@@ -6,6 +6,9 @@ import com.example.perfume_budget.exception.UnauthorizedException;
 import com.example.perfume_budget.model.Profile;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.UserRepository;
+import com.example.perfume_budget.tenancy.TenantContext;
+import com.example.perfume_budget.tenancy.TenantIdentity;
+import com.example.perfume_budget.tenancy.TenantScope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.oauth2.client.userinfo.DefaultOAuth2UserService;
@@ -47,6 +50,13 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
      * Process the OAuth2 user - either register a new user or update existing user
      */
     private OAuth2User processOAuth2User(OAuth2UserRequest userRequest, OAuth2User oAuth2User) {
+        // Tenant must have been restored from the OAuth2 state cookie before we touch any
+        // tenant-local table. Never fall back to a default/neutral schema for user creation.
+        TenantIdentity identity = TenantContext.get();
+        if (identity == null || identity.scope() != TenantScope.TENANT || identity.slug() == null) {
+            throw new UnauthorizedException("Tenant could not be resolved for OAuth2 login");
+        }
+
         String registrationId = userRequest.getClientRegistration().getRegistrationId();
         OAuth2UserInfo oAuth2UserInfo = OAuth2UserInfoFactory.getOAuth2UserInfo(
                 registrationId,

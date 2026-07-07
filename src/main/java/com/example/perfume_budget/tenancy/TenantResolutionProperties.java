@@ -32,6 +32,8 @@ public class TenantResolutionProperties {
 
     private HeaderResolution headerResolution = new HeaderResolution();
 
+    private Oauth2 oauth2 = new Oauth2();
+
     public boolean isPlatformDomain(String host) {
         return host != null && platformDomains.contains(host);
     }
@@ -40,5 +42,17 @@ public class TenantResolutionProperties {
     @Setter
     public static class HeaderResolution {
         private boolean enabled = false;
+    }
+
+    /**
+     * OAuth2 tenant resolution: the login's {@code redirect_uri} host identifies the tenant
+     * (matched against the registry). In dev there are no subdomains/custom domains, so the
+     * tenant comes from the {@code X-Tenant-ID} header and the redirect host is accepted only
+     * if it is one of these allowed dev hosts (open-redirect guard).
+     */
+    @Getter
+    @Setter
+    public static class Oauth2 {
+        private List<String> devAllowedRedirectHosts = new ArrayList<>(List.of("localhost", "127.0.0.1"));
     }
 }

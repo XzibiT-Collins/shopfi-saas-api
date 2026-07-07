@@ -34,18 +34,21 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: `mvn compile` passes.
 
 ### 1d. Tenant resolution filter + JWT binding
-- [x] `tenancy/TenantResolutionFilter` — precedence customDomain→subdomain→header(non-prod)→apex=platform→404; runs on every request; `try/finally clear()`; SUSPENDED→423; also `TenantResolutionProperties`
+- [x] `tenancy/TenantResolutionFilter` — **Origin/Referer-host** based (single API host); customDomain/subdomain match; dev `X-Tenant-ID`; platform path→PLATFORM; infra+webhook bypass; unknown origin→404; no signal→neutral; SUSPENDED→423; `try/finally clear()`; also `TenantResolutionProperties`
 - [x] `filter/JWTUtil` — `tenant` claim on access + refresh (all 4 generators); `extractTenant`
 - [x] `filter/JWTFilter` — token-tenant vs context mismatch → 401; skip for PLATFORM/neutral
 - [x] `SecurityConfig` — `tenantResolutionFilter` before `SiteVisitFilter` and `JWTFilter`
 - [x] `AuthServiceImpl.login` + `CustomUserDetailsService` — satisfied without changes: JWTUtil reads slug from `TenantContext` at generation; user lookup already runs in the resolved schema
-- [x] `AuthCookieUtil` — `HttpOnly=true`, `Secure` from config, host-only (no domain); `refreshAccessToken` validates signature + tenant before `findByEmail`
-  - Note: `mvn compile` passes; `tenant.*` dev config added (header resolution enabled for dev only).
+- [x] `AuthCookieUtil` — `HttpOnly=true`, `Secure`/`SameSite` from config (prod: `None`+`Secure`), no domain; cookie shared on single API host, isolation = JWT claim check; `refreshAccessToken` validates signature + tenant before `findByEmail`
+  - Note: `mvn compile` passes; `tenant.*` dev config added (header resolution enabled for dev only). **Revised for single-frontend/single-backend: tenant resolves from Origin/Referer, not backend Host.**
 
-### 1e. Tenant-aware Google OAuth2
-- [ ] Carry tenant slug in OAuth2 `state` on authorization request
-- [ ] `CustomOAuth2UserService` + `OAuth2AuthenticationSuccessHandler` — restore `TenantContext` from state before user create/lookup; cookie for tenant host; validate token tenant
-- [ ] Reject when tenant unresolvable from state (no default-schema fallback)
+### 1e. Tenant-aware Google OAuth2  (single API host — no OTC)
+- [x] Tenant derived from login `redirect_uri` host + validated against registry via `OAuth2RedirectValidator` (single open-redirect gate, re-checked at redirect point in success handler); slug + redirect_uri stored as auth-request attributes
+- [x] Carry through `state` via stateless `HttpCookieOAuth2AuthorizationRequestRepository` (authorize+callback both on API host); restore `TenantContext` + stash redirect on `removeAuthorizationRequest`
+- [x] `CustomOAuth2UserService` — guard rejects if tenant unresolved (no default-schema fallback)
+- [x] `OAuth2AuthenticationSuccessHandler` — set cookies on API host + redirect to validated `redirect_uri`
+- [x] Fixed Google `redirect-uri` (Google forbids wildcards); `OAuth2TenantHandoffService`/`OAuth2CompleteController` removed
+  - Note: `mvn compile` passes. Simplified after architecture clarification (single frontend + single backend); one-time-code handoff was unnecessary.
 
 ### 1f. Cache isolation
 - [ ] `tenancy/TenantAwareCacheManager` (`@Primary`) — prefix cache names with slug / `__platform__`

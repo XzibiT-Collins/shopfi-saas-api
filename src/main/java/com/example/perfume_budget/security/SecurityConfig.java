@@ -7,8 +7,10 @@ import com.example.perfume_budget.filter.JWTFilter;
 import com.example.perfume_budget.filter.SiteVisitFilter;
 import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.security.oauth2.CustomOAuth2UserService;
+import com.example.perfume_budget.security.oauth2.HttpCookieOAuth2AuthorizationRequestRepository;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationFailureHandler;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationSuccessHandler;
+import com.example.perfume_budget.security.oauth2.TenantAwareAuthorizationRequestResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -48,6 +50,8 @@ public class SecurityConfig {
     private final OAuth2AuthenticationFailureHandler oAuth2AuthenticationFailureHandler;
     private final SiteVisitFilter siteVisitFilter;
     private final TenantResolutionFilter tenantResolutionFilter;
+    private final TenantAwareAuthorizationRequestResolver authorizationRequestResolver;
+    private final HttpCookieOAuth2AuthorizationRequestRepository cookieAuthorizationRequestRepository;
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
@@ -93,6 +97,8 @@ public class SecurityConfig {
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(authorization -> authorization
                                 .baseUri("/oauth2/authorize")
+                                .authorizationRequestResolver(authorizationRequestResolver)
+                                .authorizationRequestRepository(cookieAuthorizationRequestRepository)
                         )
                         .redirectionEndpoint(redirection -> redirection
                                 .baseUri("/oauth2/callback/*")
