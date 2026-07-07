@@ -9,11 +9,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ## Stage 1 — Isolation Foundation (hard gate)
 
 ### 1a. Tenancy infra (`tenancy/`)
-- [ ] `TenantContext` — typed `TenantIdentity{slug, schemaName, scope}` ThreadLocal; `set/get/getOrDefault/clear`; default `tenant_template`
-- [ ] `SchemaMultiTenantConnectionProvider` — wrap Hikari `DataSource` via `ObjectProvider<DataSource>`; `getConnection`→`setSchema`; release→reset to `tenant_template` then close
-- [ ] `TenantIdentifierResolver implements CurrentTenantIdentifierResolver<String>`; `validateExistingCurrentSessions()=true`
-- [ ] `MultiTenancyJpaConfig` — `HibernatePropertiesCustomizer` registering both beans
-- [ ] `application-dev.properties`: `hibernate.multiTenancy=SCHEMA`, Hikari `connectionInitSql=SET search_path TO tenant_template`
+- [x] `TenantContext` — typed `TenantIdentity{slug, schemaName, scope}` ThreadLocal; `set/get/getOrDefault/clear`; default `tenant_template` (also `TenantScope`, `TenantIdentity`)
+- [x] `SchemaMultiTenantConnectionProvider` — wrap Hikari `DataSource` via `ObjectProvider<DataSource>`; `getConnection`→`setSchema`; release→reset to `tenant_template` then close
+- [x] `TenantIdentifierResolver implements CurrentTenantIdentifierResolver<String>`; `validateExistingCurrentSessions()=true`
+- [x] `MultiTenancyJpaConfig` — `HibernatePropertiesCustomizer` registering both beans
+- [x] `application-dev.properties`: `hibernate.multiTenancy=SCHEMA`, Hikari `connectionInitSql=SET search_path TO tenant_template`
+  - Note: boot deferred until 1b creates the `tenant_template` schema. `mvn compile` passes.
 
 ### 1b. Flyway split + boot ordering
 - [ ] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
