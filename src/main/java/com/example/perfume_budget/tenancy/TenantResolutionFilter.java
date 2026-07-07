@@ -14,17 +14,22 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.net.URI;
 import java.util.Optional;
 
 /**
- * Resolves the tenant for every request and binds it to {@link TenantContext} before
- * any DB-touching filter (SiteVisitFilter) or authentication runs. This solves the
- * login chicken-and-egg problem: the tenant is known from the host/header before the
- * user is authenticated.
+ * Resolves the tenant for every request and binds it to {@link TenantContext} before any
+ * DB-touching filter (SiteVisitFilter) or authentication runs.
  *
- * <p>Precedence: custom domain → subdomain → dev header → apex/platform host → 404.
- * The header path is gated to non-prod. Infrastructure paths (docs, actuator, ws,
- * oauth2) bypass resolution and run neutral. Context is always cleared in {@code finally}.
+ * <p>Topology: one frontend served at every tenant host, one backend at a single fixed API
+ * host. The backend's own {@code Host} is therefore useless for identifying a tenant — the
+ * signal is the browser-set <b>{@code Origin}</b> header (fallback {@code Referer}) = the
+ * tenant frontend host, matched to a custom domain or {@code <slug>.base-domain}. The
+ * {@code X-Tenant-ID} header is honoured only in non-prod for testing.
+ *
+ * <p>Cross-tenant isolation ultimately rests on the JWT {@code tenant}-claim check in
+ * {@link com.example.perfume_budget.filter.JWTFilter}, since the auth cookie is shared on the
+ * single API host. Context is always cleared in {@code finally}.
  */
 @Slf4j
 @Component
@@ -32,9 +37,11 @@ import java.util.Optional;
 public class TenantResolutionFilter extends OncePerRequestFilter {
 
     private static final String PLATFORM_PATH_PREFIX = "/api/v1/platform";
+    private static final String OAUTH2_PATH_PREFIX = "/oauth2";
+    // Infra + webhook: run neutral. Webhook resolves its tenant from the master route table.
     private static final String[] BYPASS_PREFIXES = {
             "/actuator", "/swagger-ui", "/v3/api-docs", "/swagger-ui.html",
-            "/ws", "/test", "/oauth2", "/login/oauth2"
+            "/ws", "/test", "/login/oauth2", "/api/v1/webhook"
     };
 
     private final TenantRegistryService tenantRegistryService;
@@ -46,7 +53,6 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
                                     @NonNull FilterChain filterChain) throws ServletException, IOException {
         String path = request.getRequestURI();
 
-        // Infrastructure/neutral paths: run without a tenant context.
         if (isBypass(path)) {
             filterChain.doFilter(request, response);
             return;
@@ -60,18 +66,24 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
                 return;
             }
 
-            String host = normalizeHost(request.getServerName());
-            Optional<Tenant> resolved = resolveTenant(host, request);
+            // OAuth2 authorize/callback run neutral here; the tenant is carried through the
+            // authorization request (derived from redirect_uri) and restored by the cookie repo.
+            if (path.startsWith(OAUTH2_PATH_PREFIX)) {
+                filterChain.doFilter(request, response);
+                return;
+            }
+
+            String originHost = resolveOriginHost(request);
+            Optional<Tenant> resolved = resolveTenant(originHost, request);
 
             if (resolved.isEmpty()) {
-                // No tenant matched. Apex/platform hosts serve the platform scope; anything
-                // else targeting a tenant surface is an unknown tenant.
-                if (properties.isPlatformDomain(host) || host.equalsIgnoreCase(properties.getBaseDomain())) {
-                    TenantContext.set(TenantIdentity.platform());
-                    filterChain.doFilter(request, response);
+                if (originHost != null) {
+                    // A real browser origin that matches no tenant.
+                    response.sendError(HttpServletResponse.SC_NOT_FOUND, "Unknown tenant");
                     return;
                 }
-                response.sendError(HttpServletResponse.SC_NOT_FOUND, "Unknown tenant");
+                // No tenant signal at all (server-to-server, health tooling): run neutral.
+                filterChain.doFilter(request, response);
                 return;
             }
 
@@ -92,14 +104,13 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
         }
     }
 
-    private Optional<Tenant> resolveTenant(String host, HttpServletRequest request) {
-        // 1 + 2: host-based resolution only when the host is not itself a platform apex.
-        if (!properties.isPlatformDomain(host)) {
-            Optional<Tenant> byDomain = tenantRegistryService.findByCustomDomain(host);
+    private Optional<Tenant> resolveTenant(String originHost, HttpServletRequest request) {
+        if (originHost != null && !properties.isPlatformDomain(originHost)) {
+            Optional<Tenant> byDomain = tenantRegistryService.findByCustomDomain(originHost);
             if (byDomain.isPresent()) {
                 return byDomain;
             }
-            String subdomainSlug = extractSubdomainSlug(host);
+            String subdomainSlug = extractSubdomainSlug(originHost);
             if (subdomainSlug != null) {
                 Optional<Tenant> bySubdomain = tenantRegistryService.findBySlug(subdomainSlug);
                 if (bySubdomain.isPresent()) {
@@ -108,7 +119,7 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
             }
         }
 
-        // 3: dev/test header, non-prod only.
+        // Dev/test header, non-prod only.
         if (properties.getHeaderResolution().isEnabled()) {
             String headerSlug = request.getHeader(properties.getHeaderName());
             if (headerSlug != null && !headerSlug.isBlank()) {
@@ -117,6 +128,27 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
         }
 
         return Optional.empty();
+    }
+
+    /** Host from the {@code Origin} header, falling back to {@code Referer}. */
+    private String resolveOriginHost(HttpServletRequest request) {
+        String host = hostFromUrl(request.getHeader("Origin"));
+        if (host != null) {
+            return host;
+        }
+        return hostFromUrl(request.getHeader("Referer"));
+    }
+
+    private String hostFromUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            String host = URI.create(value).getHost();
+            return host != null ? host.toLowerCase() : null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private String extractSubdomainSlug(String host) {
@@ -129,15 +161,6 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
             return host.substring(0, host.length() - suffix.length());
         }
         return null;
-    }
-
-    private String normalizeHost(String serverName) {
-        if (serverName == null) {
-            return "";
-        }
-        String host = serverName.toLowerCase();
-        int colon = host.indexOf(':');
-        return colon > -1 ? host.substring(0, colon) : host;
     }
 
     private boolean isBypass(String path) {

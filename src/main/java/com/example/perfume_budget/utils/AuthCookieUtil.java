@@ -59,8 +59,10 @@ public class AuthCookieUtil {
     }
 
     private void addCookie(HttpServletResponse response, String name, String token, int maxAge) {
-        // HttpOnly so tokens are never exposed to JS; host-only (no domain attribute) so each
-        // tenant host isolates its own session cookies.
+        // HttpOnly so tokens are never exposed to JS; no domain attribute (bound to the single
+        // API host). The cookie is shared across tenants on that host, so cross-tenant isolation
+        // is enforced by the JWT tenant-claim check in JWTFilter, not by the cookie. Cross-site
+        // frontend->API requires SameSite=None; Secure in prod (see cookie.* config).
         ResponseCookie cookie = ResponseCookie.from(name, token)
                 .httpOnly(true)
                 .secure(secure)
