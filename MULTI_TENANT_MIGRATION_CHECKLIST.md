@@ -17,12 +17,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: boot deferred until 1b creates the `tenant_template` schema. `mvn compile` passes.
 
 ### 1b. Flyway split + boot ordering
-- [ ] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
-- [ ] Move existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering)
-- [ ] `spring.flyway.enabled=false`
-- [ ] `TenantSchemaMigrator` — `migrateMaster()`, `migrateTemplate()`, `migrateTenant(schema)`
-- [ ] `tenantFlywayInitializer` bean: master → template → each active tenant
-- [ ] `EntityManagerFactoryDependsOnPostProcessor("tenantFlywayInitializer")`
+- [x] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
+- [x] Move existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering, via `git mv`)
+- [x] `spring.flyway.enabled=false`
+- [x] `TenantSchemaMigrator` — `migrateMaster()`, `migrateTemplate()`, `migrateTenant(schema)` + `listActiveTenantSchemas()` (JDBC, pre-EMF)
+- [x] `tenantFlywayInitializer` bean: master → template → each active tenant
+- [x] `EntityManagerFactoryDependsOnPostProcessor("tenantFlywayInitializer")`
+  - Note: `mvn compile` passes; full boot verification (needs Postgres/Redis env) deferred to the Stage 1 gate.
 
 ### 1c. Tenant registry (`platform/`, master schema)
 - [ ] `platform/model/Tenant` (`@Table(schema="master")`) with fields + `AuditingEntityListener`
