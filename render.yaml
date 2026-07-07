@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: perfume-budget-dev
+    env: docker
+    plan: free
+    branch: dev
+    healthCheckPath: /actuator/health
+
+  - type: redis
+    name: perfume-redis
+    region: frankfurt
+    ipAllowList: []
+    maxmemoryPolicy: noeviction

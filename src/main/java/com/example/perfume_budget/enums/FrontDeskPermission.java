@@ -1,0 +1,12 @@
+package com.example.perfume_budget.enums;
+
+public enum FrontDeskPermission {
+    WALK_IN_ORDER_CREATE,
+    WALK_IN_ORDER_VIEW,
+    WALK_IN_ORDER_MARK_RECEIPT_PRINTED,
+    CUSTOMER_SEARCH,
+    PRODUCT_VIEW_ADMIN_CATALOG,
+    PRODUCT_VIEW_STOCK_SUMMARY,
+    STOCK_TRANSFER,
+    STOCK_CONVERSION
+}

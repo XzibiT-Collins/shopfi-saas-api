@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful - Action Required</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: #edf4fb;
+            font-family: "Segoe UI", Arial, sans-serif;
+            color: #1e293b;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrapper {
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 28px 16px 40px;
+        }
+
+        .shell {
+            background: #ffffff;
+            border: 1px solid #d8e3f2;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+        }
+
+        .top-accent {
+            height: 6px;
+            background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 55%, #38bdf8 100%);
+        }
+
+        .header {
+            background: linear-gradient(180deg, #0f172a 0%, #111c31 100%);
+            color: #f8fafc;
+            padding: 34px 40px 28px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .brand-name {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 31px;
+            font-weight: 700;
+            letter-spacing: 2.5px;
+            color: #f8fafc;
+            text-transform: uppercase;
+        }
+
+        .status-badge {
+            display: inline-block;
+            background: #d1fae5;
+            color: #0f766e;
+            font-size: 11px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            padding: 6px 18px;
+            border-radius: 999px;
+            margin-top: 16px;
+            font-weight: 700;
+        }
+
+        .header-title {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+            color: #e2e8f0;
+            margin-top: 14px;
+        }
+
+        .action-banner {
+            background: #1d4ed8;
+            padding: 16px 28px;
+            text-align: center;
+            border-bottom: 1px solid #d8e3f2;
+        }
+
+        .action-banner p {
+            color: #ffffff;
+            font-size: 12px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+
+        .body {
+            background: #ffffff;
+            padding: 40px;
+        }
+
+        .intro-text {
+            font-size: 15px;
+            line-height: 1.75;
+            color: #475569;
+            margin-bottom: 28px;
+            padding: 16px 18px;
+            background: #f8fbff;
+            border-left: 4px solid #1d4ed8;
+            border-radius: 0 12px 12px 0;
+        }
+
+        .section-title {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 0.2px;
+            margin-bottom: 14px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .details-card {
+            background: #f8fbff;
+            border: 1px solid #d8e3f2;
+            border-radius: 16px;
+            padding: 20px 22px;
+            margin-bottom: 24px;
+        }
+
+        .details-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .details-table td {
+            padding: 8px 0;
+            font-size: 13px;
+            vertical-align: top;
+        }
+
+        .details-table .label {
+            color: #64748b;
+            font-size: 10px;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+            width: 45%;
+            padding-right: 16px;
+        }
+
+        .details-table .value {
+            color: #0f172a;
+            font-weight: 600;
+        }
+
+        .details-table .value.success { color: #0f766e; font-weight: 700; }
+        .details-table .value.amount {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 18px;
+            color: #0f172a;
+            font-weight: 700;
+        }
+
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 24px;
+        }
+
+        .items-table thead tr {
+            background: #f8fbff;
+        }
+
+        .items-table th {
+            text-align: left;
+            padding: 10px 12px;
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #64748b;
+            font-weight: 700;
+        }
+
+        .items-table th:last-child { text-align: right; }
+
+        .items-table td {
+            padding: 14px 12px;
+            font-size: 13px;
+            color: #334155;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .items-table td:last-child { text-align: right; }
+
+        .item-name { font-weight: 600; color: #0f172a; }
+
+        .totals-card {
+            background: #f8fbff;
+            border: 1px solid #d8e3f2;
+            border-radius: 16px;
+            padding: 20px 22px;
+            margin-bottom: 28px;
+        }
+
+        .totals-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .totals-table td {
+            padding: 5px 0;
+            font-size: 13px;
+            color: #475569;
+            vertical-align: middle;
+        }
+
+        .totals-table td.value {
+            text-align: right;
+            font-weight: 600;
+            white-space: nowrap;
+            color: #0f172a;
+        }
+
+        .totals-table tr.discount td { color: #0f766e; }
+
+        .totals-table tr.divider td {
+            padding: 10px 0;
+            border-top: 1px solid #e2e8f0;
+            font-size: 0;
+            line-height: 0;
+        }
+
+        .totals-table tr.grand td {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 20px;
+            color: #0f172a;
+            font-weight: 700;
+            padding-top: 6px;
+        }
+
+        .cta-section {
+            text-align: center;
+            margin-bottom: 28px;
+        }
+
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(90deg, #1d4ed8 0%, #2563eb 100%);
+            color: white !important;
+            text-decoration: none;
+            font-size: 13px;
+            letter-spacing: 1.8px;
+            text-transform: uppercase;
+            padding: 14px 34px;
+            border-radius: 999px;
+            font-weight: 700;
+            box-shadow: 0 12px 24px rgba(29, 78, 216, 0.18);
+        }
+
+        .cta-note {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 12px;
+            line-height: 1.7;
+        }
+
+        .footer {
+            background: #f8fbff;
+            border-top: 1px solid #d8e3f2;
+            padding: 24px 40px 28px;
+            text-align: center;
+        }
+
+        .footer .brand {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .footer p {
+            font-size: 11px;
+            color: #64748b;
+            letter-spacing: 0.4px;
+            line-height: 1.9;
+        }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="shell">
+    <div class="top-accent"></div>
+
+    <!-- HEADER -->
+    <div class="header">
+        <div class="brand-name">One Time Essentials</div>
+        <div class="status-badge">Payment Confirmed</div>
+        <div class="header-title">Order Awaiting Processing &amp; Delivery</div>
+    </div>
+
+    <!-- ACTION BANNER -->
+    <div class="action-banner">
+        <p>Action Required - Please process and dispatch this order</p>
+    </div>
+
+    <!-- BODY -->
+    <div class="body">
+
+        <p class="intro-text">
+            A customer has successfully completed payment for their order.
+            Please review the details below, print the receipt, attach it to the packed order, and arrange delivery.
+        </p>
+
+        <!-- PAYMENT DETAILS -->
+        <div class="section-title">Payment Details</div>
+        <div class="details-card">
+            <table class="details-table">
+                <tr>
+                    <td class="label">Order Number</td>
+                    <td class="value" th:text="${order.orderNumber}">ORD-20260221-A1B2C3</td>
+                </tr>
+                <tr>
+                    <td class="label">System Reference</td>
+                    <td class="value" th:text="${payment.systemReference}">SYS-20260221-XXXX</td>
+                </tr>
+                <tr>
+                    <td class="label">Provider Reference</td>
+                    <td class="value" th:text="${payment.providerPaymentReference}">PAY-XXXX</td>
+                </tr>
+                <tr>
+                    <td class="label">Customer Email</td>
+                    <td class="value" th:text="${payment.customerEmail}">customer@email.com</td>
+                </tr>
+                <tr>
+                    <td class="label">Payment Status</td>
+                    <td class="value success">Successful</td>
+                </tr>
+                <tr>
+                    <td class="label">Date &amp; Time</td>
+                    <td class="value" th:text="${#temporals.format(payment.paidAt, 'dd MMM yyyy, HH:mm')}">21 Feb 2026, 10:45</td>
+                </tr>
+                <tr>
+                    <td class="label">Amount Received</td>
+                    <td class="value amount" th:text="'GHS ' + ${order.totalAmount.amount}">GHS 450.00</td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- ORDER ITEMS -->
+        <div class="section-title">Items to Pack</div>
+        <table class="items-table">
+            <thead>
+            <tr>
+                <th>Product</th>
+                <th>Unit Price</th>
+                <th>Qty</th>
+                <th>Total</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="item : ${order.items}">
+                <td><span class="item-name" th:text="${item.productName}">Chanel No. 5</span></td>
+                <td th:text="${item.unitPrice}">GHS 120.00</td>
+                <td th:text="${item.quantity}">2</td>
+                <td th:text="${item.totalPrice}">GHS 240.00</td>
+            </tr>
+            </tbody>
+        </table>
+
+        <!-- TOTALS -->
+        <div class="totals-card">
+            <table class="totals-table">
+                <tr>
+                    <td>Subtotal</td>
+                    <td class="value" th:text="'GHS ' + ${order.subtotal.amount}">GHS 500.00</td>
+                </tr>
+                <tr class="discount" th:if="${order.discountAmount.amount > 0}">
+                    <td>Discount</td>
+                    <td class="value" th:text="'- GHS ' + ${order.discountAmount.amount}">- GHS 50.00</td>
+                </tr>
+                <tr class="divider"><td colspan="2">&nbsp;</td></tr>
+                <tr class="grand">
+                    <td>Total Collected</td>
+                    <td class="value" th:text="'GHS ' + ${order.totalAmount.amount}">GHS 450.00</td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- CTA -->
+        <div class="cta-section">
+            <a href="#" class="cta-button">View &amp; Print Order</a>
+            <p class="cta-note">Log in to the admin dashboard to view full order details and print the receipt.</p>
+        </div>
+
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+        <div class="brand">One Time Essentials</div>
+        <p>
+            &copy; 2026 One Time Essentials &mdash; Internal Admin Notification<br/>
+            This email was automatically generated. Do not share with customers.
+        </p>
+    </div>
+
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontend Prompt Generation"
+  short_description: "Draft detailed frontend implementation prompts"
+  default_prompt: "Use $frontend-prompt-generation to produce a frontend integration prompt from backend context and endpoints."

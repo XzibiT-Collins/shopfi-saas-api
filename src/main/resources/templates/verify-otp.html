@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify Your Account</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #edf4fb;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: #1e293b;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .wrapper {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 28px 16px 40px;
+    }
+
+    .shell {
+      background: #ffffff;
+      border: 1px solid #d8e3f2;
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+    }
+
+    .top-accent {
+      height: 6px;
+      background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 55%, #38bdf8 100%);
+    }
+
+    .header {
+      background: linear-gradient(180deg, #0f172a 0%, #111c31 100%);
+      color: #f8fafc;
+      padding: 34px 40px 28px;
+      text-align: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .brand-name {
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 31px;
+      font-weight: 700;
+      letter-spacing: 2.5px;
+      color: #f8fafc;
+      text-transform: uppercase;
+    }
+
+    .brand-tagline {
+      font-size: 11px;
+      letter-spacing: 2.8px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      margin-top: 6px;
+    }
+
+    .header-divider {
+      width: 88px;
+      height: 1px;
+      margin: 18px auto 14px;
+      background: linear-gradient(to right, transparent, rgba(148, 163, 184, 0.9), transparent);
+    }
+
+    .header-title {
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 24px;
+      font-weight: 700;
+      color: #e2e8f0;
+      letter-spacing: 0.3px;
+    }
+
+    .body {
+      background: #ffffff;
+      padding: 40px;
+    }
+
+    .greeting {
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 12px;
+    }
+
+    .intro-text {
+      font-size: 15px;
+      line-height: 1.75;
+      color: #475569;
+      margin-bottom: 30px;
+    }
+
+    .otp-section {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    .otp-label {
+      font-size: 11px;
+      letter-spacing: 2.6px;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 14px;
+      font-weight: 700;
+    }
+
+    .otp-box {
+      display: inline-block;
+      background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
+      border: 1px solid #d8e3f2;
+      border-radius: 18px;
+      padding: 26px 36px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+
+    .otp-code {
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 48px;
+      font-weight: 700;
+      color: #1d4ed8;
+      letter-spacing: 12px;
+      line-height: 1;
+    }
+
+    .expiry-notice,
+    .security-notice {
+      background: #f8fbff;
+      border: 1px solid #d8e3f2;
+      border-radius: 16px;
+      padding: 16px 20px;
+      text-align: center;
+      margin-bottom: 22px;
+    }
+
+    .expiry-notice p,
+    .security-notice p {
+      font-size: 13px;
+      color: #526077;
+      line-height: 1.75;
+    }
+
+    .expiry-notice strong {
+      color: #1d4ed8;
+      font-weight: 700;
+    }
+
+    .steps-section {
+      margin-bottom: 22px;
+    }
+
+    .steps-title {
+      font-size: 11px;
+      letter-spacing: 2.6px;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 14px;
+      font-weight: 700;
+    }
+
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .step-number {
+      flex-shrink: 0;
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      background: #e0ecff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step-text {
+      font-size: 14px;
+      color: #475569;
+      line-height: 1.75;
+      padding-top: 1px;
+    }
+
+    .footer {
+      background: #f8fbff;
+      border-top: 1px solid #d8e3f2;
+      padding: 24px 40px 28px;
+      text-align: center;
+    }
+
+    .footer .brand {
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      color: #0f172a;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .footer p {
+      font-size: 11px;
+      color: #64748b;
+      letter-spacing: 0.4px;
+      line-height: 1.9;
+    }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="shell">
+  <div class="top-accent"></div>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="brand-name">One Time Essentials</div>
+    <div class="brand-tagline">Account Verification</div>
+    <div class="header-divider"></div>
+    <div class="header-title">Verify Your Account</div>
+  </div>
+
+  <!-- BODY -->
+  <div class="body">
+
+    <div class="greeting">Welcome to One Time Essentials,</div>
+    <p class="intro-text">
+      Thank you for creating an account. To complete your registration and
+      access your account, please verify your email address using the
+      one-time code below.
+    </p>
+
+    <!-- OTP CODE -->
+    <div class="otp-section">
+      <div class="otp-label">Your verification code</div>
+      <div class="otp-box">
+        <div class="otp-code" th:text="${otpCode}">000000</div>
+      </div>
+    </div>
+
+    <!-- EXPIRY NOTICE -->
+    <div class="expiry-notice">
+      <p>
+        This code is valid for <strong>10 minutes</strong> and can only be used once.<br/>
+        After that you will need to request a new verification code.
+      </p>
+    </div>
+
+    <!-- STEPS -->
+    <div class="steps-section">
+      <div class="steps-title">How to verify</div>
+      <div class="step">
+        <div class="step-number">1</div>
+        <div class="step-text">Return to the One Time Essentials registration page.</div>
+      </div>
+      <div class="step">
+        <div class="step-number">2</div>
+        <div class="step-text">Enter the 6-digit code shown above in the verification field.</div>
+      </div>
+      <div class="step">
+        <div class="step-number">3</div>
+        <div class="step-text">Your account will be activated and you can start shopping.</div>
+      </div>
+    </div>
+
+    <!-- SECURITY NOTICE -->
+    <div class="security-notice">
+      <p>
+        If you did not create an account with One Time Essentials, please ignore this email.<br/>
+        Never share this code with anyone. Our team will never ask for your OTP.
+      </p>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <div class="brand">One Time Essentials</div>
+    <p>
+      &copy; 2026 One Time Essentials. All rights reserved.<br/>
+      This email was sent to verify your registration.<br/>
+      Please do not reply directly to this automated message.
+    </p>
+  </div>
+
+</div>
+</div>
+</body>
+</html>

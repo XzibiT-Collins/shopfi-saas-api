@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Status Update</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: #edf4fb;
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            color: #1e293b;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrapper {
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 28px 16px 40px;
+        }
+
+        .shell {
+            background: #ffffff;
+            border: 1px solid #d8e3f2;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+        }
+
+        .top-accent {
+            height: 6px;
+            background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 55%, #38bdf8 100%);
+        }
+
+        .header {
+            background: linear-gradient(180deg, #0f172a 0%, #111c31 100%);
+            color: #f8fafc;
+            padding: 34px 40px 28px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .brand-name {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 30px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #f8fafc;
+            text-transform: uppercase;
+        }
+
+        .brand-tagline {
+            font-size: 11px;
+            letter-spacing: 2.8px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-top: 6px;
+        }
+
+        .header-divider {
+            width: 88px;
+            height: 1px;
+            margin: 18px auto 14px;
+            background: linear-gradient(to right, transparent, rgba(148, 163, 184, 0.9), transparent);
+        }
+
+        .header-title {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 23px;
+            font-weight: 600;
+            color: #e2e8f0;
+            letter-spacing: 0.2px;
+        }
+
+        .body {
+            background: #ffffff;
+            padding: 40px;
+        }
+
+        .intro-text {
+            font-size: 15px;
+            line-height: 1.75;
+            color: #475569;
+            margin-bottom: 28px;
+        }
+
+        .order-ref {
+            background: #f8fbff;
+            border: 1px solid #d8e3f2;
+            border-radius: 16px;
+            padding: 16px 20px;
+            text-align: center;
+            margin-bottom: 28px;
+        }
+
+        .order-ref-label {
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #64748b;
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+
+        .order-ref-number {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 0.4px;
+        }
+
+        .tracker-section {
+            margin-bottom: 28px;
+        }
+
+        .tracker-title {
+            font-size: 11px;
+            letter-spacing: 2.4px;
+            text-transform: uppercase;
+            color: #64748b;
+            text-align: center;
+            margin-bottom: 22px;
+            font-weight: 700;
+        }
+
+        .tracker {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .tracker-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 26px;
+        }
+
+        .step-dot {
+            flex-shrink: 0;
+            color: #94a3b8;
+            font-size: 16px;
+            line-height: 1;
+            font-weight: 700;
+        }
+
+        .step-dot.active {
+            color: #1d4ed8;
+        }
+
+        .step-dot.done {
+            color: #1d4ed8;
+        }
+
+        .step-dot.cancelled {
+            color: #64748b;
+        }
+
+        .step-label {
+            font-size: 10px;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: #64748b;
+            line-height: 1.35;
+        }
+
+        .step-label.active {
+            color: #0f172a;
+            font-weight: 700;
+        }
+
+        .status-banner {
+            border-radius: 16px;
+            padding: 22px;
+            text-align: center;
+            margin-bottom: 28px;
+            border: 1px solid #d8e3f2;
+        }
+
+        .status-banner.pending {
+            background: #eff6ff;
+            border-color: #bfdbfe;
+        }
+
+        .status-banner.packing {
+            background: #f8fbff;
+            border-color: #d8e3f2;
+        }
+
+        .status-banner.out_for_delivery {
+            background: #ecfdf5;
+            border-color: #a7f3d0;
+        }
+
+        .status-banner.delivered {
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+        }
+
+        .status-banner.cancelled {
+            background: #f8fafc;
+            border-color: #e2e8f0;
+        }
+
+        .status-icon {
+            display: inline-block;
+            margin-bottom: 10px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #64748b;
+        }
+
+        .status-title {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #0f172a;
+        }
+
+        .status-title.pending { color: #1d4ed8; }
+        .status-title.packing { color: #0f172a; }
+        .status-title.out_for_delivery { color: #047857; }
+        .status-title.delivered { color: #15803d; }
+        .status-title.cancelled { color: #475569; }
+
+        .status-description {
+            font-size: 13px;
+            color: #475569;
+            line-height: 1.75;
+        }
+
+        .thank-you-note {
+            text-align: center;
+            padding: 24px 0 0;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .thank-you-note p {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 17px;
+            color: #0f172a;
+            font-style: normal;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .thank-you-note small {
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .footer {
+            background: #f8fbff;
+            border-top: 1px solid #d8e3f2;
+            padding: 24px 40px 28px;
+            text-align: center;
+        }
+
+        .footer .brand {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .footer p {
+            font-size: 11px;
+            color: #64748b;
+            letter-spacing: 0.4px;
+            line-height: 1.9;
+        }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="shell">
+    <div class="top-accent"></div>
+
+    <!-- HEADER -->
+    <div class="header">
+        <div class="brand-name">One Time Essentials</div>
+        <div class="brand-tagline">Order Tracking</div>
+        <div class="header-divider"></div>
+        <div class="header-title">Order Status Update</div>
+    </div>
+
+    <!-- BODY -->
+    <div class="body">
+
+        <p class="intro-text">
+            We have an update on your One Time Essentials order. Please see the latest
+            status below.
+        </p>
+
+        <!-- ORDER NUMBER -->
+        <div class="order-ref">
+            <div class="order-ref-label">Order Reference</div>
+            <div class="order-ref-number" th:text="${orderNumber}">ORD-20260221-A1B2C3</div>
+        </div>
+
+        <!-- STATUS TRACKER -->
+        <div class="tracker-section">
+            <div class="tracker-title">Order Progress</div>
+            <div class="tracker">
+
+                <!-- PENDING -->
+                <div class="tracker-step">
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 0} ? 'done' : '')"
+                         class="step-dot">&#10003;</div>
+                    <div th:classappend="${orderStatus.name() == 'PENDING'} ? 'active' : ''"
+                         class="step-label">Order Placed</div>
+                </div>
+
+                <!-- PACKING -->
+                <div class="tracker-step">
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 1} ? (${orderStatus.ordinal() == 1} ? 'active' : 'done') : '')"
+                         class="step-dot">&#10003;</div>
+                    <div th:classappend="${orderStatus.name() == 'PACKING'} ? 'active' : ''"
+                         class="step-label">Packing</div>
+                </div>
+
+                <!-- OUT FOR DELIVERY -->
+                <div class="tracker-step">
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 2} ? (${orderStatus.ordinal() == 2} ? 'active' : 'done') : '')"
+                         class="step-dot">&#10003;</div>
+                    <div th:classappend="${orderStatus.name() == 'OUT_FOR_DELIVERY'} ? 'active' : ''"
+                         class="step-label">Out for Delivery</div>
+                </div>
+
+                <!-- DELIVERED -->
+                <div class="tracker-step">
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 3} ? 'active' : '')"
+                         class="step-dot">&#10003;</div>
+                    <div th:classappend="${orderStatus.name() == 'DELIVERED'} ? 'active' : ''"
+                         class="step-label">Delivered</div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- STATUS BANNER — PENDING -->
+        <div th:if="${orderStatus.name() == 'PENDING'}"
+             class="status-banner pending">
+            <div class="status-icon">P</div>
+            <div class="status-title pending">Order Pending</div>
+            <p class="status-description pending">
+                Your order has been received and is currently awaiting processing.
+                We will notify you as soon as we begin preparing it.
+            </p>
+        </div>
+
+        <!-- STATUS BANNER — PACKING -->
+        <div th:if="${orderStatus.name() == 'PACKING'}"
+             class="status-banner packing">
+            <div class="status-icon">K</div>
+            <div class="status-title packing">We Are Packing Your Order</div>
+            <p class="status-description packing">
+                Great news! Our team is carefully packing your fragrances.
+                Your order will be handed over to our delivery partner very soon.
+            </p>
+        </div>
+
+        <!-- STATUS BANNER — OUT FOR DELIVERY -->
+        <div th:if="${orderStatus.name() == 'OUT_FOR_DELIVERY'}"
+             class="status-banner out_for_delivery">
+            <div class="status-icon">O</div>
+            <div class="status-title out_for_delivery">Your Order Is On Its Way</div>
+            <p class="status-description out_for_delivery">
+                Your order has been picked up and is currently out for delivery.
+                Please ensure someone is available to receive it at your delivery address.
+            </p>
+        </div>
+
+        <!-- STATUS BANNER — DELIVERED -->
+        <div th:if="${orderStatus.name() == 'DELIVERED'}"
+             class="status-banner delivered">
+            <div class="status-icon"></div>
+            <div class="status-title delivered">Order Delivered</div>
+            <p class="status-description delivered">
+                Your order has been successfully delivered. We hope you enjoy your
+                fragrances. Thank you for shopping with One Time Essentials.
+            </p>
+        </div>
+
+        <!-- STATUS BANNER — CANCELLED -->
+        <div th:if="${orderStatus.name() == 'CANCELLED'}"
+             class="status-banner cancelled">
+            <div class="status-icon">X</div>
+            <div class="status-title cancelled">Order Cancelled</div>
+            <p class="status-description cancelled">
+                Your order has been cancelled. If you believe this is a mistake or
+                have any questions, please contact our support team and we will be
+                happy to assist you.
+            </p>
+        </div>
+
+        <!-- THANK YOU -->
+        <div class="thank-you-note">
+            <p>Thank you for choosing One Time Essentials</p>
+            <small>For enquiries, please reply to this email or contact our support team.</small>
+        </div>
+
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+        <div class="brand">One Time Essentials</div>
+        <p>
+            &copy; 2026 One Time Essentials. All rights reserved.<br/>
+            This email was sent to update you on your order status.<br/>
+            Please do not reply directly to this automated message.
+        </p>
+    </div>
+
+</div>
+</div>
+</body>
+</html>

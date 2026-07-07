@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order Receipt</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: #edf4fb;
+            font-family: "Segoe UI", Arial, sans-serif;
+            color: #1e293b;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .wrapper {
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 28px 16px 40px;
+        }
+
+        .shell {
+            background: #ffffff;
+            border: 1px solid #d8e3f2;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+        }
+
+        .top-accent {
+            height: 6px;
+            background: linear-gradient(90deg, #0f172a 0%, #1d4ed8 55%, #38bdf8 100%);
+        }
+
+        .header {
+            background: linear-gradient(180deg, #0f172a 0%, #111c31 100%);
+            color: #f8fafc;
+            padding: 34px 40px 28px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .brand-name {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 31px;
+            font-weight: 700;
+            letter-spacing: 2.5px;
+            color: #f8fafc;
+            text-transform: uppercase;
+        }
+
+        .brand-tagline {
+            font-size: 11px;
+            letter-spacing: 2.8px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            margin-top: 6px;
+        }
+
+        .header-divider {
+            width: 88px;
+            height: 1px;
+            margin: 18px auto 14px;
+            background: linear-gradient(to right, transparent, rgba(148, 163, 184, 0.9), transparent);
+        }
+
+        .header-title {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+            color: #e2e8f0;
+            letter-spacing: 0.3px;
+        }
+
+        .body {
+            background: #ffffff;
+            padding: 40px;
+        }
+
+        .greeting {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 12px;
+        }
+
+        .intro-text {
+            font-size: 15px;
+            line-height: 1.75;
+            color: #475569;
+            margin-bottom: 28px;
+        }
+
+        .order-meta {
+            background: #f8fbff;
+            border: 1px solid #d8e3f2;
+            border-radius: 16px;
+            padding: 20px 22px;
+            margin-bottom: 28px;
+        }
+
+        .meta-label {
+            color: #64748b;
+            letter-spacing: 1.6px;
+            text-transform: uppercase;
+            font-size: 10px;
+            width: 48%;
+            padding-right: 16px;
+        }
+
+        .meta-value {
+            color: #0f172a;
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .section-title {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 0.2px;
+            margin-bottom: 14px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 22px;
+        }
+
+        .items-table thead tr {
+            background: #f8fbff;
+        }
+
+        .items-table th {
+            text-align: left;
+            padding: 10px 12px;
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #64748b;
+            font-weight: 700;
+        }
+
+        .items-table th:last-child { text-align: right; }
+
+        .items-table td {
+            padding: 14px 12px;
+            font-size: 13px;
+            color: #334155;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: middle;
+        }
+
+        .items-table td:last-child { text-align: right; }
+
+        .item-name {
+            font-weight: 600;
+            color: #0f172a;
+        }
+
+        .item-qty {
+            display: inline-block;
+            background: #e0ecff;
+            color: #1d4ed8;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            margin-top: 4px;
+            font-weight: 700;
+        }
+
+        .totals-section {
+            background: #f8fbff;
+            border: 1px solid #d8e3f2;
+            border-radius: 16px;
+            padding: 20px 22px;
+            margin-bottom: 28px;
+        }
+
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 13px;
+            color: #475569;
+        }
+
+        .total-row.discount { color: #0f766e; }
+
+        .total-divider {
+            height: 1px;
+            background: #e2e8f0;
+            margin: 12px 0;
+        }
+
+        .total-row.grand-total {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .delivery-section {
+            border: 1px solid #d8e3f2;
+            border-radius: 16px;
+            padding: 20px 22px;
+            margin-bottom: 28px;
+            background: #f8fbff;
+        }
+
+        .delivery-detail {
+            font-size: 13px;
+            color: #475569;
+            line-height: 1.9;
+        }
+
+        .thank-you-note {
+            text-align: center;
+            padding: 24px 0 0;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .thank-you-note p {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 18px;
+            color: #0f172a;
+            font-style: normal;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .thank-you-note small {
+            font-size: 12px;
+            color: #64748b;
+        }
+
+        .footer {
+            background: #f8fbff;
+            border-top: 1px solid #d8e3f2;
+            padding: 24px 40px 28px;
+            text-align: center;
+        }
+
+        .footer p {
+            font-size: 11px;
+            color: #64748b;
+            letter-spacing: 0.4px;
+            line-height: 1.9;
+        }
+
+        .footer .brand {
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 15px;
+            font-weight: 700;
+            color: #0f172a;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="shell">
+    <div class="top-accent"></div>
+
+    <!-- HEADER -->
+    <div class="header">
+        <div class="brand-name">One Time Essentials</div>
+        <div class="brand-tagline">Customer Receipt</div>
+        <div class="header-divider"></div>
+        <div class="header-title">Order Confirmation & Receipt</div>
+    </div>
+
+    <!-- BODY -->
+    <div class="body">
+
+        <div class="greeting">Dear <span th:text="${recipientName}">Valued Customer</span>,</div>
+        <p class="intro-text">
+            Thank you for your order. We have received your payment and your order is now being prepared with care.
+            Below is a summary of your purchase for your records.
+        </p>
+
+        <!-- ORDER META -->
+        <div class="order-meta">
+            <table style="width:100%; border-collapse: collapse;">
+                <tr>
+                    <td class="meta-label">Order Number</td>
+                    <td class="meta-value" th:text="${order.orderNumber}">ORD-20260221-A1B2C3D4</td>
+                </tr>
+                <tr>
+                    <td class="meta-label">Payment Reference</td>
+                    <td class="meta-value" th:text="${payment.systemReference}">SYS-20260221-XXXX</td>
+                </tr>
+                <tr>
+                    <td class="meta-label">Payment Status</td>
+                    <td class="meta-value" style="color: #0f766e;">Successful</td>
+                </tr>
+                <tr>
+                    <td class="meta-label">Date</td>
+                    <td class="meta-value" th:text="${#temporals.format(payment.paidAt, 'dd MMMM yyyy, HH:mm')}">21 February 2026</td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- ORDER ITEMS -->
+        <div class="section-title">Items Ordered</div>
+        <table class="items-table">
+            <thead>
+            <tr>
+                <th>Product</th>
+                <th>Unit Price</th>
+                <th>Qty</th>
+                <th>Total</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="item : ${order.items}">
+                <td>
+                    <div class="item-name" th:text="${item.productName}">Chanel No. 5</div>
+                </td>
+                <td th:text="${item.unitPrice}">GHS 120.00</td>
+                <td><span class="item-qty" th:text="${item.quantity}">1</span></td>
+                <td th:text="${item.totalPrice}">GHS 120.00</td>
+            </tr>
+            </tbody>
+        </table>
+
+        <!-- TOTALS -->
+        <div class="totals-section">
+            <table class="totals-table">
+                <tr>
+                    <td>Subtotal</td>
+                    <td class="value" th:text="'GHS ' + ${order.subtotal.amount}">GHS 500.00</td>
+                </tr>
+                <tr class="discount" th:if="${order.discountAmount.amount > 0}">
+                    <td>Discount Applied</td>
+                    <td class="value" th:text="'- GHS ' + ${order.discountAmount.amount}">- GHS 50.00</td>
+                </tr>
+                <tr class="divider"><td colspan="2">&nbsp;</td></tr>
+                <tr class="grand-total">
+                    <td>Total Paid</td>
+                    <td class="value" th:text="'GHS ' + ${order.totalAmount.amount}">GHS 450.00</td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- DELIVERY DETAILS -->
+        <div class="section-title">Delivery Details</div>
+        <div class="delivery-section">
+            <div class="delivery-detail">
+                <strong th:text="${recipientName}">Customer Name</strong><br/>
+                <span th:text="${phone}">Phone Number</span><br/>
+                <span th:text="${address}">Delivery Address</span><br/>
+                <span th:text="${city}">City</span>
+            </div>
+        </div>
+
+        <!-- THANK YOU -->
+        <div class="thank-you-note">
+            <p>Thank you for choosing One Time Essentials</p>
+            <small>For enquiries, please reply to this email or contact our support team.</small>
+        </div>
+
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+        <div class="brand">One Time Essentials</div>
+        <p>
+            &copy; 2026 One Time Essentials. All rights reserved.<br/>
+            This email was sent to confirm your recent order.<br/>
+            Please do not reply directly to this automated message.
+        </p>
+    </div>
+
+</div>
+</div>
+</body>
+</html>
