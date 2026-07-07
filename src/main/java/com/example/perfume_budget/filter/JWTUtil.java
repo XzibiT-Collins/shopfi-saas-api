@@ -3,6 +3,7 @@ package com.example.perfume_budget.filter;
 
 import com.example.perfume_budget.exception.InvalidJWTTokenException;
 import com.example.perfume_budget.interfaces.JwtUserDetails;
+import com.example.perfume_budget.tenancy.TenantContext;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
@@ -54,11 +55,20 @@ public class JWTUtil {
         return generateToken(email, expiration, new HashMap<>());
     }
 
+    /** Binds the token to the tenant resolved for the current request (cross-tenant defense). */
+    private void putTenantClaim(Map<String, Object> claims){
+        String tenant = TenantContext.getSlug();
+        if (tenant != null) {
+            claims.put("tenant", tenant);
+        }
+    }
+
     public String generateAccessToken(JwtUserDetails user){
         Map<String, Object> claims = new HashMap<>();
         claims.put("role", user.getRole());
         claims.put("userId", user.getId());
         claims.put("fullName", user.getFullName());
+        putTenantClaim(claims);
         return generateToken(user.getEmail(), jwtAccessExpirationMs, claims);
     }
 
@@ -67,6 +77,7 @@ public class JWTUtil {
         claims.put("role", role);
         claims.put("userId", userId);
         claims.put("fullName", fullName);
+        putTenantClaim(claims);
         return generateToken(email, jwtAccessExpirationMs, claims);
     }
 
@@ -76,6 +87,7 @@ public class JWTUtil {
         claims.put("userId", userId);
         claims.put("role", role);
         claims.put("fullName", fullName);
+        putTenantClaim(claims);
         return generateToken(email, jwtRefreshExpirationMs, claims);
     }
 
@@ -84,6 +96,7 @@ public class JWTUtil {
         claims.put("userId", user.getId());
         claims.put("role", user.getRole());
         claims.put("fullName", user.getFullName());
+        putTenantClaim(claims);
         return generateToken(user.getEmail(), jwtRefreshExpirationMs, claims);
     }
 
@@ -129,6 +142,13 @@ public class JWTUtil {
 
     public Long extractUserId(String token){
         return extractClaim(token, claims -> claims.get("userId", Long.class));
+    }
+
+    public String extractTenant(String token) {
+        return extractClaim(token, claims -> {
+            Object tenant = claims.get("tenant");
+            return tenant != null ? tenant.toString() : null;
+        });
     }
 
     public String extractRole(String token) {

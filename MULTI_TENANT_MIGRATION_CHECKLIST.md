@@ -34,12 +34,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: `mvn compile` passes.
 
 ### 1d. Tenant resolution filter + JWT binding
-- [ ] `tenancy/TenantResolutionFilter` — precedence customDomain→subdomain→header(non-prod)→apex=platform→404; runs on every request; `try/finally clear()`; SUSPENDED→423/403
-- [ ] `filter/JWTUtil` — `tenant` claim on access + refresh; `extractTenant`
-- [ ] `filter/JWTFilter` — token-tenant vs context mismatch → 401; skip for PLATFORM
-- [ ] `SecurityConfig` — `tenantResolutionFilter` before `SiteVisitFilter` and `JWTFilter`
-- [ ] `AuthServiceImpl.login` + `CustomUserDetailsService` — pass context slug into token gen
-- [ ] `AuthCookieUtil` — `HttpOnly=true`, `Secure` outside dev, host-only; `refreshAccessToken` validates refresh-token tenant before `findByEmail`
+- [x] `tenancy/TenantResolutionFilter` — precedence customDomain→subdomain→header(non-prod)→apex=platform→404; runs on every request; `try/finally clear()`; SUSPENDED→423; also `TenantResolutionProperties`
+- [x] `filter/JWTUtil` — `tenant` claim on access + refresh (all 4 generators); `extractTenant`
+- [x] `filter/JWTFilter` — token-tenant vs context mismatch → 401; skip for PLATFORM/neutral
+- [x] `SecurityConfig` — `tenantResolutionFilter` before `SiteVisitFilter` and `JWTFilter`
+- [x] `AuthServiceImpl.login` + `CustomUserDetailsService` — satisfied without changes: JWTUtil reads slug from `TenantContext` at generation; user lookup already runs in the resolved schema
+- [x] `AuthCookieUtil` — `HttpOnly=true`, `Secure` from config, host-only (no domain); `refreshAccessToken` validates signature + tenant before `findByEmail`
+  - Note: `mvn compile` passes; `tenant.*` dev config added (header resolution enabled for dev only).
 
 ### 1e. Tenant-aware Google OAuth2
 - [ ] Carry tenant slug in OAuth2 `state` on authorization request

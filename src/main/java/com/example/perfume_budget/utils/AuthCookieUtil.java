@@ -4,6 +4,7 @@ import com.example.perfume_budget.exception.InactiveAccountException;
 import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.UserRepository;
+import com.example.perfume_budget.tenancy.TenantContext;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -58,8 +59,10 @@ public class AuthCookieUtil {
     }
 
     private void addCookie(HttpServletResponse response, String name, String token, int maxAge) {
+        // HttpOnly so tokens are never exposed to JS; host-only (no domain attribute) so each
+        // tenant host isolates its own session cookies.
         ResponseCookie cookie = ResponseCookie.from(name, token)
-                .httpOnly(false)
+                .httpOnly(true)
                 .secure(secure)
                 .path("/")
                 .sameSite(sameSite)
@@ -69,6 +72,14 @@ public class AuthCookieUtil {
     }
 
     public void refreshAccessToken(String refreshToken, HttpServletResponse response){
+        // Validate signature and tenant binding BEFORE touching the (tenant-scoped) user table,
+        // so a refresh token cannot be replayed against another tenant's schema.
+        jwtUtil.validateToken(refreshToken);
+        String contextSlug = TenantContext.getSlug();
+        if (contextSlug != null && !contextSlug.equals(jwtUtil.extractTenant(refreshToken))) {
+            throw new BadCredentialsException("Refresh token does not belong to this tenant");
+        }
+
         String email = jwtUtil.extractUsername(refreshToken);
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new BadCredentialsException("User not found"));
@@ -76,7 +87,6 @@ public class AuthCookieUtil {
         if(!user.isActive()){
             throw new InactiveAccountException("User account is inactive");
         }
-        jwtUtil.validateToken(refreshToken);
         String newAccessToken = generateAccessToken(user);
         addCookie(response, "accessToken", newAccessToken, 3600);
     }

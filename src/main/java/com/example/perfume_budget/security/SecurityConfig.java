@@ -5,6 +5,7 @@ import com.example.perfume_budget.exception.handlers.CustomAccessDeniedHandler;
 import com.example.perfume_budget.exception.handlers.JwtAuthenticationEntryPoint;
 import com.example.perfume_budget.filter.JWTFilter;
 import com.example.perfume_budget.filter.SiteVisitFilter;
+import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.security.oauth2.CustomOAuth2UserService;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationFailureHandler;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationSuccessHandler;
@@ -46,6 +47,7 @@ public class SecurityConfig {
     private final OAuth2AuthenticationSuccessHandler oAuth2AuthenticationSuccessHandler;
     private final OAuth2AuthenticationFailureHandler oAuth2AuthenticationFailureHandler;
     private final SiteVisitFilter siteVisitFilter;
+    private final TenantResolutionFilter tenantResolutionFilter;
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
@@ -101,6 +103,7 @@ public class SecurityConfig {
                         .successHandler(oAuth2AuthenticationSuccessHandler)
                         .failureHandler(oAuth2AuthenticationFailureHandler)
                 )
+                .addFilterBefore(tenantResolutionFilter, SiteVisitFilter.class)
                 .addFilterBefore(siteVisitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .userDetailsService(userDetailsService)
