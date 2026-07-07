@@ -26,11 +26,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: `mvn compile` passes; full boot verification (needs Postgres/Redis env) deferred to the Stage 1 gate.
 
 ### 1c. Tenant registry (`platform/`, master schema)
-- [ ] `platform/model/Tenant` (`@Table(schema="master")`) with fields + `AuditingEntityListener`
-- [ ] `platform/model/PlatformAdmin` (`@Table(schema="master")`)
-- [ ] `platform/enums/` — `TenantStatus`, `TenantPlan`, `PlatformRole(SUPER_ADMIN)`
-- [ ] `TenantRepository`, `PlatformAdminRepository`
-- [ ] Explicit master service methods; platform ops set scope=PLATFORM (no tenant context)
+- [x] `platform/model/Tenant` (`@Table(schema="master")`) with fields + `AuditingEntityListener` (owner_email unique)
+- [x] `platform/model/PlatformAdmin` (`@Table(schema="master")`)
+- [x] `platform/enums/` — `TenantStatus`, `TenantPlan`, `PlatformRole(SUPER_ADMIN)`
+- [x] `TenantRepository` (findBySlug/CustomDomain/SchemaName, existsBySlug/OwnerEmail, findByStatus), `PlatformAdminRepository` (findByEmail, existsByEmail)
+- [x] Explicit master service: `TenantRegistryService` + impl (read-only), tenant context not required (master entities schema-qualified)
+  - Note: `mvn compile` passes.
 
 ### 1d. Tenant resolution filter + JWT binding
 - [ ] `tenancy/TenantResolutionFilter` — precedence customDomain→subdomain→header(non-prod)→apex=platform→404; runs on every request; `try/finally clear()`; SUSPENDED→423/403
