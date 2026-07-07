@@ -51,8 +51,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: `mvn compile` passes. Simplified after architecture clarification (single frontend + single backend); one-time-code handoff was unnecessary.
 
 ### 1f. Cache isolation
-- [ ] `tenancy/TenantAwareCacheManager` (`@Primary`) — prefix cache names with slug / `__platform__`
-- [ ] `DiscountCacheEvictionTask` — loop active tenants via `TenantRunner`
+- [x] `tenancy/TenantAwareCacheManager` (`@Primary`, wraps `redisCacheManager`) — prefix cache names with slug / `__platform__`; existing `@Cacheable`/`@CacheEvict` untouched
+- [ ] `DiscountCacheEvictionTask` — loop active tenants via `TenantRunner` (deferred to 1g, which introduces `TenantRunner`)
+  - Note: `mvn test-compile` passes; also fixed `SecurityConfigTest` constructor (new tenant/oauth2 args from 1d/1e).
 
 ### 1g. Async + scheduled context propagation
 - [ ] `AsyncConfig` — `TaskDecorator` on `taskExecutor` AND `webhookTaskExecutor` (covers 8 `@Async` handlers)

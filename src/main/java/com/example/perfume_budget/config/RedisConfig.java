@@ -1,9 +1,11 @@
 package com.example.perfume_budget.config;
 
+import com.example.perfume_budget.tenancy.TenantAwareCacheManager;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.CacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -40,7 +42,7 @@ public class RedisConfig {
     }
 
     @Bean
-    public CacheManager cacheManager(RedisConnectionFactory connectionFactory) {
+    public RedisCacheManager redisCacheManager(RedisConnectionFactory connectionFactory) {
         JdkSerializationRedisSerializer serializer = new JdkSerializationRedisSerializer();
 
         RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig()
@@ -52,6 +54,16 @@ public class RedisConfig {
         return RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(config)
                 .build();
+    }
+
+    /**
+     * Primary cache manager: tenant-prefixes every cache name so tenants never share cache
+     * entries in the shared Redis. Existing @Cacheable/@CacheEvict annotations are unchanged.
+     */
+    @Bean
+    @Primary
+    public CacheManager cacheManager(RedisCacheManager redisCacheManager) {
+        return new TenantAwareCacheManager(redisCacheManager);
     }
 
 }
