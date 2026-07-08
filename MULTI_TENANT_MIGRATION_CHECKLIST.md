@@ -52,13 +52,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ### 1f. Cache isolation
 - [x] `tenancy/TenantAwareCacheManager` (`@Primary`, wraps `redisCacheManager`) — prefix cache names with slug / `__platform__`; existing `@Cacheable`/`@CacheEvict` untouched
-- [ ] `DiscountCacheEvictionTask` — loop active tenants via `TenantRunner` (deferred to 1g, which introduces `TenantRunner`)
+- [x] `DiscountCacheEvictionTask` — loop active tenants via `TenantRunner` (done in 1g)
   - Note: `mvn test-compile` passes; also fixed `SecurityConfigTest` constructor (new tenant/oauth2 args from 1d/1e).
 
 ### 1g. Async + scheduled context propagation
-- [ ] `AsyncConfig` — `TaskDecorator` on `taskExecutor` AND `webhookTaskExecutor` (covers 8 `@Async` handlers)
-- [ ] `tenancy/TenantRunner.forEachTenant(Consumer)`
-- [ ] `ReservedProductCleanupTask` — run inside `TenantRunner` loop
+- [x] `AsyncConfig` — `TenantContextTaskDecorator` on `taskExecutor` AND `webhookTaskExecutor` (propagates context across the 8 `@Async` handlers)
+- [x] `tenancy/TenantRunner.forEachActiveTenant(Runnable)` — per-tenant context, per-tenant failure isolation
+- [x] `ReservedProductCleanupTask` + `DiscountCacheEvictionTask` — run inside `TenantRunner` loop
+  - Note: `mvn test-compile` passes; `ReservedProductCleanupTaskTest` + `SecurityConfigTest` run green.
 
 ### 1h. Seeder refactor
 - [ ] `DataSeeder` → idempotent callable `seedTenantDefaults()` (no `ApplicationRunner`)

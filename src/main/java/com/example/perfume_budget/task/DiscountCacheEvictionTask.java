@@ -1,5 +1,6 @@
 package com.example.perfume_budget.task;
 
+import com.example.perfume_budget.tenancy.TenantRunner;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.Cache;
@@ -22,15 +23,19 @@ public class DiscountCacheEvictionTask {
             List.of("customerProductListings", "featuredProducts", "productDetailsPage");
 
     private final CacheManager cacheManager;
+    private final TenantRunner tenantRunner;
 
     @Scheduled(fixedDelayString = "${discount.cache-evict-interval-ms:600000}")
     public void evictProductCaches() {
-        PRODUCT_CACHES.forEach(name -> {
-            Cache cache = cacheManager.getCache(name);
-            if (cache != null) {
-                cache.clear();
-            }
-        });
-        log.debug("Discount cache eviction cleared product caches");
+        // Runs per active tenant so the tenant-prefixed caches are cleared (a context-less run
+        // would only clear the neutral cache).
+        tenantRunner.forEachActiveTenant(() ->
+                PRODUCT_CACHES.forEach(name -> {
+                    Cache cache = cacheManager.getCache(name);
+                    if (cache != null) {
+                        cache.clear();
+                    }
+                }));
+        log.debug("Discount cache eviction cleared product caches across active tenants");
     }
 }
