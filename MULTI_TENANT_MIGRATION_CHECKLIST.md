@@ -62,11 +62,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: `mvn test-compile` passes; `ReservedProductCleanupTaskTest` + `SecurityConfigTest` run green.
 
 ### 1h. Seeder refactor
-- [ ] `DataSeeder` → idempotent callable `seedTenantDefaults()` (no `ApplicationRunner`)
-- [ ] `ChartOfAccountsSeeder` → callable
-- [ ] `FeatureFlagSeeder` → callable
-- [ ] `UomSeeder` → callable (drop `CommandLineRunner`)
-- [ ] No boot-time seeding of default schema; dev helper seeds test tenants
+- [x] `DataSeeder` → idempotent `seedAdmin(email,password,fullName)` (no `ApplicationRunner`)
+- [x] `ChartOfAccountsSeeder` → `seed()` callable
+- [x] `FeatureFlagSeeder` → `seed()` callable
+- [x] `UomSeeder` → `seed()` callable (dropped `CommandLineRunner`/`@Order`)
+- [x] No boot-time seeding of default schema; `config/TenantSeeder` orchestrates under active `TenantContext`
+- [x] Dev trigger: `DevTenantController` `POST /api/v1/dev/tenants` (create+migrate+seed a test tenant), gated by `tenant.dev-endpoints.enabled` (dev only) — TEMPORARY, superseded by Stage 2 onboarding
+  - Note: `mvn test-compile` passes.
 
 ### 1i. Webhook tenant routing
 - [ ] `master.payment_tenant_routes` table + entity/repo

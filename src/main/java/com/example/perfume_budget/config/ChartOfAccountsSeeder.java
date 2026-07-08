@@ -5,17 +5,18 @@ import com.example.perfume_budget.enums.AccountType;
 import com.example.perfume_budget.model.LedgerAccount;
 import com.example.perfume_budget.repository.LedgerAccountRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+/**
+ * Seeds the chart of accounts. Idempotent; invoked per-tenant by {@link TenantSeeder} under an
+ * active {@code TenantContext} (no longer a boot-time runner).
+ */
 @Component
 @RequiredArgsConstructor
-public class ChartOfAccountsSeeder implements ApplicationRunner {
+public class ChartOfAccountsSeeder {
     private final LedgerAccountRepository ledgerAccountRepository;
 
-    @Override
-    public void run(ApplicationArguments args) {
+    public void seed() {
         seedAccount("1000", "Cash and Bank",           AccountType.ASSET,     AccountCategory.CASH);
         seedAccount("1001", "Mobile Money",            AccountType.ASSET,     AccountCategory.MOBILE_MONEY);
         seedAccount("1100", "Inventory Asset",         AccountType.ASSET,     AccountCategory.INVENTORY);

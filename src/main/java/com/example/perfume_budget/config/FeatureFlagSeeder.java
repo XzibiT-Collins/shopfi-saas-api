@@ -5,17 +5,18 @@ import com.example.perfume_budget.enums.FeatureFlagKey;
 import com.example.perfume_budget.model.FeatureFlag;
 import com.example.perfume_budget.repository.FeatureFlagRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+/**
+ * Seeds feature flags (all disabled by default). Idempotent; invoked per-tenant by
+ * {@link TenantSeeder} under an active {@code TenantContext} (no longer a boot-time runner).
+ */
 @Component
 @RequiredArgsConstructor
-public class FeatureFlagSeeder implements ApplicationRunner {
+public class FeatureFlagSeeder {
     private final FeatureFlagRepository featureFlagRepository;
 
-    @Override
-    public void run(ApplicationArguments args) {
+    public void seed() {
         for (FeatureFlagKey featureKey : FeatureFlagKey.values()) {
             for (FeatureAudience audience : FeatureAudience.values()) {
                 featureFlagRepository.findByFeatureKeyAndAudience(featureKey, audience)
