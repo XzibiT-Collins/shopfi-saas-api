@@ -19,10 +19,9 @@ import org.springframework.web.client.*;
 @RequiredArgsConstructor
 public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
     private final RestTemplate restTemplate;
+    private final TenantPaymentGatewayProvider gatewayProvider;
 
-    @Value("${paystack.secret}")
-    private String paystackSecret;
-
+    // Paystack base URL is the same for all tenants; only the secret key is per-tenant.
     @Value("${paystack.url}")
     private String paystackUrl;
 
@@ -84,7 +83,8 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
 
     private HttpEntity<Object> paystackRequestObject(Object request) {
         HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Bearer " + paystackSecret);
+        // Per-tenant secret resolved from the tenant's own gateway config (active TenantContext).
+        headers.set("Authorization", "Bearer " + gatewayProvider.currentSecretOrThrow());
         headers.setContentType(MediaType.APPLICATION_JSON);
         return new HttpEntity<>(request, headers);
     }

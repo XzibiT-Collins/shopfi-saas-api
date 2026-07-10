@@ -16,6 +16,8 @@ public interface TenantRegistryService {
 
     Optional<Tenant> findByCustomDomain(String customDomain);
 
+    Optional<Tenant> findByWebhookToken(String webhookToken);
+
     List<Tenant> findByStatus(TenantStatus status);
 
     boolean slugExists(String slug);

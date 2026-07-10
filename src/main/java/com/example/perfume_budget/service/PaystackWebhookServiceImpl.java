@@ -4,7 +4,6 @@ import com.example.perfume_budget.service.interfaces.WebhookProcessor;
 import com.example.perfume_budget.service.interfaces.WebhookService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -18,16 +17,15 @@ import java.nio.charset.StandardCharsets;
 @RequiredArgsConstructor
 public class PaystackWebhookServiceImpl implements WebhookService {
     private final WebhookProcessor webhookProcessor;
-
-    @Value("${paystack.secret}")
-    private String paystackSecret;
+    private final TenantPaymentGatewayProvider gatewayProvider;
 
     @Override
     public ResponseEntity<String> checkWebhookSignature(String body, String signature) {
         try {
             log.info("Received webhook from Paystack.");
 
-            String computedHash = hmacSha512(body, paystackSecret);
+            // Verify with THIS tenant's secret (tenant already set on the thread by the controller).
+            String computedHash = hmacSha512(body, gatewayProvider.currentSecretOrThrow());
             if (!computedHash.equals(signature)) {
                 log.warn("Invalid Paystack signature");
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Invalid signature");

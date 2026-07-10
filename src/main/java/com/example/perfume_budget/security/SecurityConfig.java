@@ -110,7 +110,7 @@ public class SecurityConfig {
                         .successHandler(oAuth2AuthenticationSuccessHandler)
                         .failureHandler(oAuth2AuthenticationFailureHandler)
                 )
-                .addFilterBefore(tenantResolutionFilter, SiteVisitFilter.class)
+                .addFilterBefore(tenantResolutionFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(siteVisitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .userDetailsService(userDetailsService)

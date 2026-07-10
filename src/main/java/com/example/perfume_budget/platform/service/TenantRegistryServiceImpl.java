@@ -28,6 +28,11 @@ public class TenantRegistryServiceImpl implements TenantRegistryService {
     }
 
     @Override
+    public Optional<Tenant> findByWebhookToken(String webhookToken) {
+        return tenantRepository.findByWebhookToken(webhookToken);
+    }
+
+    @Override
     public List<Tenant> findByStatus(TenantStatus status) {
         return tenantRepository.findByStatus(status);
     }

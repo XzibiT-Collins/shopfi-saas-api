@@ -17,6 +17,8 @@ public interface TenantRepository extends JpaRepository<Tenant, Long> {
 
     Optional<Tenant> findBySchemaName(String schemaName);
 
+    Optional<Tenant> findByWebhookToken(String webhookToken);
+
     boolean existsBySlug(String slug);
 
     boolean existsByOwnerEmail(String ownerEmail);

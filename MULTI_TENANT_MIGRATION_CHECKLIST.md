@@ -70,10 +70,14 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 - [x] Dev trigger: `DevTenantController` `POST /api/v1/dev/tenants` (create+migrate+seed a test tenant), gated by `tenant.dev-endpoints.enabled` (dev only) — TEMPORARY, superseded by Stage 2 onboarding
   - Note: `mvn test-compile` passes.
 
-### 1i. Webhook tenant routing
-- [ ] `master.payment_tenant_routes` table + entity/repo
-- [ ] Write route in `OrderServiceImpl.createPaymentObject`; update provider ref after Paystack init
-- [ ] `WebhookProcessorImpl` — verify signature → look up route in master → set `TenantContext` → dispatch async
+### 1i. Per-tenant payment gateway + webhook routing (each tenant uses its OWN Paystack keys)
+- [x] Master `V2` migration: drop `payment_tenant_routes`; add `tenants.webhook_token` (unique); `Tenant.webhookToken` + `TenantRepository.findByWebhookToken` (+ `TenantRegistryService`)
+- [x] Tenant `V7` migration: `payment_gateway_config` + `PaymentGatewayConfig` entity/repo (tenant schema)
+- [x] `utils/AesGcmEncryptor` (AES-256-GCM, JDK) + `platform.encryption.key`; Paystack secret encrypted at rest (round-trip test green)
+- [x] `TenantPaymentGatewayProvider` + `PaystackGatewayServiceImpl`/`PaystackWebhookServiceImpl` use per-tenant decrypted secret (dropped `@Value` secret); global `paystack.secret` retired
+- [x] `WebhookController` → `POST /api/v1/webhook/{token}`: master token→tenant → set context → verify HMAC with tenant secret → dispatch async
+- [x] `PaymentSettingsController` (ADMIN) `/api/v1/payment-settings` — save keys + return webhook URL (from `platform.api-base-url`); GET returns `secretConfigured` (never the secret)
+  - Note: `mvn test-compile` passes; `AesGcmEncryptorTest` green. `application-test` given platform.* config.
 
 ### Stage 1 gate — verification
 - [ ] Boot: master + `tenant_template` migrated, `validate` passes
@@ -118,7 +122,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ## Stage 3 — Feature Surface
 
 ### 3a. Per-tenant theming
-- [ ] `db/migrations/tenant/V7__create_store_settings.sql` + default row seed
+- [ ] `db/migrations/tenant/V8__create_store_settings.sql` + default row seed (V7 taken by payment_gateway_config in 1i)
 - [ ] `model/StoreSettings` (no `schema=`; JSON via `@JdbcTypeCode`)
 - [ ] `StoreSettingsRepository.findTopByOrderByIdAsc`
 - [ ] DTOs `dto/theme/` + `mapper/StoreSettingsMapper`

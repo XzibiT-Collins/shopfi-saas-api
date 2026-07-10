@@ -58,6 +58,10 @@ public class Tenant {
     @Column(name = "custom_domain", unique = true)
     private String customDomain;
 
+    /** Opaque token embedded in this tenant's Paystack webhook URL (/api/v1/webhook/{token}). */
+    @Column(name = "webhook_token", unique = true, length = 64)
+    private String webhookToken;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
