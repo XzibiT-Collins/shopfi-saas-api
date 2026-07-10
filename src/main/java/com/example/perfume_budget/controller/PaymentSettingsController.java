@@ -4,6 +4,7 @@ import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.payment.request.PaymentSettingsRequest;
 import com.example.perfume_budget.dto.payment.response.PaymentSettingsResponse;
 import com.example.perfume_budget.service.interfaces.PaymentSettingsService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -28,7 +29,7 @@ public class PaymentSettingsController {
 
     @PutMapping
     @PreAuthorize("hasRole('ADMIN')")
-    public ResponseEntity<CustomApiResponse<PaymentSettingsResponse>> update(@RequestBody PaymentSettingsRequest request) {
+    public ResponseEntity<CustomApiResponse<PaymentSettingsResponse>> update(@RequestBody @Valid PaymentSettingsRequest request) {
         return ResponseEntity.ok(CustomApiResponse.success(paymentSettingsService.save(request)));
     }
 }
