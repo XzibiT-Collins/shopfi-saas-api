@@ -147,7 +147,16 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
         return hostFromUrl(request.getHeader("Referer"));
     }
 
-    private String hostFromUrl(String value) {
+    /**
+     * True when the tenant signal for this request comes from the {@code Origin} header itself (a parseable
+     * origin with a host), i.e. not from the Referer fallback. Public caches key on {@code Origin}, so responses
+     * that were resolved from anything else must not be shared-cacheable (THEME-04c).
+     */
+    public static boolean tenantSignalIsOrigin(HttpServletRequest request) {
+        return hostFromUrl(request.getHeader("Origin")) != null;
+    }
+
+    private static String hostFromUrl(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }

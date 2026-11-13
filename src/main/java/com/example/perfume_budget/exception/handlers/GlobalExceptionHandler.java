@@ -40,6 +40,9 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @org.springframework.beans.factory.annotation.Value("${spring.servlet.multipart.max-request-size:12MB}")
+    private String maxRequestSize = "12MB";
+
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMissingServletRequestParameterException(MissingServletRequestParameterException ex){
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Missing required parameter: " + ex.getParameterName() + "."));
@@ -97,7 +100,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMaxSizeException(MaxUploadSizeExceededException ex) {
-        String maxFileSizeErrorText = "File too large! Maximum allowed size is 10MB";
+        // The effective ceiling is the global multipart max-request-size (12MB since THEME-04), not Boot's old 10MB default.
+        String maxFileSizeErrorText = "File too large! Maximum allowed size is " + maxRequestSize;
         return ResponseEntity.status(413).body(CustomApiResponse.error(maxFileSizeErrorText));
     }
 

@@ -185,7 +185,9 @@ Request headers: `Origin` (or `Referer`) required; optional `If-None-Match`.
 | 404 | Unknown tenant | same |
 | 423 | Tenant suspended | same |
 
-Response headers (200 and 304): `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600`, `Vary: Origin`, `ETag: "<revision>-<first 16 hex of SHA-256 of the canonical JSON of data>"`. Error responses carry `Cache-Control: no-store`.
+Response headers (200 and 304): `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600`, `Vary: Origin, Referer`, `ETag: "<revision>-<first 16 hex of SHA-256 of the canonical JSON of data>"`. Error responses carry `Cache-Control: no-store`.
+
+**Caching rules (security).** The tenant is resolved from the `Origin` header, falling back to `Referer`. The public `Cache-Control` above is sent ONLY when the tenant came from `Origin`. A GET with no (usable) `Origin` (Referer-only or no signal) gets `Cache-Control: private, no-store`, because a shared cache would file it under "Origin: absent" and could serve one tenant's theme to another tenant's Origin-less request. The SSR contract: always send `Origin: https://<tenant-host>`. A CDN/shared cache in front of this API MUST include the `Origin` request header in its cache key (and honour `Vary`); never strip or normalize it.
 
 ### 5.2 `PUT /api/v1/theme`
 

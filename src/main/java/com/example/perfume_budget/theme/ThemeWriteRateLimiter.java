@@ -13,6 +13,13 @@ import java.util.Map;
  * no rate limiter existed on the base branch. Keys are {@code tenantSlug:adminEmail}; the map is an access-ordered
  * LRU capped at {@link #MAX_KEYS} and idle buckets (full again) are dropped on insert, so memory cannot grow
  * with attacker-chosen keys (keys only exist for authenticated admins anyway). Per-instance (not cluster-wide).
+ * <p>
+ * Called from {@link ThemeWriteGuardFilter}, i.e. before multipart parsing, so a throttled request is never spooled.
+ * Known trade-offs (THEME-04c, accepted): (1) {@code tryAcquire} is {@code synchronized}, and the idle sweep
+ * ({@link #evictIdle}) is O(n) over the map while holding that lock; it only runs when inserting a NEW key once the map
+ * holds at least {@code MAX_KEYS / 2} (5,000) keys, so the worst case is one 5k-entry scan per new admin, which is
+ * microseconds. (2) Evicting a bucket (LRU over 10k keys) resets that admin's allowance (fails open); only a tenant
+ * admin creating thousands of accounts could cause it. Move to a shared store (Redis) if this becomes cluster-wide.
  */
 @Component
 public class ThemeWriteRateLimiter {

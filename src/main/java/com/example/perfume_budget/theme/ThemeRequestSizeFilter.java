@@ -27,10 +27,24 @@ public class ThemeRequestSizeFilter extends OncePerRequestFilter {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /**
+     * True when the DECODED, normalized request path (servlet container: percent-decoded, {@code ;params} stripped,
+     * dot-segments resolved) is under {@code /api/v1/theme}. The raw request URI must not be used: {@code /api/v1/%74heme}
+     * dispatches to the same controller but does not start with the literal prefix.
+     */
+    public static boolean isThemePath(HttpServletRequest request) {
+        String path = (request.getServletPath() == null ? "" : request.getServletPath())
+                + (request.getPathInfo() == null ? "" : request.getPathInfo());
+        if (path.isEmpty()) {
+            path = request.getRequestURI();
+        }
+        return path.startsWith(PATH);
+    }
+
     @Override
     protected boolean shouldNotFilter(@NonNull HttpServletRequest request) {
         String m = request.getMethod();
-        return !request.getRequestURI().startsWith(PATH)
+        return !isThemePath(request)
                 || "GET".equals(m) || "HEAD".equals(m) || "OPTIONS".equals(m);
     }
 

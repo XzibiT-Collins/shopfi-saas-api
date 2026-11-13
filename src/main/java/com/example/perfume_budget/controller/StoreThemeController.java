@@ -1,19 +1,16 @@
 package com.example.perfume_budget.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
-import com.example.perfume_budget.tenancy.TenantContext;
-import com.example.perfume_budget.tenancy.TenantIdentity;
+import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.theme.BrandingFile;
 import com.example.perfume_budget.theme.BrandingUploadService;
 import com.example.perfume_budget.theme.PayloadTooLargeException;
 import com.example.perfume_budget.theme.ThemeFieldError;
-import com.example.perfume_budget.theme.ThemeRateLimitedException;
 import com.example.perfume_budget.theme.ThemeRequestSizeFilter;
 import com.example.perfume_budget.theme.ThemeService;
 import com.example.perfume_budget.theme.ThemeSnapshot;
 import com.example.perfume_budget.theme.ThemeUploads;
 import com.example.perfume_budget.theme.ThemeValidationException;
-import com.example.perfume_budget.theme.ThemeWriteRateLimiter;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,6 +52,12 @@ import java.util.regex.Pattern;
 public class StoreThemeController {
 
     static final String CACHE_CONTROL = "public, max-age=60, s-maxage=300, stale-while-revalidate=600";
+    /**
+     * Used when the tenant was NOT resolved from the Origin header (Referer-only or no Origin): a shared cache would
+     * key that response as "Origin: absent" and could serve tenant A's theme to tenant B's Origin-less request.
+     */
+    static final String CACHE_CONTROL_UNKEYED = "private, no-store";
+    static final String VARY = "Origin, Referer";
     private static final Pattern SECTION_ID = Pattern.compile("^[a-z0-9][a-z0-9-]{0,39}$");
     private static final String IMAGE_PREFIX = "image.";
     private static final int MAX_FILE_PARTS = 3 + 12; // theme + logo + background + up to 12 hero images
@@ -62,17 +65,21 @@ public class StoreThemeController {
     private static final ObjectMapper STRICT = new ObjectMapper().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
 
     private final ThemeService themeService;
-    private final ThemeWriteRateLimiter rateLimiter;
 
     @GetMapping
     public ResponseEntity<CustomApiResponse<JsonNode>> getTheme(
+            HttpServletRequest request,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch) {
+        return getTheme(TenantResolutionFilter.tenantSignalIsOrigin(request), ifNoneMatch);
+    }
+
+    ResponseEntity<CustomApiResponse<JsonNode>> getTheme(boolean tenantFromOrigin, String ifNoneMatch) {
         ThemeSnapshot snapshot = themeService.getActiveTheme();
         String etag = snapshot.etag();
         ResponseEntity.BodyBuilder ok = ResponseEntity.status(matches(ifNoneMatch, snapshot.version())
                         ? HttpStatus.NOT_MODIFIED : HttpStatus.OK)
-                .header(HttpHeaders.CACHE_CONTROL, CACHE_CONTROL)
-                .header(HttpHeaders.VARY, HttpHeaders.ORIGIN)
+                .header(HttpHeaders.CACHE_CONTROL, tenantFromOrigin ? CACHE_CONTROL : CACHE_CONTROL_UNKEYED)
+                .header(HttpHeaders.VARY, VARY)
                 .eTag(etag);
         if (matches(ifNoneMatch, snapshot.version())) {
             return ok.build();
@@ -103,7 +110,6 @@ public class StoreThemeController {
         if (!json && !multipart) {
             throw new HttpMediaTypeNotSupportedException(type, List.of(MediaType.APPLICATION_JSON, MediaType.MULTIPART_FORM_DATA));
         }
-        throttle(auth);
         Long expected = parseIfMatch(ifMatch);
         if (json) {
             byte[] body = request.getInputStream().readNBytes((int) ThemeRequestSizeFilter.MAX_JSON_BYTES + 1);
@@ -185,15 +191,6 @@ public class StoreThemeController {
     }
 
     // ------------------------------------------------------------------------------------------------
-
-    private void throttle(Authentication auth) {
-        TenantIdentity id = TenantContext.get();
-        String key = (id == null ? "-" : String.valueOf(id.slug())) + ":" + auth.getName();
-        long retryAfter = rateLimiter.tryAcquire(key);
-        if (retryAfter > 0) {
-            throw new ThemeRateLimitedException(retryAfter);
-        }
-    }
 
     private static ResponseEntity<CustomApiResponse<JsonNode>> stored(ThemeSnapshot snapshot) {
         return ResponseEntity.ok()

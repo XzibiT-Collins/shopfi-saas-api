@@ -76,7 +76,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, com.example.perfume_budget.theme.ThemeWriteRateLimiter themeWriteRateLimiter) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -114,11 +114,15 @@ public class SecurityConfig {
                         .successHandler(oAuth2AuthenticationSuccessHandler)
                         .failureHandler(oAuth2AuthenticationFailureHandler)
                 )
+                .addFilterBefore(new com.example.perfume_budget.theme.ThemeMultipartErrorDispatchFilter(), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(tenantResolutionFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(new TenantRequiredFilter(), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(new ThemeRequestSizeFilter(), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(siteVisitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                // THEME-04c: after authentication AND authorization, before DispatcherServlet's multipart parsing/spooling.
+                .addFilterAfter(new com.example.perfume_budget.theme.ThemeWriteGuardFilter(themeWriteRateLimiter),
+                        org.springframework.security.web.access.intercept.AuthorizationFilter.class)
                 .userDetailsService(userDetailsService)
                 .exceptionHandling(exceptionHandling -> exceptionHandling
                         .authenticationEntryPoint(jwtAuthenticationEntryPoint)
