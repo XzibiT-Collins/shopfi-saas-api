@@ -73,7 +73,7 @@ class AuthLoginTenantBindingTest extends AbstractTenantWebTest {
             assertThat(body.at("/data/requiresOtp").asBoolean()).isTrue();
             assertThat(setCookieValue(step1, "accessToken")).as("no JWT before OTP").isNull();
             String challenge = body.at("/data/challengeToken").asText();
-            String otp = (String) redis.get("otp:login:code:" + challenge);
+            String otp = otpValue("otp:login:code:", challenge);
             assertThat(otp).isNotNull();
 
             MvcResult step2 = mvc.perform(postJson("/api/v1/auth/verify-login-otp", t.slug(),
@@ -100,7 +100,7 @@ class AuthLoginTenantBindingTest extends AbstractTenantWebTest {
         MvcResult step1 = loginPassword("acme", shared, "Sup3rSecret!pw");
         JsonNode body = json.readTree(step1.getResponse().getContentAsString());
         String challenge = body.at("/data/challengeToken").asText();
-        String otp = (String) redis.get("otp:login:code:" + challenge);
+        String otp = otpValue("otp:login:code:", challenge);
 
         MvcResult cross = mvc.perform(postJson("/api/v1/auth/verify-login-otp", "bravo",
                 Map.of("challengeToken", challenge, "otp", otp))).andReturn();
@@ -171,7 +171,19 @@ class AuthLoginTenantBindingTest extends AbstractTenantWebTest {
     }
 
     private String otpFor(String email) {
-        return (String) redis.get("otp:registration:" + email);
+        return otpValue("otp:registration:", email);
+    }
+
+    /**
+     * TENANT-09: OTP keys are now tenant-scoped ({@code <prefix><tenantSlug>:<id>}), so the raw
+     * {@code <prefix><id>} lookup no longer exists. Find the value whose key is the prefix, one
+     * tenant segment, then the id. Assertions in the tests are unchanged.
+     */
+    private String otpValue(String prefix, String id) {
+        return redis.entrySet().stream()
+                .filter(e -> e.getKey().startsWith(prefix) && e.getKey().endsWith(":" + id)
+                        && e.getKey().indexOf(':', prefix.length()) == e.getKey().length() - id.length() - 1)
+                .map(e -> (String) e.getValue()).findFirst().orElse(null);
     }
 
     private MvcResult registerAndVerify(String slug, String email) throws Exception {
