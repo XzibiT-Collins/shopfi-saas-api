@@ -46,7 +46,7 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
     // other request must carry a tenant signal or is rejected with 4xx.
     private static final String[] BYPASS_PREFIXES = {
             "/actuator", "/swagger-ui", "/v3/api-docs", "/swagger-ui.html",
-            "/ws", "/test", "/login/oauth2", "/api/v1/webhook",
+            "/ws", "/login/oauth2", "/api/v1/webhook",
             "/error", "/favicon.ico"
     };
 
