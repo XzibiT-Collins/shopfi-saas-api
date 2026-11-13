@@ -322,8 +322,11 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         assertThat(t.at("/assets/background/url").asText()).contains("/shopfi/thmctla/branding/background");
         assertThat(t.at("/pages/home/0/props/imageUrl").asText()).contains("section-hero");
         assertSchemaValid(t);
-        assertThat(storage.uploads).containsExactlyInAnyOrder(
-                "shopfi/thmctla/branding/logo", "shopfi/thmctla/branding/background", "shopfi/thmctla/branding/section-hero");
+        // every upload gets a unique public id (THEME-02b): <base>-<16 hex>
+        assertThat(storage.uploads).hasSize(3);
+        assertThat(storage.uploads).anyMatch(k -> k.matches("shopfi/thmctla/branding/logo-[0-9a-f]{16}"));
+        assertThat(storage.uploads).anyMatch(k -> k.matches("shopfi/thmctla/branding/background-[0-9a-f]{16}"));
+        assertThat(storage.uploads).anyMatch(k -> k.matches("shopfi/thmctla/branding/section-hero-[0-9a-f]{16}"));
         // a following public GET (other tenant untouched)
         assertThat(data(fetch(A)).at("/assets/logo/url").asText()).contains("thmctla");
         JsonNode bLogo = data(fetch(B)).at("/assets/logo");
@@ -360,6 +363,34 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
     }
 
     @Test
+    void put_ifMatch_stale_multipartWithImages_is412_andStorageSeesNoCallsAtAll() throws Exception {
+        String current = etagOf(A);
+        long v = Long.parseLong(current.replaceAll("\\D", ""));
+        ObjectNode d = doc("#7c2d12");
+        d.with("assets").putObject("logo").put("alt", "x");
+        storage.reset();
+        MvcResult stale = mvc.perform(putMultipart(A, adminA).file(themePart(d))
+                .file(new MockMultipartFile("logo", "l.png", "image/png", FakeBrandingStorage.png(5, 5)))
+                .file(new MockMultipartFile("background", "b.jpg", "image/jpeg", FakeBrandingStorage.jpeg(10, 10)))
+                .file(new MockMultipartFile("image.hero", "h.webp", "image/webp", FakeBrandingStorage.webpLossy(5, 5)))
+                .header("If-Match", "W/\"" + (v + 7) + "\"")).andReturn();
+        assertThat(stale.getResponse().getStatus()).isEqualTo(412);
+        assertThat(json(stale.getResponse().getContentAsString()).get("data").isNull()).isTrue();
+        assertThat(storage.uploads).as("no asset uploaded before the lock check").isEmpty();
+        assertThat(storage.deletes).as("no asset deleted").isEmpty();
+        assertThat(storage.objects).isEmpty();
+        assertThat(etagOf(A)).isEqualTo(current);
+        // a stale If-Match with an invalid body is still a clean 4xx and still touches no asset
+        ObjectNode bad = doc("not-a-hex");
+        MvcResult staleBad = mvc.perform(putMultipart(A, adminA).file(themePart(bad))
+                .file(new MockMultipartFile("logo", "l.png", "image/png", FakeBrandingStorage.png(5, 5)))
+                .header("If-Match", "W/\"" + (v + 7) + "\"")).andReturn();
+        assertThat(staleBad.getResponse().getStatus()).isIn(400, 412);
+        assertThat(storage.uploads).isEmpty();
+        assertThat(storage.deletes).isEmpty();
+    }
+
+    @Test
     void put_ifMatch_malformed_is400() throws Exception {
         MvcResult r = mvc.perform(putJson(A, adminA, doc("#7c2d12").toString()).header("If-Match", "not-an-etag")).andReturn();
         assertThat(r.getResponse().getStatus()).isEqualTo(400);
@@ -385,6 +416,59 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         }
         assertThat(body.get("data").toString()).contains("tokens.colors.primary").contains("UNSAFE_CONTENT");
         assertThat(r.getResponse().getHeader("Cache-Control")).contains("no-store");
+    }
+
+    private ObjectNode withRichText(String... bodies) throws Exception {
+        ObjectNode d = doc("#7c2d12");
+        com.fasterxml.jackson.databind.node.ArrayNode home = (com.fasterxml.jackson.databind.node.ArrayNode) d.get("pages").get("home");
+        int base = home.size();
+        for (int i = 0; i < bodies.length; i++) {
+            ObjectNode sec = (ObjectNode) json("{\"id\":\"rtx" + i + "\",\"type\":\"rich-text\",\"props\":{},\"visible\":true,\"order\":" + (50 + i) + "}");
+            ((ObjectNode) sec.get("props")).put("body", bodies[i]);
+            home.add(sec);
+        }
+        assertThat(home.size()).isEqualTo(base + bodies.length);
+        return d;
+    }
+
+    private JsonNode errorFor(MvcResult r, String code) throws Exception {
+        assertThat(r.getResponse().getStatus()).isEqualTo(400);
+        JsonNode body = json(r.getResponse().getContentAsString());
+        assertThat(body.get("description").asText()).isEqualTo("Theme validation failed");
+        for (JsonNode e : body.get("data")) {
+            assertThat(e.get("path").asText()).isNotBlank();
+            assertThat(e.get("message").asText()).isNotBlank();
+            if (code.equals(e.get("code").asText())) {
+                return e;
+            }
+        }
+        throw new AssertionError("no " + code + " in " + body.get("data"));
+    }
+
+    @Test
+    void put_richTextTooManyLines_is400_withStructuredError_andNoChange() throws Exception {
+        String before = etagOf(A);
+        MvcResult r = mvc.perform(putJson(A, adminA, withRichText("- x\n".repeat(61)).toString())).andReturn();
+        JsonNode e = errorFor(r, "RICH_TEXT_TOO_MANY_LINES");
+        assertThat(e.get("path").asText()).endsWith(".props.body");
+        assertThat(r.getResponse().getHeader("Cache-Control")).contains("no-store");
+        assertThat(etagOf(A)).isEqualTo(before);
+        // 60 lines is fine
+        assertThat(mvc.perform(putJson(A, adminA, withRichText("- x\n".repeat(60)).toString())).andReturn().getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void put_richTextBudgetExceeded_is400_withStructuredError_andNoChange() throws Exception {
+        String before = etagOf(A);
+        String four = "a".repeat(4000);
+        MvcResult r = mvc.perform(putJson(A, adminA, withRichText(four, four, "b").toString())).andReturn();
+        JsonNode e = errorFor(r, "RICH_TEXT_BUDGET_EXCEEDED");
+        assertThat(e.get("path").asText()).endsWith(".props.body");
+        assertThat(etagOf(A)).isEqualTo(before);
+        // multipart goes through the same mapping, and uploads nothing
+        MvcResult mp = mvc.perform(putMultipart(A, adminA).file(themePart(withRichText(four, four, "b")))).andReturn();
+        errorFor(mp, "RICH_TEXT_BUDGET_EXCEEDED");
+        assertThat(storage.uploads).isEmpty();
     }
 
     @Test
