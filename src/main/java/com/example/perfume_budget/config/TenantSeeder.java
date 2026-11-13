@@ -29,4 +29,14 @@ public class TenantSeeder {
         dataSeeder.seedAdmin(adminEmail, adminPassword, adminFullName);
         log.info("Seeded tenant defaults for admin {}", adminEmail);
     }
+
+    /** Provisioning variant: the admin password arrives pre-hashed (BCrypt); never logged. */
+    @Transactional
+    public void seedTenantDefaultsWithHashedAdmin(String adminEmail, String adminPasswordHash, String adminFullName) {
+        chartOfAccountsSeeder.seed();
+        featureFlagSeeder.seed();
+        uomSeeder.seed();
+        dataSeeder.seedAdminWithHash(adminEmail, adminPasswordHash, adminFullName);
+        log.info("Seeded tenant defaults for admin {}", adminEmail);
+    }
 }
