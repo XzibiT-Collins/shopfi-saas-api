@@ -55,4 +55,31 @@ public class DataSeeder {
                 }
         );
     }
+
+    /**
+     * Seeds the admin from an already-BCrypt-hashed password (provisioning path: the raw password is
+     * never seen by this service). Idempotent: an existing user with the same email is left untouched,
+     * so a retried provisioning never overwrites credentials.
+     */
+    public void seedAdminWithHash(String email, String passwordHash, String fullName) {
+        if (email == null || email.isBlank() || passwordHash == null || passwordHash.isBlank()) {
+            throw new IllegalArgumentException("Admin email and password hash are required");
+        }
+        String normalizedEmail = email.strip().toLowerCase();
+        String name = (fullName == null || fullName.isBlank()) ? "Admin" : fullName.strip();
+        if (userRepository.findByEmail(normalizedEmail).isPresent()) {
+            log.info("Admin {} already present; leaving credentials unchanged", normalizedEmail);
+            return;
+        }
+        userRepository.save(User.builder()
+                .fullName(name)
+                .email(normalizedEmail)
+                .password(passwordHash)
+                .roles(UserRole.ADMIN)
+                .authProvider(AuthProvider.LOCAL)
+                .isActive(true)
+                .emailVerified(true)
+                .build());
+        log.info("Seeded admin user {}", normalizedEmail);
+    }
 }

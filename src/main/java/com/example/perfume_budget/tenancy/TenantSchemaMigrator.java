@@ -56,6 +56,42 @@ public class TenantSchemaMigrator {
                 .migrate();
     }
 
+    private static final java.util.regex.Pattern TENANT_SCHEMA = java.util.regex.Pattern.compile("^tenant_[a-z0-9_]{3,40}$");
+
+    /**
+     * Strict last line of defence before a schema name is interpolated into DDL (identifiers cannot be
+     * bound as parameters). Only {@code tenant_[a-z0-9_]+} is accepted, never {@code tenant_template}.
+     */
+    static String requireTenantSchema(String schemaName) {
+        if (schemaName == null || !TENANT_SCHEMA.matcher(schemaName).matches()
+                || TenantContext.DEFAULT_SCHEMA.equals(schemaName)) {
+            throw new IllegalArgumentException("Refusing DDL on illegal tenant schema name");
+        }
+        return schemaName;
+    }
+
+    private static String quote(String identifier) {
+        return "\"" + identifier.replace("\"", "\"\"") + "\"";
+    }
+
+    /** {@code CREATE SCHEMA IF NOT EXISTS} for a tenant schema (auto-committed DDL, outside any JPA tx). */
+    public void createTenantSchema(String schemaName) {
+        runDdl("CREATE SCHEMA IF NOT EXISTS " + quote(requireTenantSchema(schemaName)));
+    }
+
+    /** Saga compensation: {@code DROP SCHEMA IF EXISTS ... CASCADE}; idempotent. */
+    public void dropTenantSchema(String schemaName) {
+        runDdl("DROP SCHEMA IF EXISTS " + quote(requireTenantSchema(schemaName)) + " CASCADE");
+    }
+
+    private void runDdl(String sql) {
+        try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Schema DDL failed", e);
+        }
+    }
+
     /**
      * Reads active tenant schema names directly via JDBC (runs before the EMF exists,
      * so JPA repositories are not yet available). Empty until tenants are provisioned.
