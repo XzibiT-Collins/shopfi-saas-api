@@ -34,4 +34,23 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    /**
+     * Runs tenant provisioning kicked off by onboarding (PLATFORM scope, no tenant). Deliberately has NO
+     * {@link TenantContextTaskDecorator}: the submitting request thread carries a PLATFORM identity, and
+     * provisioning binds the new tenant's context itself, so the worker must start with a clean context
+     * rather than inherit the platform one.
+     */
+    @Bean(name = "onboardingTaskExecutor")
+    public TaskExecutor onboardingTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(3);
+        executor.setQueueCapacity(20);
+        executor.setThreadNamePrefix("onboarding-");
+        executor.setAwaitTerminationSeconds(30);
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.initialize();
+        return executor;
+    }
 }
