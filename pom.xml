@@ -108,12 +108,19 @@
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
-		<!-- THEME-03: draft 2020-12 JSON Schema validation for the theme contract test (test scope only) -->
+		<!-- THEME-02: draft 2020-12 JSON Schema validation. Compile scope (was test-only in THEME-03) because
+		     ThemeValidator validates every tenant PUT /theme document against theme.schema.json at runtime. -->
 		<dependency>
 			<groupId>com.networknt</groupId>
 			<artifactId>json-schema-validator</artifactId>
 			<version>1.5.6</version>
-			<scope>test</scope>
+		</dependency>
+		<!-- THEME-02: CommonMark parser (no HTML rendering) used only to inspect rich-text Markdown AST and
+		     link destinations after entity decoding; the parsed output is never rendered or stored. -->
+		<dependency>
+			<groupId>org.commonmark</groupId>
+			<artifactId>commonmark</artifactId>
+			<version>0.24.0</version>
 		</dependency>
 		<dependency>
 			<groupId>com.h2database</groupId>

@@ -1,0 +1,864 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:shopfi:theme:v1",
+  "title": "Shopfi storefront theme document (schemaVersion 1)",
+  "description": "Contract for GET/PUT /api/v1/theme (the `data` member of the response envelope). Semantic rules JSON Schema cannot express (WCAG contrast, unique ids/orders, referenced ids exist, tenant-owned asset URLs, sanitisation of Markdown link destinations) are listed in docs/api/theme-contract.md and enforced server-side.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "tokens",
+    "assets",
+    "pages"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "readOnly": true,
+      "description": "Server-managed; ignored on PUT."
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true,
+      "description": "Server-managed; ignored on PUT."
+    },
+    "tokens": {
+      "$ref": "#/$defs/tokens"
+    },
+    "assets": {
+      "$ref": "#/$defs/assets"
+    },
+    "pages": {
+      "$ref": "#/$defs/pages"
+    }
+  },
+  "$defs": {
+    "plainText": {
+      "type": "string",
+      "pattern": "^[^<>\\u0000-\\u001F\\u007F]*$",
+      "description": "Plain text: no angle brackets, no control characters. Rendered as text, never as HTML."
+    },
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$",
+      "description": "Six-digit sRGB hex. Server normalises to lowercase."
+    },
+    "sectionId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 99
+    },
+    "fontFamily": {
+      "enum": [
+        "system",
+        "Inter",
+        "Roboto",
+        "Open Sans",
+        "Lato",
+        "Montserrat",
+        "Poppins",
+        "Raleway",
+        "Nunito",
+        "DM Sans",
+        "Source Sans 3",
+        "Playfair Display",
+        "Merriweather",
+        "Lora",
+        "Cormorant Garamond"
+      ]
+    },
+    "cloudinaryImageUrl": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/[A-Za-z0-9_\\-./,:%]+$",
+      "description": "Cloudinary delivery URL. Server additionally requires the stored value or the tenant's own branding folder."
+    },
+    "link": {
+      "type": "string",
+      "maxLength": 512,
+      "anyOf": [
+        {
+          "pattern": "^/(?!/)[^\\s<>\"'\\\\]*$",
+          "description": "Same-site absolute path"
+        },
+        {
+          "pattern": "^https://[^\\s<>\"'\\\\/][^\\s<>\"'\\\\]*$",
+          "description": "https URL"
+        }
+      ]
+    },
+    "socialUrl": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https://(www\\.)?(facebook\\.com|instagram\\.com|x\\.com|twitter\\.com|tiktok\\.com|youtube\\.com|linkedin\\.com|wa\\.me|whatsapp\\.com|pinterest\\.com)(/[^\\s<>\"'\\\\]*)?$"
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "colors",
+        "typography",
+        "radius",
+        "spacing"
+      ],
+      "properties": {
+        "colors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary",
+            "onPrimary",
+            "accent",
+            "onAccent",
+            "background",
+            "surface",
+            "text",
+            "mutedText"
+          ],
+          "properties": {
+            "primary": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "onPrimary": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "accent": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "onAccent": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "background": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "surface": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "text": {
+              "$ref": "#/$defs/hexColor"
+            },
+            "mutedText": {
+              "$ref": "#/$defs/hexColor"
+            }
+          }
+        },
+        "typography": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "headingFont",
+            "bodyFont",
+            "baseSizePx"
+          ],
+          "properties": {
+            "headingFont": {
+              "$ref": "#/$defs/fontFamily"
+            },
+            "bodyFont": {
+              "$ref": "#/$defs/fontFamily"
+            },
+            "baseSizePx": {
+              "type": "integer",
+              "minimum": 14,
+              "maximum": 20
+            }
+          }
+        },
+        "radius": {
+          "enum": [
+            "none",
+            "sm",
+            "md",
+            "lg",
+            "full"
+          ]
+        },
+        "spacing": {
+          "enum": [
+            "compact",
+            "comfortable",
+            "spacious"
+          ]
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logo",
+        "background"
+      ],
+      "properties": {
+        "logo": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "url",
+                "alt"
+              ],
+              "properties": {
+                "url": {
+                  "$ref": "#/$defs/cloudinaryImageUrl"
+                },
+                "alt": {
+                  "$ref": "#/$defs/plainText",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              }
+            }
+          ]
+        },
+        "background": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "url"
+              ],
+              "properties": {
+                "url": {
+                  "$ref": "#/$defs/cloudinaryImageUrl"
+                },
+                "overlayOpacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.8,
+                  "default": 0
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "pages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "home",
+        "product",
+        "footer"
+      ],
+      "properties": {
+        "home": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/hero"
+              },
+              {
+                "$ref": "#/$defs/featuredProducts"
+              },
+              {
+                "$ref": "#/$defs/categoryGrid"
+              },
+              {
+                "$ref": "#/$defs/banner"
+              },
+              {
+                "$ref": "#/$defs/richText"
+              }
+            ]
+          }
+        },
+        "product": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/featuredProducts"
+              },
+              {
+                "$ref": "#/$defs/banner"
+              },
+              {
+                "$ref": "#/$defs/richText"
+              }
+            ]
+          }
+        },
+        "footer": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/footer"
+          }
+        }
+      }
+    },
+    "hero": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "hero"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "heading": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "subheading": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 200
+            },
+            "imageUrl": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/cloudinaryImageUrl"
+                }
+              ]
+            },
+            "imageAlt": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 120
+            },
+            "alignment": {
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ],
+              "default": "center"
+            },
+            "overlayOpacity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.8,
+              "default": 0.4
+            },
+            "ctaLabel": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 1,
+              "maxLength": 30
+            },
+            "ctaHref": {
+              "$ref": "#/$defs/link"
+            }
+          },
+          "required": [
+            "heading"
+          ],
+          "dependentRequired": {
+            "ctaLabel": [
+              "ctaHref"
+            ],
+            "ctaHref": [
+              "ctaLabel"
+            ]
+          }
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        }
+      }
+    },
+    "featuredProducts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "featured-products"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 80
+            },
+            "source": {
+              "enum": [
+                "featured",
+                "category",
+                "manual"
+              ]
+            },
+            "categoryId": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "productIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12,
+              "default": 8
+            },
+            "columns": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 4,
+              "default": 4
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "source": {
+                    "const": "category"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              },
+              "then": {
+                "required": [
+                  "categoryId"
+                ],
+                "not": {
+                  "required": [
+                    "productIds"
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "source": {
+                    "const": "manual"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              },
+              "then": {
+                "required": [
+                  "productIds"
+                ],
+                "not": {
+                  "required": [
+                    "categoryId"
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "source": {
+                    "const": "featured"
+                  }
+                },
+                "required": [
+                  "source"
+                ]
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "categoryId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "productIds"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        }
+      }
+    },
+    "categoryGrid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "category-grid"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 80
+            },
+            "categoryIds": {
+              "type": "array",
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": "Empty = all categories (up to 12) in API order."
+            },
+            "columns": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 4,
+              "default": 3
+            },
+            "showDescription": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": []
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        }
+      }
+    },
+    "banner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "banner"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "tone": {
+              "enum": [
+                "primary",
+                "accent",
+                "neutral"
+              ],
+              "default": "primary"
+            },
+            "linkLabel": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 1,
+              "maxLength": 30
+            },
+            "linkHref": {
+              "$ref": "#/$defs/link"
+            },
+            "dismissible": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "message"
+          ],
+          "dependentRequired": {
+            "linkLabel": [
+              "linkHref"
+            ],
+            "linkHref": [
+              "linkLabel"
+            ]
+          }
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        }
+      }
+    },
+    "richText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "rich-text"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5000,
+              "allOf": [
+                {
+                  "pattern": "^[^<>\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$",
+                  "description": "No raw HTML (angle brackets) or control characters; \\n, \\r and \\t allowed."
+                },
+                {
+                  "not": {
+                    "pattern": "!\\["
+                  },
+                  "description": "Markdown images not allowed in v1."
+                },
+                {
+                  "not": {
+                    "pattern": "\\]\\(\\s*[jJ][aA][vV][aA][sS][cC][rR][iI][pP][tT]\\s*:"
+                  }
+                },
+                {
+                  "not": {
+                    "pattern": "\\]\\(\\s*[dD][aA][tT][aA]\\s*:"
+                  }
+                },
+                {
+                  "not": {
+                    "pattern": "\\]\\(\\s*[vV][bB][sS][cC][rR][iI][pP][tT]\\s*:"
+                  }
+                }
+              ],
+              "description": "Restricted Markdown subset (see contract section Safety)."
+            },
+            "align": {
+              "enum": [
+                "left",
+                "center"
+              ],
+              "default": "left"
+            }
+          },
+          "required": [
+            "body"
+          ]
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        }
+      }
+    },
+    "footer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "footer"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tagline": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 160
+            },
+            "linkGroups": {
+              "type": "array",
+              "maxItems": 3,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "title",
+                  "links"
+                ],
+                "properties": {
+                  "title": {
+                    "$ref": "#/$defs/plainText",
+                    "minLength": 1,
+                    "maxLength": 30
+                  },
+                  "links": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "label",
+                        "href"
+                      ],
+                      "properties": {
+                        "label": {
+                          "$ref": "#/$defs/plainText",
+                          "minLength": 1,
+                          "maxLength": 30
+                        },
+                        "href": {
+                          "$ref": "#/$defs/link"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "social": {
+              "type": "array",
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "network",
+                  "url"
+                ],
+                "properties": {
+                  "network": {
+                    "enum": [
+                      "facebook",
+                      "instagram",
+                      "x",
+                      "tiktok",
+                      "youtube",
+                      "linkedin",
+                      "whatsapp",
+                      "pinterest"
+                    ]
+                  },
+                  "url": {
+                    "$ref": "#/$defs/socialUrl"
+                  }
+                }
+              }
+            },
+            "copyrightText": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 0,
+              "maxLength": 120
+            }
+          },
+          "required": []
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        }
+      }
+    }
+  }
+}
