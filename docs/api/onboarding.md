@@ -80,7 +80,8 @@ Failures:
 |---|---|---|
 | 400 | A field is missing, blank, too long, malformed e-mail, control characters | `Validation failed`, `data` = `{ "<field>": "<message>" }` |
 | 400 | Body is not JSON, empty, or a wrong type (for example an unknown `plan`) | `Request body is missing or malformed.` |
-| 400 | Slug length, characters or reserved name | `slug must be 3-40 characters`, `slug may contain only lowercase letters, digits and single hyphens between them`, `slug is reserved` |
+| 400 | Slug longer than 64 characters (bean validation) | `Validation failed`, `data` = `{ "slug": "<message>" }` (the 3-40 rule below is not reached) |
+| 400 | Slug length (under 3 or 41-64), characters or reserved name | `slug must be 3-40 characters`, `slug may contain only lowercase letters, digits and single hyphens between them`, `slug is reserved` |
 | 400 | Password too short or over 72 UTF-8 bytes | `Password must be at least 8 characters and at most 72 bytes` |
 | 409 | Slug **or** owner e-mail already registered (including a FAILED tenant), or a concurrent duplicate | `Slug or owner email is already registered` |
 | 429 | Rate limit (section 7) | `Too many requests. Please try again later.` + `Retry-After` |
@@ -281,23 +282,23 @@ Frontend consequence: because success and no-op look the same, the UI must say "
 
 ```
                  signup (201)
-   (no tenant) ─────────────────▶ PENDING ◀──────────────────────────────┐
-                                    │  (row: verified_at = null)         │
-                  verify OK (202)   │                                    │ resend (new code,
-                  code burned,      ▼                                    │ clears verified_at)
-                  verified_at set  PENDING + verified_at   ── reported as ┤
-                  job queued       (DB state)                PROVISIONING │
-                                    │  worker claims PENDING/FAILED       │
-                                    ▼  -> PROVISIONING (atomic CAS)       │
-                               PROVISIONING                               │
-                               │            │                             │
-                  saga succeeds│            │saga fails                   │
-                               ▼            ▼                             │
-                             ACTIVE       FAILED ─────────────────────────┘
-                          (terminal;     (retryable: POST /resend, then
-                          URLs appear;   POST /verify with the new code)
-                          signup row,
-                          password hash
+   (no tenant) ─────────────────▶ PENDING
+                                    │  (row: verified_at = null)
+                  verify OK (202)   │
+                  code burned,      ▼
+                  verified_at set  PENDING + verified_at   ── reported as PROVISIONING
+                  job queued       (DB state)
+                                    │  worker claims PENDING/FAILED
+                                    ▼  -> PROVISIONING (atomic CAS)
+                               PROVISIONING
+                               │            │
+                  saga succeeds│            │saga fails
+                               ▼            ▼
+                             ACTIVE       FAILED
+                          (terminal;     (retryable: POST /resend issues a new code and
+                          URLs appear;   clears verified_at, the tenant status is NOT changed;
+                          signup row,    /status keeps answering FAILED until the next
+                          password hash  successful POST /verify queues a new attempt)
                           deleted)
    SUSPENDED (platform action, outside onboarding): /status answers 404.
 ```
@@ -306,7 +307,8 @@ Rules worth coding against:
 
 - The API reports a verified-but-not-yet-claimed `PENDING` tenant as `PROVISIONING`; that is why `verify` answers `PROVISIONING` at once. `PENDING` in a poll therefore always means "waiting for the owner's code".
 - `PENDING` before the code is entered never moves on its own. An abandoned signup is purged after 24 h but only when someone signs up with the same slug or e-mail (there is no scheduled purge yet).
-- `FAILED` is recoverable: the old code is dead (single use), so call `/resend`, then `/verify` with the new code. After `max-resends` (3) failures and resends the signup is stuck until the purge, and a user-facing "contact support" path is needed. A FAILED tenant cannot be re-signed-up (`409`).
+- `FAILED` is recoverable: the old code is dead (single use), so call `/resend`, then `/verify` with the new code. `/resend` never changes the tenant status: `/status` keeps returning `FAILED` after a resend and only moves on after the next `/verify` is accepted (then `PROVISIONING`). After `max-resends` (3) failures and resends the signup is stuck until the purge, and a user-facing "contact support" path is needed. A FAILED tenant cannot be re-signed-up (`409`).
+- **Crash window.** If the JVM dies after `/verify` was accepted but before the provisioning worker claims the tenant, it stays `PENDING` with `verified_at` set and `/status` reports `PROVISIONING` indefinitely: `/resend` is a no-op for it, `/verify` answers `400` (the code is burned), and no sweeper exists, so nothing recovers it until the 24 h purge triggered by a signup that reuses its slug or e-mail. The UI's 3 minute polling timeout and "contact support" path cover it (see PROV-04/PROV-05).
 - `ACTIVE` is final for onboarding. Provisioning typically takes a few seconds (schema creation and migrations) but has no documented upper bound.
 
 ## 7. Rate limiting and client IP
@@ -377,7 +379,7 @@ adminLoginUrl = storefrontUrl + <onboarding.admin-login-path>                   
 
 What is configured today (`SecurityConfig.corsConfigurationSource`, one global config for `/**`):
 
-- Allowed origins: the exact list in `cors.allowed-origins` (`CORS_ALLOWED_ORIGINS`). Dev default: `http://localhost:3000, http://localhost:8080, http://localhost:4200, https://perfume-budget-gs-fe.vercel.app`; **prod has no default and requires the env var**. Exact-match only (no wildcards or patterns).
+- Allowed origins: the exact list in `cors.allowed-origins` (`CORS_ALLOWED_ORIGINS`). Default in the base `application.properties` (used when `CORS_ALLOWED_ORIGINS` is unset, so also in dev): `http://localhost:3000, http://localhost:8080, http://localhost:4200, https://perfume-budget-gs-fe.vercel.app`; `application-prod.properties` has no default and requires the env var. Exact-match only (no wildcards or patterns).
 - Methods and headers from `cors.allowed-methods` / `cors.allowed-headers` (default `*`), `allowCredentials=true`.
 - **No `exposedHeaders` is configured.** A cross-origin browser `fetch` therefore cannot read `Retry-After` (not a CORS-safelisted response header). Until the backend exposes it, the frontend should not depend on the header cross-origin, and should fall back to the documented windows (60 s for resend, 15 min for lockout, a few minutes otherwise) or go through a same-origin proxy.
 - An `Origin` header that is **not** in the allow-list is rejected by the CORS layer with `403` and the plain-text body `Invalid CORS request` (not the JSON envelope), for simple requests as well as preflights. Clients without an `Origin` (curl, server-to-server) are unaffected.

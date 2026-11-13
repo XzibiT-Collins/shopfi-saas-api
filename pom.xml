@@ -145,13 +145,16 @@
 			<scope>compile</scope>
 		</dependency>
 
-		<!-- PROV-03: JSON Schema validator for the onboarding contract test only (test scope). Same coordinates and
-		     version as the THEME-02 branch (compile scope there), so the two merge to one compile-scope entry. -->
+		<!-- PROV-03: JSON Schema validator, used by OnboardingDocSchemaTest/OnboardingContractTest. Declared with compile
+		     scope on purpose: origin/feature/THEME-02-theme-service declares the same coordinates (1.5.6) with compile scope
+		     because ThemeValidator needs it at runtime. Git merges the two branches cleanly into TWO declarations, and Maven
+		     keeps the last one, so a test-scope entry here would silently downgrade THEME-02 and break main compilation.
+		     When both branches are merged, delete ONE of the two identical declarations (this one or the THEME-02 one). -->
 		<dependency>
 			<groupId>com.networknt</groupId>
 			<artifactId>json-schema-validator</artifactId>
 			<version>1.5.6</version>
-			<scope>test</scope>
+			<scope>compile</scope>
 		</dependency>
 
 		<dependency>

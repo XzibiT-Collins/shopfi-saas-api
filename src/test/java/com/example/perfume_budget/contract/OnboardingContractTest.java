@@ -464,9 +464,11 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
         assertFalse(generated.contains("password\" : \"") , "no example secrets");
 
         java.nio.file.Path file = OnboardingDocExamples.DOCS.resolve("openapi-onboarding.json");
-        if (Boolean.getBoolean("openapi.regenerate") || !Files.exists(file)) {
+        if (Boolean.getBoolean("openapi.regenerate")) {
             Files.writeString(file, generated, StandardCharsets.UTF_8);
         }
+        assertTrue(Files.exists(file), "docs/api/openapi-onboarding.json is missing: run the contract test once with "
+                + "-Dopenapi.regenerate=true and commit the file (it is never recreated silently)");
         assertEquals(Files.readString(file, StandardCharsets.UTF_8), generated,
                 "docs/api/openapi-onboarding.json is stale: run the contract test with -Dopenapi.regenerate=true and commit it");
     }
