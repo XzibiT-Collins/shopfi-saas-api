@@ -279,3 +279,31 @@ No Postgres on the host? `docker compose up -d postgres` (see `docker-compose.ym
 Note: the main `./mvnw spring-boot:run` flow with the `dev` profile (`DB_URL`, `DB_USER`, `DB_PASSWORD`) runs the same
 Flyway-then-validate boot sequence for manual gate checks; `tenant.dev-endpoints.enabled=true` exposes
 `POST /api/v1/dev/tenants` to create tenants by hand.
+
+## Production deployment (DEPLOYMENT)
+
+Run with `ACTIVE_PROFILE=prod`. There is intentionally no default profile: an unset `ACTIVE_PROFILE` selects no
+dev-only behaviour. `application-prod.properties` reads everything below from environment variables, has no
+defaults for secrets or URLs (a missing one fails startup), and forces `tenant.header-resolution.enabled=false`
+and `tenant.dev-endpoints.enabled=false`. Set secrets in the Render dashboard (`sync: false` in `render.yaml`); never commit values.
+
+Required (no default):
+
+| Group | Env vars |
+|---|---|
+| Profile | `ACTIVE_PROFILE=prod` |
+| Database | `DB_URL` (jdbc:postgresql://...), `DB_USER`, `DB_PASSWORD` |
+| JWT | `JWT_SECRET`, `JWT_ACCESS_EXPIRATION`, `JWT_REFRESH_EXPIRATION` |
+| Redis | `REDIS_URL` |
+| Mail (SMTP) | `SPRING_MAIL_HOST`, `SPRING_MAIL_PORT`, `SPRING_MAIL_USERNAME`, `SPRING_MAIL_PASSWORD`, `SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH`, `SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_ENABLE`, `SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE`, `SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_TRUST`, `SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_PROTOCOLS` |
+| Google OAuth2 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH2_CALLBACK_BASE_URL`, `OAUTH2_REDIRECT_URIS` |
+| Payments | `PLATFORM_ENCRYPTION_KEY`, `PLATFORM_API_BASE_URL` |
+| Cloudinary | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` |
+| Seed admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD` |
+| URLs / CORS | `FRONTEND_CHANGE_PASSWORD_URL`, `CORS_ALLOWED_ORIGINS` |
+| Tenancy | `TENANT_BASE_DOMAIN` (e.g. `shopfi.app`, tenants are `<slug>.TENANT_BASE_DOMAIN`), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts) |
+
+Optional (safe defaults): `PORT`/`SERVER_PORT`, `PAYSTACK_URL`, `NOTIFICATION_EMAIL_PROVIDER`,
+`NOTIFICATION_EMAIL_FROM_ADDRESS`, `NOTIFICATION_EMAIL_FROM_NAME`, `RESEND_API_KEY`, `RESEND_BASE_URL`,
+`MANAGEMENT_HEALTH_MAIL_ENABLED`, `REDIS_CACHE_TTL_MINUTES`, `INVENTORY_RESERVATION_EXPIRY_HOURS`,
+`INVENTORY_RESERVATION_CLEANUP_INTERVAL_MS`, `DISCOUNT_CACHE_EVICT_INTERVAL_MS`.

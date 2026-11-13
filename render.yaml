@@ -5,6 +5,71 @@ services:
     plan: free
     branch: dev
     healthCheckPath: /actuator/health
+    envVars:
+      - key: ACTIVE_PROFILE
+        value: prod
+      - key: DB_URL
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SPRING_MAIL_USERNAME
+        sync: false
+      - key: SPRING_MAIL_PASSWORD
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: PLATFORM_ENCRYPTION_KEY
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: JWT_ACCESS_EXPIRATION
+        sync: false
+      - key: JWT_REFRESH_EXPIRATION
+        sync: false
+      - key: SPRING_MAIL_HOST
+        sync: false
+      - key: SPRING_MAIL_PORT
+        sync: false
+      - key: SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH
+        sync: false
+      - key: SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_ENABLE
+        sync: false
+      - key: SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE
+        sync: false
+      - key: SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_TRUST
+        sync: false
+      - key: SPRING_MAIL_PROPERTIES_MAIL_SMTP_SSL_PROTOCOLS
+        sync: false
+      - key: OAUTH2_CALLBACK_BASE_URL
+        sync: false
+      - key: OAUTH2_REDIRECT_URIS
+        sync: false
+      - key: PLATFORM_API_BASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: FRONTEND_CHANGE_PASSWORD_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: TENANT_BASE_DOMAIN
+        sync: false
+      - key: TENANT_PLATFORM_DOMAINS
+        sync: false
 
   - type: redis
     name: perfume-redis
