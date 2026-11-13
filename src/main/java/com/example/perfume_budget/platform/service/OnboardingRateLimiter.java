@@ -14,17 +14,30 @@ public class OnboardingRateLimiter {
     private final TokenBucketRateLimiter verifyIp;
     private final TokenBucketRateLimiter verifyEmail;
     private final TokenBucketRateLimiter statusIp;
+    private final TokenBucketRateLimiter resendIp;
+    private final TokenBucketRateLimiter resendEmail;
 
     public OnboardingRateLimiter(OnboardingProperties p) {
-        this.signupIp = build(p.getSignupIp());
-        this.signupEmail = build(p.getSignupEmail());
-        this.verifyIp = build(p.getVerifyIp());
-        this.verifyEmail = build(p.getVerifyEmail());
-        this.statusIp = build(p.getStatusIp());
+        int max = p.getMaxTrackedKeys();
+        this.signupIp = build(p.getSignupIp(), max);
+        this.signupEmail = build(p.getSignupEmail(), max);
+        this.verifyIp = build(p.getVerifyIp(), max);
+        this.verifyEmail = build(p.getVerifyEmail(), max);
+        this.statusIp = build(p.getStatusIp(), max);
+        this.resendIp = build(p.getResendIp(), max);
+        this.resendEmail = build(p.getResendEmail(), max);
     }
 
-    private static TokenBucketRateLimiter build(OnboardingProperties.Limit l) {
-        return new TokenBucketRateLimiter(l.getCapacity(), Duration.ofSeconds(l.getPeriodSeconds()));
+    private static TokenBucketRateLimiter build(OnboardingProperties.Limit l, int maxKeys) {
+        return new TokenBucketRateLimiter(l.getCapacity(), Duration.ofSeconds(l.getPeriodSeconds()), maxKeys, System::nanoTime);
+    }
+
+    public void checkResendIp(String ip) {
+        check(resendIp, ip);
+    }
+
+    public void checkResendEmail(String email) {
+        check(resendEmail, normalize(email));
     }
 
     public void checkSignupIp(String ip) {

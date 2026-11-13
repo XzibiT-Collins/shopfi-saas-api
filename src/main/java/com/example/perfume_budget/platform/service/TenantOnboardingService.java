@@ -6,6 +6,7 @@ import com.example.perfume_budget.exception.DuplicateResourceException;
 import com.example.perfume_budget.exception.RateLimitExceededException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.platform.dto.OnboardingStatusResponse;
+import com.example.perfume_budget.platform.dto.TenantResendRequest;
 import com.example.perfume_budget.platform.dto.TenantSignupRequest;
 import com.example.perfume_budget.platform.dto.TenantVerifyRequest;
 import com.example.perfume_budget.platform.enums.TenantPlan;
@@ -129,7 +130,7 @@ public class TenantOnboardingService {
                         .tenantId(tenant.getId()).ownerFullName(fullName).passwordHash(hash)
                         .otpSalt(salt).otpHash(hashOtp(salt, otp))
                         .otpExpiresAt(now.plusMinutes(props.getOtpValidMinutes()))
-                        .failedAttempts(0).createdAt(now).build());
+                        .failedAttempts(0).resendCount(0).lastOtpSentAt(now).createdAt(now).build());
             });
         } catch (DataIntegrityViolationException race) {
             throw new DuplicateResourceException("Slug or owner email is already registered");
@@ -144,7 +145,12 @@ public class TenantOnboardingService {
 
     private enum Outcome { OK, WRONG, LOCKED }
 
-    private record VerifyResult(Outcome outcome, ProvisioningRequest request, Long tenantId, long retryAfter) {
+    /** {@code consumed} carries the pre-verify OTP state so it can be restored if the executor rejects the job. */
+    private record VerifyResult(Outcome outcome, ProvisioningRequest request, Long tenantId, long retryAfter,
+                                String[] consumed, LocalDateTime consumedExpiry) {
+        VerifyResult(Outcome outcome, ProvisioningRequest request, Long tenantId, long retryAfter) {
+            this(outcome, request, tenantId, retryAfter, null, null);
+        }
     }
 
     public OnboardingStatusResponse verify(TenantVerifyRequest req) {
@@ -165,7 +171,16 @@ public class TenantOnboardingService {
         try {
             onboardingExecutor.execute(() -> runProvisioning(r.request(), r.tenantId()));
         } catch (RejectedExecutionException busy) {
-            tx.executeWithoutResult(s -> signupRepository.clearVerified(r.tenantId()));
+            // Nothing was provisioned: hand the one-time code back so the owner can simply retry.
+            tx.executeWithoutResult(s -> {
+                signupRepository.clearVerified(r.tenantId());
+                signupRepository.findByTenantIdForUpdate(r.tenantId()).ifPresent(su -> {
+                    su.setOtpSalt(r.consumed()[0]);
+                    su.setOtpHash(r.consumed()[1]);
+                    su.setOtpExpiresAt(r.consumedExpiry());
+                    signupRepository.saveAndFlush(su);
+                });
+            });
             throw new RateLimitExceededException("Onboarding is busy, retry shortly", 30);
         }
         return new OnboardingStatusResponse(slug, TenantStatus.PROVISIONING.name(), null, null);
@@ -204,12 +219,20 @@ public class TenantOnboardingService {
             signupRepository.saveAndFlush(signup);
             return new VerifyResult(Outcome.WRONG, null, null, 0);
         }
+        // Single use: burn the code on success. Rotating the salt and replacing the hash with a digest of a random
+        // value nobody ever sees, and expiring it, means a replay of the same OTP cannot verify again.
+        String[] consumed = {signup.getOtpSalt(), signup.getOtpHash()};
+        LocalDateTime consumedExpiry = signup.getOtpExpiresAt();
+        String burnSalt = randomHex(16);
+        signup.setOtpSalt(burnSalt);
+        signup.setOtpHash(hashOtp(burnSalt, randomHex(32)));
+        signup.setOtpExpiresAt(now.minusSeconds(1));
         signup.setFailedAttempts(0);
         signup.setVerifiedAt(now);
         signupRepository.saveAndFlush(signup);
         ProvisioningRequest pr = new ProvisioningRequest(tenant.getSlug(), tenant.getDisplayName(),
                 tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash(), tenant.getPlan());
-        return new VerifyResult(Outcome.OK, pr, tenant.getId(), 0);
+        return new VerifyResult(Outcome.OK, pr, tenant.getId(), 0, consumed, consumedExpiry);
     }
 
     /** Worker thread. Starts with no TenantContext (dedicated executor); provision() binds/restores its own. */
@@ -229,6 +252,77 @@ public class TenantOnboardingService {
                 // best effort
             }
         }
+    }
+
+    // ------------------------------------------------------------------------------------------ resend
+
+    /** Identical body for every outcome so the endpoint reveals nothing about which signups exist. */
+    public static final String RESEND_MESSAGE = "If a pending signup matches, a new verification code has been sent";
+
+    /**
+     * Issues a fresh OTP for a PENDING or FAILED signup (the owner's code expired, was lost, or a previous
+     * provisioning attempt failed). Policy, chosen so that knowing a slug and email gives an attacker no leverage:
+     * <ul>
+     *   <li>Silent no-op (same response as success) when: no match, wrong owner email, a verified provisioning is in
+     *       flight, the cooldown has not elapsed, the per-signup resend cap is reached, or the signup is locked.</li>
+     *   <li>It never clears a lockout and never resets {@code failed_attempts}: an attacker cannot buy fresh guesses
+     *       by requesting codes, and cannot unlock someone else's lock for them. The counter only resets on a
+     *       successful verify or when a lock expires on its own, so total guesses stay bounded.</li>
+     *   <li>A new code replaces the old one (the old one stops working), is valid for the normal OTP window, and
+     *       the code is only ever sent to the email stored on the signup, never to the requester's input.</li>
+     *   <li>Bounded: {@code onboarding.max-resends} per signup, {@code resend-cooldown-seconds} apart, plus the
+     *       per-IP/per-email rate limits in the controller. The abandoned-signup purge window is unchanged.</li>
+     * </ul>
+     * The cost to a legitimate owner locked out by a griefer is at most the lockout (15 min) instead of the 24 h
+     * purge window.
+     */
+    public void resend(TenantResendRequest req) {
+        String slug = tryNormalizeSlug(req.slug());
+        String email = normalizeEmail(req.email());
+        if (slug == null) {
+            return;
+        }
+        String otp = tx.execute(s -> doResend(slug, email));
+        if (otp != null) {
+            eventPublisher.publishEvent(new UserRegistrationEvent(email, otp));
+            log.info("Onboarding OTP re-sent for slug {}", slug);
+        }
+    }
+
+    private String doResend(String slug, String email) {
+        LocalDateTime now = LocalDateTime.now();
+        Tenant tenant = tenantRepository.findBySlug(slug).orElse(null);
+        if (tenant == null || !tenant.getOwnerEmail().equalsIgnoreCase(email)
+                || (tenant.getStatus() != TenantStatus.PENDING && tenant.getStatus() != TenantStatus.FAILED)) {
+            return null;
+        }
+        TenantSignup signup = signupRepository.findByTenantIdForUpdate(tenant.getId()).orElse(null);
+        if (signup == null) {
+            return null;
+        }
+        if (tenant.getStatus() == TenantStatus.PENDING && signup.getVerifiedAt() != null) {
+            return null; // already verified, provisioning in flight
+        }
+        if (signup.getLockedUntil() != null && signup.getLockedUntil().isAfter(now)) {
+            return null;
+        }
+        if (signup.getResendCount() >= props.getMaxResends()) {
+            return null;
+        }
+        LocalDateTime lastSent = signup.getLastOtpSentAt() != null ? signup.getLastOtpSentAt() : signup.getCreatedAt();
+        if (lastSent.plusSeconds(props.getResendCooldownSeconds()).isAfter(now)) {
+            return null;
+        }
+        String otp = generateOtp();
+        String salt = randomHex(16);
+        signup.setOtpSalt(salt);
+        signup.setOtpHash(hashOtp(salt, otp));
+        signup.setOtpExpiresAt(now.plusMinutes(props.getOtpValidMinutes()));
+        signup.setResendCount(signup.getResendCount() + 1);
+        signup.setLastOtpSentAt(now);
+        signup.setVerifiedAt(null); // a FAILED attempt may have left it set
+        signupRepository.saveAndFlush(signup);
+        return otp;
     }
 
     // ------------------------------------------------------------------------------------------ status

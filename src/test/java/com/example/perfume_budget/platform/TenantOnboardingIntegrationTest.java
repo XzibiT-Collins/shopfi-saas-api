@@ -300,8 +300,32 @@ class TenantOnboardingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(verify("onb-whatever", "a@b.test", "123456", "10.0.0.8").getResponse().getStatus()).isEqualTo(400);
     }
 
+    private MvcResult resend(String slug, String email, String ip) throws Exception {
+        return mvc.perform(post("/api/v1/platform/onboarding/resend").with(ip(ip))
+                .contentType("application/json")
+                .content("{\"slug\":\"" + slug + "\",\"email\":\"" + email + "\"}")).andReturn();
+    }
+
+    private static void ageLastOtpSend(String slug) {
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                return st.executeUpdate("UPDATE master.tenant_signups SET last_otp_sent_at = now() - interval '5 minutes' "
+                        + "WHERE tenant_id = (SELECT id FROM master.tenants WHERE slug='" + slug + "')");
+            }
+        });
+    }
+
+    private static String passwordHashOf(String slug) {
+        return jdbc(c -> {
+            try (var ps = c.prepareStatement("SELECT s.password_hash FROM master.tenant_signups s JOIN master.tenants t "
+                    + "ON t.id = s.tenant_id WHERE t.slug = '" + slug + "'"); ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        });
+    }
+
     @Test
-    void provisioningFailure_reportsFailed_andSameOtpCanRetry() throws Exception {
+    void provisioningFailure_reportsFailed_oldOtpIsDead_resendIssuesNewCode_thatRetriesToActive() throws Exception {
         String ip = "10.0.0.9";
         assertThat(signup("onb-fail", "fail@onb.test", PASSWORD, ip).getResponse().getStatus()).isEqualTo(201);
         String otp = OtpCapture.OTPS.get("fail@onb.test");
@@ -317,9 +341,174 @@ class TenantOnboardingIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(verify("onb-fail", "fail@onb.test", otp, ip).getResponse().getStatus()).isEqualTo(202);
         Thread.sleep(500);
         assertThat(body(status("onb-fail", ip))).contains("FAILED");
-        // retry within the OTP window: second call goes to the real saga (FAILED rows are claimable)
-        assertThat(verify("onb-fail", "fail@onb.test", otp, ip).getResponse().getStatus()).isEqualTo(202);
+
+        // AC3: the code is single use, so the same OTP no longer works...
+        assertThat(verify("onb-fail", "fail@onb.test", otp, ip).getResponse().getStatus()).isEqualTo(400);
+        // ...and the owner recovers with a resend instead of waiting for the 24h purge
+        ageLastOtpSend("onb-fail");
+        MvcResult rs = resend("onb-fail", "fail@onb.test", ip);
+        assertThat(rs.getResponse().getStatus()).isEqualTo(202);
+        String fresh = OtpCapture.OTPS.get("fail@onb.test");
+        assertThat(fresh).matches("\\d{6}");
+        assertThat(verify("onb-fail", "fail@onb.test", fresh, ip).getResponse().getStatus()).isEqualTo(202);
         waitForStatus("onb-fail", ip, "ACTIVE");
         org.mockito.Mockito.reset(provisioning);
+    }
+
+    // ---- PROV-02b AC3/AC4 ---------------------------------------------------------------------------------
+
+    @Test
+    void otpIsSingleUse_replayAfterSuccessIs400_andProvisionRunsOnce() throws Exception {
+        String ip = "10.0.4.1";
+        assertThat(signup("onb-once", "once@onb.test", PASSWORD, ip).getResponse().getStatus()).isEqualTo(201);
+        String otp = OtpCapture.OTPS.get("once@onb.test");
+        org.mockito.Mockito.clearInvocations(provisioning);
+        assertThat(verify("onb-once", "once@onb.test", otp, ip).getResponse().getStatus()).isEqualTo(202);
+        assertThat(verify("onb-once", "once@onb.test", otp, ip).getResponse().getStatus()).isEqualTo(400);
+        waitForStatus("onb-once", ip, "ACTIVE");
+        assertThat(verify("onb-once", "once@onb.test", otp, ip).getResponse().getStatus()).isEqualTo(400);
+        org.mockito.Mockito.verify(provisioning, org.mockito.Mockito.times(1))
+                .provision(org.mockito.ArgumentMatchers.any(ProvisioningRequest.class));
+    }
+
+    @Test
+    void concurrentVerifyWithTheCorrectOtp_exactlyOneWins_oneProvisionCall_oneAdmin() throws Exception {
+        assertThat(signup("onb-cv", "cv@onb.test", PASSWORD, "10.0.4.2").getResponse().getStatus()).isEqualTo(201);
+        String otp = OtpCapture.OTPS.get("cv@onb.test");
+        org.mockito.Mockito.clearInvocations(provisioning);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<java.util.concurrent.Future<Integer>> fs = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            fs.add(pool.submit(() -> {
+                gate.await();
+                return verify("onb-cv", "cv@onb.test", otp, "10.0.4.2").getResponse().getStatus();
+            }));
+        }
+        gate.countDown();
+        int accepted = 0;
+        for (var f : fs) {
+            int st = f.get(60, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(st).isIn(202, 400);
+            if (st == 202) accepted++;
+        }
+        pool.shutdown();
+        assertThat(accepted).as("single-use OTP: only one concurrent verify may succeed").isEqualTo(1);
+        waitForStatus("onb-cv", "10.0.4.2", "ACTIVE");
+        org.mockito.Mockito.verify(provisioning, org.mockito.Mockito.times(1))
+                .provision(org.mockito.ArgumentMatchers.any(ProvisioningRequest.class));
+        assertThat(count("SELECT count(*) FROM tenant_onb_cv.users WHERE email='cv@onb.test'")).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentSignupsForTheSameSlug_exactlyOne201_restAre409_oneTenantRow() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<java.util.concurrent.Future<Integer>> fs = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            final int n = i;
+            fs.add(pool.submit(() -> {
+                gate.await();
+                return signup("onb-race", "race" + n + "@onb.test", PASSWORD, "10.0.5." + n).getResponse().getStatus();
+            }));
+        }
+        gate.countDown();
+        int created = 0, dup = 0;
+        for (var f : fs) {
+            int st = f.get(60, java.util.concurrent.TimeUnit.SECONDS);
+            if (st == 201) created++;
+            else if (st == 409) dup++;
+        }
+        pool.shutdown();
+        assertThat(created).isEqualTo(1);
+        assertThat(dup).isEqualTo(3);
+        assertThat(count("SELECT count(*) FROM master.tenants WHERE slug='onb-race'")).isEqualTo(1);
+    }
+
+    @Test
+    void failedTenant_resignupWithDifferentPassword_is409_storedHashUnchanged_attackerEmailToo() throws Exception {
+        String ip = "10.0.4.3";
+        assertThat(signup("onb-fbind", "fbind@onb.test", PASSWORD, ip).getResponse().getStatus()).isEqualTo(201);
+        String before = passwordHashOf("onb-fbind");
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                return st.executeUpdate("UPDATE master.tenants SET status='FAILED' WHERE slug='onb-fbind'");
+            }
+        });
+        assertThat(signup("onb-fbind", "fbind@onb.test", "Attacker-Pass-1", "10.0.4.4").getResponse().getStatus()).isEqualTo(409);
+        assertThat(signup("onb-fbind", "attacker@onb.test", "Attacker-Pass-1", "10.0.4.5").getResponse().getStatus()).isEqualTo(409);
+        assertThat(passwordHashOf("onb-fbind")).isEqualTo(before);
+        assertThat(OtpCapture.OTPS).doesNotContainKey("attacker@onb.test");
+    }
+
+    @Test
+    void resend_isEnumerationSafe_sameResponseForKnownUnknownAndWrongEmail_neverUnlocksOrResetsAttempts() throws Exception {
+        String ip = "10.0.4.6";
+        assertThat(signup("onb-rs", "rs@onb.test", PASSWORD, ip).getResponse().getStatus()).isEqualTo(201);
+        String first = OtpCapture.OTPS.get("rs@onb.test");
+        String wrong = first.equals("000000") ? "000001" : "000000";
+
+        MvcResult known = resend("onb-rs", "rs@onb.test", "10.0.4.7");   // inside cooldown: silent no-op
+        MvcResult unknown = resend("onb-nobody", "nobody@onb.test", "10.0.4.8");
+        MvcResult other = resend("onb-rs", "intruder@onb.test", "10.0.4.9");
+        assertThat(known.getResponse().getStatus()).isEqualTo(202);
+        assertThat(body(unknown)).isEqualTo(body(known));
+        assertThat(body(other)).isEqualTo(body(known));
+        assertThat(OtpCapture.OTPS.get("rs@onb.test")).as("cooldown: no new code yet").isEqualTo(first);
+        assertThat(OtpCapture.OTPS).doesNotContainKey("intruder@onb.test").doesNotContainKey("nobody@onb.test");
+
+        // lock the signup (3 wrong codes), then resend must not unlock or reset anything
+        for (int i = 0; i < 3; i++) {
+            assertThat(verify("onb-rs", "rs@onb.test", wrong, ip).getResponse().getStatus()).isEqualTo(400);
+        }
+        ageLastOtpSend("onb-rs");
+        assertThat(resend("onb-rs", "rs@onb.test", "10.0.4.7").getResponse().getStatus()).isEqualTo(202);
+        assertThat(OtpCapture.OTPS.get("rs@onb.test")).as("locked: no new code").isEqualTo(first);
+        assertThat(verify("onb-rs", "rs@onb.test", first, ip).getResponse().getStatus()).isEqualTo(429);
+        assertThat(count("SELECT count(*) FROM master.tenant_signups s JOIN master.tenants t ON t.id=s.tenant_id "
+                + "WHERE t.slug='onb-rs' AND s.failed_attempts = 3 AND s.locked_until > now() AND s.resend_count = 0")).isEqualTo(1);
+    }
+
+    @Test
+    void resend_isRateLimitedPerIp() throws Exception {
+        // resend-ip capacity is 10/hour by default; the 11th call from one IP is 429
+        for (int i = 0; i < 10; i++) {
+            assertThat(resend("onb-rl-none", "rln" + i + "@onb.test", "10.0.6.1").getResponse().getStatus()).isEqualTo(202);
+        }
+        MvcResult limited = resend("onb-rl-none", "rln10@onb.test", "10.0.6.1");
+        assertThat(limited.getResponse().getStatus()).isEqualTo(429);
+        assertThat(limited.getResponse().getHeader("Retry-After")).isNotNull();
+    }
+
+    // ---- PROV-02b AC1 at the controller: the limiter key is the resolved address, not a header ------------
+
+    @Test
+    void perIpLimit_cannotBeEvadedByRotatingXForwardedForRealIpOrForwarded() throws Exception {
+        for (int i = 0; i < 6; i++) {
+            MvcResult r = mvc.perform(post("/api/v1/platform/onboarding/signup").with(ip("10.0.7.1"))
+                    .header("X-Forwarded-For", "6.6.6." + i + ", 7.7.7." + i)
+                    .header("X-Real-IP", "5.5.5." + i).header("Forwarded", "for=4.4.4." + i)
+                    .contentType("application/json")
+                    .content("{\"slug\":\"onb-spoof" + i + "\",\"displayName\":\"S\",\"ownerEmail\":\"sp" + i
+                            + "@onb.test\",\"ownerFullName\":\"O\",\"password\":\"" + PASSWORD + "\"}")).andReturn();
+            assertThat(r.getResponse().getStatus()).isEqualTo(201);
+        }
+        MvcResult seventh = mvc.perform(post("/api/v1/platform/onboarding/signup").with(ip("10.0.7.1"))
+                .header("X-Forwarded-For", "9.9.9.9, 8.8.8.8").header("X-Real-IP", "1.2.3.4")
+                .contentType("application/json")
+                .content("{\"slug\":\"onb-spoof6\",\"displayName\":\"S\",\"ownerEmail\":\"sp6@onb.test\","
+                        + "\"ownerFullName\":\"O\",\"password\":\"" + PASSWORD + "\"}")).andReturn();
+        assertThat(seventh.getResponse().getStatus()).isEqualTo(429);
+    }
+
+    @Test
+    void perIpLimit_ipv6AddressesInOneSlash64ShareTheBucket() throws Exception {
+        for (int i = 0; i < 6; i++) {
+            assertThat(signup("onb-v6-" + i, "v6" + i + "@onb.test", PASSWORD, "2001:db8:77:1:0:0:0:" + (i + 1))
+                    .getResponse().getStatus()).isEqualTo(201);
+        }
+        assertThat(signup("onb-v6-6", "v66@onb.test", PASSWORD, "2001:db8:77:1:abcd:ef01:2345:6789")
+                .getResponse().getStatus()).isEqualTo(429);
+        assertThat(signup("onb-v6-6", "v66@onb.test", PASSWORD, "2001:db8:77:2::1").getResponse().getStatus()).isEqualTo(201);
     }
 }

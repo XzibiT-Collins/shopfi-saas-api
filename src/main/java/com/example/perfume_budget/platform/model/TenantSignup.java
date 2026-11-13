@@ -49,6 +49,12 @@ public class TenantSignup {
     @Column(name = "verified_at")
     private LocalDateTime verifiedAt;
 
+    @Column(name = "resend_count", nullable = false)
+    private int resendCount;
+
+    @Column(name = "last_otp_sent_at")
+    private LocalDateTime lastOtpSentAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 }

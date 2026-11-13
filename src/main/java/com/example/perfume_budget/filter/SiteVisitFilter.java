@@ -2,6 +2,7 @@ package com.example.perfume_budget.filter;
 
 import com.example.perfume_budget.model.SiteVisit;
 import com.example.perfume_budget.repository.SiteVisitRepository;
+import com.example.perfume_budget.security.ClientIps;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -41,13 +42,9 @@ public class SiteVisitFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
+    /** Container-resolved client address (trusted-proxy aware); never a raw client supplied header. */
     private String resolveIpAddress(HttpServletRequest request) {
-        String ip = request.getHeader("X-Forwarded-For");
-        if (ip != null && !ip.isBlank()) {
-            log.info("Site Visit Tracked");
-            return ip.split(",")[0].trim(); // take first IP if multiple proxies
-        }
-        return request.getRemoteAddr();
+        return ClientIps.clientIp(request);
     }
 
     @Override

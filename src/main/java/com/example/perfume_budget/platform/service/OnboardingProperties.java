@@ -21,11 +21,20 @@ public class OnboardingProperties {
     private String publicScheme = "https";
     private String adminLoginPath = "/admin/login";
 
+    /** Max OTP re-sends per signup row over its lifetime (the first code does not count). */
+    private int maxResends = 3;
+    /** Minimum gap between two codes for the same signup. */
+    private int resendCooldownSeconds = 60;
+    /** Hard cap on tracked keys per rate-limit bucket map; beyond it new keys share one overflow bucket. */
+    private int maxTrackedKeys = 10_000;
+
     private Limit signupIp = new Limit(5, 3600);
     private Limit signupEmail = new Limit(3, 3600);
     private Limit verifyIp = new Limit(20, 600);
     private Limit verifyEmail = new Limit(10, 600);
     private Limit statusIp = new Limit(60, 60);
+    private Limit resendIp = new Limit(10, 3600);
+    private Limit resendEmail = new Limit(3, 3600);
 
     /** {@code capacity} requests per {@code periodSeconds} (burst = capacity, continuous refill). */
     @Getter

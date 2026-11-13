@@ -6,6 +6,7 @@ import com.example.perfume_budget.exception.DuplicateResourceException;
 import com.example.perfume_budget.exception.RateLimitExceededException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.platform.dto.OnboardingStatusResponse;
+import com.example.perfume_budget.platform.dto.TenantResendRequest;
 import com.example.perfume_budget.platform.dto.TenantSignupRequest;
 import com.example.perfume_budget.platform.dto.TenantVerifyRequest;
 import com.example.perfume_budget.platform.enums.TenantPlan;
@@ -228,6 +229,143 @@ class TenantOnboardingServiceTest {
         service.runProvisioning(new ProvisioningRequest("acme", "S", "o@x.com", "O", "h", TenantPlan.FREE), 7L);
         verify(signups).clearVerified(7L);
         verify(signups, never()).deleteByTenantId(anyLong());
+    }
+
+    // ---- PROV-02b AC3: single-use OTP, resend policy, redaction -----------------------------------------
+
+    @Test
+    void verify_otpIsSingleUse_replayOfTheSameCodeIsRejected() {
+        TenantSignup s = pendingSignup(null);
+        String oldHash = s.getOtpHash();
+        service.verify(new TenantVerifyRequest("acme", "owner@example.com", pendingOtp));
+        assertThat(s.getOtpHash()).as("hash rotated on success").isNotEqualTo(oldHash);
+        assertThat(s.getOtpExpiresAt()).isBefore(LocalDateTime.now());
+        clearInvocations(executor);
+
+        assertThatThrownBy(() -> service.verify(new TenantVerifyRequest("acme", "owner@example.com", pendingOtp)))
+                .isInstanceOf(BadRequestException.class);
+        verifyNoInteractions(executor); // provisioning not re-submitted by a replay
+    }
+
+    @Test
+    void verify_executorRejects_restoresTheOneTimeCodeSoTheOwnerCanRetry() {
+        TenantSignup s = pendingSignup(null);
+        doThrow(new RejectedExecutionException()).doNothing().when(executor).execute(any());
+        TenantVerifyRequest req = new TenantVerifyRequest("acme", "owner@example.com", pendingOtp);
+        assertThatThrownBy(() -> service.verify(req)).isInstanceOf(RateLimitExceededException.class);
+        assertThat(service.verify(req).status()).isEqualTo("PROVISIONING"); // same code works again
+    }
+
+    private String resendOtp() {
+        ArgumentCaptor<Object> ev = ArgumentCaptor.forClass(Object.class);
+        verify(events, atLeastOnce()).publishEvent(ev.capture());
+        return ((UserRegistrationEvent) ev.getValue()).otp();
+    }
+
+    private TenantSignup resendable() {
+        TenantSignup s = pendingSignup(null);
+        s.setLastOtpSentAt(LocalDateTime.now().minusMinutes(5));
+        clearInvocations(events);
+        return s;
+    }
+
+    private static TenantResendRequest resendReq() {
+        return new TenantResendRequest("acme", "Owner@Example.com");
+    }
+
+    @Test
+    void resend_issuesFreshOtp_oldOneStopsWorking_sentOnlyToTheStoredEmail() {
+        TenantSignup s = resendable();
+        String old = pendingOtp;
+        s.setOtpExpiresAt(LocalDateTime.now().minusMinutes(1)); // the owner's code expired
+        service.resend(resendReq());
+
+        UserRegistrationEvent e = (UserRegistrationEvent) mockingDetails(events).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().equals("publishEvent")).findFirst().get().getArgument(0);
+        assertThat(e.email()).isEqualTo("owner@example.com");
+        assertThat(e.otp()).matches("\\d{6}");
+        assertThat(s.getResendCount()).isEqualTo(1);
+        assertThat(s.getOtpExpiresAt()).isAfter(LocalDateTime.now());
+
+        if (!old.equals(e.otp())) { // (1 in 900k collision otherwise)
+            assertThatThrownBy(() -> service.verify(new TenantVerifyRequest("acme", "owner@example.com", old)))
+                    .isInstanceOf(BadRequestException.class);
+        }
+        assertThat(service.verify(new TenantVerifyRequest("acme", "owner@example.com", e.otp())).status())
+                .isEqualTo("PROVISIONING");
+    }
+
+    @Test
+    void resend_doesNotResetAttemptsOrUnlock() {
+        TenantSignup s = resendable();
+        s.setFailedAttempts(2);
+        service.resend(resendReq());
+        assertThat(s.getFailedAttempts()).as("attacker cannot buy fresh guesses with resends").isEqualTo(2);
+
+        clearInvocations(events);
+        s.setLastOtpSentAt(LocalDateTime.now().minusMinutes(5));
+        s.setFailedAttempts(3);
+        s.setLockedUntil(LocalDateTime.now().plusMinutes(10));
+        String hash = s.getOtpHash();
+        service.resend(resendReq());
+        verifyNoInteractions(events);
+        assertThat(s.getLockedUntil()).isAfter(LocalDateTime.now());
+        assertThat(s.getFailedAttempts()).isEqualTo(3);
+        assertThat(s.getOtpHash()).isEqualTo(hash);
+    }
+
+    @Test
+    void resend_isBoundedByCountAndCooldown() {
+        TenantSignup s = resendable();
+        service.resend(resendReq()); // 1
+        verify(events).publishEvent(any(Object.class));
+        service.resend(resendReq()); // inside cooldown -> silent no-op
+        verify(events, times(1)).publishEvent(any(Object.class));
+
+        for (int i = 1; i < props.getMaxResends(); i++) {
+            s.setLastOtpSentAt(LocalDateTime.now().minusMinutes(5));
+            service.resend(resendReq());
+        }
+        assertThat(s.getResendCount()).isEqualTo(props.getMaxResends());
+        int sent = mockingDetails(events).getInvocations().size();
+        s.setLastOtpSentAt(LocalDateTime.now().minusMinutes(5));
+        service.resend(resendReq()); // cap reached
+        assertThat(mockingDetails(events).getInvocations().size()).isEqualTo(sent);
+    }
+
+    @Test
+    void resend_isEnumerationSafe_noOpForWrongEmailUnknownSlugBadSlugVerifiedOrProvisioningStates() {
+        TenantSignup s = resendable();
+        service.resend(new TenantResendRequest("acme", "other@example.com"));
+        service.resend(new TenantResendRequest("nope", "owner@example.com"));
+        service.resend(new TenantResendRequest("bad;slug", "owner@example.com"));
+        s.setVerifiedAt(LocalDateTime.now()); // verified, provisioning in flight
+        service.resend(resendReq());
+        tenantWith(TenantStatus.ACTIVE);
+        service.resend(resendReq());
+        tenantWith(TenantStatus.PROVISIONING);
+        service.resend(resendReq());
+        verifyNoInteractions(events);
+        assertThat(s.getResendCount()).isZero();
+    }
+
+    @Test
+    void resend_forFailedTenant_issuesNewCode_andClearsStaleVerifiedMarker() {
+        TenantSignup s = resendable();
+        s.setVerifiedAt(LocalDateTime.now().minusMinutes(3));
+        Tenant failed = Tenant.builder().id(7L).slug("acme").displayName("Shop").schemaName("tenant_acme")
+                .status(TenantStatus.FAILED).plan(TenantPlan.FREE).ownerEmail("owner@example.com").build();
+        when(tenants.findBySlug("acme")).thenReturn(Optional.of(failed));
+        service.resend(resendReq());
+        assertThat(resendOtp()).matches("\\d{6}");
+        assertThat(s.getVerifiedAt()).isNull();
+    }
+
+    @Test
+    void userRegistrationEvent_toStringNeverPrintsTheOtp() {
+        UserRegistrationEvent e = new UserRegistrationEvent("a@b.test", "493817");
+        assertThat(e.toString()).doesNotContain("493817").contains("a@b.test").contains("redacted");
+        assertThat(String.valueOf(e)).doesNotContain("493817");
     }
 
     // ---- status -------------------------------------------------------------------------------------------
