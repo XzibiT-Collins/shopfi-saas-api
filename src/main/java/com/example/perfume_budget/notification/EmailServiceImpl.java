@@ -93,7 +93,6 @@ public class EmailServiceImpl implements EmailService{
         try{
             Context context = new Context();
             String resetPasswordUrl = changePasswordUrl+"?resetPasswordToken=" + token;
-            log.info("Reset Password URL: {}", resetPasswordUrl);
             context.setVariable("recipientName", recipientName);
             context.setVariable("resetPasswordLink", resetPasswordUrl);
 
