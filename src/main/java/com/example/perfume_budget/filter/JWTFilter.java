@@ -42,7 +42,10 @@ public class JWTFilter extends OncePerRequestFilter {
         String token = extractTokenFromCookie(request);
 
         try {
-            if (token != null) {
+            // No resolved tenant means a neutral allow-listed path (webhook, actuator, OAuth2...):
+            // never authenticate from a cookie there, since that would load users from the
+            // default schema. Tenant-only paths without a signal are rejected upstream.
+            if (token != null && TenantContext.get() != null) {
                 // Cross-tenant defense: a token issued for tenant A must not authenticate
                 // against tenant B. Skip for neutral/platform-scoped requests.
                 if (!tenantMatches(token)) {
@@ -95,7 +98,10 @@ public class JWTFilter extends OncePerRequestFilter {
      */
     private boolean tenantMatches(String token) {
         TenantIdentity identity = TenantContext.get();
-        if (identity == null || identity.scope() == TenantScope.PLATFORM) {
+        if (identity == null) {
+            return false;
+        }
+        if (identity.scope() == TenantScope.PLATFORM) {
             return true;
         }
         String tokenTenant = jwtUtil.extractTenant(token);
