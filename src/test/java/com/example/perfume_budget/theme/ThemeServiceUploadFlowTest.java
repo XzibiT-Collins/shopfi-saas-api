@@ -76,9 +76,9 @@ class ThemeServiceUploadFlowTest {
     void logoUploadReplacesUrlInStoredDocumentWithSecureUrl() {
         ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(10, 10), "image/png", "x.png"), null, Map.of());
         ThemeSnapshot saved = service.updateTheme(withLogoAlt(), 1L, up, "admin");
-        assertThat(storage.uploads).containsExactly("shopfi/acme/branding/logo");
+        assertThat(storage.uploads).singleElement().asString().matches("shopfi/acme/branding/logo-[0-9a-f]{16}");
         assertThat(saved.theme().at("/assets/logo/url").asText())
-                .isEqualTo("https://res.cloudinary.com/shopfi-demo/image/upload/v1/shopfi/acme/branding/logo.png");
+                .matches("https://res\\.cloudinary\\.com/shopfi-demo/image/upload/v1/shopfi/acme/branding/logo-[0-9a-f]{16}\\.png");
         assertThat(saved.theme().at("/assets/logo/alt").asText()).isEqualTo("Acme");
         verify(store).save(any(), eq(1L), eq("admin"));
     }
@@ -97,7 +97,8 @@ class ThemeServiceUploadFlowTest {
                 new BrandingFile(FakeBrandingStorage.jpeg(100, 100), "image/jpeg", "b.jpg"),
                 Map.of("hero", new BrandingFile(FakeBrandingStorage.webpLossy(50, 50), "image/webp", "h.webp")));
         ThemeSnapshot saved = service.updateTheme(defaults(), null, up, "admin");
-        assertThat(storage.uploads).containsExactlyInAnyOrder("shopfi/acme/branding/background", "shopfi/acme/branding/section-hero");
+        assertThat(storage.uploads).hasSize(2).anyMatch(k -> k.matches("shopfi/acme/branding/background-[0-9a-f]{16}"))
+                .anyMatch(k -> k.matches("shopfi/acme/branding/section-hero-[0-9a-f]{16}"));
         assertThat(saved.theme().at("/assets/background/url").asText()).contains("shopfi/acme/branding/background");
         assertThat(saved.theme().at("/pages/home/0/props/imageUrl").asText()).contains("section-hero");
     }
@@ -113,21 +114,66 @@ class ThemeServiceUploadFlowTest {
         assertThat(storage.uploads).isEmpty();
     }
 
+    private static final String OLD_BG = "https://res.cloudinary.com/shopfi-demo/image/upload/v1/shopfi/acme/branding/background.png";
+
     @Test
-    void persistenceFailureCleansUpNewAssetsButNotOverwrittenOnes() {
+    void persistenceFailureDeletesOnlyTheNewAssetsAndNeverTheLiveOnes() {
+        // the live theme already points at background.png, which exists in the store
+        storage.objects.put("shopfi/acme/branding/background", new byte[]{1, 2, 3});
+        ObjectNode stored = defaults();
+        stored.with("assets").putObject("background").put("url", OLD_BG);
+        when(store.read()).thenReturn(new ThemeSnapshot(stored.toString(), 3));
         doThrow(new ThemeConflictException("stale")).when(store).save(any(), any(), any());
         ThemeUploads up = new ThemeUploads(null,
                 new BrandingFile(FakeBrandingStorage.jpeg(100, 100), "image/jpeg", "b.jpg"), Map.of());
-        assertThatThrownBy(() -> service.updateTheme(defaults(), 1L, up, "a")).isInstanceOf(ThemeConflictException.class);
-        assertThat(storage.deletes).containsExactly("shopfi/acme/branding/background");
 
-        // an asset that already belongs to the stored theme is never deleted by a failed update
-        storage.reset();
-        ObjectNode stored = defaults();
-        stored.with("assets").putObject("background").put("url", "https://res.cloudinary.com/shopfi-demo/image/upload/v1/shopfi/acme/branding/background.png");
-        when(store.read()).thenReturn(new ThemeSnapshot(stored.toString(), 3));
         assertThatThrownBy(() -> service.updateTheme(defaults(), 3L, up, "a")).isInstanceOf(ThemeConflictException.class);
+
+        assertThat(storage.uploads).singleElement().asString().matches("shopfi/acme/branding/background-[0-9a-f]{16}");
+        String newKey = storage.uploads.get(0);
+        assertThat(storage.deletes).containsExactly(newKey);                    // the new asset is rolled back
+        assertThat(storage.objects).containsKey("shopfi/acme/branding/background") // the live one is untouched
+                .doesNotContainKey(newKey);
+        assertThat(storage.objects.get("shopfi/acme/branding/background")).containsExactly(1, 2, 3);
+        assertThat(storage.uploads).doesNotContain("shopfi/acme/branding/background"); // never overwritten
+    }
+
+    @Test
+    void staleIfMatchIsRejectedBeforeAnyUploadOrAssetChange() {
+        storage.objects.put("shopfi/acme/branding/background", new byte[]{1, 2, 3});
+        ObjectNode stored = defaults();
+        stored.with("assets").putObject("background").put("url", OLD_BG);
+        when(store.read()).thenReturn(new ThemeSnapshot(stored.toString(), 5)); // current version 5
+        ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(10, 10), "image/png", "l.png"),
+                new BrandingFile(FakeBrandingStorage.jpeg(100, 100), "image/jpeg", "b.jpg"), Map.of());
+        ObjectNode doc = withLogoAlt();
+
+        assertThatThrownBy(() -> service.updateTheme(doc, 4L, up, "a")).isInstanceOf(ThemeConflictException.class);
+
+        assertThat(storage.uploads).isEmpty();   // no Cloudinary call of any kind
         assertThat(storage.deletes).isEmpty();
+        assertThat(storage.objects).containsOnlyKeys("shopfi/acme/branding/background");
+        verify(store, never()).save(any(), any(), any());
+    }
+
+    @Test
+    void everyUploadGetsAFreshPublicIdSoNothingIsOverwritten() {
+        ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(10, 10), "image/png", "l.png"), null, Map.of());
+        service.updateTheme(withLogoAlt(), null, up, "a");
+        service.updateTheme(withLogoAlt(), null, up, "a");
+        assertThat(storage.uploads).hasSize(2).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void invalidSectionPartNameIsNeverEchoedInTheFieldErrorPath() {
+        String hostile = "<script>" + "x".repeat(5000);
+        ThemeUploads up = new ThemeUploads(null, null, Map.of(hostile, new BrandingFile(FakeBrandingStorage.png(5, 5), "image/png", "x.png")));
+        assertThatThrownBy(() -> service.updateTheme(defaults(), null, up, "a"))
+                .isInstanceOfSatisfying(ThemeValidationException.class, e -> {
+                    assertThat(e.getErrors()).extracting(ThemeFieldError::path).containsExactly("image");
+                    assertThat(e.getErrors().toString()).doesNotContain("script").hasSizeLessThan(500);
+                });
+        assertThat(storage.uploads).isEmpty();
     }
 
     @Test

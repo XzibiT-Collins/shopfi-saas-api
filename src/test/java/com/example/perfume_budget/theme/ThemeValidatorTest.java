@@ -380,6 +380,80 @@ class ThemeValidatorTest {
         assertThat((System.nanoTime() - t0) / 1_000_000).isLessThan(100);
     }
 
+    private static final String EMOJI_2600 = "\uD83D\uDE00".repeat(2600); // 2600 code points, 5200 UTF-16 units
+
+    @ParameterizedTest
+    @ValueSource(strings = {"\n\n[x](&#106;avascript:alert(1))", "\n\n[x][r]\n\n[r]: javascript:alert(1)", "\n\n[x](&#x6A;avascript:alert(1))",
+            "\n- - - - - - x", "\n\n[x](javascript&colon;alert(1))"})
+    void checkerStillRunsWhenBodyIsLongInUtf16UnitsButUnderTheCodePointCap(String tail) {
+        String md = EMOJI_2600 + tail;
+        assertThat(md.length()).isGreaterThan(5000);
+        assertThat(md.codePointCount(0, md.length())).isLessThanOrEqualTo(5000);
+        assertThat(body(md)).as(tail).anySatisfy(err -> {
+            assertThat(err.path()).isEqualTo("pages.home[5].props.body");
+            assertThat(err.code()).isIn("UNSAFE_CONTENT", "RICH_TEXT_TOO_DEEP");
+        });
+    }
+
+    @Test
+    void harmlessLongEmojiBodyUnderTheCodePointCapIsAccepted() {
+        assertThat(body(EMOJI_2600)).isEmpty();
+    }
+
+    @Test
+    void bodyOverTheCodePointCapIsRejectedExplicitlyNotSkipped() {
+        String over = EMOJI_2600 + "a".repeat(2401); // 5001 code points
+        assertThat(RichTextChecker.check(over)).isNotNull().extracting(RichTextChecker.Problem::code).isEqualTo("TOO_LONG");
+        assertThat(body(over)).anySatisfy(e -> assertThat(e.code()).isEqualTo("TOO_LONG"));
+        // nothing about length lets the hostile tail through, and very long hostile bodies are still judged by the checker
+        assertThat(RichTextChecker.check("- ".repeat(20_000))).extracting(RichTextChecker.Problem::code).isEqualTo("RICH_TEXT_TOO_DEEP");
+        assertThat(RichTextChecker.check("a".repeat(60_000) + "[x](&#106;avascript:alert(1))")).isNotNull();
+        assertThat(RichTextChecker.check(EMOJI_2600 + "a".repeat(2400))).isNull(); // exactly 5000 code points
+    }
+
+    @Test
+    void sixtyBlockLinesAreAllowedSixtyOneAreNot() {
+        assertThat(RichTextChecker.check("- x\n".repeat(60))).isNull();
+        for (String line : new String[]{"- x\n", "1. x\n", "-\n", "* x\r\n", "+ x\r"}) {
+            assertThat(RichTextChecker.check(line.repeat(61))).as(line).isNotNull()
+                    .extracting(RichTextChecker.Problem::code).isEqualTo("RICH_TEXT_TOO_MANY_LINES");
+        }
+        assertHas(body("- x\n".repeat(61)), "pages.home[5].props.body", "RICH_TEXT_TOO_MANY_LINES");
+        assertThat(body("- x\n".repeat(60))).isEmpty();
+    }
+
+    @Test
+    void carriageReturnLineEndingsCannotHideNestingOrLines() {
+        assertThat(RichTextChecker.check("ok\r- - - - x")).extracting(RichTextChecker.Problem::code).isEqualTo("RICH_TEXT_TOO_DEEP");
+        assertThat(RichTextChecker.check("ok\r\n- - - - x")).extracting(RichTextChecker.Problem::code).isEqualTo("RICH_TEXT_TOO_DEEP");
+        assertThat(RichTextChecker.maxNesting("a\r- - - - x\r")).isEqualTo(4);
+    }
+
+    private ObjectNode withRichTextBodies(String... bodies) {
+        ObjectNode d = defaults();
+        ArrayNode home = (ArrayNode) d.get("pages").get("home");
+        for (int i = 0; i < bodies.length; i++) {
+            ObjectNode sec = (ObjectNode) json("{\"id\":\"rt" + i + "\",\"type\":\"rich-text\",\"props\":{},\"visible\":true,\"order\":" + (50 + i) + "}");
+            ((ObjectNode) sec.get("props")).put("body", bodies[i]);
+            home.add(sec);
+        }
+        return d;
+    }
+
+    @Test
+    void totalMarkdownBudgetPerDocumentIsEnforcedInCodePoints() {
+        String four = "a".repeat(4000);
+        assertThat(run(withRichTextBodies(four, four))).as("exactly 8000 is fine").isEmpty();
+        // third body (3 sections -> indexes 3,4,5 in home) pushes the total over 8000
+        List<ThemeFieldError> e = run(withRichTextBodies(four, four, "b"));
+        assertHas(e, "pages.home[5].props.body", "RICH_TEXT_BUDGET_EXCEEDED");
+        assertThat(e).noneMatch(x -> x.path().equals("pages.home[3].props.body") || x.path().equals("pages.home[4].props.body"));
+        // astral characters count once each
+        String emoji = "\uD83D\uDE00".repeat(4000);
+        assertThat(run(withRichTextBodies(emoji, emoji))).isEmpty();
+        assertHas(run(withRichTextBodies(emoji, emoji, "x")), "pages.home[5].props.body", "RICH_TEXT_BUDGET_EXCEEDED");
+    }
+
     @Test
     void nestingUpToThreeLevelsIsNotFlaggedAsTooDeep() {
         assertThat(RichTextChecker.maxNesting("- one\n- two")).isEqualTo(1);
@@ -405,7 +479,10 @@ class ThemeValidatorTest {
         assertHas(run(otherCloud), "assets.logo.url", "ASSET_URL_NOT_OWNED");
         ObjectNode outside = mutated(x -> ((ObjectNode) x.get("assets").get("logo"))
                 .put("url", "https://res.cloudinary.com/shopfi-demo/image/upload/v1/images/random.png"));
-        assertHas(run(outside), "assets.logo.url", "ASSET_URL_NOT_OWNED");
+        assertThat(run(outside)).anySatisfy(e -> {
+            assertThat(e.path()).isEqualTo("assets.logo.url");
+            assertThat(e.code()).isIn("URL_NOT_ALLOWED", "ASSET_URL_NOT_OWNED"); // the tightened schema pattern fires first
+        });
     }
 
     @ParameterizedTest
@@ -416,17 +493,53 @@ class ThemeValidatorTest {
         assertThat(validator.ownedByTenant("https://res.cloudinary.com/shopfi-demo/image/upload/" + tail, "acme")).isFalse();
     }
 
+    private static final String UP = "https://res.cloudinary.com/shopfi-demo/image/upload/";
+
+    @ParameterizedTest
+    @ValueSource(strings = {"v12/shopfi/acme/branding/logo.png", "shopfi/acme/branding/logo.png", "v1/shopfi/acme/branding/background.jpg",
+            "v1/shopfi/acme/branding/background.jpeg", "v1/shopfi/acme/branding/section-hero.webp", "v1/shopfi/acme/branding/section-promo-2.png",
+            "v1731500000/shopfi/acme/branding/logo-0123456789abcdef.png", "v1/shopfi/acme/branding/section-hero-0123456789abcdef.jpg"})
+    void exactBrandingUrlsAreOwned(String tail) {
+        assertThat(validator.ownedByTenant(UP + tail, "acme")).as(tail).isTrue();
+        assertThat(validator.ownedByTenant(UP + tail, "bravo")).as(tail + " for another tenant").isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "l_fetch:aHR0cHM6Ly9ldmlsLmNvbS94LnBuZw/shopfi/acme/branding/logo.png",
+            "l_text:Arial_200:BUY_NOW/shopfi/acme/branding/logo.png", "fl_attachment/shopfi/acme/branding/logo.png",
+            "f_auto,q_auto/v12/shopfi/acme/branding/logo.png", "w_100/shopfi/acme/branding/logo.png", "h_10/v1/shopfi/acme/branding/logo.png",
+            "x_5/shopfi/acme/branding/logo.png", "y_5/shopfi/acme/branding/logo.png", "e_blur:100/shopfi/acme/branding/logo.png",
+            "l_fetch:aaa/v1/shopfi/acme/branding/logo.png", "v1/v2/shopfi/acme/branding/logo.png", "v1/fl_attachment/shopfi/acme/branding/logo.png",
+            "v1/shopfi/acme/branding/logo.svg", "v1/shopfi/acme/branding/logo", "v1/shopfi/acme/branding/logo.gif",
+            "v1/shopfi/acme/branding/logo.png.exe", "v1/shopfi/acme/branding/Logo.png", "v1/shopfi/acme/branding/avatar.png",
+            "v1/shopfi/acme/branding/.png", "v1/shopfi/acme/branding/logo-xyz.png", "v1/shopfi/acme/branding/section-.png",
+            "v1/shopfi/acme/branding/logo.png?x=1", "v1/shopfi/acme/branding/logo.png#a", "v1/shopfi/acme/branding/logo.png\n",
+            "v/shopfi/acme/branding/logo.png", "va1/shopfi/acme/branding/logo.png", "v1234567890123/shopfi/acme/branding/logo.png"})
+    void transformationsSvgAndOddFileNamesAreNotOwned(String tail) {
+        assertThat(validator.ownedByTenant(UP + tail, "acme")).as(tail).isFalse();
+    }
+
     @Test
-    void ownedUrlsWithTransformationsAreAccepted() {
-        assertThat(validator.ownedByTenant("https://res.cloudinary.com/shopfi-demo/image/upload/f_auto,q_auto/v12/shopfi/acme/branding/logo.png", "acme")).isTrue();
-        assertThat(validator.ownedByTenant("https://res.cloudinary.com/shopfi-demo/image/upload/shopfi/acme/branding/logo", "acme")).isTrue();
-        assertThat(validator.ownedByTenant("https://res.cloudinary.com/shopfi-demo/image/upload/shopfi/acme/branding/logo", "bravo")).isFalse();
-        assertThat(validator.ownedByTenant("https://res.cloudinary.com/shopfi-demo/image/upload/shopfi/acme/branding/logo", null)).isFalse();
+    void ownershipRejectsNullTenantAndBadSlugs() {
+        assertThat(validator.ownedByTenant(UP + "shopfi/acme/branding/logo.png", null)).isFalse();
+        assertThat(validator.ownedByTenant(UP + "shopfi/acme/branding/logo.png", "AC ME")).isFalse();
+    }
+
+    @Test
+    void schemaPatternRejectsTransformationUrlsToo() {
+        for (String tail : new String[]{"l_fetch:aHR0/shopfi/acme/branding/logo.png", "f_auto/v1/shopfi/acme/branding/logo.png",
+                "v1/shopfi/acme/branding/logo.svg", "v1/images/random.png", "v1/shopfi/acme/branding/logo.png?x=1"}) {
+            ObjectNode d = mutated(x -> ((ObjectNode) x.get("assets").get("logo")).put("url", UP + tail));
+            assertThat(validator.validateStructure(d)).as(tail).anySatisfy(e -> assertThat(e.path()).isEqualTo("assets.logo.url"));
+        }
+        ObjectNode ok = mutated(x -> ((ObjectNode) x.get("assets").get("logo")).put("url", UP + "v1/shopfi/acme/branding/logo-0123456789abcdef.png"));
+        assertThat(validator.validateStructure(ok)).isEmpty();
     }
 
     @Test
     void storedUrlsAreAlwaysAcceptedEvenIfNotOwned() {
-        String legacy = "https://res.cloudinary.com/shopfi-demo/image/upload/v1/legacy/logo.png";
+        String legacy = "https://res.cloudinary.com/shopfi-demo/image/upload/v1/shopfi/bravo/branding/logo.png"; // schema-valid, other tenant
         ObjectNode d = mutated(x -> ((ObjectNode) x.get("assets").get("logo")).put("url", legacy));
         assertThat(validator.validate(d, "acme", Set.of(legacy))).isEmpty();
         assertHas(validator.validate(d, "acme", Set.of()), "assets.logo.url", "ASSET_URL_NOT_OWNED");

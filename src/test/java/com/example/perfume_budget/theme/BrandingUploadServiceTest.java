@@ -41,10 +41,13 @@ class BrandingUploadServiceTest {
 
     @Test
     void acceptsPngJpegWebpAndStoresInTenantBrandingFolder() {
-        String logo = service.upload(BrandingUploadService.Kind.LOGO, null, file(FakeBrandingStorage.png(100, 100), "image/png"));
-        String bg = service.upload(BrandingUploadService.Kind.BACKGROUND, null, file(FakeBrandingStorage.jpeg(800, 600), "image/jpeg"));
-        String hero = service.upload(BrandingUploadService.Kind.SECTION_IMAGE, "hero", file(FakeBrandingStorage.webpLossy(640, 480), "image/webp"));
-        assertThat(storage.uploads).containsExactly("shopfi/acme/branding/logo", "shopfi/acme/branding/background", "shopfi/acme/branding/section-hero");
+        String logo = service.upload(BrandingUploadService.Kind.LOGO, null, file(FakeBrandingStorage.png(100, 100), "image/png")).url();
+        String bg = service.upload(BrandingUploadService.Kind.BACKGROUND, null, file(FakeBrandingStorage.jpeg(800, 600), "image/jpeg")).url();
+        String hero = service.upload(BrandingUploadService.Kind.SECTION_IMAGE, "hero", file(FakeBrandingStorage.webpLossy(640, 480), "image/webp")).url();
+        assertThat(storage.uploads).hasSize(3);
+        assertThat(storage.uploads.get(0)).matches("shopfi/acme/branding/logo-[0-9a-f]{16}");
+        assertThat(storage.uploads.get(1)).matches("shopfi/acme/branding/background-[0-9a-f]{16}");
+        assertThat(storage.uploads.get(2)).matches("shopfi/acme/branding/section-hero-[0-9a-f]{16}");
         assertThat(logo).startsWith("https://res.cloudinary.com/test/image/upload/");
         assertThat(bg).contains("shopfi/acme/branding/background");
         assertThat(hero).contains("section-hero");
@@ -116,7 +119,7 @@ class BrandingUploadServiceTest {
     void filenameNeverInfluencesStoragePath() {
         service.upload(BrandingUploadService.Kind.LOGO, null,
                 new BrandingFile(FakeBrandingStorage.png(5, 5), "image/png", "../../bravo/branding/logo.svg"));
-        assertThat(storage.uploads).containsExactly("shopfi/acme/branding/logo");
+        assertThat(storage.uploads).singleElement().asString().matches("shopfi/acme/branding/logo-[0-9a-f]{16}");
     }
 
     @Test

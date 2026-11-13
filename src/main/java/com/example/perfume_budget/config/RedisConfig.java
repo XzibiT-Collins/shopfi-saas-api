@@ -7,7 +7,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
+import org.springframework.data.redis.cache.RedisCache;
 import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.cache.RedisCacheWriter;
+import com.example.perfume_budget.theme.ThemeServiceImpl;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.repository.configuration.EnableRedisRepositories;
@@ -20,6 +23,8 @@ import java.time.Duration;
 @Configuration
 @EnableRedisRepositories
 public class RedisConfig {
+
+    static final Duration THEME_CACHE_TTL = Duration.ofMinutes(2);
 
     @Value("${redis.cache.ttl.minutes:60}")
     private int ttl;
@@ -51,9 +56,18 @@ public class RedisConfig {
                 .entryTtl(Duration.ofMinutes(ttl))
                 .disableCachingNullValues();
 
-        return RedisCacheManager.builder(connectionFactory)
-                .cacheDefaults(config)
-                .build();
+        // The tenant-prefixed physical name is "<tenant>:<logical>", so per-cache TTLs are matched by suffix.
+        // `theme` is short-lived: a read that raced a PUT may re-populate the cache with the old document
+        // after the post-update evict, and this bounds that staleness to THEME_CACHE_TTL (not the default TTL).
+        return new RedisCacheManager(RedisCacheWriter.nonLockingRedisCacheWriter(connectionFactory), config) {
+            @Override
+            protected RedisCache createRedisCache(String name, RedisCacheConfiguration cacheConfig) {
+                if (name != null && name.endsWith(":" + ThemeServiceImpl.CACHE)) {
+                    cacheConfig = cacheConfig.entryTtl(THEME_CACHE_TTL);
+                }
+                return super.createRedisCache(name, cacheConfig);
+            }
+        };
     }
 
     /**
