@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shopfi.example/schemas/onboarding.schema.json",
+  "title": "Shopfi tenant onboarding API (PROV-03)",
+  "description": "Request and response bodies of /api/v1/platform/onboarding/*. Every response body is the CustomApiResponse envelope {description, data}. Validated against the documented examples by OnboardingContractTest. Server-side rules that JSON Schema cannot express (reserved slugs beyond the listed ones, e-mail deliverability, byte length of the password) are documented in onboarding.md.",
+  "$defs": {
+    "Slug": {
+      "description": "Tenant slug. The server trims and lowercases first; this schema describes the normalised form. 3-40 chars, lowercase letters and digits, single hyphens between them only.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 40,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "not": {
+        "anyOf": [
+          {
+            "enum": ["public", "master", "tenant-template", "template", "tenant", "tenants", "www", "api", "admin", "platform", "postgres", "information-schema", "root", "system", "internal"]
+          },
+          { "pattern": "^pg-" },
+          { "pattern": "^tenant-" }
+        ]
+      }
+    },
+    "Email": {
+      "description": "Shape check only (one @, no whitespace). The server uses Jakarta @Email and normalises case; deliverability is not checked.",
+      "type": "string",
+      "pattern": "^[^@\\s]+@[^@\\s]+$",
+      "minLength": 3,
+      "maxLength": 255
+    },
+    "NoControlChars": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "TenantSignupRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "displayName", "ownerEmail", "ownerFullName", "password"],
+      "properties": {
+        "slug": { "$ref": "#/$defs/Slug" },
+        "displayName": { "$ref": "#/$defs/NoControlChars" },
+        "ownerEmail": { "$ref": "#/$defs/Email" },
+        "ownerFullName": { "$ref": "#/$defs/NoControlChars" },
+        "password": { "type": "string", "minLength": 8, "maxLength": 72, "description": "Trimmed by the server. At least 8 characters; at most 72 UTF-8 bytes (BCrypt limit, so 72 is only exact for ASCII). The API accepts up to 200 characters at the bean-validation layer and then rejects over-72-byte values with 400." },
+        "plan": { "enum": ["FREE", "STARTER", "PRO"], "description": "Optional, defaults to FREE. Records intent only; no billing." }
+      }
+    },
+    "TenantVerifyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "email", "otp"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "email": { "$ref": "#/$defs/Email" },
+        "otp": { "type": "string", "minLength": 1, "maxLength": 16, "description": "The 6-digit code from the e-mail." }
+      }
+    },
+    "TenantResendRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "email"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "email": { "$ref": "#/$defs/Email" }
+      }
+    },
+    "OnboardingStatus": {
+      "description": "data of signup, verify and status responses. storefrontUrl and adminLoginUrl are present only when status is ACTIVE and tenant.base-domain is configured; they are omitted (not null) otherwise.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "status"],
+      "properties": {
+        "slug": { "$ref": "#/$defs/Slug" },
+        "status": { "enum": ["PENDING", "PROVISIONING", "ACTIVE", "FAILED"] },
+        "storefrontUrl": { "type": "string", "pattern": "^https?://" },
+        "adminLoginUrl": { "type": "string", "pattern": "^https?://" }
+      },
+      "if": { "properties": { "status": { "const": "ACTIVE" } } },
+      "then": {},
+      "else": { "not": { "anyOf": [{ "required": ["storefrontUrl"] }, { "required": ["adminLoginUrl"] }] } }
+    },
+    "StatusEnvelope": {
+      "description": "Success envelope for signup (201), verify (202) and status (200).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": ["string", "null"] },
+        "data": { "$ref": "#/$defs/OnboardingStatus" }
+      }
+    },
+    "ResendEnvelope": {
+      "description": "Resend always answers 202 with this exact body, whatever happened.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "const": "If a pending signup matches, a new verification code has been sent" },
+        "data": { "type": "null" }
+      }
+    },
+    "ErrorEnvelope": {
+      "description": "Every non-2xx body. description is human readable and NOT a stable machine code; branch on the HTTP status. data is null, except for bean-validation failures (400) where it maps field name to message.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "string" },
+        "data": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "object", "additionalProperties": { "type": "string" } }
+          ]
+        }
+      }
+    }
+  }
+}
