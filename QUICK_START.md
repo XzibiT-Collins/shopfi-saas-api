@@ -25,6 +25,8 @@ OAuth2 authentication with Google has been successfully implemented and tested. 
 
 ### Step 2: Update .env File
 
+> Local dev must now set `ACTIVE_PROFILE=dev` (there is no default profile any more; an unset value in production no longer silently enables dev-only behaviour such as `X-Tenant-ID` tenant resolution). Production uses `ACTIVE_PROFILE=prod`.
+
 Replace the placeholder values in `.env`:
 
 ```env
