@@ -1,22 +1,10 @@
 package com.example.perfume_budget;
 
+import com.example.perfume_budget.support.AbstractPostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
-import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-
-@SpringBootTest
-@ActiveProfiles("test")
-class PerfumeBudgetApplicationTests {
-
-    @MockitoBean
-    private RedisConnectionFactory redisConnectionFactory;
-
-    @MockitoBean
-    private ReactiveRedisConnectionFactory reactiveRedisConnectionFactory;
+/** Full-context smoke test on PostgreSQL (master + tenant_template migrated, ddl-auto=validate). */
+class PerfumeBudgetApplicationTests extends AbstractPostgresIntegrationTest {
 
 	@Test
 	void contextLoads() {
