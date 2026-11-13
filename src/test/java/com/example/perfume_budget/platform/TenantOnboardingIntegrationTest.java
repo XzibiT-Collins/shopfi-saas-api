@@ -36,6 +36,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /** PROV-02 end to end against real PostgreSQL: no manual DB work between signup and ACTIVE. */
 @AutoConfigureMockMvc
+// Closes this class's (uniquely configured) context afterwards so its Hikari pool and the cached contexts of the
+// rest of the suite stay within the shared PostgreSQL connection-slot limit.
+@org.springframework.test.annotation.DirtiesContext(classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 @Import(TenantOnboardingIntegrationTest.OtpCapture.class)
 @TestPropertySource(properties = {
         "tenant.base-domain=shopfi.test",
