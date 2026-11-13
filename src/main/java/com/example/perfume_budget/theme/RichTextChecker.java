@@ -37,12 +37,29 @@ final class RichTextChecker {
     record Problem(String code, String message) {
     }
 
-    /** @return null when the body is safe, otherwise the problem */
+    /** Max list/blockquote lines in one body (contract 7.1 rule 4b); matches the frontend renderer budget. */
+    static final int MAX_BLOCK_LINES = 60;
+
+    /** Max body length in Unicode code points (the schema's {@code maxLength}). */
+    static final int MAX_BODY_CODE_POINTS = 5000;
+
+    /**
+     * @return null when the body is safe, otherwise the problem. ALWAYS runs on every body, whatever its length:
+     * the linear scans always execute, and only the CommonMark parse is skipped (after an explicit TOO_LONG
+     * rejection) for a body over {@link #MAX_BODY_CODE_POINTS}, so oversize input is rejected, never skipped.
+     */
     static Problem check(String body) {
         // Linear pre-scan BEFORE any parse: nested-marker bombs ("- - - - x" x1200) must never reach the parser
         // here or the Markdown renderer (contract 7.1).
-        if (maxNesting(body) > MAX_NESTING) {
+        int[] scan = scan(body);
+        if (scan[0] > MAX_NESTING) {
             return new Problem("RICH_TEXT_TOO_DEEP", "Markdown nesting is limited to " + MAX_NESTING + " levels");
+        }
+        if (scan[1] > MAX_BLOCK_LINES) {
+            return new Problem("RICH_TEXT_TOO_MANY_LINES", "at most " + MAX_BLOCK_LINES + " list or quote lines are allowed per body");
+        }
+        if (body.codePointCount(0, body.length()) > MAX_BODY_CODE_POINTS) {
+            return new Problem("TOO_LONG", "must be at most " + MAX_BODY_CODE_POINTS + " characters");
         }
         String reason = checkSafety(body);
         return reason == null ? null : new Problem("UNSAFE_CONTENT", reason);
@@ -50,7 +67,22 @@ final class RichTextChecker {
 
     /** Greatest per-line nesting: leading indentation (2 columns = 1 level, tab = 4 columns) plus list/quote markers. O(n). */
     static int maxNesting(String body) {
+        return scan(body)[0];
+    }
+
+    /** Number of lines that start with a list or quote marker. O(n). */
+    static int blockLines(String body) {
+        return scan(body)[1];
+    }
+
+    /**
+     * One linear pass. Lines end at LF, CR or CRLF (CommonMark line endings; a CR-only body must not hide a bomb).
+     *
+     * @return {max nesting (stops counting once over the cap), number of list/quote lines (stops once over the cap)}
+     */
+    private static int[] scan(String body) {
         int max = 0;
+        int lines = 0;
         int n = body.length();
         int i = 0;
         while (i < n) {
@@ -60,6 +92,7 @@ final class RichTextChecker {
                 i++;
             }
             int depth = col / 2;
+            boolean marked = false;
             // consecutive block markers: "- ", "* ", "+ ", "1. ", "1) ", "> "
             while (i < n) {
                 char c = body.charAt(i);
@@ -80,27 +113,38 @@ final class RichTextChecker {
                 }
                 if (j < n && (body.charAt(j) == ' ' || body.charAt(j) == '\t')) {
                     depth++;
+                    marked = true;
                     while (j < n && (body.charAt(j) == ' ' || body.charAt(j) == '\t')) {
                         j++;
                     }
                     i = j;
                 } else if (c == '>') {
                     depth++;
+                    marked = true;
                     i = j;
                 } else {
+                    if (j >= n || body.charAt(j) == '\n' || body.charAt(j) == '\r') {
+                        marked = true; // an empty list item ("-" alone) is still a list line
+                    }
                     break;
                 }
             }
-            max = Math.max(max, depth);
-            if (max > MAX_NESTING) {
-                return max;
+            if (marked) {
+                lines++;
             }
-            while (i < n && body.charAt(i) != '\n') {
+            max = Math.max(max, depth);
+            if (max > MAX_NESTING || lines > MAX_BLOCK_LINES) {
+                return new int[]{max, lines};
+            }
+            while (i < n && body.charAt(i) != '\n' && body.charAt(i) != '\r') {
+                i++;
+            }
+            if (i + 1 < n && body.charAt(i) == '\r' && body.charAt(i + 1) == '\n') {
                 i++;
             }
             i++;
         }
-        return max;
+        return new int[]{max, lines};
     }
 
     private static String checkSafety(String body) {

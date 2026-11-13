@@ -98,17 +98,31 @@ public class BrandingUploadService {
         }
     }
 
-    /** Validates then uploads; returns the secure URL. */
-    public String upload(Kind kind, String sectionId, BrandingFile file) {
+    /** A stored asset: its delivery URL and the public id (relative to the branding folder) it was stored under. */
+    public record Stored(String url, String name) {
+    }
+
+    /**
+     * Validates then uploads under a NEW unique public id ({@code logo-<16 hex>}, {@code section-<id>-<16 hex>}),
+     * returning the secure URL. Never overwrites an existing asset: a stale, conflicting or failed update therefore
+     * cannot change what the live theme points at, and the caller may always delete what it just created.
+     */
+    public Stored upload(Kind kind, String sectionId, BrandingFile file) {
         String path = switch (kind) {
             case LOGO -> "logo";
             case BACKGROUND -> "background";
             case SECTION_IMAGE -> "image." + sectionId;
         };
         String folder = brandingFolder();
-        String name = publicId(kind, sectionId);
+        String name = uniquePublicId(kind, sectionId);
         validate(kind, file, path);
-        return storage.upload(file.bytes(), folder, name);
+        return new Stored(storage.upload(file.bytes(), folder, name), name);
+    }
+
+    /** {@link #publicId} plus a random 64-bit suffix. */
+    static String uniquePublicId(Kind kind, String sectionId) {
+        long r = java.util.concurrent.ThreadLocalRandom.current().nextLong();
+        return publicId(kind, sectionId) + "-" + String.format("%016x", r);
     }
 
     /** Best-effort cleanup of an asset this service created. */

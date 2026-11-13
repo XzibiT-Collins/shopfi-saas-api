@@ -25,7 +25,13 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.Map;
 import java.util.function.Supplier;
 
@@ -265,6 +271,53 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(dbPrimary(healer)).isEqualTo("#0b3d2e");
     }
 
+    @Autowired ThemeStore themeStore;
+
+    /**
+     * 6 threads x 5 rounds all read a tenant whose singleton row was deleted. The V9 unique index is dropped in this
+     * tenant's schema first, so ONLY the advisory lock in {@code ThemeStore.heal} stands between the threads and a
+     * second row: removing the lock makes this test fail (mutation-checked).
+     */
+    @Test
+    void concurrentSelfHealCreatesExactlyOneRowUnderTheAdvisoryLock() throws Exception {
+        TestTenant healer = tenants.ensureTenant("themeheal3");
+        String schema = healer.schemaName();
+        jdbc.execute("DROP INDEX IF EXISTS " + schema + ".uq_store_settings_singleton");
+        int threads = 6;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int round = 1; round <= 5; round++) {
+                jdbc.update("DELETE FROM " + schema + ".store_settings");
+                CyclicBarrier start = new CyclicBarrier(threads);
+                List<Future<Long>> results = new ArrayList<>();
+                for (int t = 0; t < threads; t++) {
+                    results.add(pool.submit(() -> {
+                        start.await(30, TimeUnit.SECONDS);
+                        return tenants.runAs(healer, () -> themeStore.read().version());
+                    }));
+                }
+                for (Future<Long> f : results) {
+                    assertThat(f.get(60, TimeUnit.SECONDS)).as("round " + round).isEqualTo(1L);
+                }
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM " + schema + ".store_settings", Integer.class))
+                        .as("rows after round " + round).isEqualTo(1);
+            }
+        } finally {
+            pool.shutdownNow();
+            jdbc.update("DELETE FROM " + schema + ".store_settings WHERE id > (SELECT min(id) FROM " + schema + ".store_settings)");
+            jdbc.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_store_settings_singleton ON " + schema + ".store_settings ((TRUE))");
+        }
+    }
+
+    @Test
+    void v9UniqueIndexMakesASecondSingletonRowImpossible() {
+        get(a); // make sure the row exists
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO " + a.schemaName()
+                + ".store_settings (schema_version, theme, version, created_at) VALUES (1, '{}'::jsonb, 1, now())"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + a.schemaName() + ".store_settings", Integer.class)).isEqualTo(1);
+    }
+
     // ---------------------------------------------------------------- AC3 invalid documents end-to-end
 
     @Test
@@ -369,8 +422,8 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         doc.with("assets").putObject("logo").put("alt", "Theme A");
         ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(64, 64), "image/png", "whatever.exe"), null, Map.of());
         ThemeSnapshot saved = as(a, () -> themes.updateTheme(doc, null, up, "admin"));
-        assertThat(storage.uploads).containsExactly("shopfi/themea/branding/logo");
-        assertThat(saved.theme().at("/assets/logo/url").asText()).isEqualTo("https://res.cloudinary.com/test/image/upload/v1/shopfi/themea/branding/logo.png");
+        assertThat(storage.uploads).singleElement().asString().matches("shopfi/themea/branding/logo-[0-9a-f]{16}");
+        assertThat(saved.theme().at("/assets/logo/url").asText()).matches("https://res\\.cloudinary\\.com/test/image/upload/v1/shopfi/themea/branding/logo-[0-9a-f]{16}\\.png");
         assertThat(get(a).theme().at("/assets/logo/url").asText()).contains("/shopfi/themea/branding/");
         // B never sees it
         assertThat(get(b).theme().at("/assets/logo").isNull()).isTrue();

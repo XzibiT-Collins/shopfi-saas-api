@@ -62,6 +62,11 @@ public class ThemeServiceImpl implements ThemeService {
         String folder = BrandingUploadService.brandingFolder();
 
         ThemeSnapshot current = store.read();
+        // Optimistic lock FIRST, before validation and before any network call: a stale If-Match must not cost an
+        // upload (uploads use new unique ids, but there is no reason to do the work). store.save re-checks atomically.
+        if (expectedVersion != null && expectedVersion != current.version()) {
+            throw new ThemeConflictException("Theme was modified by someone else; reload and retry");
+        }
         Set<String> storedUrls = imageUrls(current.theme());
         ObjectNode working = normalize(theme);
 
@@ -78,20 +83,13 @@ public class ThemeServiceImpl implements ThemeService {
             throw new ThemeValidationException(errors);
         }
 
-        // 3. upload, then swap placeholders for the real secure URLs
-        Set<String> storedNames = new HashSet<>();
-        for (String u : storedUrls) {
-            String n = validator.brandingName(u, slug);
-            if (n != null) {
-                storedNames.add(n);
-            }
-        }
+        // 3. upload under new unique public ids, then swap placeholders for the real secure URLs
         List<String> uploadedNames = new ArrayList<>();
         try {
             for (Upload u : plan) {
-                String url = uploads.upload(u.kind, u.sectionId, u.file);
-                uploadedNames.add(BrandingUploadService.publicId(u.kind, u.sectionId));
-                u.apply(working, url);
+                BrandingUploadService.Stored stored = uploads.upload(u.kind, u.sectionId, u.file);
+                uploadedNames.add(stored.name());
+                u.apply(working, stored.url());
             }
             if (!plan.isEmpty()) {
                 List<ThemeFieldError> after = validator.validate(working, slug, storedUrls);
@@ -103,15 +101,13 @@ public class ThemeServiceImpl implements ThemeService {
             cleanupRemoved(storedUrls, working, slug);
             return saved;
         } catch (RuntimeException e) {
-            // Only delete assets that did not exist before: fixed public ids are overwritten in place, so an
-            // existing asset cannot be rolled back and must not be deleted from under the stored theme.
+            // Every asset uploaded by this call has a brand-new id nothing else references, so deleting them all is
+            // always safe and the previously stored assets are never touched.
             for (String name : uploadedNames) {
-                if (!storedNames.contains(name)) {
-                    try {
-                        uploads.delete(name);
-                    } catch (RuntimeException ignored) {
-                        log.warn("Cleanup of branding asset failed");
-                    }
+                try {
+                    uploads.delete(name);
+                } catch (RuntimeException ignored) {
+                    log.warn("Cleanup of branding asset failed");
                 }
             }
             throw e;
@@ -182,11 +178,12 @@ public class ThemeServiceImpl implements ThemeService {
         }
         for (Map.Entry<String, BrandingFile> e : new TreeMap<>(files.sectionImages()).entrySet()) {
             String id = e.getKey();
-            String path = "image." + id;
             if (id == null || !id.matches("^[a-z0-9][a-z0-9-]{0,39}$")) {
-                errors.add(new ThemeFieldError(path, "INVALID_FORMAT", "invalid section id"));
+                // never echo the client-supplied part name (arbitrary length/content): constant path
+                errors.add(new ThemeFieldError("image", "INVALID_FORMAT", "invalid section id"));
                 continue;
             }
+            String path = "image." + id;
             checkFile(BrandingUploadService.Kind.SECTION_IMAGE, e.getValue(), path, errors);
             ObjectNode hero = findHero(working, id);
             if (hero == null) {

@@ -30,6 +30,8 @@ public class ThemeValidator {
     public static final int MAX_ERRORS = 50;
     public static final int MAX_JSON_BYTES = 64 * 1024;
     static final int MAX_DEPTH = 12;
+    /** Total Markdown code points allowed across all rich-text bodies of one theme document (contract 7.1 rule 4c). */
+    public static final int MAX_RICH_TEXT_TOTAL = 8000;
     static final String SCHEMA_RESOURCE = "theme/theme.schema.json";
 
     private static final Map<String, Set<String>> SLOT_TYPES = Map.of(
@@ -45,7 +47,10 @@ public class ThemeValidator {
             {"mutedText", "surface"}, {"onPrimary", "primary"}, {"onAccent", "accent"}};
     private static final Pattern HEX = Pattern.compile("^#[0-9a-fA-F]{6}$");
     private static final Pattern CLOUD_URL = Pattern.compile("^https://res\\.cloudinary\\.com/([A-Za-z0-9_-]+)/image/upload/(.+)$");
-    private static final Pattern PREFIX_SEGMENT = Pattern.compile("^(?:v[0-9]+|[a-z]{1,4}_[A-Za-z0-9_.:,-]+)$");
+    private static final Pattern VERSION_SEGMENT = Pattern.compile("^v[0-9]{1,12}$");
+    /** Final path segment of a branding image: fixed names (optionally with the unique upload suffix). */
+    static final Pattern BRANDING_FILE = Pattern.compile(
+            "^(?:(?:logo|background)(?:-[0-9a-f]{16})?|section-[a-z0-9-]+)\\.(?:png|jpe?g|webp)$");
     private static final Pattern SLUG = Pattern.compile("^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$");
     private static final Pattern UNSAFE_CHARS = Pattern.compile("[<>\\u0000-\\u001F\\u007F]");
 
@@ -139,10 +144,11 @@ public class ThemeValidator {
         JsonNode origPages = doc.get("pages");
         if (origPages != null && origPages.isObject()) {
             Set<String> seenIds = new HashSet<>();
+            int[] richTextChars = {0}; // running total of Markdown code points across the whole document
             for (String slot : new TreeSet<>(SLOT_TYPES.keySet())) {
                 JsonNode arr = origPages.get(slot);
                 if (arr != null && arr.isArray()) {
-                    slot(slot, arr, seenIds, errors);
+                    slot(slot, arr, seenIds, richTextChars, errors);
                 }
             }
         }
@@ -150,7 +156,7 @@ public class ThemeValidator {
         return errors.isEmpty();
     }
 
-    private void slot(String slot, JsonNode arr, Set<String> seenIds, Errors errors) {
+    private void slot(String slot, JsonNode arr, Set<String> seenIds, int[] richTextChars, Errors errors) {
         if (arr.size() > SLOT_MAX.get(slot)) {
             errors.add("pages." + slot, "TOO_MANY_SECTIONS", "at most " + SLOT_MAX.get(slot) + " sections allowed in " + slot);
         }
@@ -190,10 +196,19 @@ public class ThemeValidator {
             }
             if ("rich-text".equals(type.asText())) {
                 JsonNode body = s.path("props").get("body");
-                if (body != null && body.isTextual() && body.asText().length() <= 5000) {
-                    RichTextChecker.Problem problem = RichTextChecker.check(body.asText());
-                    if (problem != null && !errors.has(base + ".props.body")) {
-                        errors.add(base + ".props.body", problem.code(), problem.message());
+                if (body != null && body.isTextual()) {
+                    String text = body.asText();
+                    String bodyPath = base + ".props.body";
+                    // ALWAYS runs, at any length: over-cap bodies come back as TOO_LONG (code points, like the
+                    // schema's maxLength), never skipped.
+                    RichTextChecker.Problem problem = RichTextChecker.check(text);
+                    if (problem != null && !errors.has(bodyPath)) {
+                        errors.add(bodyPath, problem.code(), problem.message());
+                    }
+                    richTextChars[0] += (int) Math.min(Integer.MAX_VALUE / 2, text.codePointCount(0, text.length()));
+                    if (richTextChars[0] > MAX_RICH_TEXT_TOTAL && !errors.has(bodyPath)) {
+                        errors.add(bodyPath, "RICH_TEXT_BUDGET_EXCEEDED",
+                                "all rich-text bodies together may hold at most " + MAX_RICH_TEXT_TOTAL + " characters");
                     }
                 }
             }
@@ -298,21 +313,20 @@ public class ThemeValidator {
         if (rest.indexOf('%') >= 0 || rest.contains("..") || rest.indexOf('?') >= 0 || rest.indexOf('#') >= 0) {
             return false;
         }
+        // Exactly: [v<digits>/]shopfi/<slug>/branding/<file>. No transformation segments (l_fetch, l_text,
+        // fl_attachment, w_/h_/e_ ...): the platform cloud must never be made to fetch or compose third-party content.
         String[] seg = rest.split("/", -1);
         int i = 0;
-        while (i < seg.length && !seg[i].equals("shopfi")) {
-            if (!PREFIX_SEGMENT.matcher(seg[i]).matches()) {
-                return false;
-            }
-            i++;
+        if (seg.length > 0 && VERSION_SEGMENT.matcher(seg[0]).matches()) {
+            i = 1;
         }
         return seg.length == i + 4 && seg[i].equals("shopfi") && seg[i + 1].equals(tenantSlug)
-                && seg[i + 2].equals("branding") && !seg[i + 3].isEmpty() && !seg[i + 3].startsWith(".");
+                && seg[i + 2].equals("branding") && BRANDING_FILE.matcher(seg[i + 3]).matches();
     }
 
     /** Synthetic tenant-owned URL used while an upload is pending (replaced by the real secure URL). */
     String placeholderUrl(String tenantSlug, String name) {
-        return "https://res.cloudinary.com/" + cloudName + "/image/upload/shopfi/" + tenantSlug + "/branding/" + name;
+        return "https://res.cloudinary.com/" + cloudName + "/image/upload/shopfi/" + tenantSlug + "/branding/" + name + ".png";
     }
 
     /** Public id (relative to the folder) of a tenant-owned URL, e.g. {@code logo}; null if not owned. */
