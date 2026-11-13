@@ -9,60 +9,75 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ## Stage 1 — Isolation Foundation (hard gate)
 
 ### 1a. Tenancy infra (`tenancy/`)
-- [ ] `TenantContext` — typed `TenantIdentity{slug, schemaName, scope}` ThreadLocal; `set/get/getOrDefault/clear`; default `tenant_template`
-- [ ] `SchemaMultiTenantConnectionProvider` — wrap Hikari `DataSource` via `ObjectProvider<DataSource>`; `getConnection`→`setSchema`; release→reset to `tenant_template` then close
-- [ ] `TenantIdentifierResolver implements CurrentTenantIdentifierResolver<String>`; `validateExistingCurrentSessions()=true`
-- [ ] `MultiTenancyJpaConfig` — `HibernatePropertiesCustomizer` registering both beans
-- [ ] `application-dev.properties`: `hibernate.multiTenancy=SCHEMA`, Hikari `connectionInitSql=SET search_path TO tenant_template`
+- [x] `TenantContext` — typed `TenantIdentity{slug, schemaName, scope}` ThreadLocal; `set/get/getOrDefault/clear`; default `tenant_template` (also `TenantScope`, `TenantIdentity`)
+- [x] `SchemaMultiTenantConnectionProvider` — wrap Hikari `DataSource` via `ObjectProvider<DataSource>`; `getConnection`→`setSchema`; release→reset to `tenant_template` then close
+- [x] `TenantIdentifierResolver implements CurrentTenantIdentifierResolver<String>`; `validateExistingCurrentSessions()=true`
+- [x] `MultiTenancyJpaConfig` — `HibernatePropertiesCustomizer` registering both beans
+- [x] `application-dev.properties`: `hibernate.multiTenancy=SCHEMA`, Hikari `connectionInitSql=SET search_path TO tenant_template`
+  - Note: boot deferred until 1b creates the `tenant_template` schema. `mvn compile` passes.
 
 ### 1b. Flyway split + boot ordering
-- [ ] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
-- [ ] Move existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering)
-- [ ] `spring.flyway.enabled=false`
-- [ ] `TenantSchemaMigrator` — `migrateMaster()`, `migrateTemplate()`, `migrateTenant(schema)`
-- [ ] `tenantFlywayInitializer` bean: master → template → each active tenant
-- [ ] `EntityManagerFactoryDependsOnPostProcessor("tenantFlywayInitializer")`
+- [x] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
+- [x] Move existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering, via `git mv`)
+- [x] `spring.flyway.enabled=false`
+- [x] `TenantSchemaMigrator` — `migrateMaster()`, `migrateTemplate()`, `migrateTenant(schema)` + `listActiveTenantSchemas()` (JDBC, pre-EMF)
+- [x] `tenantFlywayInitializer` bean: master → template → each active tenant
+- [x] `EntityManagerFactoryDependsOnPostProcessor("tenantFlywayInitializer")`
+  - Note: `mvn compile` passes; full boot verification (needs Postgres/Redis env) deferred to the Stage 1 gate.
 
 ### 1c. Tenant registry (`platform/`, master schema)
-- [ ] `platform/model/Tenant` (`@Table(schema="master")`) with fields + `AuditingEntityListener`
-- [ ] `platform/model/PlatformAdmin` (`@Table(schema="master")`)
-- [ ] `platform/enums/` — `TenantStatus`, `TenantPlan`, `PlatformRole(SUPER_ADMIN)`
-- [ ] `TenantRepository`, `PlatformAdminRepository`
-- [ ] Explicit master service methods; platform ops set scope=PLATFORM (no tenant context)
+- [x] `platform/model/Tenant` (`@Table(schema="master")`) with fields + `AuditingEntityListener` (owner_email unique)
+- [x] `platform/model/PlatformAdmin` (`@Table(schema="master")`)
+- [x] `platform/enums/` — `TenantStatus`, `TenantPlan`, `PlatformRole(SUPER_ADMIN)`
+- [x] `TenantRepository` (findBySlug/CustomDomain/SchemaName, existsBySlug/OwnerEmail, findByStatus), `PlatformAdminRepository` (findByEmail, existsByEmail)
+- [x] Explicit master service: `TenantRegistryService` + impl (read-only), tenant context not required (master entities schema-qualified)
+  - Note: `mvn compile` passes.
 
 ### 1d. Tenant resolution filter + JWT binding
-- [ ] `tenancy/TenantResolutionFilter` — precedence customDomain→subdomain→header(non-prod)→apex=platform→404; runs on every request; `try/finally clear()`; SUSPENDED→423/403
-- [ ] `filter/JWTUtil` — `tenant` claim on access + refresh; `extractTenant`
-- [ ] `filter/JWTFilter` — token-tenant vs context mismatch → 401; skip for PLATFORM
-- [ ] `SecurityConfig` — `tenantResolutionFilter` before `SiteVisitFilter` and `JWTFilter`
-- [ ] `AuthServiceImpl.login` + `CustomUserDetailsService` — pass context slug into token gen
-- [ ] `AuthCookieUtil` — `HttpOnly=true`, `Secure` outside dev, host-only; `refreshAccessToken` validates refresh-token tenant before `findByEmail`
+- [x] `tenancy/TenantResolutionFilter` — **Origin/Referer-host** based (single API host); customDomain/subdomain match; dev `X-Tenant-ID`; platform path→PLATFORM; infra+webhook bypass; unknown origin→404; no signal→neutral; SUSPENDED→423; `try/finally clear()`; also `TenantResolutionProperties`
+- [x] `filter/JWTUtil` — `tenant` claim on access + refresh (all 4 generators); `extractTenant`
+- [x] `filter/JWTFilter` — token-tenant vs context mismatch → 401; skip for PLATFORM/neutral
+- [x] `SecurityConfig` — `tenantResolutionFilter` before `SiteVisitFilter` and `JWTFilter`
+- [x] `AuthServiceImpl.login` + `CustomUserDetailsService` — satisfied without changes: JWTUtil reads slug from `TenantContext` at generation; user lookup already runs in the resolved schema
+- [x] `AuthCookieUtil` — `HttpOnly=true`, `Secure`/`SameSite` from config (prod: `None`+`Secure`), no domain; cookie shared on single API host, isolation = JWT claim check; `refreshAccessToken` validates signature + tenant before `findByEmail`
+  - Note: `mvn compile` passes; `tenant.*` dev config added (header resolution enabled for dev only). **Revised for single-frontend/single-backend: tenant resolves from Origin/Referer, not backend Host.**
 
-### 1e. Tenant-aware Google OAuth2
-- [ ] Carry tenant slug in OAuth2 `state` on authorization request
-- [ ] `CustomOAuth2UserService` + `OAuth2AuthenticationSuccessHandler` — restore `TenantContext` from state before user create/lookup; cookie for tenant host; validate token tenant
-- [ ] Reject when tenant unresolvable from state (no default-schema fallback)
+### 1e. Tenant-aware Google OAuth2  (single API host — no OTC)
+- [x] Tenant derived from login `redirect_uri` host + validated against registry via `OAuth2RedirectValidator` (single open-redirect gate, re-checked at redirect point in success handler); slug + redirect_uri stored as auth-request attributes
+- [x] Carry through `state` via stateless `HttpCookieOAuth2AuthorizationRequestRepository` (authorize+callback both on API host); restore `TenantContext` + stash redirect on `removeAuthorizationRequest`
+- [x] `CustomOAuth2UserService` — guard rejects if tenant unresolved (no default-schema fallback)
+- [x] `OAuth2AuthenticationSuccessHandler` — set cookies on API host + redirect to validated `redirect_uri`
+- [x] Fixed Google `redirect-uri` (Google forbids wildcards); `OAuth2TenantHandoffService`/`OAuth2CompleteController` removed
+  - Note: `mvn compile` passes. Simplified after architecture clarification (single frontend + single backend); one-time-code handoff was unnecessary.
 
 ### 1f. Cache isolation
-- [ ] `tenancy/TenantAwareCacheManager` (`@Primary`) — prefix cache names with slug / `__platform__`
-- [ ] `DiscountCacheEvictionTask` — loop active tenants via `TenantRunner`
+- [x] `tenancy/TenantAwareCacheManager` (`@Primary`, wraps `redisCacheManager`) — prefix cache names with slug / `__platform__`; existing `@Cacheable`/`@CacheEvict` untouched
+- [x] `DiscountCacheEvictionTask` — loop active tenants via `TenantRunner` (done in 1g)
+  - Note: `mvn test-compile` passes; also fixed `SecurityConfigTest` constructor (new tenant/oauth2 args from 1d/1e).
 
 ### 1g. Async + scheduled context propagation
-- [ ] `AsyncConfig` — `TaskDecorator` on `taskExecutor` AND `webhookTaskExecutor` (covers 8 `@Async` handlers)
-- [ ] `tenancy/TenantRunner.forEachTenant(Consumer)`
-- [ ] `ReservedProductCleanupTask` — run inside `TenantRunner` loop
+- [x] `AsyncConfig` — `TenantContextTaskDecorator` on `taskExecutor` AND `webhookTaskExecutor` (propagates context across the 8 `@Async` handlers)
+- [x] `tenancy/TenantRunner.forEachActiveTenant(Runnable)` — per-tenant context, per-tenant failure isolation
+- [x] `ReservedProductCleanupTask` + `DiscountCacheEvictionTask` — run inside `TenantRunner` loop
+  - Note: `mvn test-compile` passes; `ReservedProductCleanupTaskTest` + `SecurityConfigTest` run green.
 
 ### 1h. Seeder refactor
-- [ ] `DataSeeder` → idempotent callable `seedTenantDefaults()` (no `ApplicationRunner`)
-- [ ] `ChartOfAccountsSeeder` → callable
-- [ ] `FeatureFlagSeeder` → callable
-- [ ] `UomSeeder` → callable (drop `CommandLineRunner`)
-- [ ] No boot-time seeding of default schema; dev helper seeds test tenants
+- [x] `DataSeeder` → idempotent `seedAdmin(email,password,fullName)` (no `ApplicationRunner`)
+- [x] `ChartOfAccountsSeeder` → `seed()` callable
+- [x] `FeatureFlagSeeder` → `seed()` callable
+- [x] `UomSeeder` → `seed()` callable (dropped `CommandLineRunner`/`@Order`)
+- [x] No boot-time seeding of default schema; `config/TenantSeeder` orchestrates under active `TenantContext`
+- [x] Dev trigger: `DevTenantController` `POST /api/v1/dev/tenants` (create+migrate+seed a test tenant), gated by `tenant.dev-endpoints.enabled` (dev only) — TEMPORARY, superseded by Stage 2 onboarding
+  - Note: `mvn test-compile` passes.
 
-### 1i. Webhook tenant routing
-- [ ] `master.payment_tenant_routes` table + entity/repo
-- [ ] Write route in `OrderServiceImpl.createPaymentObject`; update provider ref after Paystack init
-- [ ] `WebhookProcessorImpl` — verify signature → look up route in master → set `TenantContext` → dispatch async
+### 1i. Per-tenant payment gateway + webhook routing (each tenant uses its OWN Paystack keys)
+- [x] Master `V2` migration: drop `payment_tenant_routes`; add `tenants.webhook_token` (unique); `Tenant.webhookToken` + `TenantRepository.findByWebhookToken` (+ `TenantRegistryService`)
+- [x] Tenant `V7` migration: `payment_gateway_config` + `PaymentGatewayConfig` entity/repo (tenant schema)
+- [x] `utils/AesGcmEncryptor` (AES-256-GCM, JDK) + `platform.encryption.key`; Paystack secret encrypted at rest (round-trip test green)
+- [x] `TenantPaymentGatewayProvider` + `PaystackGatewayServiceImpl`/`PaystackWebhookServiceImpl` use per-tenant decrypted secret (dropped `@Value` secret); global `paystack.secret` retired
+- [x] `WebhookController` → `POST /api/v1/webhook/{token}`: master token→tenant → set context → verify HMAC with tenant secret → dispatch async
+- [x] `PaymentSettingsController` (ADMIN) `/api/v1/payment-settings` — save keys + return webhook URL (from `platform.api-base-url`); GET returns `secretConfigured` (never the secret)
+  - Note: `mvn test-compile` passes; `AesGcmEncryptorTest` green. `application-test` given platform.* config.
 
 ### Stage 1 gate — verification
 - [ ] Boot: master + `tenant_template` migrated, `validate` passes
@@ -107,7 +122,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ## Stage 3 — Feature Surface
 
 ### 3a. Per-tenant theming
-- [ ] `db/migrations/tenant/V7__create_store_settings.sql` + default row seed
+- [ ] `db/migrations/tenant/V8__create_store_settings.sql` + default row seed (V7 taken by payment_gateway_config in 1i)
 - [ ] `model/StoreSettings` (no `schema=`; JSON via `@JdbcTypeCode`)
 - [ ] `StoreSettingsRepository.findTopByOrderByIdAsc`
 - [ ] DTOs `dto/theme/` + `mapper/StoreSettingsMapper`

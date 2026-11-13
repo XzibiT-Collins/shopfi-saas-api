@@ -5,8 +5,11 @@ import com.example.perfume_budget.exception.handlers.JwtAuthenticationEntryPoint
 import com.example.perfume_budget.filter.JWTFilter;
 import com.example.perfume_budget.filter.SiteVisitFilter;
 import com.example.perfume_budget.security.oauth2.CustomOAuth2UserService;
+import com.example.perfume_budget.security.oauth2.HttpCookieOAuth2AuthorizationRequestRepository;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationFailureHandler;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationSuccessHandler;
+import com.example.perfume_budget.security.oauth2.TenantAwareAuthorizationRequestResolver;
+import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,7 +38,10 @@ class SecurityConfigTest {
                 mock(CustomOAuth2UserService.class),
                 mock(OAuth2AuthenticationSuccessHandler.class),
                 mock(OAuth2AuthenticationFailureHandler.class),
-                mock(SiteVisitFilter.class)
+                mock(SiteVisitFilter.class),
+                mock(TenantResolutionFilter.class),
+                mock(TenantAwareAuthorizationRequestResolver.class),
+                mock(HttpCookieOAuth2AuthorizationRequestRepository.class)
         );
     }
 

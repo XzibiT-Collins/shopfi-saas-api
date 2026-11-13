@@ -1,9 +1,8 @@
 package com.example.perfume_budget.security.oauth2;
 
-import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.model.User;
+import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.utils.AuthCookieUtil;
-import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -17,46 +16,54 @@ import org.springframework.web.util.UriComponentsBuilder;
 import java.io.IOException;
 
 /**
- * Handles successful OAuth2 authentication
- * Generates JWT tokens and redirects user to frontend with authentication cookies
+ * On successful OAuth2 login (on the single API host), set the auth cookies and redirect the
+ * browser back to the tenant frontend's validated {@code redirect_uri} (stashed on the request
+ * by {@link HttpCookieOAuth2AuthorizationRequestRepository}). The tenant context was restored
+ * before the user was loaded, so the issued JWT carries the correct tenant claim.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationSuccessHandler {
 
-    private final JWTUtil jwtUtil;
     private final AuthCookieUtil authCookieUtil;
+    private final OAuth2RedirectValidator redirectValidator;
 
     @Value("${application.oauth2.authorized-redirect-uris}")
-    private String redirectUri;
+    private String fallbackRedirectUri;
 
     @Override
     public void onAuthenticationSuccess(HttpServletRequest request,
                                         HttpServletResponse response,
                                         Authentication authentication) throws IOException {
-
-        String targetUrl = determineTargetUrl(request, response, authentication);
-
         if (response.isCommitted()) {
-            log.debug("Response has already been committed. Unable to redirect to {}", targetUrl);
+            log.debug("Response already committed; cannot redirect after OAuth2 success");
             return;
         }
 
         CustomOAuth2User oAuth2User = (CustomOAuth2User) authentication.getPrincipal();
         User user = oAuth2User.getUser();
 
-        // Generate JWT tokens and set cookies
         authCookieUtil.setAuthCookies(request, response, user);
 
-        // Redirect to frontend with success
-        String redirectUrl = UriComponentsBuilder.fromUriString(redirectUri)
+        String redirectUri = (String) request.getAttribute(
+                HttpCookieOAuth2AuthorizationRequestRepository.REQUEST_REDIRECT_ATTRIBUTE);
+
+        // Open-redirect gate (defense in depth): only follow the redirect if its host still
+        // belongs to the authenticated tenant; otherwise use the safe configured fallback.
+        String safeRedirect = fallbackRedirectUri;
+        if (redirectUri != null && redirectValidator.isAllowedForTenant(redirectUri, TenantContext.getSlug())) {
+            safeRedirect = redirectUri;
+        } else if (redirectUri != null) {
+            log.warn("Discarding untrusted OAuth2 redirect_uri for tenant {}: {}",
+                    TenantContext.getSlug(), redirectUri);
+        }
+
+        String target = UriComponentsBuilder.fromUriString(safeRedirect)
                 .queryParam("success", "true")
                 .build().toUriString();
 
-        log.info("OAuth2 authentication successful for user: {}", user.getEmail());
-        getRedirectStrategy().sendRedirect(request, response, redirectUrl);
+        log.info("OAuth2 success for {}; redirecting to {}", user.getEmail(), target);
+        getRedirectStrategy().sendRedirect(request, response, target);
     }
-
-
 }

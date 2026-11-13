@@ -16,7 +16,18 @@ Goal: turn it into a multi-tenant SaaS where many shops operate in **data isolat
 4. **Staged ship:** Stage 1 Isolation Foundation → Stage 2 Provisioning & Onboarding → Stage 3 Feature Surface. Each stage is a hard gate.
 5. **Customer dashboard stays the same feature set, just tenant-specific** — no new domains (no wishlist). Existing customer surfaces (`/order/my-orders`, `/order/{orderNumber}`, `/delivery-detail`, `/auth/me`, cart, storefront browse) simply resolve their tenant from the host. No new aggregate dashboard endpoint.
 6. **Routing precedence:** customDomain → subdomain (`<slug>.platform.com`) → `X-Tenant-ID` header (**non-prod only**) → apex/api host = platform-scoped → else 404.
-7. **Billing out of scope** — only a `plan` enum on `Tenant`.
+7. **Billing out of scope** — only a `plan` enum on `Tenant` (subscription billing; unrelated to tenants' own Paystack payment collection).
+8. **Payments are per-tenant.** Each tenant uses its OWN Paystack account/keys — the platform never collects to a consolidated account. See the architecture correction + 1i.
+
+## Architecture correction (confirmed with user, supersedes earlier host assumptions)
+
+**Topology:** ONE frontend deployment (served at every tenant host — subdomains + custom domains all DNS→same frontend; the SPA reads `window.location.host`) and ONE backend at a **single fixed API host** (e.g. `api.platform.com`). Domain/subdomain exist **only to identify the tenant**.
+
+Consequences (these supersede the pre-correction wording in Decision 6, the Corrections list, and sections 1d/1e/1i below):
+- **Tenant resolution is Origin-based, not Host-based.** The backend's own `Host` is always the API host. In prod the tenant is resolved from the **`Origin`** header (fallback `Referer`) = the tenant frontend host, matched to `customDomain`/subdomain; `X-Tenant-ID` stays dev-only. Platform paths → PLATFORM scope; infra + webhook paths run neutral; unknown origin → 404.
+- **Cookies are shared across tenants on the single API host** (no per-tenant host-only cookie). Cross-tenant isolation is the **JWT `tenant`-claim mismatch check** — mandatory. Cross-site frontend→API ⇒ `SameSite=None; Secure` in prod.
+- **OAuth2 needs no one-time-code handoff.** Authorize + Google callback both land on the single API host, so the stateless cookie auth-request repo works; the login `redirect_uri` host identifies the tenant (validated by `OAuth2RedirectValidator`).
+- **Per-tenant Paystack.** Tenant credentials live encrypted in the tenant schema; a per-tenant opaque webhook token (master) drives `/api/v1/webhook/{token}`. Replaces the master `payment_tenant_routes` table (dropped). See 1i.
 
 ## Corrections to the original plan (verified against code)
 
@@ -24,7 +35,7 @@ Goal: turn it into a multi-tenant SaaS where many shops operate in **data isolat
 - Flyway location is `classpath:db/migrations` (**plural**). All DDL uses **unqualified** table names → portable across schemas (favorable). One native-query repo (`JournalEntryRepository`, 2 methods) also unqualified → fine.
 - Use a dedicated **`tenant_template`** schema as the neutral/validation target for `ddl-auto=validate` — clearer intent than reusing `public`. `TenantContext` default = `tenant_template`; connections reset to it on release.
 - **Typed context**: distinguish tenant **slug** (in JWT + host) from **schemaName** (`tenant_<slug>`, what Hibernate needs). Use a small typed context object, never pass `acme` where `tenant_acme` is required.
-- Webhook routing needs a **master route table**, not reference-scanning.
+- Webhook routing uses a **per-tenant opaque token** in the URL (`/api/v1/webhook/{token}`), resolved via master — not a reference-scan or a per-reference route table (per-tenant Paystack accounts; see 1i).
 - Cookie: `AuthCookieUtil.addCookie` currently sets `httpOnly(false)`. Harden to `HttpOnly=true`, `Secure` outside dev, **host-only (no parent-domain cookie)** so each tenant host isolates its session; pair with the JWT tenant-mismatch check.
 - No Hikari pool tuning exists today (fully defaulted, single shared pool) — correct baseline for one-pool schema switching; add `connectionInitSql`/reset hardening only.
 - `AdminSessionManager` is in-memory single-node — WebSocket presence must be keyed by tenant; multi-instance shared presence is explicitly **out of scope** (flag it).
@@ -40,7 +51,7 @@ Goal: turn it into a multi-tenant SaaS where many shops operate in **data isolat
 
 New packages:
 - `com.example.perfume_budget.tenancy` — context, providers, resolver, JPA config, migrator, provisioning, runner, cache manager, task decorator.
-- `com.example.perfume_budget.platform` — master-scoped: `Tenant`/`PlatformAdmin` entities, repos, enums, onboarding + platform-admin controllers/services, `payment_tenant_routes`.
+- `com.example.perfume_budget.platform` — master-scoped: `Tenant`/`PlatformAdmin` entities, repos, enums, onboarding + platform-admin controllers/services.
 
 ## Risk register (address explicitly)
 
@@ -68,7 +79,7 @@ Deliver a **tenant-safe version of the existing API** before any new SaaS featur
 - `MultiTenancyJpaConfig` — `HibernatePropertiesCustomizer` registering both beans. `application-dev.properties`: `spring.jpa.properties.hibernate.multiTenancy=SCHEMA`; Hikari `connectionInitSql=SET search_path TO tenant_template`.
 
 ### 1b. Flyway split + boot ordering (`tenancy/`)
-- New `db/migrations/master/V1__create_master_schema.sql` — `master.tenants`, `master.platform_admins`, `master.payment_tenant_routes`.
+- New `db/migrations/master/V1__create_master_schema.sql` — `master.tenants`, `master.platform_admins`. (1i adds master `V2`: drop the obsolete `payment_tenant_routes`, add `tenants.webhook_token`.)
 - **Move** existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering; this is the per-tenant template).
 - `spring.flyway.enabled=false` (programmatic control).
 - `TenantSchemaMigrator` — `migrateMaster()` (schemas `master`, location `.../master`); `migrateTemplate()` (schemas/default `tenant_template`, location `.../tenant`); `migrateTenant(schema)` (creates schema if missing, own `flyway_schema_history`, location `.../tenant`).
@@ -106,10 +117,14 @@ Deliver a **tenant-safe version of the existing API** before any new SaaS featur
 ### 1h. Seeder refactor (hard dependency of provisioning)
 - Convert `config/DataSeeder`, `ChartOfAccountsSeeder`, `FeatureFlagSeeder` (`ApplicationRunner`) and `UomSeeder` (`CommandLineRunner`) from boot-time global runners into **idempotent callable services** (`seedTenantDefaults()`), invoked only under an explicit tenant context. No boot-time seeding of a default schema. (In Stage 1 a dev helper calls them to create test tenants; provisioning calls them in Stage 2.)
 
-### 1i. Webhook tenant routing
-- `master.payment_tenant_routes(system_reference PK, provider_reference, tenant_slug, schema_name, created_at)`.
-- Write the route in `OrderServiceImpl.createPaymentObject` (where `systemReference` is generated) and update `provider_reference` after Paystack init (`OrderServiceImpl` ~line 150), inside a master transaction.
-- `WebhookController`/`WebhookProcessorImpl` — verify Paystack signature, parse reference, **look up route in master → set `TenantContext` → then dispatch** the existing `@Async` processing (which now finds the correct schema via TaskDecorator). Source of truth is the master table (do not trust payload for tenant).
+### 1i. Per-tenant payment gateway + webhook routing
+Each tenant uses its OWN Paystack account/keys — the shared `paystack.secret`/`paystack.url` are retired (base URL stays a constant). No consolidated account; the `master.payment_tenant_routes` table is dropped.
+- **Master migration `V2`** (`db/migrations/master/V2__per_tenant_payment_gateway.sql`): drop `payment_tenant_routes`; `ALTER TABLE tenants ADD webhook_token VARCHAR(64) UNIQUE` (nullable). Add `webhookToken` to `platform/model/Tenant` + `TenantRepository.findByWebhookToken`.
+- **Tenant migration `V7`** (`db/migrations/tenant/V7__create_payment_gateway_config.sql`): `payment_gateway_config` singleton (provider, `secret_key_encrypted TEXT`, `public_key`, `enabled`, timestamps) + `model/PaymentGatewayConfig` + repo. (Stage 3 `store_settings` shifts to tenant `V8`.)
+- **Encryption at rest**: `utils/AesGcmEncryptor` (JDK `javax.crypto`, no new dep), platform key `platform.encryption.key`. Encrypt each tenant's Paystack secret; decrypt on use.
+- **Per-tenant init**: `PaystackGatewayServiceImpl` drops `@Value` secret; resolves the current tenant's decrypted secret via `TenantPaymentGatewayProvider` (reads `payment_gateway_config` under the active `TenantContext`). Throws a clear error if unconfigured/disabled. `OrderServiceImpl` unchanged.
+- **Per-tenant webhook URL**: `WebhookController` → `POST /api/v1/webhook/{token}`. Resolve tenant by `webhook_token` in **master** (webhook thread has no context) → set `TenantContext` → load tenant secret from its schema → verify **HMAC-SHA512 with the tenant's secret** → dispatch existing `@Async` `processWebhook` (context captured by the TaskDecorator; `findByProviderPaymentReference` runs in the right schema). `PaystackWebhookServiceImpl.checkWebhookSignature` takes the tenant secret. Filter still bypasses `/api/v1/webhook`; controller sets/clears context in `try/finally`.
+- **Tenant-ADMIN settings**: `PaymentSettingsController` @ `/api/v1/payment-settings` (`hasRole('ADMIN')`) — `PUT` saves `{secretKey, publicKey, enabled}` (encrypt secret, upsert config, generate `webhook_token` in master if absent) and returns the webhook URL to paste into Paystack; `GET` returns masked secret + public key + enabled + webhook URL. URL built from `platform.api-base-url`.
 
 ### Stage 1 gate
 Two tenants (created via dev helper) can: authenticate (password, email-OTP, Google OAuth2) with tenant-bound JWT; browse public storefront (tenant resolved from host); create/list products with zero cross-tenant reads; serve cached endpoints with tenant-prefixed keys; run both scheduled tasks across all tenants; process a Paystack webhook to the correct schema. Replaying tenant A's cookie against tenant B host → 401. Boot succeeds with `validate` against `tenant_template`. Native accounting queries isolated across the two schemas.
@@ -143,7 +158,7 @@ A tenant goes signup → OTP verify → provisioned → ACTIVE with schema, all 
 ## Stage 3 — Feature Surface (depends on stable tenancy)
 
 ### 3a. Per-tenant theming (`store_settings`, tenant schema)
-- `db/migrations/tenant/V7__create_store_settings.sql` — singleton row per schema: `store_name, accent_color VARCHAR(7), secondary_color VARCHAR(7), background_image_url, logo_url, font_family, currency VARCHAR(3), contact_email/phone/address, social_links JSONB, extra_config JSONB, timestamps`. Seed one default row (add to provisioning seeders).
+- `db/migrations/tenant/V8__create_store_settings.sql` — singleton row per schema: `store_name, accent_color VARCHAR(7), secondary_color VARCHAR(7), background_image_url, logo_url, font_family, currency VARCHAR(3), contact_email/phone/address, social_links JSONB, extra_config JSONB, timestamps`. Seed one default row (add to provisioning seeders). (Tenant `V7` is payment_gateway_config from 1i.)
 - `model/StoreSettings` — `@Table(name="store_settings")` (no `schema=`, follows search_path). JSON via `@JdbcTypeCode(SqlTypes.JSON)`. `StoreSettingsRepository.findTopByOrderByIdAsc`.
 - DTOs `dto/theme/`, `mapper/StoreSettingsMapper` (static, private ctor like `ProductMapper`).
 - `service/StoreSettingsService` — `getActiveTheme()` `@Cacheable("storeTheme")` (tenant-prefixed via TenantAwareCacheManager); `updateTheme()` uploads images via `CloudinaryFileUploadUtil` (add branding folder), `@CacheEvict`.
@@ -192,7 +207,7 @@ Tenant user APIs, public storefront + theme APIs, platform APIs, realtime notifi
 - `config/ws/{WebSocketConfig,AuthChannelInterceptor,AdminSessionManager}.java`, `notification/NotificationService.java` — WebSocket tenant binding (Stage 3).
 - `utils/CloudinaryFileUploadUtil.java` — branding folder (Stage 3).
 - `application-dev.properties` — `hibernate.multiTenancy=SCHEMA`, `spring.flyway.enabled=false`, Hikari `connectionInitSql`, `tenant.header-resolution.enabled`, SMS provider keys.
-- Migrations: new `db/migrations/master/V1`, move existing `V1..V6` → `db/migrations/tenant/`, new `db/migrations/tenant/V7__create_store_settings.sql`.
+- Migrations: new `db/migrations/master/V1` (+ master `V2` for per-tenant payments), move existing `V1..V6` → `db/migrations/tenant/`, new tenant `V7__create_payment_gateway_config.sql` (1i) and `V8__create_store_settings.sql` (Stage 3).
 
 ## Reuse (don't rebuild)
 

@@ -7,6 +7,7 @@ import com.example.perfume_budget.enums.CurrencyCode;
 import com.example.perfume_budget.model.Category;
 import com.example.perfume_budget.model.Money;
 import com.example.perfume_budget.model.Product;
+import com.example.perfume_budget.support.AbstractPostgresIntegrationTest;
 import com.example.perfume_budget.repository.CategoryRepository;
 import com.example.perfume_budget.repository.ProductFamilyRepository;
 import com.example.perfume_budget.repository.ProductRepository;
@@ -39,14 +40,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.*;
 
-@SpringBootTest
-@ActiveProfiles("test")
-class ProductListingCacheIntegrationTest {
+class ProductListingCacheIntegrationTest extends AbstractPostgresIntegrationTest {
 
-    @MockitoBean
-    private RedisConnectionFactory redisConnectionFactory;
-    @MockitoBean
-    private ReactiveRedisConnectionFactory reactiveRedisConnectionFactory;
     @MockitoBean
     private ProductRepository productRepository;
     @MockitoBean
@@ -68,15 +63,6 @@ class ProductListingCacheIntegrationTest {
 
     @Autowired
     private ProductService productService;
-
-    @TestConfiguration
-    static class CacheTestConfig {
-        @Bean
-        @Primary
-        CacheManager testCacheManager() {
-            return new ConcurrentMapCacheManager("customerProductListings", "featuredProducts", "productDetailsPage");
-        }
-    }
 
     @Test
     void getProductListings_CachesRepeatedRequestsAndEvictsOnDelete() {

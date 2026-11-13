@@ -5,9 +5,12 @@ import com.example.perfume_budget.exception.handlers.CustomAccessDeniedHandler;
 import com.example.perfume_budget.exception.handlers.JwtAuthenticationEntryPoint;
 import com.example.perfume_budget.filter.JWTFilter;
 import com.example.perfume_budget.filter.SiteVisitFilter;
+import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.security.oauth2.CustomOAuth2UserService;
+import com.example.perfume_budget.security.oauth2.HttpCookieOAuth2AuthorizationRequestRepository;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationFailureHandler;
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationSuccessHandler;
+import com.example.perfume_budget.security.oauth2.TenantAwareAuthorizationRequestResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -46,6 +49,9 @@ public class SecurityConfig {
     private final OAuth2AuthenticationSuccessHandler oAuth2AuthenticationSuccessHandler;
     private final OAuth2AuthenticationFailureHandler oAuth2AuthenticationFailureHandler;
     private final SiteVisitFilter siteVisitFilter;
+    private final TenantResolutionFilter tenantResolutionFilter;
+    private final TenantAwareAuthorizationRequestResolver authorizationRequestResolver;
+    private final HttpCookieOAuth2AuthorizationRequestRepository cookieAuthorizationRequestRepository;
 
     @Value("${cors.allowed-origins}")
     private String allowedOrigins;
@@ -74,6 +80,7 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/test/**").permitAll()
+                        .requestMatchers("/api/v1/dev/**").permitAll()
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/swagger-ui/**").permitAll()
                         .requestMatchers("/swagger-ui.html").permitAll()
@@ -91,6 +98,8 @@ public class SecurityConfig {
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(authorization -> authorization
                                 .baseUri("/oauth2/authorize")
+                                .authorizationRequestResolver(authorizationRequestResolver)
+                                .authorizationRequestRepository(cookieAuthorizationRequestRepository)
                         )
                         .redirectionEndpoint(redirection -> redirection
                                 .baseUri("/oauth2/callback/*")
@@ -101,6 +110,7 @@ public class SecurityConfig {
                         .successHandler(oAuth2AuthenticationSuccessHandler)
                         .failureHandler(oAuth2AuthenticationFailureHandler)
                 )
+                .addFilterBefore(tenantResolutionFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(siteVisitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .userDetailsService(userDetailsService)

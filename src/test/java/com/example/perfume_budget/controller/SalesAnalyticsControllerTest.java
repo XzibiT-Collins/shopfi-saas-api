@@ -4,7 +4,9 @@ import com.example.perfume_budget.dto.analytics.*;
 import com.example.perfume_budget.enums.*;
 import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.repository.SiteVisitRepository;
+import com.example.perfume_budget.platform.service.TenantRegistryService;
 import com.example.perfume_budget.repository.UserRepository;
+import com.example.perfume_budget.tenancy.TenantResolutionProperties;
 import com.example.perfume_budget.service.interfaces.AdminMetricService;
 import com.example.perfume_budget.utils.AuthCookieUtil;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -33,7 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(AdminMetricController.class)
 @ActiveProfiles("test")
-@Import(SalesAnalyticsControllerTest.MethodSecurityConfig.class)
+@Import({SalesAnalyticsControllerTest.MethodSecurityConfig.class, TenantResolutionProperties.class})
 class SalesAnalyticsControllerTest {
 
     @TestConfiguration
@@ -67,6 +69,10 @@ class SalesAnalyticsControllerTest {
 
     @MockBean
     UserDetailsService userDetailsService;
+
+    // Required by TenantResolutionFilter, which the @WebMvcTest slice picks up as a Filter bean.
+    @MockBean
+    TenantRegistryService tenantRegistryService;
 
     @MockBean
     JpaMetamodelMappingContext jpaMetamodelMappingContext;

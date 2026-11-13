@@ -3,19 +3,19 @@ package com.example.perfume_budget.config;
 import com.example.perfume_budget.model.UnitOfMeasure;
 import com.example.perfume_budget.repository.UnitOfMeasureRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.CommandLineRunner;
-import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+/**
+ * Seeds units of measure. Idempotent; invoked per-tenant by {@link TenantSeeder} under an
+ * active {@code TenantContext} (no longer a boot-time runner).
+ */
 @Component
 @RequiredArgsConstructor
-@Order(2) // Run after ChartOfAccountsSeeder
-public class UomSeeder implements CommandLineRunner {
+public class UomSeeder {
 
     private final UnitOfMeasureRepository uomRepository;
 
-    @Override
-    public void run(String... args) {
+    public void seed() {
         seedUom("EA", "Each");
         seedUom("BOX", "Box");
         seedUom("PACK", "Pack");

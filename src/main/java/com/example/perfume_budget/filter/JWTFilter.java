@@ -3,6 +3,9 @@ package com.example.perfume_budget.filter;
 
 
 import com.example.perfume_budget.dto.AppUser;
+import com.example.perfume_budget.tenancy.TenantContext;
+import com.example.perfume_budget.tenancy.TenantIdentity;
+import com.example.perfume_budget.tenancy.TenantScope;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -40,6 +43,15 @@ public class JWTFilter extends OncePerRequestFilter {
 
         try {
             if (token != null) {
+                // Cross-tenant defense: a token issued for tenant A must not authenticate
+                // against tenant B. Skip for neutral/platform-scoped requests.
+                if (!tenantMatches(token)) {
+                    log.warn("Rejecting request: token tenant does not match resolved tenant context");
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.getWriter().write("Tenant mismatch");
+                    return;
+                }
+
                 String username = jwtUtil.extractUsername(token);
 
                 if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
@@ -74,6 +86,20 @@ public class JWTFilter extends OncePerRequestFilter {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             response.getWriter().write("Invalid or expired token");
         }
+    }
+
+    /**
+     * True when the token may proceed: neutral (no tenant resolved) and platform-scoped
+     * requests skip the check; tenant-scoped requests require the token's {@code tenant}
+     * claim to equal the resolved tenant slug.
+     */
+    private boolean tenantMatches(String token) {
+        TenantIdentity identity = TenantContext.get();
+        if (identity == null || identity.scope() == TenantScope.PLATFORM) {
+            return true;
+        }
+        String tokenTenant = jwtUtil.extractTenant(token);
+        return identity.slug() != null && identity.slug().equals(tokenTenant);
     }
 
     private String extractTokenFromCookie(HttpServletRequest request) {
