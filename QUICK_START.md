@@ -237,3 +237,43 @@ You'll know it's working when:
 ---
 
 **Built with ❤️ using Spring Boot 3.5.10, Spring Security 6.5.7, and OAuth2 Client**
+
+---
+
+## Multi-tenant boot and Flyway verification (Stage-1 gate checks)
+
+Tests extending `AbstractPostgresIntegrationTest` (`src/test/java/com/example/perfume_budget/support`) boot the
+full app on a real PostgreSQL with `ddl-auto=validate`, migrate `master` + `tenant_template` first, mock Redis,
+and use `TenantAwareCacheManager` over an in-memory delegate. Autowire `TestTenants` to get the `acme` and `bravo`
+tenants (migrated with `TenantSchemaMigrator`, seeded with `TenantSeeder`; admins are `admin@<slug>.test`).
+
+### One-time DB setup (throwaway database, no Docker needed)
+
+```bash
+sudo -u postgres psql -c "CREATE ROLE shopfi_test LOGIN PASSWORD 'shopfi_test' CREATEDB" \
+                      -c "CREATE DATABASE shopfi_test OWNER shopfi_test"
+```
+
+Use a dedicated database: the tests drop the `master`, `tenant_template` and `tenant_*` schemas before the first
+boot and again on JVM exit.
+
+### Run
+
+```bash
+./mvnw test                                   # everything
+./mvnw test -Dtest='PostgresBootTest,MigrationBeforeValidationTest'   # just the boot/Flyway checks
+```
+
+| Env var | Default |
+|---|---|
+| `SHOPFI_TEST_DB_URL` | `jdbc:postgresql://localhost:5432/shopfi_test` |
+| `SHOPFI_TEST_DB_USER` | `shopfi_test` |
+| `SHOPFI_TEST_DB_PASSWORD` | `shopfi_test` (local throwaway credential) |
+| `SHOPFI_TEST_DB_REQUIRED` | unset: Postgres tests are skipped (with a reason) if the DB is unreachable; `true`: fail instead (use in CI) |
+
+No Postgres on the host? `docker compose up -d postgres` (see `docker-compose.yml`) and point
+`SHOPFI_TEST_DB_URL/USER/PASSWORD` at it (create a database such as `shopfi_test` first). Testcontainers is not used.
+
+Note: the main `./mvnw spring-boot:run` flow with the `dev` profile (`DB_URL`, `DB_USER`, `DB_PASSWORD`) runs the same
+Flyway-then-validate boot sequence for manual gate checks; `tenant.dev-endpoints.enabled=true` exposes
+`POST /api/v1/dev/tenants` to create tenants by hand.

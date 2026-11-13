@@ -9,7 +9,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -24,6 +23,9 @@ class PaystackWebhookServiceImplTest {
     @Mock
     private WebhookProcessor webhookProcessor;
 
+    @Mock
+    private TenantPaymentGatewayProvider gatewayProvider;
+
     @InjectMocks
     private PaystackWebhookServiceImpl webhookService;
 
@@ -32,7 +34,8 @@ class PaystackWebhookServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(webhookService, "paystackSecret", secret);
+        // The webhook is verified with the current tenant's secret, supplied by the gateway provider.
+        lenient().when(gatewayProvider.currentSecretOrThrow()).thenReturn(secret);
     }
 
     @Test
