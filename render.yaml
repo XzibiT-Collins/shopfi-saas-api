@@ -10,6 +10,10 @@ services:
         value: prod
       - key: DB_URL
         sync: false
+      # SECURITY (PLAT-02b): master.tenant_audit_log is append-only only through its triggers, which the table OWNER can drop.
+      # Set DB_USER to a NON-owner role with INSERT/SELECT (no UPDATE/DELETE/TRUNCATE/TRIGGER) on master.tenant_audit_log and run
+      # Flyway migrations with a separate privileged role. See docs/api/platform-tenants.md "Deployment notes".
+      # SINGLE INSTANCE ONLY (numInstances 1): the CORS decision cache invalidation after platform actions is per JVM.
       - key: DB_USER
         sync: false
       - key: DB_PASSWORD
