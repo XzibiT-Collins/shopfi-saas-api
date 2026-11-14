@@ -51,6 +51,15 @@ public class TokenBucketRateLimiter {
         this.overflow = new Bucket(capacity, nanoClock.getAsLong());
     }
 
+    /** Forgets every bucket (all keys full again). Test support only: production code never calls it. */
+    public void reset() {
+        synchronized (lock) {
+            buckets.clear();
+            overflow.tokens = capacity;
+            overflow.lastNanos = nanoClock.getAsLong();
+        }
+    }
+
     /** @return 0 if the request is allowed (a token was taken), otherwise the seconds until a token is available. */
     public long tryAcquire(String key) {
         long now = nanoClock.getAsLong();

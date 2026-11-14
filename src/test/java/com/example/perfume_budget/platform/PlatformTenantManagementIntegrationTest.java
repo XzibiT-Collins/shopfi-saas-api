@@ -1,6 +1,14 @@
 package com.example.perfume_budget.platform;
 
 import com.example.perfume_budget.filter.JWTUtil;
+import com.example.perfume_budget.platform.auth.PlatformPrincipal;
+import com.example.perfume_budget.platform.enums.TenantAuditPhase;
+import com.example.perfume_budget.platform.model.TenantAuditLog;
+import com.example.perfume_budget.platform.repository.TenantAuditLogRepository;
+import com.example.perfume_budget.platform.service.PlatformTenantService;
+import com.example.perfume_budget.security.cors.TenantOriginPolicy;
+import com.example.perfume_budget.tenancy.TenantProvisioningService;
+import org.springframework.transaction.PlatformTransactionManager;
 import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.PlatformAdmin;
@@ -52,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -90,6 +99,10 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     @Autowired PlatformAdminRepository admins;
     @Autowired TenantRepository tenantRepository;
     @Autowired TenantSignupRepository signupRepository;
+    @Autowired TenantAuditLogRepository audits;
+    @Autowired TenantProvisioningService provisioningService;
+    @Autowired TenantOriginPolicy originPolicy;
+    @Autowired PlatformTransactionManager txManager;
     @Autowired PasswordEncoder encoder;
     @Autowired JWTUtil jwtUtil;
     @Autowired TestTenants tenants;
@@ -114,6 +127,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     @AfterEach
     void reset() {
         Mockito.reset(migrator);
+        dropInjectedFailures();
         TenantContext.clear();
     }
 
@@ -212,6 +226,22 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
                     assertThat(rs.next()).isTrue();
                     assertThat(rs.getTimestamp(6)).isNotNull();
                     return rs.getLong(1) + "|" + rs.getString(2) + "|" + rs.getString(3) + "|" + rs.getString(4) + "|" + rs.getString(5);
+                }
+            }
+        });
+    }
+
+    private String phases(String slug) {
+        return jdbc(c -> {
+            try (var ps = c.prepareStatement("SELECT phase FROM master.tenant_audit_log WHERE tenant_slug = ? ORDER BY id OFFSET ?")) {
+                ps.setString(1, slug);
+                ps.setInt(2, baseline.getOrDefault(slug, 0L).intValue());
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<String> out = new ArrayList<>();
+                    while (rs.next()) {
+                        out.add(rs.getString(1));
+                    }
+                    return String.join(",", out);
                 }
             }
         });
@@ -477,12 +507,14 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         assertThat(scalar("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'tenant_p2_rp_ok'")).isGreaterThan(5);
         assertThat(scalar("SELECT count(*) FROM master.tenant_signups s JOIN master.tenants t ON t.id = s.tenant_id WHERE t.slug = ?",
                 "p2-rp-ok")).isZero();
-        assertThat(auditRows("p2-rp-ok")).isEqualTo(1);
-        assertThat(auditLine("p2-rp-ok", 0)).isEqualTo(admin.getId() + "|" + admin.getEmail() + "|REPROVISION|FAILED|ACTIVE");
+        assertThat(auditRows("p2-rp-ok")).isEqualTo(2);
+        assertThat(phases("p2-rp-ok")).isEqualTo("INTENT,OUTCOME");
+        assertThat(auditLine("p2-rp-ok", 0)).isEqualTo(admin.getId() + "|" + admin.getEmail() + "|REPROVISION|FAILED|PROVISIONING");
+        assertThat(auditLine("p2-rp-ok", 1)).isEqualTo(admin.getId() + "|" + admin.getEmail() + "|REPROVISION|FAILED|ACTIVE");
         assertThat(preflight(origin).getStatus()).isEqualTo(200); // flipped at once, not after the 10 s negative TTL
         // a second call is now illegal (ACTIVE tenants are never reprovisioned) and adds no audit row
         assertThat(act("p2-rp-ok", "reprovision").getStatus()).isEqualTo(409);
-        assertThat(auditRows("p2-rp-ok")).isEqualTo(1);
+        assertThat(auditRows("p2-rp-ok")).isEqualTo(2);
     }
 
     @Test
@@ -494,15 +526,18 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         assertThat(r.getContentAsString()).doesNotContain("hunter2").doesNotContain("db.internal").doesNotContain("$2a$");
         assertThat(status("p2-rp-fail")).isEqualTo("FAILED");
         assertThat(scalar("SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'tenant_p2_rp_fail'")).isZero();
-        assertThat(auditRows("p2-rp-fail")).isEqualTo(1);
-        assertThat(auditLine("p2-rp-fail", 0)).endsWith("|REPROVISION|FAILED|FAILED");
+        assertThat(auditRows("p2-rp-fail")).isEqualTo(2);
+        assertThat(phases("p2-rp-fail")).isEqualTo("INTENT,OUTCOME");
+        assertThat(auditLine("p2-rp-fail", 0)).endsWith("|REPROVISION|FAILED|PROVISIONING");
+        assertThat(auditLine("p2-rp-fail", 1)).endsWith("|REPROVISION|FAILED|FAILED");
         assertThat(scalar("SELECT count(*) FROM master.tenant_signups s JOIN master.tenants t ON t.id = s.tenant_id WHERE t.slug = ?",
                 "p2-rp-fail")).isEqualTo(1); // credential kept for the retry
 
         Mockito.reset(migrator);
         assertThat(act("p2-rp-fail", "reprovision").getStatus()).isEqualTo(200);
         assertThat(status("p2-rp-fail")).isEqualTo("ACTIVE");
-        assertThat(auditRows("p2-rp-fail")).isEqualTo(2);
+        assertThat(auditRows("p2-rp-fail")).isEqualTo(4);
+        assertThat(phases("p2-rp-fail")).isEqualTo("INTENT,OUTCOME,INTENT,OUTCOME");
     }
 
     @Test
@@ -510,7 +545,9 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         mk("p2-ap-ok", TenantStatus.PENDING, true);
         assertThat(act("p2-ap-ok", "approve").getStatus()).isEqualTo(200);
         assertThat(status("p2-ap-ok")).isEqualTo("ACTIVE");
-        assertThat(auditLine("p2-ap-ok", 0)).endsWith("|APPROVE|PENDING|ACTIVE");
+        assertThat(phases("p2-ap-ok")).isEqualTo("INTENT,OUTCOME");
+        assertThat(auditLine("p2-ap-ok", 0)).endsWith("|APPROVE|PENDING|PROVISIONING");
+        assertThat(auditLine("p2-ap-ok", 1)).endsWith("|APPROVE|PENDING|ACTIVE");
 
         mk("p2-ap-unv", TenantStatus.PENDING, false);
         MockHttpServletResponse r = act("p2-ap-unv", "approve");
@@ -537,7 +574,341 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         });
         assertThat(act("p2-stuck-old", "reprovision").getStatus()).isEqualTo(200);
         assertThat(status("p2-stuck-old")).isEqualTo("ACTIVE");
-        assertThat(auditLine("p2-stuck-old", 0)).endsWith("|REPROVISION|FAILED|ACTIVE");
+        assertThat(phases("p2-stuck-old")).isEqualTo("RECLAIM,INTENT,OUTCOME");
+        assertThat(auditLine("p2-stuck-old", 0)).isEqualTo(admin.getId() + "|" + admin.getEmail() + "|REPROVISION|PROVISIONING|FAILED");
+        assertThat(auditLine("p2-stuck-old", 1)).endsWith("|REPROVISION|FAILED|PROVISIONING");
+        assertThat(auditLine("p2-stuck-old", 2)).endsWith("|REPROVISION|FAILED|ACTIVE");
+    }
+
+    // ---- PLAT-02b: audit integrity around the saga ---------------------------------------------------------------
+
+    private final List<String> injected = new ArrayList<>();
+
+    /** Real database fault injection: an audit insert of this slug+phase raises inside PostgreSQL (rolled back, class-only log). */
+    private void failAuditWrites(String slug, TenantAuditPhase phase) {
+        failAuditWrites(slug, phase, null);
+    }
+
+    private void failAuditWrites(String slug, TenantAuditPhase phase, String sqlState) {
+        String name = "p2b_fail_audit_" + SEQ.incrementAndGet();
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE OR REPLACE FUNCTION master." + name + "() RETURNS trigger AS $f$ BEGIN "
+                        + "IF NEW.tenant_slug = '" + slug + "' AND NEW.phase = '" + phase.name() + "' THEN "
+                        + "RAISE EXCEPTION 'injected jdbc:postgresql://db.internal password=hunter2'"
+                        + (sqlState == null ? "" : " USING ERRCODE = '" + sqlState + "'") + "; END IF; RETURN NEW; END; $f$ LANGUAGE plpgsql");
+                st.execute("CREATE TRIGGER " + name + " BEFORE INSERT ON master.tenant_audit_log FOR EACH ROW EXECUTE FUNCTION master." + name + "()");
+            }
+            return null;
+        });
+        injected.add("master.tenant_audit_log:" + name);
+    }
+
+    /** A delete of this tenant's signup row (the BCrypt hash) fails inside PostgreSQL until the fault is dropped. */
+    private void failSignupDeletes(String slug) {
+        String name = "p2b_fail_signup_" + SEQ.incrementAndGet();
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE OR REPLACE FUNCTION master." + name + "() RETURNS trigger AS $f$ BEGIN "
+                        + "IF OLD.tenant_id = (SELECT id FROM master.tenants WHERE slug = '" + slug + "') THEN "
+                        + "RAISE EXCEPTION 'injected delete failure'; END IF; RETURN OLD; END; $f$ LANGUAGE plpgsql");
+                st.execute("CREATE TRIGGER " + name + " BEFORE DELETE ON master.tenant_signups FOR EACH ROW EXECUTE FUNCTION master." + name + "()");
+            }
+            return null;
+        });
+        injected.add("master.tenant_signups:" + name);
+    }
+
+    /** The claim transaction (status -> PROVISIONING for this slug) fails AT COMMIT, i.e. after the claim hook already ran. */
+    private void failClaimCommit(String slug) {
+        String name = "p2b_fail_claim_" + SEQ.incrementAndGet();
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE OR REPLACE FUNCTION master." + name + "() RETURNS trigger AS $f$ BEGIN "
+                        + "IF NEW.slug = '" + slug + "' AND NEW.status = 'PROVISIONING' THEN "
+                        + "RAISE EXCEPTION 'injected claim commit failure'; END IF; RETURN NEW; END; $f$ LANGUAGE plpgsql");
+                st.execute("CREATE CONSTRAINT TRIGGER " + name + " AFTER UPDATE ON master.tenants DEFERRABLE INITIALLY DEFERRED "
+                        + "FOR EACH ROW EXECUTE FUNCTION master." + name + "()");
+            }
+            return null;
+        });
+        injected.add("master.tenants:" + name);
+    }
+
+    private void dropInjectedFailures() {
+        for (String e : injected) {
+            String table = e.substring(0, e.indexOf(':'));
+            String name = e.substring(e.indexOf(':') + 1);
+            jdbc(c -> {
+                try (var st = c.createStatement()) {
+                    st.execute("DROP TRIGGER IF EXISTS " + name + " ON " + table);
+                    st.execute("DROP FUNCTION IF EXISTS master." + name + "()");
+                }
+                return null;
+            });
+        }
+        injected.clear();
+    }
+
+    private long signupRows(String slug) {
+        return scalar("SELECT count(*) FROM master.tenant_signups s JOIN master.tenants t ON t.id = s.tenant_id WHERE t.slug = ?", slug);
+    }
+
+    /** A service instance with no reconcile grace (the HTTP one keeps the 60 s default so it never races a live winner). */
+    private PlatformTenantService noGraceService() {
+        return new PlatformTenantService(tenantRepository, signupRepository, audits, provisioningService, originPolicy,
+                txManager, 1000, 15, 0);
+    }
+
+    private PlatformPrincipal principal() {
+        return new PlatformPrincipal(admin.getId(), admin.getEmail(), "Root");
+    }
+
+    @Test
+    void crashBetweenSagaCommitAndOutcomeWrite_leavesIntent_tenantActive_hashGone_andARetryReconcilesOnce() throws Exception {
+        mk("p2-crash", TenantStatus.PENDING, true);
+        failAuditWrites("p2-crash", TenantAuditPhase.OUTCOME);
+        MockHttpServletResponse r = act("p2-crash", "approve");
+        // the saga succeeded: the admin is told so even though the outcome row could not be written
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(200);
+        assertThat(r.getContentAsString()).doesNotContain("hunter2").doesNotContain("db.internal");
+        assertThat(status("p2-crash")).isEqualTo("ACTIVE");
+        assertThat(phases("p2-crash")).isEqualTo("INTENT");                     // intent survived, outcome lost
+        assertThat(auditLine("p2-crash", 0)).isEqualTo(admin.getId() + "|" + admin.getEmail() + "|APPROVE|PENDING|PROVISIONING");
+        assertThat(signupRows("p2-crash")).isZero();                            // hash delete is independent of the audit
+
+        dropInjectedFailures();
+        // within the grace period an in-flight winner is presumed: the HTTP retry is a plain no-op
+        MockHttpServletResponse early = act("p2-crash", "approve");
+        assertThat(early.getStatus()).isEqualTo(200);
+        assertThat(phases("p2-crash")).isEqualTo("INTENT");
+
+        var retry = noGraceService().approve("p2-crash", principal());
+        assertThat(retry.changed()).isFalse();
+        assertThat(phases("p2-crash")).isEqualTo("INTENT,RECONCILE");
+        assertThat(auditLine("p2-crash", 1)).isEqualTo(admin.getId() + "|" + admin.getEmail() + "|APPROVE|ACTIVE|ACTIVE");
+        noGraceService().approve("p2-crash", principal());                       // reconciled once, then quiet
+        assertThat(phases("p2-crash")).isEqualTo("INTENT,RECONCILE");
+    }
+
+    @Test
+    void hashDeleteFailingAfterTheSaga_keepsTenantActiveAndOutcome_andARetryDeletesTheHashAndAudits() throws Exception {
+        mk("p2-hash", TenantStatus.PENDING, true);
+        failSignupDeletes("p2-hash");
+        assertThat(act("p2-hash", "approve").getStatus()).isEqualTo(200);
+        assertThat(status("p2-hash")).isEqualTo("ACTIVE");
+        assertThat(phases("p2-hash")).isEqualTo("INTENT,OUTCOME");              // the audit row does not depend on the delete
+        assertThat(signupRows("p2-hash")).isEqualTo(1);                         // the hash is still there
+
+        dropInjectedFailures();
+        var retry = noGraceService().approve("p2-hash", principal());
+        assertThat(retry.changed()).isFalse();
+        assertThat(signupRows("p2-hash")).isZero();
+        assertThat(phases("p2-hash")).isEqualTo("INTENT,OUTCOME,RECONCILE");
+        noGraceService().approve("p2-hash", principal());
+        assertThat(phases("p2-hash")).isEqualTo("INTENT,OUTCOME,RECONCILE");    // nothing left to repair: nothing written
+    }
+
+    @Test
+    void failureBranch_auditWriteThrowing_neverReplacesTheGeneric500() throws Exception {
+        mk("p2-fb", TenantStatus.FAILED, true);
+        doThrow(new IllegalStateException("jdbc:postgresql://db.internal password=hunter2")).when(migrator).migrateTenant("tenant_p2_fb");
+        failAuditWrites("p2-fb", TenantAuditPhase.OUTCOME);
+        MockHttpServletResponse r = act("p2-fb", "reprovision");
+        assertThat(r.getStatus()).isEqualTo(500);
+        assertThat(body(r).get("description").asText()).isEqualTo("Provisioning failed for tenant 'p2-fb'; it is now FAILED and can be reprovisioned");
+        assertThat(r.getContentAsString()).doesNotContain("hunter2").doesNotContain("db.internal").doesNotContain("injected");
+        assertThat(status("p2-fb")).isEqualTo("FAILED");
+        assertThat(phases("p2-fb")).isEqualTo("INTENT");
+        assertThat(signupRows("p2-fb")).isEqualTo(1);
+    }
+
+    @Test
+    void intentWriteFailing_rollsBackTheClaim_nothingIsProvisioned_andARetryWorks() throws Exception {
+        mk("p2-intent", TenantStatus.FAILED, true);
+        failAuditWrites("p2-intent", TenantAuditPhase.INTENT);
+        MockHttpServletResponse r = act("p2-intent", "reprovision");
+        assertThat(r.getStatus()).isEqualTo(500);
+        assertThat(r.getContentAsString()).doesNotContain("hunter2").doesNotContain("db.internal");
+        assertThat(status("p2-intent")).isEqualTo("FAILED");
+        verify(migrator, never()).createTenantSchema("tenant_p2_intent");
+        assertThat(auditRows("p2-intent")).isZero();
+        assertThat(signupRows("p2-intent")).isEqualTo(1);
+        dropInjectedFailures();
+        assertThat(act("p2-intent", "reprovision").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-intent")).isEqualTo("INTENT,OUTCOME");
+    }
+
+    @Test
+    void intentRowIsCommittedBeforeTheSagaCreatesAnything() throws Exception {
+        mk("p2-order", TenantStatus.PENDING, true);
+        java.util.concurrent.atomic.AtomicReference<String> seenDuringSaga = new java.util.concurrent.atomic.AtomicReference<>();
+        doAnswer(inv -> {
+            seenDuringSaga.set(phases("p2-order") + "/" + status("p2-order")); // from a separate connection: committed rows only
+            return inv.callRealMethod();
+        }).when(migrator).createTenantSchema("tenant_p2_order");
+        assertThat(act("p2-order", "approve").getStatus()).isEqualTo(200);
+        assertThat(seenDuringSaga.get()).isEqualTo("INTENT/PROVISIONING");
+    }
+
+    @Test
+    void suspendAndReactivate_stayOneOutcomeRow_each() throws Exception {
+        act("plat-a", "suspend");
+        act("plat-a", "reactivate");
+        assertThat(phases("plat-a")).isEqualTo("OUTCOME,OUTCOME");
+    }
+
+    // ---- PLAT-02b rework -----------------------------------------------------------------------------------------
+
+    @Test
+    void signupCleanup_deletesOnlyTheTargetTenantsHash_afterTheSaga_andInReconcile() throws Exception {
+        mk("p2-two-a", TenantStatus.PENDING, true);
+        mk("p2-two-b", TenantStatus.PENDING, true);
+        assertThat(act("p2-two-a", "approve").getStatus()).isEqualTo(200);
+        assertThat(signupRows("p2-two-a")).isZero();
+        assertThat(signupRows("p2-two-b")).isEqualTo(1);   // another tenant's credential is untouched
+
+        mk("p2-two-c", TenantStatus.ACTIVE, true);          // ACTIVE with a leftover hash
+        assertThat(signupRows("p2-two-c")).isEqualTo(1);
+        noGraceService().approve("p2-two-c", principal());
+        assertThat(signupRows("p2-two-c")).isZero();
+        assertThat(signupRows("p2-two-b")).isEqualTo(1);
+        assertThat(phases("p2-two-c")).isEqualTo("RECONCILE");
+    }
+
+    @Test
+    void laterSuspendAndReactivateOutcomes_doNotCompleteAnOpenApproveIntent() throws Exception {
+        mk("p2-f3", TenantStatus.PENDING, true);
+        failAuditWrites("p2-f3", TenantAuditPhase.OUTCOME);
+        assertThat(act("p2-f3", "approve").getStatus()).isEqualTo(200);
+        dropInjectedFailures();
+        assertThat(act("p2-f3", "suspend").getStatus()).isEqualTo(200);
+        assertThat(act("p2-f3", "reactivate").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-f3")).isEqualTo("INTENT,OUTCOME,OUTCOME");
+        noGraceService().approve("p2-f3", principal());
+        assertThat(phases("p2-f3")).isEqualTo("INTENT,OUTCOME,OUTCOME,RECONCILE");
+        noGraceService().approve("p2-f3", principal());
+        assertThat(phases("p2-f3")).isEqualTo("INTENT,OUTCOME,OUTCOME,RECONCILE"); // closed once
+    }
+
+    @Test
+    void reclaimRow_isAtomicWithTheReclaimCas_rolledBackTogether_andPresentWhenTheCasWins() throws Exception {
+        Tenant t = mk("p2-recl", TenantStatus.PROVISIONING, true);
+        jdbc(c -> {
+            try (var ps = c.prepareStatement("UPDATE master.tenants SET updated_at = now() - interval '3 hours' WHERE id = ?")) {
+                ps.setLong(1, t.getId());
+                return ps.executeUpdate();
+            }
+        });
+        failAuditWrites("p2-recl", TenantAuditPhase.RECLAIM);
+        MockHttpServletResponse r = act("p2-recl", "reprovision");
+        assertThat(r.getStatus()).isEqualTo(500);
+        assertThat(status("p2-recl")).isEqualTo("PROVISIONING"); // the CAS rolled back with the failed audit insert
+        assertThat(auditRows("p2-recl")).isZero();
+        dropInjectedFailures();
+        assertThat(act("p2-recl", "reprovision").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-recl")).isEqualTo("RECLAIM,INTENT,OUTCOME");
+    }
+
+    @Test
+    void intentRow_isAtomicWithTheClaim_itDoesNotPersistIfTheClaimTransactionFailsAfterTheHook() throws Exception {
+        mk("p2-atomic", TenantStatus.PENDING, true);
+        failClaimCommit("p2-atomic");
+        MockHttpServletResponse r = act("p2-atomic", "approve");
+        assertThat(r.getStatus()).isEqualTo(500);
+        assertThat(status("p2-atomic")).isEqualTo("PENDING");
+        assertThat(auditRows("p2-atomic")).isZero();              // no orphan INTENT for a claim that never committed
+        verify(migrator, never()).createTenantSchema("tenant_p2_atomic");
+        dropInjectedFailures();
+        assertThat(act("p2-atomic", "approve").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-atomic")).isEqualTo("INTENT,OUTCOME");
+    }
+
+    @Test
+    void constraintViolationOnTheIntentInsert_isAGeneric500_notAReportedLostRace() throws Exception {
+        mk("p2-f4", TenantStatus.FAILED, true);
+        failAuditWrites("p2-f4", TenantAuditPhase.INTENT, "23514");
+        MockHttpServletResponse r = act("p2-f4", "reprovision");
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(500);
+        assertThat(r.getContentAsString()).doesNotContain("hunter2").doesNotContain("db.internal").doesNotContain("already");
+        assertThat(status("p2-f4")).isEqualTo("FAILED");
+        verify(migrator, never()).createTenantSchema("tenant_p2_f4");
+        assertThat(auditRows("p2-f4")).isZero();
+        assertThat(signupRows("p2-f4")).isEqualTo(1);
+    }
+
+    @Test
+    void sagaClaim_hookSeesTheStatusFromTheClaimTransaction_andItsFailureIsNotALostRace() throws Exception {
+        var req = new com.example.perfume_budget.tenancy.ProvisioningRequest("p2-claimx", "Shop", "p2-claimx@p2.test", "Owner",
+                encoder.encode("Own3r-Passw0rd!"), TenantPlan.FREE);
+        mk("p2-claimx", TenantStatus.FAILED, true);
+        java.util.concurrent.atomic.AtomicReference<TenantStatus> seen = new java.util.concurrent.atomic.AtomicReference<>();
+        assertThatThrownBy(() -> provisioningService.provision(req, t -> {
+            seen.set(t.getStatus());
+            throw new org.springframework.dao.DataIntegrityViolationException("check violated");
+        })).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(seen.get()).isEqualTo(TenantStatus.FAILED);
+        assertThat(status("p2-claimx")).isEqualTo("FAILED");     // claim rolled back
+
+        for (TenantStatus st : List.of(TenantStatus.ACTIVE, TenantStatus.SUSPENDED, TenantStatus.PROVISIONING)) {
+            String slug = "p2-claim-" + st.name().toLowerCase();
+            mk(slug, st, true);
+            var r2 = new com.example.perfume_budget.tenancy.ProvisioningRequest(slug, "Shop", slug + "@p2.test", "Owner",
+                    encoder.encode("Own3r-Passw0rd!"), TenantPlan.FREE);
+            java.util.concurrent.atomic.AtomicInteger called = new java.util.concurrent.atomic.AtomicInteger();
+            assertThatThrownBy(() -> provisioningService.provision(r2, t -> called.incrementAndGet()))
+                    .isInstanceOf(com.example.perfume_budget.tenancy.TenantAlreadyExistsException.class);
+            assertThat(called.get()).as(st.name()).isZero();
+        }
+    }
+
+    // ---- V7 phase column ---------------------------------------------------------------------------------------
+
+    private int insertAudit(String phaseColumnAndValue, String slug) {
+        String cols = phaseColumnAndValue == null ? "" : ", phase";
+        String vals = phaseColumnAndValue == null ? "" : ", '" + phaseColumnAndValue.replace("'", "''") + "'";
+        return jdbc(c -> {
+            try (var st = c.createStatement()) {
+                return st.executeUpdate("INSERT INTO master.tenant_audit_log (actor_admin_id, actor_email, tenant_id, tenant_slug, action, "
+                        + "previous_status, new_status" + cols + ") VALUES (1, 'a@b.c', 999001, '" + slug + "', 'APPROVE', 'PENDING', 'ACTIVE'" + vals + ")");
+            }
+        });
+    }
+
+    @Test
+    void phaseColumn_acceptsTheFourPhases_rejectsEverythingElse() {
+        for (String ph : List.of("INTENT", "OUTCOME", "RECLAIM", "RECONCILE")) {
+            assertThat(insertAudit(ph, "p2b-phase-ok")).as(ph).isEqualTo(1);
+        }
+        for (String bad : new String[]{"intent", "BOGUS", "", " OUTCOME", "OUTCOME "}) {
+            assertThatThrownBy(() -> insertAudit(bad, "p2b-phase-bad")).as("'" + bad + "'").hasMessageContaining("ck_tenant_audit_log_phase");
+        }
+        assertThatThrownBy(() -> jdbc(c -> {
+            try (var st = c.createStatement()) {
+                return st.executeUpdate("INSERT INTO master.tenant_audit_log (actor_admin_id, actor_email, tenant_id, tenant_slug, action, "
+                        + "previous_status, new_status, phase) VALUES (1, 'a@b.c', 999001, 'p2b-phase-bad', 'APPROVE', 'PENDING', 'ACTIVE', NULL)");
+            }
+        })).hasMessageContaining("phase");
+        assertThat(scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = 'p2b-phase-bad'")).isZero();
+    }
+
+    @Test
+    void rowsWithoutAPhase_readBackAsOutcome_columnDefaultIsOutcome() throws Exception {
+        assertThat(insertAudit(null, "p2b-phase-default")).isEqualTo(1);   // what every pre-V7 INSERT looks like
+        assertThat(scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = 'p2b-phase-default' AND phase = 'OUTCOME'"))
+                .isEqualTo(1);
+        List<TenantAuditLog> rows = audits.findByTenantSlugOrderByIdAsc("p2b-phase-default");
+        assertThat(rows).extracting(TenantAuditLog::getPhase).containsExactly(TenantAuditPhase.OUTCOME);
+        // and the default is declared as OUTCOME in the catalog, so rows that existed before V7 were back-filled the same way
+        String columnDefault = jdbc(c -> {
+            try (var ps = c.prepareStatement("SELECT column_default FROM information_schema.columns WHERE table_schema = 'master' "
+                    + "AND table_name = 'tenant_audit_log' AND column_name = 'phase'");
+                 ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getString(1);
+            }
+        });
+        assertThat(columnDefault).contains("'OUTCOME'");
     }
 
     // ---- concurrency ---------------------------------------------------------------------------------------------
@@ -585,7 +956,8 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         assertThat(changed(rs)).isEqualTo(1);
         verify(migrator, times(1)).migrateTenant("tenant_p2_race_rp");
         assertThat(status("p2-race-rp")).isEqualTo("ACTIVE");
-        assertThat(auditRows("p2-race-rp")).isEqualTo(1);
+        assertThat(auditRows("p2-race-rp")).isEqualTo(2);
+        assertThat(phases("p2-race-rp")).isEqualTo("INTENT,OUTCOME"); // a loser never writes a second intent
         assertThat(tenantRepository.findBySlug("p2-race-rp").orElseThrow().getStatus()).isEqualTo(TenantStatus.ACTIVE);
     }
 
@@ -602,7 +974,8 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         }
         assertThat(changed(rs)).isEqualTo(1);
         verify(migrator, times(1)).migrateTenant("tenant_p2_race_ap");
-        assertThat(auditRows("p2-race-ap")).isEqualTo(1);
+        assertThat(auditRows("p2-race-ap")).isEqualTo(2);
+        assertThat(phases("p2-race-ap")).isEqualTo("INTENT,OUTCOME");
         assertThat(status("p2-race-ap")).isEqualTo("ACTIVE");
     }
 
@@ -669,6 +1042,6 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
             return cols;
         });
         assertThat(columns).containsExactlyInAnyOrder("id", "occurred_at", "actor_admin_id", "actor_email", "tenant_id", "tenant_slug",
-                "action", "previous_status", "new_status");
+                "action", "previous_status", "new_status", "phase");
     }
 }

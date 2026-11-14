@@ -7,6 +7,7 @@ import com.example.perfume_budget.platform.auth.PlatformPrincipal;
 import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
 import com.example.perfume_budget.platform.enums.TenantAction;
+import com.example.perfume_budget.platform.enums.TenantAuditPhase;
 import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
@@ -28,6 +29,11 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -60,7 +66,7 @@ class PlatformTenantServiceTest {
     @BeforeEach
     void setUp() {
         when(tm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        service = new PlatformTenantService(tenants, signups, audits, saga, cors, tm, 1000, 15);
+        service = new PlatformTenantService(tenants, signups, audits, saga, cors, tm, 1000, 15, 60);
     }
 
     private Tenant tenant(String slug, TenantStatus status) {
@@ -85,6 +91,20 @@ class PlatformTenantServiceTest {
         ArgumentCaptor<TenantAuditLog> c = ArgumentCaptor.forClass(TenantAuditLog.class);
         verify(audits, times(1)).saveAndFlush(c.capture());
         return c.getValue();
+    }
+
+    private List<TenantAuditLog> allAudits() {
+        ArgumentCaptor<TenantAuditLog> c = ArgumentCaptor.forClass(TenantAuditLog.class);
+        verify(audits, org.mockito.Mockito.atLeast(0)).saveAndFlush(c.capture());
+        return c.getAllValues();
+    }
+
+    /** A saga stub that, like the real one, runs the claim hook (INTENT write) and then succeeds. */
+    private void sagaClaimsAndSucceeds(Tenant t) {
+        when(saga.provision(any(), any())).thenAnswer(inv -> {
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(t);
+            return null;
+        });
     }
 
     // ---- list ---------------------------------------------------------------------------------------------
@@ -218,7 +238,8 @@ class PlatformTenantServiceTest {
         assertThat(service.reactivate("acme", ADMIN).changed()).isFalse();
         assertThat(service.approve("acme", ADMIN).changed()).isFalse();
         verify(tenants, never()).transitionStatus(anyLong(), any(), any());
-        verifyNoInteractions(audits, saga);
+        verify(audits, never()).saveAndFlush(any());
+        verifyNoInteractions(saga);
     }
 
     @Test
@@ -238,13 +259,20 @@ class PlatformTenantServiceTest {
 
     @Test
     void reprovision_failed_runsSagaOnce_auditsOnce_dropsHash_andInvalidatesCors() {
-        stub("acme", TenantStatus.FAILED);
+        Tenant t = stub("acme", TenantStatus.FAILED);
         verifiedSignup();
+        sagaClaimsAndSucceeds(t);
         TenantActionResponse r = service.reprovision("acme", ADMIN);
         assertThat(r.changed()).isTrue();
-        verify(saga, times(1)).provision(any());
+        verify(saga, times(1)).provision(any(), any());
         verify(signups).deleteByTenantId(1L);
-        TenantAuditLog a = onlyAudit();
+        List<TenantAuditLog> rows = allAudits();
+        assertThat(rows).hasSize(2);
+        assertThat(rows).extracting(TenantAuditLog::getPhase)
+                .containsExactly(TenantAuditPhase.INTENT, TenantAuditPhase.OUTCOME);
+        assertThat(rows.get(0).getPreviousStatus()).isEqualTo(TenantStatus.FAILED);
+        assertThat(rows.get(0).getNewStatus()).isEqualTo(TenantStatus.PROVISIONING);
+        TenantAuditLog a = rows.get(1);
         assertThat(a.getAction()).isEqualTo(TenantAction.REPROVISION);
         assertThat(a.getPreviousStatus()).isEqualTo(TenantStatus.FAILED);
         assertThat(a.getNewStatus()).isEqualTo(TenantStatus.ACTIVE);
@@ -253,19 +281,20 @@ class PlatformTenantServiceTest {
 
     @Test
     void approve_pendingVerified_usesTheSaga() {
-        stub("acme", TenantStatus.PENDING);
+        Tenant t = stub("acme", TenantStatus.PENDING);
         verifiedSignup();
+        sagaClaimsAndSucceeds(t);
         assertThat(service.approve("acme", ADMIN).changed()).isTrue();
-        verify(saga, times(1)).provision(any());
-        assertThat(onlyAudit().getPreviousStatus()).isEqualTo(TenantStatus.PENDING);
+        verify(saga, times(1)).provision(any(), any());
+        assertThat(allAudits()).hasSize(2).allSatisfy(a -> assertThat(a.getPreviousStatus()).isEqualTo(TenantStatus.PENDING));
     }
 
     @Test
     void reprovision_losingTheSagaClaim_isAnIdempotentNoOp_noAudit_noHashDelete() {
         Tenant t = stub("acme", TenantStatus.FAILED);
         verifiedSignup();
-        when(saga.provision(any())).thenAnswer(inv -> {
-            t.setStatus(TenantStatus.PROVISIONING);
+        when(saga.provision(any(), any())).thenAnswer(inv -> {
+            t.setStatus(TenantStatus.PROVISIONING); // lost the claim: the hook never runs, so no INTENT row
             throw new TenantAlreadyExistsException("tenant is not in a provisionable state");
         });
         TenantActionResponse r = service.reprovision("acme", ADMIN);
@@ -279,14 +308,82 @@ class PlatformTenantServiceTest {
     void reprovision_sagaFailure_auditsFailedOnce_throwsGenericError_leaksNothing() {
         stub("acme", TenantStatus.FAILED);
         verifiedSignup();
-        when(saga.provision(any())).thenThrow(new TenantProvisioningException("acme", true,
+        when(saga.provision(any(), any())).thenThrow(new TenantProvisioningException("acme", true,
                 new RuntimeException("jdbc:postgresql://secret-host password=hunter2")));
         assertThatThrownBy(() -> service.reprovision("acme", ADMIN))
                 .isInstanceOf(TenantProvisioningFailedException.class)
                 .hasMessageNotContaining("hunter2").hasMessageNotContaining("secret-host").hasNoCause();
         TenantAuditLog a = onlyAudit();
         assertThat(a.getNewStatus()).isEqualTo(TenantStatus.FAILED);
+        assertThat(a.getPhase()).isEqualTo(TenantAuditPhase.OUTCOME);
         verify(signups, never()).deleteByTenantId(anyLong());
+    }
+
+    @Test
+    void reprovision_sagaFailure_auditWriteThrowing_stillTheGeneric500_noSecretsLogged() {
+        stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenThrow(new TenantProvisioningException("acme", true, new RuntimeException("x")));
+        when(audits.saveAndFlush(any())).thenThrow(new IllegalStateException("jdbc:postgresql://db password=hunter2"));
+        assertThatThrownBy(() -> service.reprovision("acme", ADMIN))
+                .isInstanceOf(TenantProvisioningFailedException.class)
+                .hasMessageNotContaining("hunter2").hasNoCause();
+    }
+
+    @Test
+    void reprovision_intentWriteFails_nothingIsProvisioned_andTheErrorPropagates() {
+        stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenThrow(new IllegalStateException("claim rolled back"));
+        assertThatThrownBy(() -> service.reprovision("acme", ADMIN)).isInstanceOf(IllegalStateException.class);
+        verify(signups, never()).deleteByTenantId(anyLong());
+    }
+
+    @Test
+    void reprovision_outcomeAuditThrowing_afterSagaSuccess_stillSucceeds_andHashIsDeleted() {
+        Tenant t = stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        sagaClaimsAndSucceeds(t);
+        when(audits.saveAndFlush(any())).thenAnswer(inv -> {
+            TenantAuditLog l = inv.getArgument(0);
+            if (l.getPhase() == TenantAuditPhase.OUTCOME) {
+                throw new IllegalStateException("db down");
+            }
+            return l;
+        });
+        assertThat(service.reprovision("acme", ADMIN).changed()).isTrue();
+        verify(signups).deleteByTenantId(1L);
+    }
+
+    @Test
+    void reprovision_hashDeleteThrowing_doesNotSkipTheOutcomeRow_orFailTheAction() {
+        Tenant t = stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        sagaClaimsAndSucceeds(t);
+        when(signups.deleteByTenantId(1L)).thenThrow(new IllegalStateException("db down"));
+        assertThat(service.reprovision("acme", ADMIN).changed()).isTrue();
+        assertThat(allAudits()).extracting(TenantAuditLog::getPhase)
+                .containsExactly(TenantAuditPhase.INTENT, TenantAuditPhase.OUTCOME);
+    }
+
+    @Test
+    void retryOnActiveTenant_withLeftoverHash_deletesIt_andAuditsReconcile() {
+        stub("acme", TenantStatus.ACTIVE);
+        when(signups.deleteByTenantId(1L)).thenReturn(1);
+        TenantActionResponse r = service.approve("acme", ADMIN);
+        assertThat(r.changed()).isFalse();
+        TenantAuditLog a = onlyAudit();
+        assertThat(a.getPhase()).isEqualTo(TenantAuditPhase.RECONCILE);
+        assertThat(a.getPreviousStatus()).isEqualTo(TenantStatus.ACTIVE);
+        assertThat(a.getNewStatus()).isEqualTo(TenantStatus.ACTIVE);
+        verifyNoInteractions(saga);
+    }
+
+    @Test
+    void retryOnActiveTenant_nothingToRepair_writesNothing() {
+        stub("acme", TenantStatus.ACTIVE);
+        service.approve("acme", ADMIN);
+        verify(audits, never()).saveAndFlush(any());
     }
 
     @Test
@@ -321,10 +418,17 @@ class PlatformTenantServiceTest {
             return 1;
         });
         verifiedSignup();
+        sagaClaimsAndSucceeds(t);
         TenantActionResponse r = service.reprovision("acme", ADMIN);
         assertThat(r.changed()).isTrue();
-        verify(saga, times(1)).provision(any());
-        assertThat(onlyAudit().getPreviousStatus()).isEqualTo(TenantStatus.FAILED);
+        verify(saga, times(1)).provision(any(), any());
+        List<TenantAuditLog> rows = allAudits();
+        assertThat(rows).extracting(TenantAuditLog::getPhase)
+                .containsExactly(TenantAuditPhase.RECLAIM, TenantAuditPhase.INTENT, TenantAuditPhase.OUTCOME);
+        assertThat(rows.get(0).getPreviousStatus()).isEqualTo(TenantStatus.PROVISIONING);
+        assertThat(rows.get(0).getNewStatus()).isEqualTo(TenantStatus.FAILED);
+        assertThat(rows.get(0).getActorAdminId()).isEqualTo(7L);
+        assertThat(rows.get(1).getPreviousStatus()).isEqualTo(TenantStatus.FAILED);
     }
 
     @Test
@@ -337,11 +441,156 @@ class PlatformTenantServiceTest {
         verifyNoInteractions(saga, audits);
     }
 
+    // ---- PLAT-02b rework ------------------------------------------------------------------------------------------
+
+    static final String SECRET = "jdbc:postgresql://db.internal:5432/x password=hunter2 owner@acme.test $2a$12$" + "a".repeat(53);
+
+    /** Captures everything PlatformTenantService logs (message, arguments, stack traces) for the duration of a test. */
+    private ListAppender<ILoggingEvent> captureLogs() {
+        ListAppender<ILoggingEvent> app = new ListAppender<>();
+        app.start();
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PlatformTenantService.class)).addAppender(app);
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PlatformTenantService.class)).setLevel(Level.DEBUG);
+        return app;
+    }
+
+    private static void release(ListAppender<ILoggingEvent> app) {
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PlatformTenantService.class)).detachAppender(app);
+    }
+
+    private static void assertLoggedClassOnly(ListAppender<ILoggingEvent> app, String className) {
+        assertThat(app.list).isNotEmpty();
+        for (ILoggingEvent e : app.list) {
+            assertThat(e.getFormattedMessage()).doesNotContain("hunter2").doesNotContain("jdbc:").doesNotContain("db.internal")
+                    .doesNotContain("owner@acme.test").doesNotContain("$2a$");
+            assertThat(e.getThrowableProxy()).as("no stack trace / exception message is logged").isNull();
+        }
+        assertThat(app.list).anyMatch(e -> e.getLevel() == Level.ERROR && e.getFormattedMessage().contains(className));
+    }
+
+    @Test
+    void bestEffortFailures_logOnlyTheExceptionClass_neverMessageUrlHashOrEmail() {
+        Tenant t = stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        sagaClaimsAndSucceeds(t);
+        when(signups.deleteByTenantId(1L)).thenThrow(new IllegalStateException(SECRET));
+        when(audits.saveAndFlush(any())).thenAnswer(inv -> {
+            TenantAuditLog l = inv.getArgument(0);
+            if (l.getPhase() == TenantAuditPhase.OUTCOME) {
+                throw new java.io.UncheckedIOException(new java.io.IOException(SECRET));
+            }
+            return l;
+        });
+        ListAppender<ILoggingEvent> app = captureLogs();
+        try {
+            assertThat(service.reprovision("acme", ADMIN).changed()).isTrue();
+            assertLoggedClassOnly(app, "IllegalStateException");
+            assertThat(app.list).anyMatch(e -> e.getFormattedMessage().contains("UncheckedIOException"));
+        } finally {
+            release(app);
+        }
+    }
+
+    @Test
+    void failureBranchAuditThrow_logsOnlyTheClass() {
+        stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenThrow(new TenantProvisioningException("acme", true, new RuntimeException(SECRET)));
+        when(audits.saveAndFlush(any())).thenThrow(new IllegalStateException(SECRET));
+        ListAppender<ILoggingEvent> app = captureLogs();
+        try {
+            assertThatThrownBy(() -> service.reprovision("acme", ADMIN)).isInstanceOf(TenantProvisioningFailedException.class);
+            assertLoggedClassOnly(app, "IllegalStateException");
+        } finally {
+            release(app);
+        }
+    }
+
+    @Test
+    void claimOnARowThatBecameFailed_isRejectedInsideTheClaim_forApprove_noIntentWritten() {
+        stub("acme", TenantStatus.PENDING); // what the service read
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenAnswer(inv -> {
+            // the claim transaction saw FAILED (another approve failed the saga meanwhile): approve on FAILED is illegal
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(tenant("acme", TenantStatus.FAILED));
+            return null;
+        });
+        assertThatThrownBy(() -> service.approve("acme", ADMIN)).isInstanceOf(IllegalTenantTransitionException.class)
+                .hasMessage("Cannot approve a tenant that is FAILED");
+        verify(audits, never()).saveAndFlush(any());
+        verify(signups, never()).deleteByTenantId(anyLong());
+    }
+
+    @Test
+    void intentRecordsTheStatusSeenInsideTheClaim_notTheEarlierRead() {
+        stub("acme", TenantStatus.FAILED); // reprovision read FAILED...
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenAnswer(inv -> {
+            // ...and the claim transaction agrees (FAILED); a PENDING there would be illegal for reprovision
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(tenant("acme", TenantStatus.FAILED));
+            return null;
+        });
+        service.reprovision("acme", ADMIN);
+        assertThat(allAudits()).extracting(TenantAuditLog::getPreviousStatus).containsExactly(TenantStatus.FAILED, TenantStatus.FAILED);
+
+        org.mockito.Mockito.reset(audits);
+        stub("acme", TenantStatus.FAILED);
+        org.mockito.Mockito.doAnswer(inv -> {
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(tenant("acme", TenantStatus.PENDING));
+            return null;
+        }).when(saga).provision(any(), any());
+        assertThatThrownBy(() -> service.reprovision("acme", ADMIN)).isInstanceOf(IllegalTenantTransitionException.class);
+        verify(audits, never()).saveAndFlush(any());
+    }
+
+    private TenantAuditLog intent(java.time.Instant at) {
+        return TenantAuditLog.builder().id(5L).tenantId(1L).tenantSlug("acme").phase(TenantAuditPhase.INTENT)
+                .action(TenantAction.APPROVE).previousStatus(TenantStatus.PENDING).newStatus(TenantStatus.PROVISIONING)
+                .occurredAt(at).build();
+    }
+
+    @Test
+    void reconcile_graceIsMeasuredFromTheLaterOfIntentAndTenantUpdate() {
+        Tenant t = stub("acme", TenantStatus.ACTIVE);
+        when(audits.findFirstByTenantIdAndPhaseOrderByIdDesc(1L, TenantAuditPhase.INTENT))
+                .thenReturn(Optional.of(intent(java.time.Instant.now().minusSeconds(3600)))); // old intent, no outcome
+        when(signups.deleteByTenantId(1L)).thenReturn(1);
+        // a slow saga that only just went ACTIVE: its own OUTCOME is about to be written, do not reconcile
+        t.setUpdatedAt(LocalDateTime.now().minusSeconds(5));
+        service.approve("acme", ADMIN);
+        verify(signups, never()).deleteByTenantId(anyLong());
+        verify(audits, never()).saveAndFlush(any());
+        // the tenant went ACTIVE long ago too: now it is reconciled
+        t.setUpdatedAt(LocalDateTime.now().minusHours(2));
+        service.approve("acme", ADMIN);
+        assertThat(onlyAudit().getPhase()).isEqualTo(TenantAuditPhase.RECONCILE);
+    }
+
+    @Test
+    void reconcile_onlyAnOutcomeOfTheSameActionAndStatusCompletesTheIntent() {
+        Tenant t = stub("acme", TenantStatus.ACTIVE);
+        t.setUpdatedAt(LocalDateTime.now().minusHours(2));
+        when(audits.findFirstByTenantIdAndPhaseOrderByIdDesc(1L, TenantAuditPhase.INTENT))
+                .thenReturn(Optional.of(intent(java.time.Instant.now().minusSeconds(3600))));
+        // a later OUTCOME exists, but not an APPROVE one starting at PENDING (e.g. suspend/reactivate rows)
+        when(audits.existsByTenantIdAndPhaseAndIdGreaterThan(1L, TenantAuditPhase.OUTCOME, 5L)).thenReturn(true);
+        service.approve("acme", ADMIN);
+        assertThat(onlyAudit().getPhase()).isEqualTo(TenantAuditPhase.RECONCILE);
+
+        org.mockito.Mockito.reset(audits);
+        when(audits.findFirstByTenantIdAndPhaseOrderByIdDesc(1L, TenantAuditPhase.INTENT))
+                .thenReturn(Optional.of(intent(java.time.Instant.now().minusSeconds(3600))));
+        when(audits.existsByTenantIdAndPhaseAndActionAndPreviousStatusAndIdGreaterThan(1L, TenantAuditPhase.OUTCOME,
+                TenantAction.APPROVE, TenantStatus.PENDING, 5L)).thenReturn(true);
+        service.approve("acme", ADMIN);
+        verify(audits, never()).saveAndFlush(any());
+    }
+
     // ---- throttle -------------------------------------------------------------------------------------------
 
     @Test
     void perAdminActionThrottle_returns429Exception_andIsPerAdmin() {
-        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, tm, 2, 15);
+        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, tm, 2, 15, 60);
         stub("acme", TenantStatus.SUSPENDED);
         limited.suspend("acme", ADMIN);
         limited.suspend("acme", ADMIN);

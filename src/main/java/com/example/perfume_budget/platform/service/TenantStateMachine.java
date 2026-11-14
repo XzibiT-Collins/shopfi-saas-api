@@ -25,7 +25,9 @@ import com.example.perfume_budget.platform.enums.TenantStatus;
  *                                      configured threshold is first reclaimed to FAILED by the service)
  *             PENDING, ACTIVE, SUSPENDED     ILLEGAL (409)  (an ACTIVE tenant is never re-provisioned)
  * </pre>
- * A NO_OP changes nothing and writes no audit row. Unknown tenants are a 404 before the machine is consulted.
+ * A NO_OP changes no tenant status and writes no audit row, with one exception: an APPROVE no-op on an ACTIVE tenant may
+ * reconcile leftovers of an earlier crash (delete the signup hash, append a RECONCILE audit row), see PlatformTenantService.
+ * Unknown tenants are a 404 before the machine is consulted.
  */
 public final class TenantStateMachine {
 

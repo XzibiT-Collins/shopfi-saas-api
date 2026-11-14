@@ -17,6 +17,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: boot deferred until 1b creates the `tenant_template` schema. `mvn compile` passes.
 
 ### 1b. Flyway split + boot ordering
+- [x] `db/migrations/master/V6__tenant_audit_log.sql` (PLAT-02) and `V7__tenant_audit_log_phase.sql` (PLAT-02b: `phase` INTENT/OUTCOME/RECLAIM/RECONCILE; the table stays append-only)
 - [x] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
 - [x] Move existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering, via `git mv`)
 - [x] `spring.flyway.enabled=false`

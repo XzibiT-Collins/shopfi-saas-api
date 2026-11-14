@@ -17,9 +17,15 @@ return tenant business data.
 | 400 | bad query parameter (`status`, `page`, `size`, `sort`, `direction`) |
 | 401 / 403 | not authenticated / not SUPER_ADMIN |
 | 404 | tenant not found. An unknown slug and a malformed slug give the identical response |
-| 409 | illegal transition for the tenant's current status (see below) |
-| 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30), `Retry-After` header set |
+| 409 | illegal transition for the tenant's current status, or approve/reprovision without verified credentials (exact texts below) |
+| 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30), `Retry-After` header (seconds) set. Standard error envelope, exactly `{"description": "Too many tenant actions, slow down", "data": null}` |
 | 500 | the provisioning saga failed; the tenant is now `FAILED` and may be reprovisioned |
+
+## Slug path parameter
+
+`{slug}` must match `^[a-z0-9-]{3,40}$` (3 to 40 characters, lower-case letters, digits and hyphen). Anything else, **including
+upper case** (`Acme` is not `acme`), is answered exactly like an unknown tenant: `404` with `{"description": "Tenant not found",
+"data": null}`. Malformed slugs never reach SQL or a schema name.
 
 ## GET /api/v1/platform/tenants
 
@@ -29,6 +35,8 @@ Query: `status` (optional, one of `PENDING|PROVISIONING|ACTIVE|SUSPENDED|FAILED`
 final tiebreaker, so paging is stable.
 
 Fields are registry fields only. `schemaName`, `webhookToken` and anything from a tenant schema are never returned.
+`ownerEmail` IS returned, on purpose: the console is SUPER_ADMIN only and needs it to contact the owner of a `PENDING`/`FAILED`
+signup. It is personal data, so the console must not log it, cache it in shared storage or show it to anyone below SUPER_ADMIN.
 
 ```json example:list-response
 {
@@ -145,6 +153,18 @@ Illegal transition (HTTP 409), unknown tenant (HTTP 404):
 {"description": "Cannot suspend a tenant that is FAILED", "data": null}
 ```
 
+Exact `409` texts (`description`; `<action>` is the lower-case action, `<STATUS>` the current status):
+
+| Case | `description` |
+|---|---|
+| any illegal transition (see the state machine) | `Cannot <action> a tenant that is <STATUS>` |
+| approve/reprovision, no signup row stored | `Cannot <action> a tenant that is <STATUS>: no onboarding credentials on record` |
+| approve/reprovision, signup not verified | `Cannot <action> a tenant that is <STATUS>: the owner has not verified their email` |
+
+A `FAILED` tenant with no stored signup row (the platform keeps no other credential) therefore gets the "no onboarding credentials" 409 on reprovision. A platform-initiated credential reset is deliberately NOT
+part of this API (decision recorded in PLAT-02b): the platform never sets or sees an owner password. The owner repeats the
+public onboarding signup flow instead; add a separate ticket if operations needs a reset.
+
 ```json example:error-404
 {"description": "Tenant not found", "data": null}
 ```
@@ -194,20 +214,61 @@ Meaning of the transitions:
 
 ## Audit log
 
-Every state-changing call writes exactly one row to `master.tenant_audit_log` (idempotent no-ops and rejected calls write
-none). Suspend/reactivate write it in the same transaction as the status change; approve/reprovision write it once after the
-saga ended, by the caller that won the saga claim (`newStatus` is `ACTIVE`, or `FAILED` when the saga failed).
+`master.tenant_audit_log` is append-only (database triggers reject `UPDATE`, `DELETE`, `TRUNCATE`; the code has no such path),
+so an action that spans several committed steps writes SEVERAL rows. The `phase` column (migration `V7`) says which step a row
+records. Idempotent no-ops and rejected calls write nothing, with the single exception of RECONCILE below.
 
-| Field | Meaning |
-|---|---|
-| `id`, `occurred_at` | sequence id, database timestamp |
-| `actor_admin_id`, `actor_email` | the platform admin from the platform JWT |
-| `tenant_id`, `tenant_slug` | the tenant acted on (no foreign key, survives tenant purge) |
-| `action` | `APPROVE`, `SUSPEND`, `REACTIVATE`, `REPROVISION` |
-| `previous_status`, `new_status` | status before and after |
+| `phase` | Written by | `previous_status` -> `new_status` | Meaning |
+|---|---|---|---|
+| `INTENT` | approve / reprovision | `PENDING`/`FAILED` -> `PROVISIONING` | The action was accepted. Committed atomically with the saga claim and BEFORE any schema is created, only by the caller that won the claim (a concurrent loser writes nothing). Exactly one per accepted action. |
+| `OUTCOME` | approve / reprovision | `PENDING`/`FAILED` -> `ACTIVE` or `FAILED` | The saga ended. Also the single row of suspend and reactivate (`ACTIVE` <-> `SUSPENDED`, same transaction as the status change). |
+| `RECLAIM` | reprovision | `PROVISIONING` -> `FAILED` | A dead saga (untouched for `platform.tenants.stuck-provisioning-minutes`, default 15) was moved to `FAILED`, same transaction as the move; the reprovision then continues with its own INTENT and OUTCOME. Action is `REPROVISION`. |
+| `RECONCILE` | approve (no-op on `ACTIVE`) | `ACTIVE` -> `ACTIVE` | A retry found the tenant already `ACTIVE` and repaired a leftover of a crash after the saga: it deleted the still-stored signup password hash and/or recorded an INTENT that never got its OUTCOME. Written only when something was repaired. Action is the retried action. |
 
-The table holds no passwords, hashes, tokens or payloads. It is append-only: no API can update or delete it and database
-triggers reject `UPDATE`, `DELETE` and `TRUNCATE`. There is no read endpoint yet.
+Rows written before V7 are `OUTCOME` rows. Columns: `id`, `occurred_at` (database time), `actor_admin_id`, `actor_email` (the
+platform admin from the platform JWT, also on RECLAIM and RECONCILE), `tenant_id`, `tenant_slug` (no foreign key, survives a
+tenant purge), `action` (`APPROVE`, `SUSPEND`, `REACTIVATE`, `REPROVISION`), `previous_status`, `new_status`, `phase`. The
+table holds no passwords, hashes, tokens or payloads. There is no read endpoint yet.
+
+How a console (or an auditor with SQL access) should read it, per tenant ordered by `id`:
+
+* `INTENT` followed by `OUTCOME` (same action): completed; `new_status` of the OUTCOME is the result (`FAILED` means the saga
+  failed and the caller received the generic 500).
+* `INTENT` with no later `OUTCOME` or `RECONCILE`: the action was accepted but its end was not recorded (crash, or the audit
+  write failed). The tenant registry status is authoritative: `ACTIVE` means the saga completed, `FAILED` it did not,
+  `PROVISIONING` it is running or dead (a reprovision reclaims it after the stuck window, with a RECLAIM row).
+  A retried approve on an `ACTIVE` tenant older than 60 s (`platform.tenants.reconcile-grace-seconds`) closes the gap with a
+  RECONCILE row. Never infer that nothing happened because the OUTCOME is missing.
+* A `RECLAIM` row sitting between two `INTENT` rows of a tenant marks the EARLIER `INTENT` as dead: that saga died while
+  `PROVISIONING` and was moved to `FAILED`; the later `INTENT` belongs to the reprovision that followed. Do not read the earlier
+  INTENT as an action still in progress, and do not expect an `OUTCOME` for it.
+* `RECONCILE` rows attribute the repair to the admin who retried, not to the original actor: the original actor is the one on
+  the INTENT row.
+* Reprovision of an `ACTIVE` tenant is a 409 (illegal), so only `approve` retries reconcile.
+
+The signup password hash is deleted in its own transaction right after the saga commits, independent of the audit insert; if
+that fails the hash is deleted by the reconcile step of the next approve retry (nothing is lost, and a leftover hash is only a
+BCrypt hash for a tenant whose owner already exists).
+
+## Deployment notes (PLAT-02b)
+
+* **What the audit triggers do and do not protect (known limitation).** The V6 triggers reject `UPDATE`, `DELETE` and
+  `TRUNCATE` on `master.tenant_audit_log` for ANY SQL, including SQL issued by the application, so a bug or an injected
+  statement running as the application cannot rewrite history. They do NOT protect against the table owner or a superuser: an
+  owner can `DROP TRIGGER` or `ALTER TABLE ... DISABLE TRIGGER` and then change rows. Today the application uses a single
+  database role for everything (Flyway migrations at boot via `TenantSchemaMigrator`/`TenantFlywayInitializer`, tenant
+  `CREATE SCHEMA`/`DROP SCHEMA` DDL in the provisioning saga, and normal queries), so that role is necessarily the owner
+  and **the tamper resistance is NOT enforced against a compromised application credential or database administrator**.
+  Splitting migrations/DDL from a runtime role with only `INSERT, SELECT` on `tenant_audit_log` is the intended hardening, but
+  it is NOT deliverable with the current code and must not be assumed in deployment; it is tracked as a separate security
+  item (SEC-01). Until then, protect the audit trail with database-side controls (restricted access to the credential,
+  database audit logging, off-host log shipping).
+* **Single instance.** After every action the CORS decision cache is dropped with `TenantOriginPolicy.invalidateAll()`, which
+  clears the cache of the JVM that handled the request only. With more than one API instance the other instances converge only
+  when their cached decision expires: the cache TTL (30 s allowed, 10 s denied) plus, under registry-lookup pressure, the
+  stale-allow grace of 120 s (DOMAIN-01c), so a suspended tenant's origin can still be allowed on another instance for up to
+  about 150 s. Tenant resolution itself (the 423 for a suspended tenant) reads the registry on every request and is not
+  affected. Run a single instance, or add a cluster-wide invalidation (for example Redis pub/sub) before scaling out.
 
 ## Examples
 

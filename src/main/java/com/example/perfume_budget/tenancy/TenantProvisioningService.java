@@ -63,13 +63,23 @@ public class TenantProvisioningService {
      * @throws TenantProvisioningException         failed after registration; compensated, status FAILED, retryable
      */
     public ProvisioningResult provision(ProvisioningRequest request) {
+        return provision(request, null);
+    }
+
+    /**
+     * Same as {@link #provision(ProvisioningRequest)}; {@code onClaimed} (nullable) runs INSIDE master tx #1 right after
+     * this caller won the claim, so whatever it writes commits atomically with the claim and only for the winner
+     * (PLAT-02b: the audit INTENT row). The Tenant passed in carries the status read in the claim transaction BEFORE the move
+     * to PROVISIONING. If the hook throws, the claim rolls back, nothing is provisioned and the exception propagates unchanged.
+     */
+    public ProvisioningResult provision(ProvisioningRequest request, java.util.function.Consumer<Tenant> onClaimed) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException(
                     "TenantProvisioningService must not run inside a transaction (master and tenant boundaries are separate)");
         }
         ValidatedRequest v = validate(request);
 
-        Tenant tenant = claimOrRegister(v);
+        Tenant tenant = claimOrRegister(v, onClaimed);
         Long tenantId = tenant.getId();
         log.info("Provisioning tenant {} -> schema {}", v.slug(), v.schemaName());
 
@@ -129,7 +139,7 @@ public class TenantProvisioningService {
     }
 
     /** Master tx #1: insert a new PROVISIONING row, or atomically claim a PENDING/FAILED one for the same owner. */
-    private Tenant claimOrRegister(ValidatedRequest v) {
+    private Tenant claimOrRegister(ValidatedRequest v, java.util.function.Consumer<Tenant> onClaimed) {
         try {
             return masterTx.execute(s -> {
                 Tenant existing = tenantRepository.findBySlug(v.slug()).orElse(null);
@@ -137,7 +147,7 @@ public class TenantProvisioningService {
                     if (tenantRepository.existsByOwnerEmail(v.ownerEmail())) {
                         throw new TenantAlreadyExistsException("owner email already registered");
                     }
-                    return tenantRepository.saveAndFlush(Tenant.builder()
+                    Tenant created = tenantRepository.saveAndFlush(Tenant.builder()
                             .slug(v.slug())
                             .displayName(v.displayName())
                             .schemaName(v.schemaName())
@@ -145,19 +155,51 @@ public class TenantProvisioningService {
                             .plan(v.plan())
                             .ownerEmail(v.ownerEmail())
                             .build());
+                    runHook(onClaimed, created);
+                    return created;
                 }
                 if (!existing.getOwnerEmail().equalsIgnoreCase(v.ownerEmail())) {
                     throw new TenantAlreadyExistsException("slug already registered");
                 }
-                int moved = tenantRepository.transitionStatus(existing.getId(),
-                        List.of(TenantStatus.PENDING, TenantStatus.FAILED), TenantStatus.PROVISIONING);
+                // Exact compare-and-set from the status read in THIS transaction: `existing` keeps that pre-claim status,
+                // which is what the hook (audit INTENT) must record, never a value another caller changed meanwhile.
+                TenantStatus seen = existing.getStatus();
+                if (seen != TenantStatus.PENDING && seen != TenantStatus.FAILED) {
+                    throw new TenantAlreadyExistsException("tenant is not in a provisionable state");
+                }
+                int moved = tenantRepository.transitionStatus(existing.getId(), List.of(seen), TenantStatus.PROVISIONING);
                 if (moved != 1) {
                     throw new TenantAlreadyExistsException("tenant is not in a provisionable state");
                 }
+                runHook(onClaimed, existing);
                 return existing;
             });
+        } catch (ClaimHookException hook) {
+            throw hook.unwrap(); // a failure of the caller's hook is NOT a lost race (never reported as "already exists")
         } catch (DataIntegrityViolationException race) {
             throw new TenantAlreadyExistsException("slug or owner email already registered");
+        }
+    }
+
+    /** Runs the caller's claim hook inside the claim transaction; its failure rolls the claim back and is rethrown as is. */
+    private static void runHook(java.util.function.Consumer<Tenant> onClaimed, Tenant claimed) {
+        if (onClaimed == null) {
+            return;
+        }
+        try {
+            onClaimed.accept(claimed);
+        } catch (RuntimeException e) {
+            throw new ClaimHookException(e);
+        }
+    }
+
+    private static final class ClaimHookException extends RuntimeException {
+        ClaimHookException(RuntimeException cause) {
+            super(null, cause, false, false);
+        }
+
+        RuntimeException unwrap() {
+            return (RuntimeException) getCause();
         }
     }
 

@@ -82,6 +82,7 @@ class DynamicCorsIntegrationTest extends AbstractPostgresIntegrationTest {
         status("dcustomsusp", TenantStatus.SUSPENDED, "old.dcustom.example");
         status("dflip", TenantStatus.ACTIVE, null);
         policy.invalidateAll();
+        policy.resetBudgets(); // the flood test drains the shared lookup bucket; do not depend on wall-clock refill
     }
 
     private void status(String slug, TenantStatus status, String domain) {

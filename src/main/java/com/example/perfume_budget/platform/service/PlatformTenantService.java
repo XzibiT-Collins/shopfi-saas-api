@@ -8,6 +8,7 @@ import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.PlatformTenantSummary;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
 import com.example.perfume_budget.platform.enums.TenantAction;
+import com.example.perfume_budget.platform.enums.TenantAuditPhase;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.model.TenantAuditLog;
@@ -44,8 +45,11 @@ import java.util.regex.Pattern;
  * <p>Concurrency model: every status write is a compare-and-set ({@code TenantRepository.transitionStatus}) so two
  * racing callers cannot both win; the loser re-reads and reports an idempotent no-op. The audit row of a
  * suspend/reactivate is written in the SAME master transaction as the status change (all or nothing). For
- * approve/reprovision the saga itself commits in separate steps, so exactly one audit row is written afterwards by the
- * caller that won the saga's claim (previous status to the final ACTIVE/FAILED status).
+ * approve/reprovision the saga commits in separate steps, and the audit table is append-only, so TWO rows are written
+ * by the caller that won the saga's claim: an INTENT row (previous status to PROVISIONING) committed atomically with
+ * the claim and before any DDL, and an OUTCOME row (previous status to ACTIVE/FAILED) after the saga. The signup
+ * password hash is deleted in its own transaction, independent of the audit insert. A crash between the saga and the
+ * OUTCOME write therefore leaves the INTENT row; a retry on the now-ACTIVE tenant reconciles (hash + RECONCILE row).
  *
  * <p>Caches: after every action that may change tenant visibility the CORS decision cache is dropped with
  * {@link TenantOriginPolicy#invalidateAll()} AFTER the DB commit. Tenant resolution itself reads the registry on every
@@ -70,13 +74,16 @@ public class PlatformTenantService {
     private final TransactionTemplate masterTx;
     private final TokenBucketRateLimiter actionLimiter;
     private final Duration stuckAfter;
+    /** An INTENT younger than this is presumed still in flight, so a retry does not write a RECONCILE row for it. */
+    private final Duration reconcileGrace;
 
     public PlatformTenantService(TenantRepository tenantRepository, TenantSignupRepository signupRepository,
                                  TenantAuditLogRepository auditRepository,
                                  TenantProvisioningService provisioningService, TenantOriginPolicy originPolicy,
                                  PlatformTransactionManager txManager,
                                  @Value("${platform.tenants.actions-per-minute:30}") int actionsPerMinute,
-                                 @Value("${platform.tenants.stuck-provisioning-minutes:15}") long stuckMinutes) {
+                                 @Value("${platform.tenants.stuck-provisioning-minutes:15}") long stuckMinutes,
+                                 @Value("${platform.tenants.reconcile-grace-seconds:60}") long reconcileGraceSeconds) {
         this.tenantRepository = tenantRepository;
         this.signupRepository = signupRepository;
         this.auditRepository = auditRepository;
@@ -85,6 +92,7 @@ public class PlatformTenantService {
         this.masterTx = new TransactionTemplate(txManager);
         this.actionLimiter = new TokenBucketRateLimiter(Math.max(1, actionsPerMinute), Duration.ofMinutes(1));
         this.stuckAfter = Duration.ofMinutes(Math.max(1, stuckMinutes));
+        this.reconcileGrace = Duration.ofSeconds(Math.max(0, reconcileGraceSeconds));
     }
 
     // ------------------------------------------------------------------------------------------ list
@@ -197,21 +205,29 @@ public class PlatformTenantService {
                 throw new IllegalTenantTransitionException(action, tenant.getStatus(), "");
             }
             if (d == Decision.NO_OP && !(action == TenantAction.REPROVISION && isStuck(tenant))) {
+                if (tenant.getStatus() == TenantStatus.ACTIVE) {
+                    reconcile(actor, tenant, action);
+                }
                 return response(action, false, tenant.getStatus() == TenantStatus.PROVISIONING,
                         tenant.getStatus(), tenant);
             }
             if (d == Decision.NO_OP) {
                 // Stuck PROVISIONING (saga died): compare-and-set it to FAILED; only one caller wins and proceeds.
-                final Long stuckId = tenant.getId();
-                int reclaimed = masterTx.execute(s -> tenantRepository.reclaimStuckProvisioning(stuckId,
-                        LocalDateTime.now().minus(stuckAfter)));
+                // The RECLAIM audit row is written in the same transaction as the move (all or nothing).
+                final Tenant stuck = tenant;
+                int reclaimed = masterTx.execute(s -> {
+                    int n = tenantRepository.reclaimStuckProvisioning(stuck.getId(), LocalDateTime.now().minus(stuckAfter));
+                    if (n == 1) {
+                        audit(actor, stuck, action, TenantAuditPhase.RECLAIM, TenantStatus.PROVISIONING, TenantStatus.FAILED);
+                    }
+                    return n;
+                });
                 if (reclaimed != 1) {
                     return noOpNow(action, tenant.getId());
                 }
                 tenant = require(slug);
                 log.warn("Platform admin {} reclaimed stuck PROVISIONING tenant {}", actor.id(), slug);
             }
-            TenantStatus previous = tenant.getStatus(); // PENDING (approve) or FAILED (reprovision / reclaimed)
 
             // Credentials: the verified signup row (BCrypt hash only). Never provision without a verified owner.
             TenantSignup signup = signupRepository.findByTenantId(tenant.getId()).orElse(null);
@@ -227,25 +243,101 @@ public class PlatformTenantService {
             ProvisioningRequest request = new ProvisioningRequest(tenant.getSlug(), tenant.getDisplayName(),
                     tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash(), tenant.getPlan());
             final Tenant claimed = tenant;
+            // The status the claim actually moved from, captured INSIDE the claim transaction by the hook below (the
+            // status read above may be stale if another caller changed it meanwhile).
+            final java.util.concurrent.atomic.AtomicReference<TenantStatus> claimedFrom =
+                    new java.util.concurrent.atomic.AtomicReference<>(tenant.getStatus()); // fallback until the hook runs
             try {
                 // The saga performs the atomic PENDING/FAILED -> PROVISIONING claim; exactly one concurrent caller wins.
-                provisioningService.provision(request);
+                // The INTENT row is written inside that claim transaction: only the winner writes it, it is committed
+                // before any DDL runs, and if the insert fails the claim rolls back and nothing is provisioned.
+                provisioningService.provision(request, t -> {
+                    TenantStatus from = t.getStatus();
+                    // The state machine must hold on the row the claim really moved, not only on the earlier read: e.g. an
+                    // approve that read PENDING must not succeed through the claim if the row became FAILED meanwhile.
+                    if (TenantStateMachine.decide(action, from) != Decision.TRANSITION) {
+                        throw new IllegalTenantTransitionException(action, from, "");
+                    }
+                    claimedFrom.set(from);
+                    audit(actor, claimed, action, TenantAuditPhase.INTENT, from, TenantStatus.PROVISIONING);
+                });
             } catch (TenantAlreadyExistsException lost) {
                 return noOpNow(action, claimed.getId());
             } catch (TenantProvisioningException failed) {
-                masterTx.executeWithoutResult(s -> audit(actor, claimed, action, previous, TenantStatus.FAILED));
+                // Best effort and never fatal: a failing audit write must not replace the generic 500 (the INTENT row
+                // already records that the action was accepted). Log the class only, never the message or cause.
+                bestEffort("outcome audit (FAILED)", claimed, () -> masterTx.executeWithoutResult(
+                        s -> audit(actor, claimed, action, TenantAuditPhase.OUTCOME, claimedFrom.get(), TenantStatus.FAILED)));
                 throw new TenantProvisioningFailedException(claimed.getSlug());
             } catch (InvalidProvisioningRequestException bad) {
                 throw new TenantProvisioningFailedException(claimed.getSlug());
+            } catch (org.springframework.dao.DataIntegrityViolationException hookFailure) {
+                // Only the claim hook (INTENT insert) can surface this here: the saga maps its own races to
+                // TenantAlreadyExistsException. It is a server fault with nothing provisioned, never a "lost race" 409.
+                log.error("Tenant {}: claim failed ({}); nothing was provisioned", claimed.getSlug(),
+                        hookFailure.getClass().getSimpleName());
+                throw new org.springframework.dao.DataAccessResourceFailureException("tenant action could not be recorded");
             }
-            masterTx.executeWithoutResult(s -> {
-                signupRepository.deleteByTenantId(claimed.getId()); // drops the password hash, like onboarding does
-                audit(actor, claimed, action, previous, TenantStatus.ACTIVE);
-            });
+            // Saga committed ACTIVE. Two independent best-effort steps: dropping the password hash (retryable, repeated by
+            // reconcile) and the OUTCOME audit row. Neither can undo or fail an action that already succeeded.
+            bestEffort("signup hash delete", claimed, () -> masterTx.executeWithoutResult(
+                    s -> signupRepository.deleteByTenantId(claimed.getId())));
+            bestEffort("outcome audit (ACTIVE)", claimed, () -> masterTx.executeWithoutResult(
+                    s -> audit(actor, claimed, action, TenantAuditPhase.OUTCOME, claimedFrom.get(), TenantStatus.ACTIVE)));
             log.info("Platform admin {} {} tenant {}", actor.id(), action, slug);
-            return response(action, true, false, previous, require(slug));
+            return response(action, true, false, claimedFrom.get(), require(slug));
         } finally {
             originPolicy.invalidateAll();
+        }
+    }
+
+    /**
+     * A retried approve/reprovision on an ACTIVE tenant: repair what a crash after the saga may have left. In ONE
+     * transaction: delete a leftover signup row (BCrypt hash) and, if a hash was deleted or the newest INTENT has no later
+     * OUTCOME/RECONCILE row; nothing is touched while the newest INTENT is younger than the grace period without an OUTCOME (an in-flight winner is not raced), append a RECONCILE row
+     * (ACTIVE -> ACTIVE) naming the retrying admin. Nothing to repair: nothing written (plain idempotent no-op).
+     * A failure here never changes the response of the no-op.
+     */
+    private void reconcile(PlatformPrincipal actor, Tenant tenant, TenantAction action) {
+        bestEffort("reconcile", tenant, () -> masterTx.executeWithoutResult(s -> {
+            TenantAuditLog intent = auditRepository
+                    .findFirstByTenantIdAndPhaseOrderByIdDesc(tenant.getId(), TenantAuditPhase.INTENT).orElse(null);
+            // Only an OUTCOME of the SAME action and starting status, written after that INTENT, completes it (a later
+            // suspend/reactivate OUTCOME says nothing about this approve/reprovision).
+            boolean outcomeWritten = intent != null && auditRepository
+                    .existsByTenantIdAndPhaseAndActionAndPreviousStatusAndIdGreaterThan(tenant.getId(),
+                            TenantAuditPhase.OUTCOME, intent.getAction(), intent.getPreviousStatus(), intent.getId());
+            // In flight = the winner is probably still finishing: measured from the later of the INTENT and the tenant's
+            // last status change, so a slow saga that only just went ACTIVE is not reconciled before its own OUTCOME.
+            java.time.Instant last = intent == null ? null : intent.getOccurredAt();
+            if (tenant.getUpdatedAt() != null) {
+                java.time.Instant upd = tenant.getUpdatedAt().atZone(java.time.ZoneId.systemDefault()).toInstant();
+                last = last == null || upd.isAfter(last) ? upd : last;
+            }
+            boolean inFlight = intent != null && !outcomeWritten && last != null
+                    && last.isAfter(java.time.Instant.now().minus(reconcileGrace));
+            if (inFlight) {
+                return; // the winner of the saga is most likely still finishing its own steps: do not race it
+            }
+            int hashes = signupRepository.deleteByTenantId(tenant.getId());
+            boolean outcomeMissing = intent != null && !outcomeWritten
+                    && !auditRepository.existsByTenantIdAndPhaseAndIdGreaterThan(
+                    tenant.getId(), TenantAuditPhase.RECONCILE, intent.getId());
+            if (hashes > 0 || outcomeMissing) {
+                audit(actor, tenant, action, TenantAuditPhase.RECONCILE, TenantStatus.ACTIVE, TenantStatus.ACTIVE);
+                log.warn("Reconciled ACTIVE tenant {} (hashDeleted={}, outcomeMissing={})",
+                        tenant.getSlug(), hashes > 0, outcomeMissing);
+            }
+        }));
+    }
+
+    /** Runs a step whose failure must not change the HTTP outcome; logs the exception CLASS only (no message/cause). */
+    private void bestEffort(String what, Tenant tenant, Runnable step) {
+        try {
+            step.run();
+        } catch (Exception e) {
+            log.error("Tenant {}: {} failed ({}); the INTENT row and reconciliation cover it", tenant.getSlug(), what,
+                    e.getClass().getSimpleName());
         }
     }
 
@@ -275,7 +367,12 @@ public class PlatformTenantService {
     // ------------------------------------------------------------------------------------------ helpers
 
     private void audit(PlatformPrincipal actor, Tenant t, TenantAction action, TenantStatus prev, TenantStatus next) {
-        auditRepository.saveAndFlush(TenantAuditLog.builder()
+        audit(actor, t, action, TenantAuditPhase.OUTCOME, prev, next);
+    }
+
+    private void audit(PlatformPrincipal actor, Tenant t, TenantAction action, TenantAuditPhase phase,
+                       TenantStatus prev, TenantStatus next) {
+        auditRepository.saveAndFlush(TenantAuditLog.builder().phase(phase)
                 .actorAdminId(actor.id()).actorEmail(actor.email())
                 .tenantId(t.getId()).tenantSlug(t.getSlug())
                 .action(action).previousStatus(prev).newStatus(next).build());
