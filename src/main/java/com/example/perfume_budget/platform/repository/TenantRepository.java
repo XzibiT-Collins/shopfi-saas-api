@@ -37,4 +37,11 @@ public interface TenantRepository extends JpaRepository<Tenant, Long> {
             + "where t.id = :id and t.status in :from")
     int transitionStatus(@Param("id") Long id, @Param("from") java.util.Collection<TenantStatus> from,
                          @Param("to") TenantStatus to);
+
+    /** Stale PENDING (never verified) registrations are purged so an abandoned signup cannot hold a slug/email forever. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from Tenant t where t.status = com.example.perfume_budget.platform.enums.TenantStatus.PENDING "
+            + "and t.createdAt < :cutoff and (t.slug = :slug or t.ownerEmail = :email)")
+    int deleteStalePending(@Param("slug") String slug, @Param("email") String email,
+                           @Param("cutoff") java.time.LocalDateTime cutoff);
 }

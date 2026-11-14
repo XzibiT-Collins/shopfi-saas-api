@@ -91,6 +91,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/category/**").permitAll()
                         .requestMatchers("/api/v1/product/**").permitAll()
                         .requestMatchers("/api/v1/webhook/**").permitAll()
+                        .requestMatchers("/api/v1/platform/onboarding/**").permitAll()
                         .requestMatchers("/actuator/health").permitAll()
                         .requestMatchers("/actuator/prometheus").permitAll()
                         .anyRequest().authenticated()

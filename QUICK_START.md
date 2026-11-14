@@ -307,3 +307,43 @@ Optional (safe defaults): `PORT`/`SERVER_PORT`, `PAYSTACK_URL`, `NOTIFICATION_EM
 `NOTIFICATION_EMAIL_FROM_ADDRESS`, `NOTIFICATION_EMAIL_FROM_NAME`, `RESEND_API_KEY`, `RESEND_BASE_URL`,
 `MANAGEMENT_HEALTH_MAIL_ENABLED`, `REDIS_CACHE_TTL_MINUTES`, `INVENTORY_RESERVATION_EXPIRY_HOURS`,
 `INVENTORY_RESERVATION_CLEANUP_INTERVAL_MS`, `DISCOUNT_CACHE_EVICT_INTERVAL_MS`.
+
+### Reverse proxy and client IP (required for per-IP rate limits)
+
+The public onboarding endpoints (and `SiteVisitFilter`) rate-limit per client IP. That IP must come from the
+proxy, never from a header the client can write. Both profiles inherit these settings from `application.properties`
+(so dev and prod cannot drift):
+
+```
+server.forward-headers-strategy=native
+server.tomcat.remoteip.remote-ip-header=X-Forwarded-For
+server.tomcat.remoteip.protocol-header=X-Forwarded-Proto
+server.tomcat.remoteip.internal-proxies=${TRUSTED_PROXY_REGEX:<private and loopback ranges>}
+```
+
+How it works: Tomcat's RemoteIpValve reads `X-Forwarded-For` from the right, skips hops that match
+`internal-proxies` (our own proxy tier) and sets `request.getRemoteAddr()` to the first untrusted hop, i.e. the
+address the proxy itself saw. Everything left of it is client supplied and ignored. If the direct TCP peer is not a
+trusted proxy, forwarding headers are ignored entirely. `X-Real-IP` and `Forwarded` are never used. Do NOT set
+`server.forward-headers-strategy=framework`: Spring's ForwardedHeaderFilter takes the LEFTMOST `X-Forwarded-For`
+entry, so any client could pick its own rate-limit bucket (a test boots the shipped config in dev and prod and fails
+if this regresses). IPv6 clients are bucketed by their /64.
+
+- Render (single router in front of the service, private network peers): the defaults are correct, no env var needed.
+  Render's router appends the real client address to `X-Forwarded-For`.
+- Another proxy tier in front of Render (CDN, Cloudflare, extra LB): set `TRUSTED_PROXY_REGEX` to a regex that matches
+  the addresses of ALL your proxies and nothing else (full-match regex, e.g. `10\..*|203\.0\.113\.\d+`). If you
+  forget one, all clients collapse into that proxy's address (shared bucket: safe but too strict); if you list too
+  much (e.g. `.*`), clients can spoof again.
+- Direct exposure without any proxy: the peer is the client, headers are ignored. Local `curl` from the same host is
+  treated as a trusted proxy in dev, so a hand-set `X-Forwarded-For` is honoured there only.
+- Rate-limit state is per JVM instance and bounded (`onboarding.max-tracked-keys`, default 10000 per limiter; beyond
+  it new keys share one overflow bucket, i.e. fail closed).
+
+### Onboarding OTP policy
+
+`POST /api/v1/platform/onboarding/verify` consumes the OTP (single use). `POST /resend` (`{slug,email}`) always
+returns the same 202 body; it only sends a new code to the signup's stored owner email for a PENDING/FAILED signup that
+is not locked, not mid-provisioning, past the 60 s cooldown and under `onboarding.max-resends` (3). A resend never
+clears a lockout and never resets the failed-attempt counter (so it cannot be used to buy extra guesses or to unlock
+someone else's signup). Master migration `V4__tenant_signup_resend.sql` adds the resend bookkeeping columns.
