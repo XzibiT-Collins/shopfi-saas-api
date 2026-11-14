@@ -218,13 +218,11 @@ public class OtpServiceImpl implements OtpService {
      * Single place where every OTP/reset Redis key is built (TENANT-09 scheme). The key is always scoped by the
      * current request's tenant (same prefix the cache layer uses), so a challenge token, OTP or reset token minted
      * for one tenant can never be looked up, redeemed or overwritten from another tenant. Format:
-     * {@code otp:<kind>:<tenant>:<id>}. Fails closed (AUTH-01) when no scope is bound at all
-     * (the neutral-schema fallback of the cache prefix is never used for OTP keys).
+     * {@code otp:<kind>:<tenant>:<id>}. Fails closed (AUTH-01, PO decision) unless a TENANT-scope context is bound: no
+     * context or PLATFORM scope throws (platform admins never use customer OTPs).
      */
     private String buildKey(String kind, String id) {
-        if (TenantContext.getSlug() == null) {
-            throw new IllegalStateException("OTP and reset-token operations require a resolved tenant");
-        }
+        tenantScope(); // fail closed: no context or PLATFORM scope -> IllegalStateException
         return KEY_ROOT + ":" + kind + ":" + TenantContext.getCachePrefix() + ":" + id;
     }
 

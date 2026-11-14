@@ -115,9 +115,14 @@ class OtpServiceTenantScopingTest {
     }
 
     @Test
-    void platformScopeUsesPlatformMarker() {
+    void platformScopeFailsClosed() {
+        // Deliberate stricter semantics (PO decision, CHAIN-SYNC): platform scope used to get the __platform__ marker.
         TenantContext.set(TenantIdentity.platform());
-        service.sendRegistrationOtp("p@x.com");
-        assertTrue(store.containsKey("otp:registration:__platform__:p@x.com"));
+        assertThrows(IllegalStateException.class, () -> service.sendRegistrationOtp("p@x.com"));
+        assertThrows(IllegalStateException.class, () -> service.initiateLoginOtp("p@x.com"));
+        assertThrows(IllegalStateException.class, () -> service.verifyRegistrationOtp("p@x.com", "123456"));
+        assertThrows(IllegalStateException.class, () -> service.verifyResetPasswordToken("t"));
+        assertThrows(IllegalStateException.class, () -> service.requestResetPasswordToken("p@x.com", "P"));
+        assertTrue(store.isEmpty());
     }
 }
