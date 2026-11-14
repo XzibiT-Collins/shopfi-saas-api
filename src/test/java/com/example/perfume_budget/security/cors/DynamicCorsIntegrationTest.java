@@ -51,6 +51,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "cors.tenant-cache.ttl-seconds=1",
         "cors.tenant-cache.negative-ttl-seconds=1",
         "cors.tenant-cache.max-lookups-per-second=20",
+        // every MockMvc request comes from 127.0.0.1: the per-client budget (unit-tested in TenantOriginPolicyTest) is
+        // raised here so the shared-address test traffic is governed by the global budget exactly as before
+        "cors.tenant-cache.max-lookups-per-ip-per-second=1000",
         "spring.datasource.hikari.maximum-pool-size=4",
         "spring.datasource.hikari.minimum-idle=0"
 })
