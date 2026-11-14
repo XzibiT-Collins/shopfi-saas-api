@@ -51,6 +51,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "CLOUDINARY_API_SECRET=test",
         "ADMIN_EMAIL=admin@shopfi.test",
         "ADMIN_PASSWORD=test-admin-password",
+        "PLATFORM_ADMIN_EMAIL=platform-root@shopfi.test",
+        "PLATFORM_ADMIN_PASSWORD=Pl4tform-boot-pass!",
         "FRONTEND_CHANGE_PASSWORD_URL=https://app.shopfi.test/reset-password",
         "CORS_ALLOWED_ORIGINS=https://app.shopfi.test",
         "TENANT_PLATFORM_DOMAINS=api.shopfi.test",
