@@ -300,6 +300,7 @@ Required (no default):
 | Payments | `PLATFORM_ENCRYPTION_KEY`, `PLATFORM_API_BASE_URL` |
 | Cloudinary | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` |
 | Seed admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD` |
+| Platform super-admin (first login) | `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` (12 to 72 bytes), optional `PLATFORM_ADMIN_FULL_NAME`. Insert-only: creates the first SUPER_ADMIN at boot if that email does not exist, never changes an existing one (rotate a password in the DB, not via env). Unset or empty = bootstrap skipped with one WARN (no DB access), same in dev and prod; after the first super-admin exists both variables can be removed from the environment, and changing them later never alters an existing admin. Login: `POST /api/v1/platform/auth/login`. |
 | URLs / CORS | `FRONTEND_CHANGE_PASSWORD_URL`, `CORS_ALLOWED_ORIGINS` |
 | Tenancy | `TENANT_BASE_DOMAIN` (e.g. `shopfi.app`, tenants are `<slug>.TENANT_BASE_DOMAIN`), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts) |
 

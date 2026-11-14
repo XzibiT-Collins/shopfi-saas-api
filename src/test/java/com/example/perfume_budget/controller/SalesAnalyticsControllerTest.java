@@ -74,6 +74,13 @@ class SalesAnalyticsControllerTest {
     @MockBean
     TenantRegistryService tenantRegistryService;
 
+    // Required by JWTFilter (platform-scope authentication, PLAT-01).
+    @MockBean
+    com.example.perfume_budget.platform.auth.PlatformJwtService platformJwtService;
+
+    @MockBean
+    com.example.perfume_budget.platform.repository.PlatformAdminRepository platformAdminRepository;
+
     @MockBean
     JpaMetamodelMappingContext jpaMetamodelMappingContext;
 

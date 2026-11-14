@@ -9,7 +9,8 @@ import java.util.Optional;
 @Repository
 public interface PlatformAdminRepository extends JpaRepository<PlatformAdmin, Long> {
 
-    Optional<PlatformAdmin> findByEmail(String email);
+    /** Case-insensitive (lower(email) = lower(?)): consistent with login lowercasing; V5 enforces lower(email) uniqueness. */
+    Optional<PlatformAdmin> findByEmailIgnoreCase(String email);
 
-    boolean existsByEmail(String email);
+    boolean existsByEmailIgnoreCase(String email);
 }
