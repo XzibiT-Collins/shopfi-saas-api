@@ -43,6 +43,7 @@ public class CategoryController {
         return ResponseEntity.ok().body(CustomApiResponse.success(categoryService.getCategoryById(categoryId)));
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/delete/{categoryId}")
     public ResponseEntity<Void> deleteCategory(@PathVariable Long categoryId){
         categoryService.deleteCategory(categoryId);
