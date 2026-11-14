@@ -125,6 +125,10 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         for (Map<String, Object> fk : fks) {
             jdbc.update("DELETE FROM " + fk.get("tbl") + " WHERE " + fk.get("col") + " IN " + in);
         }
+        jdbc.update("UPDATE tenant_acme.products SET family_id = NULL WHERE id IN " + in);
+        jdbc.update("DELETE FROM tenant_acme.product_families WHERE base_unit_id IN " + in
+                + " AND NOT EXISTS (SELECT 1 FROM tenant_acme.products p WHERE p.family_id = product_families.id)");
+        jdbc.update("UPDATE tenant_acme.product_families SET base_unit_id = NULL WHERE base_unit_id IN " + in);
         jdbc.update("DELETE FROM tenant_acme.products WHERE id IN " + in);
     }
 
