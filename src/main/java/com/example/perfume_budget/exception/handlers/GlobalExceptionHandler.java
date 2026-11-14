@@ -40,6 +40,9 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @org.springframework.beans.factory.annotation.Value("${spring.servlet.multipart.max-request-size:12MB}")
+    private String maxRequestSize = "12MB";
+
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMissingServletRequestParameterException(MissingServletRequestParameterException ex){
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Missing required parameter: " + ex.getParameterName() + "."));
@@ -104,8 +107,25 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMaxSizeException(MaxUploadSizeExceededException ex) {
-        String maxFileSizeErrorText = "File too large! Maximum allowed size is 10MB";
+        // The effective ceiling is the global multipart max-request-size (12MB since THEME-04), not Boot's old 10MB default.
+        String maxFileSizeErrorText = "File too large! Maximum allowed size is " + maxRequestSize;
         return ResponseEntity.status(413).body(CustomApiResponse.error(maxFileSizeErrorText));
+    }
+
+    /**
+     * Safety net (THEME-04d): a multipart parse failure that got past ThemeWriteGuardFilter on the theme endpoint is a
+     * client error (400 INVALID_FORMAT in the theme error shape), never a 500. Everywhere else the previous generic
+     * behaviour is kept unchanged.
+     */
+    @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
+    public ResponseEntity<?> handleMultipartException(
+            org.springframework.web.multipart.MultipartException ex, jakarta.servlet.http.HttpServletRequest request) {
+        if ("PUT".equals(request.getMethod()) && com.example.perfume_budget.theme.ThemeRequestSizeFilter.isThemePath(request)) {
+            log.debug("Theme multipart rejected by resolver: {}", ex.getClass().getSimpleName());
+            return ResponseEntity.badRequest().body(CustomApiResponse.error("Theme validation failed",
+                    java.util.List.of(new com.example.perfume_budget.theme.ThemeFieldError("$", "INVALID_FORMAT", "malformed multipart request"))));
+        }
+        return handleGenericException(ex);
     }
 
     @ExceptionHandler(InvalidFileException.class)

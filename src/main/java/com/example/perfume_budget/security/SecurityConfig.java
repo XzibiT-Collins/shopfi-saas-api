@@ -14,7 +14,9 @@ import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationFailureHan
 import com.example.perfume_budget.security.oauth2.OAuth2AuthenticationSuccessHandler;
 import com.example.perfume_budget.security.oauth2.TenantAwareAuthorizationRequestResolver;
 import lombok.RequiredArgsConstructor;
+import com.example.perfume_budget.theme.ThemeRequestSizeFilter;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.HttpMethod;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
@@ -61,7 +63,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, com.example.perfume_budget.theme.ThemeWriteRateLimiter themeWriteRateLimiter) throws Exception {
         http
                 .addFilterBefore(new com.example.perfume_budget.security.cors.CanonicalPathGuardFilter(), org.springframework.web.filter.CorsFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
@@ -76,6 +78,8 @@ public class SecurityConfig {
                         .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers("/api/v1/auth/me").authenticated()
                         .requestMatchers("/api/v1/auth/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/theme").permitAll()
+                        .requestMatchers(HttpMethod.PUT, "/api/v1/theme").hasRole("ADMIN")
                         .requestMatchers("/api/v1/category/**").permitAll()
                         .requestMatchers("/api/v1/product/**").permitAll()
                         .requestMatchers("/api/v1/webhook/**").permitAll()
@@ -104,10 +108,15 @@ public class SecurityConfig {
                         .successHandler(oAuth2AuthenticationSuccessHandler)
                         .failureHandler(oAuth2AuthenticationFailureHandler)
                 )
+                .addFilterBefore(new com.example.perfume_budget.theme.ThemeMultipartErrorDispatchFilter(), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(tenantResolutionFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(new TenantRequiredFilter(), UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new ThemeRequestSizeFilter(), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(siteVisitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                // THEME-04c: after authentication AND authorization, before DispatcherServlet's multipart parsing/spooling.
+                .addFilterAfter(new com.example.perfume_budget.theme.ThemeWriteGuardFilter(themeWriteRateLimiter),
+                        org.springframework.security.web.access.intercept.AuthorizationFilter.class)
                 .userDetailsService(userDetailsService)
                 .exceptionHandling(exceptionHandling -> exceptionHandling
                         .authenticationEntryPoint(jwtAuthenticationEntryPoint)
