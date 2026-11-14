@@ -91,7 +91,12 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/category/**").permitAll()
                         .requestMatchers("/api/v1/product/**").permitAll()
                         .requestMatchers("/api/v1/webhook/**").permitAll()
+                        // Platform control plane: auth endpoints and public onboarding are open; everything else
+                        // under /platform needs a platform-claim SUPER_ADMIN token (JWTFilter.authenticatePlatform).
+                        .requestMatchers("/api/v1/platform/auth/me").hasRole("SUPER_ADMIN")
+                        .requestMatchers("/api/v1/platform/auth/**").permitAll()
                         .requestMatchers("/api/v1/platform/onboarding/**").permitAll()
+                        .requestMatchers("/api/v1/platform/**").hasRole("SUPER_ADMIN")
                         .requestMatchers("/actuator/health").permitAll()
                         .requestMatchers("/actuator/prometheus").permitAll()
                         .anyRequest().authenticated()

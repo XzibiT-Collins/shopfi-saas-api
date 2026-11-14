@@ -3,6 +3,13 @@ package com.example.perfume_budget.filter;
 
 
 import com.example.perfume_budget.dto.AppUser;
+import com.example.perfume_budget.platform.auth.PlatformAuthCookies;
+import com.example.perfume_budget.platform.auth.PlatformJwtService;
+import com.example.perfume_budget.platform.auth.PlatformPrincipal;
+import com.example.perfume_budget.platform.enums.PlatformRole;
+import com.example.perfume_budget.platform.model.PlatformAdmin;
+import com.example.perfume_budget.platform.repository.PlatformAdminRepository;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.tenancy.TenantIdentity;
 import com.example.perfume_budget.tenancy.TenantScope;
@@ -34,11 +41,21 @@ public class JWTFilter extends OncePerRequestFilter {
 
     private final JWTUtil jwtUtil;
     private final UserDetailsService userDetailsService;
+    private final PlatformJwtService platformJwtService;
+    private final PlatformAdminRepository platformAdminRepository;
 
     @Override
     protected void doFilterInternal(@NonNull HttpServletRequest request,
                                     @NonNull HttpServletResponse response,
                                     @NonNull FilterChain filterChain) throws ServletException, IOException {
+        TenantIdentity identity = TenantContext.get();
+        if (identity != null && identity.scope() == TenantScope.PLATFORM) {
+            // Platform control plane: tenant cookies/tokens are never read here and platform cookies are never
+            // read on tenant paths (below), so the two token families cannot be confused.
+            authenticatePlatform(request, response, filterChain);
+            return;
+        }
+
         String token = extractTokenFromCookie(request);
 
         try {
@@ -101,11 +118,54 @@ public class JWTFilter extends OncePerRequestFilter {
         if (identity == null) {
             return false;
         }
+        // Fail closed: platform scope never reaches this method (handled by authenticatePlatform), and a
+        // platform-claim token is never valid for a tenant.
         if (identity.scope() == TenantScope.PLATFORM) {
-            return true;
+            return false;
         }
         String tokenTenant = jwtUtil.extractTenant(token);
+        if (TenantContext.PLATFORM_SLUG.equals(tokenTenant)) {
+            return false;
+        }
         return identity.slug() != null && identity.slug().equals(tokenTenant);
+    }
+
+    private static final java.util.Set<String> PLATFORM_PUBLIC_AUTH_PATHS = java.util.Set.of(
+            "/api/v1/platform/auth/login", "/api/v1/platform/auth/refresh", "/api/v1/platform/auth/logout");
+    private static final String PLATFORM_ONBOARDING_PREFIX = "/api/v1/platform/onboarding/";
+
+    /**
+     * Authenticates {@code /api/v1/platform/**} from the {@code platformAccessToken} cookie only: signature (key
+     * derived for platform), {@code tenant="__platform__"}, role SUPER_ADMIN, type access, and an ACTIVE
+     * {@link PlatformAdmin} in master. {@code /platform/auth/{login,refresh,logout}} and {@code /platform/onboarding/**} are public and
+     * skip token processing entirely so a stale cookie can never block login or signup.
+     */
+    private void authenticatePlatform(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+            throws ServletException, IOException {
+        String path = request.getRequestURI();
+        if (PLATFORM_PUBLIC_AUTH_PATHS.contains(path) || path.startsWith(PLATFORM_ONBOARDING_PREFIX)) {
+            chain.doFilter(request, response);
+            return;
+        }
+        String token = PlatformAuthCookies.read(request, PlatformAuthCookies.ACCESS_COOKIE);
+        if (token != null) {
+            PlatformAdmin admin = platformJwtService.verify(token, PlatformJwtService.TYPE_ACCESS)
+                    .flatMap(c -> platformAdminRepository.findByEmail(c.getSubject()))
+                    .filter(PlatformAdmin::isActive)
+                    .orElse(null);
+            if (admin == null) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType("application/json");
+                response.getWriter().write("{\"description\":\"Invalid or expired token\",\"data\":null}");
+                return;
+            }
+            var auth = new UsernamePasswordAuthenticationToken(
+                    new PlatformPrincipal(admin.getId(), admin.getEmail(), admin.getFullName()), null,
+                    java.util.List.of(new SimpleGrantedAuthority("ROLE_" + PlatformRole.SUPER_ADMIN.name())));
+            auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+            SecurityContextHolder.getContext().setAuthentication(auth);
+        }
+        chain.doFilter(request, response);
     }
 
     private String extractTokenFromCookie(HttpServletRequest request) {
