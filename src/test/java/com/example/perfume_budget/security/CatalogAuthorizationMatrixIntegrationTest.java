@@ -73,7 +73,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         platformAsTenant = new Cookie("accessToken", platformToken);
         platformCookie = new Cookie("platformAccessToken", platformToken);
 
-        jdbc.update("DELETE FROM tenant_acme.categories WHERE category LIKE 'sec03-%'");
+        jdbc.update("DELETE FROM tenant_acme.categories WHERE name LIKE 'sec03-%'");
         categoryId = createCategory("sec03-keep");
         createProductViaApi(acme, "sec03-product");
         productId = jdbc.queryForObject("SELECT id FROM tenant_acme.products WHERE name = 'sec03-product' ORDER BY id DESC LIMIT 1", Long.class);
@@ -100,7 +100,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
     void cleanUp() {
         platformAdmins.findAll().stream().filter(a -> PLATFORM_EMAIL.equals(a.getEmail())).forEach(platformAdmins::delete);
         jdbc.update("DELETE FROM tenant_acme.users WHERE email = 'customer-sec03@acme.test'");
-        jdbc.update("DELETE FROM tenant_acme.categories WHERE category LIKE 'sec03-%'");
+        jdbc.update("DELETE FROM tenant_acme.categories WHERE name LIKE 'sec03-%'");
     }
 
     @org.junit.jupiter.api.AfterEach
@@ -108,7 +108,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         for (Long id : jdbc.queryForList("SELECT id FROM tenant_acme.products WHERE name LIKE 'sec03-%'", Long.class)) {
             mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/product/delete/" + id).header("X-Tenant-ID", "acme").cookie(admin));
         }
-        jdbc.update("DELETE FROM tenant_acme.categories WHERE category LIKE 'sec03-%'");
+        jdbc.update("DELETE FROM tenant_acme.categories WHERE name LIKE 'sec03-%'");
     }
 
     // ---------------------------------------------------------------- helpers
@@ -118,7 +118,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
                 .header("X-Tenant-ID", "acme").cookie(admin).contentType("application/json")
                 .content("{\"categoryName\":\"" + name + "\",\"description\":\"d\"}")).andReturn().getResponse();
         assertThat(r.getStatus()).as("fixture category").isEqualTo(200);
-        return jdbc.queryForObject("SELECT id FROM tenant_acme.categories WHERE category = ? ORDER BY id DESC LIMIT 1", Long.class, name);
+        return jdbc.queryForObject("SELECT id FROM tenant_acme.categories WHERE name = ? ORDER BY id DESC LIMIT 1", Long.class, name);
     }
 
     /** Hash of every row of the tables an endpoint under test could mutate, plus tenant registry size. */
@@ -221,7 +221,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         long extra = createCategory("sec03-extra");
         assertThat(status(build(Endpoint.json("u", HttpMethod.PUT, "/api/v1/category/update/" + extra,
                 "{\"categoryName\":\"sec03-renamed\",\"description\":\"x\"}"), admin))).isEqualTo(200);
-        assertThat(jdbc.queryForObject("SELECT category FROM tenant_acme.categories WHERE id = ?", String.class, extra))
+        assertThat(jdbc.queryForObject("SELECT name FROM tenant_acme.categories WHERE id = ?", String.class, extra))
                 .isEqualTo("sec03-renamed");
         assertThat(status(build(Endpoint.plain("d", HttpMethod.DELETE, "/api/v1/category/delete/" + extra), admin))).isEqualTo(204);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.categories WHERE id = ?", Integer.class, extra)).isZero();
