@@ -4,6 +4,9 @@ import com.example.perfume_budget.events.LoginOtpEvent;
 import com.example.perfume_budget.events.ResetPasswordEvent;
 import com.example.perfume_budget.events.UserRegistrationEvent;
 import com.example.perfume_budget.exception.BadRequestException;
+import com.example.perfume_budget.tenancy.TenantContext;
+import com.example.perfume_budget.tenancy.TenantIdentity;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -41,13 +44,20 @@ class OtpServiceImplTest {
     @BeforeEach
     void setUp() {
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        // AUTH-01: every OTP / challenge / reset key is tenant scoped, so a tenant must be bound.
+        TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+    }
+
+    @AfterEach
+    void clearTenant() {
+        TenantContext.clear();
     }
 
     @Test
     void sendRegistrationOtp_Success() {
         otpService.sendRegistrationOtp(email);
 
-        verify(valueOperations).set(eq("otp:registration:" + email), anyString(), any(Duration.class));
+        verify(valueOperations).set(eq("otp:registration:acme:" + email), anyString(), any(Duration.class));
         verify(eventPublisher).publishEvent(any(UserRegistrationEvent.class));
     }
 
@@ -56,8 +66,8 @@ class OtpServiceImplTest {
         String challengeToken = otpService.initiateLoginOtp(email);
 
         assertNotNull(challengeToken);
-        verify(valueOperations).set(eq("otp:login:code:" + challengeToken), anyString(), any(Duration.class));
-        verify(valueOperations).set(eq("otp:login:email:" + challengeToken), eq(email), any(Duration.class));
+        verify(valueOperations).set(eq("otp:login:code:acme:" + challengeToken), anyString(), any(Duration.class));
+        verify(valueOperations).set(eq("otp:login:email:acme:" + challengeToken), eq(email), any(Duration.class));
         verify(eventPublisher).publishEvent(any(LoginOtpEvent.class));
     }
 
@@ -73,23 +83,23 @@ class OtpServiceImplTest {
     void invalidateResetPasswordToken_Success() {
         String token = "token123";
         otpService.invalidateResetPasswordToken(token);
-        verify(redisTemplate).delete(token);
+        verify(redisTemplate).delete("otp:reset:acme:" + token);
     }
 
     @Test
     void verifyRegistrationOtp_Success() {
         String otp = "123456";
-        when(valueOperations.get("otp:registration:" + email)).thenReturn(otp);
+        when(valueOperations.get("otp:registration:acme:" + email)).thenReturn(otp);
 
         boolean result = otpService.verifyRegistrationOtp(email, otp);
 
         assertTrue(result);
-        verify(redisTemplate).delete("otp:registration:" + email);
+        verify(redisTemplate).delete("otp:registration:acme:" + email);
     }
 
     @Test
     void verifyRegistrationOtp_Failure_WrongOtp() {
-        when(valueOperations.get("otp:registration:" + email)).thenReturn("123456");
+        when(valueOperations.get("otp:registration:acme:" + email)).thenReturn("123456");
 
         boolean result = otpService.verifyRegistrationOtp(email, "654321");
 
@@ -99,7 +109,7 @@ class OtpServiceImplTest {
 
     @Test
     void verifyRegistrationOtp_Failure_NoStoredOtp() {
-        when(valueOperations.get("otp:registration:" + email)).thenReturn(null);
+        when(valueOperations.get("otp:registration:acme:" + email)).thenReturn(null);
 
         boolean result = otpService.verifyRegistrationOtp(email, "123456");
 
@@ -110,43 +120,43 @@ class OtpServiceImplTest {
     void verifyLoginOtp_Success() {
         String challengeToken = "challenge-123";
         String otp = "123456";
-        when(valueOperations.get("otp:login:code:" + challengeToken)).thenReturn(otp);
+        when(valueOperations.get("otp:login:code:acme:" + challengeToken)).thenReturn(otp);
 
         boolean result = otpService.verifyLoginOtp(challengeToken, otp);
 
         assertTrue(result);
-        verify(redisTemplate).delete("otp:login:code:" + challengeToken);
-        verify(redisTemplate).delete("otp:login:email:" + challengeToken);
+        verify(redisTemplate).delete("otp:login:code:acme:" + challengeToken);
+        verify(redisTemplate).delete("otp:login:email:acme:" + challengeToken);
     }
 
     @Test
     void verifyLoginOtp_Failure_WrongOtp() {
         String challengeToken = "challenge-123";
-        when(valueOperations.get("otp:login:code:" + challengeToken)).thenReturn("123456");
+        when(valueOperations.get("otp:login:code:acme:" + challengeToken)).thenReturn("123456");
 
         boolean result = otpService.verifyLoginOtp(challengeToken, "654321");
 
         assertFalse(result);
-        verify(redisTemplate, never()).delete("otp:login:code:" + challengeToken);
-        verify(redisTemplate, never()).delete("otp:login:email:" + challengeToken);
+        verify(redisTemplate, never()).delete("otp:login:code:acme:" + challengeToken);
+        verify(redisTemplate, never()).delete("otp:login:email:acme:" + challengeToken);
     }
 
     @Test
     void resendLoginOtp_Success() {
         String challengeToken = "challenge-123";
-        when(valueOperations.get("otp:login:email:" + challengeToken)).thenReturn(email);
+        when(valueOperations.get("otp:login:email:acme:" + challengeToken)).thenReturn(email);
 
         otpService.resendLoginOtp(challengeToken);
 
-        verify(valueOperations).set(eq("otp:login:code:" + challengeToken), anyString(), any(Duration.class));
-        verify(valueOperations).set(eq("otp:login:email:" + challengeToken), eq(email), any(Duration.class));
+        verify(valueOperations).set(eq("otp:login:code:acme:" + challengeToken), anyString(), any(Duration.class));
+        verify(valueOperations).set(eq("otp:login:email:acme:" + challengeToken), eq(email), any(Duration.class));
         verify(eventPublisher).publishEvent(any(LoginOtpEvent.class));
     }
 
     @Test
     void resendLoginOtp_Failure_InvalidChallenge() {
         String challengeToken = "challenge-123";
-        when(valueOperations.get("otp:login:email:" + challengeToken)).thenReturn(null);
+        when(valueOperations.get("otp:login:email:acme:" + challengeToken)).thenReturn(null);
 
         assertThrows(BadRequestException.class, () -> otpService.resendLoginOtp(challengeToken));
     }
@@ -154,7 +164,7 @@ class OtpServiceImplTest {
     @Test
     void getEmailFromLoginChallenge_Success() {
         String challengeToken = "challenge-123";
-        when(valueOperations.get("otp:login:email:" + challengeToken)).thenReturn(email);
+        when(valueOperations.get("otp:login:email:acme:" + challengeToken)).thenReturn(email);
 
         String result = otpService.getEmailFromLoginChallenge(challengeToken);
 
@@ -164,7 +174,7 @@ class OtpServiceImplTest {
     @Test
     void verifyResetPasswordToken_Success() {
         String token = "valid-token";
-        when(valueOperations.get(token)).thenReturn(email);
+        when(valueOperations.get("otp:reset:acme:" + token)).thenReturn(email);
 
         boolean result = otpService.verifyResetPasswordToken(token);
 
@@ -174,7 +184,7 @@ class OtpServiceImplTest {
     @Test
     void verifyResetPasswordToken_Failure() {
         String token = "invalid-token";
-        when(valueOperations.get(token)).thenReturn(null);
+        when(valueOperations.get("otp:reset:acme:" + token)).thenReturn(null);
 
         boolean result = otpService.verifyResetPasswordToken(token);
 
@@ -184,7 +194,7 @@ class OtpServiceImplTest {
     @Test
     void getEmailFromResetPasswordToken_Success() {
         String token = "valid-token";
-        when(valueOperations.get(token)).thenReturn(email);
+        when(valueOperations.get("otp:reset:acme:" + token)).thenReturn(email);
 
         String result = otpService.getEmailFromResetPasswordToken(token);
 

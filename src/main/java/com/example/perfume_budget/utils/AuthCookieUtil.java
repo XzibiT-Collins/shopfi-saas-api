@@ -1,6 +1,7 @@
 package com.example.perfume_budget.utils;
 
 import com.example.perfume_budget.exception.InactiveAccountException;
+import com.example.perfume_budget.exception.InvalidJWTTokenException;
 import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.UserRepository;
@@ -19,6 +20,8 @@ import java.time.Duration;
 @Component
 @RequiredArgsConstructor
 public class AuthCookieUtil {
+    private static final String INVALID_REFRESH = "Invalid or expired token";
+
     private final JWTUtil jwtUtil;
     private final UserRepository userRepository;
 
@@ -30,8 +33,8 @@ public class AuthCookieUtil {
 
     public void setAuthCookies(HttpServletRequest request, HttpServletResponse response, User user){
         // Set tokens as HttpOnly cookies
-        addCookie(response, "accessToken", generateAccessToken(user), 3600); // 1 hour
-        addCookie(response, "refreshToken", generateRefreshToken(user), 604800); // 7 days
+        addCookie(response, "accessToken", generateAccessToken(user), jwtUtil.accessTokenTtlSeconds());
+        addCookie(response, "refreshToken", generateRefreshToken(user), jwtUtil.refreshTokenTtlSeconds());
     }
 
     public void removeAuthCookies(HttpServletResponse response){
@@ -76,10 +79,16 @@ public class AuthCookieUtil {
     public void refreshAccessToken(String refreshToken, HttpServletResponse response){
         // Validate signature and tenant binding BEFORE touching the (tenant-scoped) user table,
         // so a refresh token cannot be replayed against another tenant's schema.
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw new InvalidJWTTokenException(INVALID_REFRESH);
+        }
         jwtUtil.validateToken(refreshToken);
         String contextSlug = TenantContext.getSlug();
-        if (contextSlug != null && !contextSlug.equals(jwtUtil.extractTenant(refreshToken))) {
-            throw new BadCredentialsException("Refresh token does not belong to this tenant");
+        // Fail closed: a refresh token is only valid for the tenant resolved for this request. The message is the
+        // same generic one as for a bad signature so a token from another tenant (or the platform) is simply invalid.
+        if (contextSlug == null || TenantContext.PLATFORM_SLUG.equals(contextSlug)
+                || !contextSlug.equals(jwtUtil.extractTenant(refreshToken))) {
+            throw new InvalidJWTTokenException(INVALID_REFRESH);
         }
 
         String email = jwtUtil.extractUsername(refreshToken);
@@ -90,6 +99,6 @@ public class AuthCookieUtil {
             throw new InactiveAccountException("User account is inactive");
         }
         String newAccessToken = generateAccessToken(user);
-        addCookie(response, "accessToken", newAccessToken, 3600);
+        addCookie(response, "accessToken", newAccessToken, jwtUtil.accessTokenTtlSeconds());
     }
 }

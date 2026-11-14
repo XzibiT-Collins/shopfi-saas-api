@@ -2,6 +2,7 @@ package com.example.perfume_budget.security.oauth2;
 
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
+import com.example.perfume_budget.security.cors.TenantOriginPolicy;
 import com.example.perfume_budget.tenancy.TenantResolutionProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -84,15 +85,8 @@ public class OAuth2RedirectValidator {
     }
 
     private String extractSubdomainSlug(String host) {
-        String base = properties.getBaseDomain();
-        if (base == null || base.isBlank()) {
-            return null;
-        }
-        String suffix = "." + base.toLowerCase();
-        if (host.endsWith(suffix) && host.length() > suffix.length()) {
-            return host.substring(0, host.length() - suffix.length());
-        }
-        return null;
+        // One shared rule with CORS (exactly one valid label under the base domain).
+        return TenantOriginPolicy.subdomainSlug(host, properties.getBaseDomain());
     }
 
     private String hostFromUrl(String value) {

@@ -161,12 +161,15 @@ class TenantJwtIsolationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void ac3_replayOnPublicTenantPath_isAlso401() throws Exception {
-        // Not only /me: a mismatching cookie on a permitAll path is rejected by JWTFilter too.
+    void ac3_replayOnPublicTenantPath_isAnonymous_neverAuthenticatesAsTheOtherTenantsUser() throws Exception {
+        // AUTH-01 AC2 (was ac3_replayOnPublicTenantPath_isAlso401): the auth cookie is shared on the single API
+        // host, so a foreign cookie on a permitAll path must be IGNORED (anonymous, 200), not a plain-text 401 that
+        // locks the user out of login/logout on the second shop. It still never authenticates and never reaches a
+        // tenant-local user lookup; protected paths stay 401 (see the /me tests above and AuthTenantFixesIntegrationTest).
         String token = accessTokenFor(acme);
         clearLookups();
-        mvc.perform(get("/api/v1/category").header("Origin", BRAVO_ORIGIN).cookie(new Cookie("accessToken", token)))
-                .andExpect(r -> assertThat(r.getResponse().getStatus()).isEqualTo(401));
+        mvc.perform(get("/api/v1/category/all").header("Origin", BRAVO_ORIGIN).cookie(new Cookie("accessToken", token)))
+                .andExpect(r -> assertThat(r.getResponse().getStatus()).isEqualTo(200));
         verifyNoUserLookup();
     }
 

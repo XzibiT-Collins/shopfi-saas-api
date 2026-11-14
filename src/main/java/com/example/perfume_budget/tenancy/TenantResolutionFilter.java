@@ -1,6 +1,7 @@
 package com.example.perfume_budget.tenancy;
 
 import com.example.perfume_budget.platform.enums.TenantStatus;
+import com.example.perfume_budget.security.cors.RequestPaths;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
 import jakarta.servlet.FilterChain;
@@ -58,7 +59,8 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
     protected void doFilterInternal(@NonNull HttpServletRequest request,
                                     @NonNull HttpServletResponse response,
                                     @NonNull FilterChain filterChain) throws ServletException, IOException {
-        String path = request.getRequestURI();
+        // Decoded, lower-cased path (DOMAIN-01b S1): the raw URI would let %70latform skip platform scope.
+        String path = RequestPaths.canonical(request);
 
         if (isBypass(path)) {
             filterChain.doFilter(request, response);

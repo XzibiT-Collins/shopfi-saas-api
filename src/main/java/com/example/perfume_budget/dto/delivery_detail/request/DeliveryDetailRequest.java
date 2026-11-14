@@ -16,8 +16,9 @@ public record DeliveryDetailRequest(
         String city,
         @NotNull
         String region,
-        @NotNull
+        /** Optional (nullable column): omitted or null is stored as null. */
         String landmark,
+        /** Optional on create: defaults to {@link DeliveryLabel#HOME} (the column is NOT NULL). */
         DeliveryLabel label,
         boolean isDefault
 ) {}

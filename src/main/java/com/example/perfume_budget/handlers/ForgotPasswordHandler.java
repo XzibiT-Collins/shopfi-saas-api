@@ -18,6 +18,6 @@ public class ForgotPasswordHandler {
     @EventListener
     public void handlePasswordResetEvent(ResetPasswordEvent event){
         log.info("Received ForgotPasswordEvent for email: {}", event.email());
-        emailService.sendForgotPasswordEmail(event.email(), event.fullName(), event.token());
+        emailService.sendForgotPasswordEmail(event.email(), event.fullName(), event.token(), event.tenantSlug());
     }
 }

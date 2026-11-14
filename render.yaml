@@ -62,9 +62,20 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
+      # Platform super-admin bootstrap: optional, may be removed once the first admin exists (never alters an existing admin)
+      - key: PLATFORM_ADMIN_EMAIL
+        sync: false
+      - key: PLATFORM_ADMIN_PASSWORD
+        sync: false
+      - key: PLATFORM_ADMIN_FULL_NAME
+        sync: false
       - key: FRONTEND_CHANGE_PASSWORD_URL
         sync: false
+      # Optional: non-tenant origins only (tenant subdomains/custom domains are allowed dynamically from the registry)
       - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      # Platform-admin console origin(s) for /api/v1/platform/**; unset = platform API unreachable from browsers
+      - key: PLATFORM_CORS_ALLOWED_ORIGINS
         sync: false
       - key: TENANT_BASE_DOMAIN
         sync: false

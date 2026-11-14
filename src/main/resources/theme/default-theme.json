@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "updatedAt": "2026-11-13T10:00:00Z",
+  "tokens": {
+    "colors": {
+      "primary": "#111827",
+      "onPrimary": "#ffffff",
+      "accent": "#b45309",
+      "onAccent": "#ffffff",
+      "background": "#ffffff",
+      "surface": "#f9fafb",
+      "text": "#111827",
+      "mutedText": "#4b5563"
+    },
+    "typography": {
+      "headingFont": "Inter",
+      "bodyFont": "Inter",
+      "baseSizePx": 16
+    },
+    "radius": "md",
+    "spacing": "comfortable"
+  },
+  "assets": {
+    "logo": null,
+    "background": null
+  },
+  "pages": {
+    "home": [
+      {
+        "id": "hero",
+        "type": "hero",
+        "props": {
+          "heading": "Welcome to our store",
+          "alignment": "center",
+          "overlayOpacity": 0.4
+        },
+        "visible": true,
+        "order": 0
+      },
+      {
+        "id": "featured",
+        "type": "featured-products",
+        "props": {
+          "title": "Featured",
+          "source": "featured",
+          "limit": 8,
+          "columns": 4
+        },
+        "visible": true,
+        "order": 1
+      },
+      {
+        "id": "categories",
+        "type": "category-grid",
+        "props": {
+          "title": "Shop by category",
+          "categoryIds": [],
+          "columns": 3,
+          "showDescription": false
+        },
+        "visible": true,
+        "order": 2
+      }
+    ],
+    "product": [],
+    "footer": [
+      {
+        "id": "footer",
+        "type": "footer",
+        "props": {
+          "tagline": "",
+          "linkGroups": [],
+          "social": [],
+          "copyrightText": ""
+        },
+        "visible": true,
+        "order": 0
+      }
+    ]
+  }
+}

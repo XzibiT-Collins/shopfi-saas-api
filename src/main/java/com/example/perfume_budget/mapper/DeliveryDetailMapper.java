@@ -2,9 +2,13 @@ package com.example.perfume_budget.mapper;
 
 import com.example.perfume_budget.dto.delivery_detail.request.DeliveryDetailRequest;
 import com.example.perfume_budget.dto.delivery_detail.response.DeliveryDetailResponse;
+import com.example.perfume_budget.enums.DeliveryLabel;
 import com.example.perfume_budget.model.DeliveryDetail;
 
 public class DeliveryDetailMapper {
+    /** Applied on create when the client omits the label (delivery_details.label is NOT NULL). */
+    public static final DeliveryLabel DEFAULT_LABEL = DeliveryLabel.HOME;
+
     private DeliveryDetailMapper(){
         throw new IllegalStateException("Utility class");
     }
@@ -34,7 +38,7 @@ public class DeliveryDetailMapper {
                 .addressLine2(request.addressLine2())
                 .city(request.city())
                 .region(request.region())
-                .label(request.label())
+                .label(request.label() != null ? request.label() : DEFAULT_LABEL)
                 .landmark(request.landmark())
                 .isDefault(request.isDefault())
                 .build();

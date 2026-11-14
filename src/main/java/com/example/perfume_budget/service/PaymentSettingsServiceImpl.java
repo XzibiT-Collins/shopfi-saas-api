@@ -45,6 +45,8 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
         config.setProvider(PaymentProvider.PAYSTACK);
         if (request.secretKey() != null && !request.secretKey().isBlank()) {
             config.setSecretKeyEncrypted(encryptor.encrypt(request.secretKey().strip()));
+        } else if (config.getSecretKeyEncrypted() == null || config.getSecretKeyEncrypted().isBlank()) {
+            throw new BadRequestException("Secret Key is required");
         }
         config.setPublicKey(request.publicKey().strip());
         config.setEnabled(request.enabled());
