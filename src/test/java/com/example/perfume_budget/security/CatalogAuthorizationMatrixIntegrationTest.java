@@ -327,9 +327,10 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         for (String p : List.of("/api/v1/cart", "/api/v1/order/my-orders", "/api/v1/delivery-detail")) {
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK GET " + p).isEqualTo(403);
         }
-        // FRONT_DESK operational routes (annotation hasAnyRole('ADMIN','FRONT_DESK')): not an authorization failure
+        // FRONT_DESK operational routes (annotation hasAnyRole('ADMIN','FRONT_DESK')): not a role failure. (Routes such as
+        // GET /admin/inventory/transfers additionally need a per-user front-desk PERMISSION and answer 403 from the service.)
         for (String p : List.of("/api/v1/admin/inventory/locations", "/api/v1/admin/notifications",
-                "/api/v1/admin/notifications/unread-count", "/api/v1/admin/inventory/transfers")) {
+                "/api/v1/admin/notifications/unread-count")) {
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK GET " + p).isNotIn(401, 403);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(customer))).as("CUSTOMER GET " + p).isEqualTo(403);
         }
