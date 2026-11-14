@@ -3,6 +3,7 @@ package com.example.perfume_budget.mapper;
 import com.example.perfume_budget.dto.category.response.CategoryResponse;
 import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.dto.product.response.ProductVariantSummaryResponse;
 import com.example.perfume_budget.model.Category;
 import com.example.perfume_budget.model.Product;
@@ -30,6 +31,25 @@ public class ProductMapper {
                 .isActive(Boolean.TRUE.equals(product.getIsActive()))
                 .isEnlisted(Boolean.TRUE.equals(product.getIsEnlisted()))
                 .stockQuantity(stockQuantity)
+                .slug(product.getSlug())
+                .build();
+    }
+
+    /** Anonymous storefront shape: availability flag only (no exact stock, no active/enlisted flags). */
+    public static PublicProductListing toPublicProductListing(Product product, EffectivePrice effectivePrice){
+        int stockQuantity = product.getStockQuantity() != null ? product.getStockQuantity() : 0;
+        return PublicProductListing.builder()
+                .productId(product.getId())
+                .productName(product.getName())
+                .productShortDescription(product.getShortDescription())
+                .productImageUrl(product.getImageUrl())
+                .categoryName(product.getCategory() != null ? product.getCategory().getName() : "")
+                .price(effectivePrice.effectiveDisplay())
+                .originalPrice(effectivePrice.originalDisplay())
+                .onSale(effectivePrice.onSale())
+                .discountPercentage(effectivePrice.discountPercentage())
+                .discountEndsAt(effectivePrice.endsAt())
+                .isOutOfStock(stockQuantity <= 0)
                 .slug(product.getSlug())
                 .build();
     }

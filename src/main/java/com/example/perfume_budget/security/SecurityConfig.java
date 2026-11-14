@@ -64,7 +64,14 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, com.example.perfume_budget.theme.ThemeWriteRateLimiter themeWriteRateLimiter,
-                                                   @org.springframework.beans.factory.annotation.Value("${tenant.dev-endpoints.enabled:false}") boolean devEndpointsEnabled) throws Exception {
+                                                   @org.springframework.beans.factory.annotation.Value("${tenant.dev-endpoints.enabled:false}") boolean devEndpointsEnabled,
+                                                   @org.springframework.beans.factory.annotation.Value("${springdoc.api-docs.enabled:true}") boolean apiDocsEnabled,
+                                                   @org.springframework.beans.factory.annotation.Value("${springdoc.swagger-ui.enabled:true}") boolean swaggerUiEnabled,
+                                                   @org.springframework.beans.factory.annotation.Value("${shopfi.metrics.scrape-token:}") String metricsScrapeToken) throws Exception {
+        // SEC-03b F7: HEAD is answered by Spring MVC from the GET handler, so it must follow the GET rule exactly
+        // (public where GET is public, same role where GET is guarded). Both method lists share these path arrays.
+        final String[] swaggerPaths = {"/swagger-ui/**", "/swagger-ui.html"};
+        final String[] apiDocsPaths = {"/v3/api-docs/**"};
         http
                 .addFilterBefore(new com.example.perfume_budget.security.cors.CanonicalPathGuardFilter(), org.springframework.web.filter.CorsFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
@@ -78,7 +85,10 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/dev/**").access((authentication, context) ->
                                 new org.springframework.security.authorization.AuthorizationDecision(devEndpointsEnabled))
                         .requestMatchers("/ws/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
+                        // SEC-03b F5: swagger/api-docs are public ONLY while springdoc itself is enabled (dev/test). The prod
+                        // profile disables springdoc; if someone re-enables it by mistake these paths are still authenticated.
+                        .requestMatchers(request -> swaggerUiEnabled && isReadMethod(request) && matchesAny(request, swaggerPaths)).permitAll()
+                        .requestMatchers(request -> apiDocsEnabled && isReadMethod(request) && matchesAny(request, apiDocsPaths)).permitAll()
                         .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/me").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/verify-otp",
@@ -87,13 +97,18 @@ public class SecurityConfig {
                                 "/api/v1/auth/forgot-password", "/api/v1/auth/reset-password").permitAll()
                         .requestMatchers("/api/v1/auth/**").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/theme").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/theme").permitAll()
                         .requestMatchers(HttpMethod.PUT, "/api/v1/theme").hasRole("ADMIN")
                         // Catalog: storefront reads are public; every other category/product route is ADMIN
                         // (FRONT_DESK may also search the admin product list).
                         .requestMatchers(HttpMethod.GET, "/api/v1/category/all").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/category/all").permitAll()
                         .requestMatchers("/api/v1/category/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
                         .requestMatchers(HttpMethod.GET, "/api/v1/product/featured", "/api/v1/product/listing",
+                                "/api/v1/product/search", "/api/v1/product/*").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/product/featured", "/api/v1/product/listing",
                                 "/api/v1/product/search", "/api/v1/product/*").permitAll()
                         .requestMatchers("/api/v1/product/**").hasRole("ADMIN")
                         // Paystack webhook: unauthenticated by design, authenticated by per-tenant token + HMAC signature.
@@ -106,8 +121,18 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/platform/onboarding/signup",
                                 "/api/v1/platform/onboarding/verify", "/api/v1/platform/onboarding/resend").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/platform/onboarding/status").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/platform/onboarding/status").permitAll()
                         .requestMatchers("/api/v1/platform/**").hasRole("SUPER_ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/prometheus").permitAll()
+                        // Actuator (SEC-03b F3/F6): only the bare health probe is public (details are never shown to anonymous callers).
+                        // Prometheus needs the dedicated scrape token (shopfi.metrics.scrape-token, Authorization: Bearer ...); with no
+                        // token configured it is closed. Every other actuator endpoint (metrics, info, env, ...) is denied.
+                        .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/actuator/health").permitAll()
+                        .requestMatchers("/actuator/prometheus").access((authentication, context) ->
+                                new org.springframework.security.authorization.AuthorizationDecision(
+                                        HttpMethod.GET.matches(context.getRequest().getMethod())
+                                                && scrapeTokenMatches(metricsScrapeToken, context.getRequest().getHeader("Authorization"))))
+                        .requestMatchers("/actuator/**").denyAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2Login(oauth2 -> oauth2
@@ -140,5 +165,30 @@ public class SecurityConfig {
                         .accessDeniedHandler(customAccessDeniedHandler)
                 );
         return http.build();
+    }
+
+    private static boolean isReadMethod(jakarta.servlet.http.HttpServletRequest request) {
+        return HttpMethod.GET.matches(request.getMethod()) || HttpMethod.HEAD.matches(request.getMethod());
+    }
+
+    private static boolean matchesAny(jakarta.servlet.http.HttpServletRequest request, String[] patterns) {
+        for (String pattern : patterns) {
+            if (org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher.withDefaults()
+                    .matcher(pattern).matches(request)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Constant-time compare of "Bearer <token>" against the configured scrape token; a blank or short (<16) token disables scraping. */
+    static boolean scrapeTokenMatches(String configured, String authorizationHeader) {
+        if (configured == null || configured.length() < 16 || authorizationHeader == null
+                || !authorizationHeader.startsWith("Bearer ")) {
+            return false;
+        }
+        byte[] expected = configured.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] actual = authorizationHeader.substring("Bearer ".length()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return java.security.MessageDigest.isEqual(expected, actual);
     }
 }

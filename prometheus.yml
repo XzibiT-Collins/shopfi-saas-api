@@ -5,5 +5,11 @@ global:
 scrape_configs:
   - job_name: 'perfume-budget'
     metrics_path: '/actuator/prometheus'
+    # SEC-03b: the endpoint requires a bearer token equal to PROMETHEUS_SCRAPE_TOKEN of the app container
+    # (>= 16 chars). Put the same value, with no trailing newline, in ./prometheus-scrape-token (untracked) and
+    # mount it, see docker-compose.yml.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/scrape-token
     static_configs:
       - targets: ['app:8080']

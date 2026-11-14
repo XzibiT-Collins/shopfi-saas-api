@@ -6,6 +6,7 @@ import com.example.perfume_budget.dto.product.request.ProductRequest;
 import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
 import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.enums.DiscountType;
 import com.example.perfume_budget.enums.UserRole;
 import com.example.perfume_budget.events.ViewCountEvent;
@@ -191,17 +192,17 @@ public class ProductServiceImpl implements ProductService {
             cacheNames = "customerProductListings",
             key = "#pageable.pageNumber + ':' + #pageable.pageSize + ':' + #pageable.sort.toString()"
     )
-    public PageResponse<ProductListing> getProductListings(Pageable pageable) {
+    public PageResponse<PublicProductListing> getProductListings(Pageable pageable) {
         log.info("Cache miss: customerProductListings");
-        Page<ProductListing> productListings = productRepository.findAllByIsActiveTrueAndIsEnlistedTrue(pageable)
-                .map(listingMapper());
+        Page<PublicProductListing> productListings = productRepository.findAllByIsActiveTrueAndIsEnlistedTrue(pageable)
+                .map(publicListingMapper());
         return PaginationUtil.createPageResponse(productListings);
     }
 
     @Override
-    public PageResponse<ProductListing> searchProducts(Long categoryId, String searchTerm, Pageable pageable) {
+    public PageResponse<PublicProductListing> searchProducts(Long categoryId, String searchTerm, Pageable pageable) {
         Specification<Product> spec = ProductSpecification.filterProducts(categoryId, searchTerm);
-        Page<ProductListing> productListings = productRepository.findAll(spec, pageable).map(listingMapper());
+        Page<PublicProductListing> productListings = productRepository.findAll(spec, pageable).map(publicListingMapper());
         return PaginationUtil.createPageResponse(productListings);
     }
 
@@ -212,7 +213,7 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public List<ProductListing> getFeaturedProducts() {
+    public List<PublicProductListing> getFeaturedProducts() {
         return productCatalogCacheService.getFeaturedProducts();
     }
 
@@ -289,6 +290,12 @@ public class ProductServiceImpl implements ProductService {
                 throw new BadRequestException("Flat discount must be less than the product price.");
             }
         }
+    }
+
+    private Function<Product, PublicProductListing> publicListingMapper() {
+        ShopWideDiscount shop = effectivePriceService.activeShopDiscount().orElse(null);
+        LocalDateTime now = effectivePriceService.now();
+        return product -> ProductMapper.toPublicProductListing(product, effectivePriceService.compute(product, shop, now));
     }
 
     private Function<Product, ProductListing> listingMapper() {
