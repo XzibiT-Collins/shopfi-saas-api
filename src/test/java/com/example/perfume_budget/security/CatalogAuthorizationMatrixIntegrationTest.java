@@ -121,7 +121,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         List<Map<String, Object>> fks = jdbc.queryForList(
                 "SELECT c.conrelid::regclass::text AS tbl, a.attname AS col FROM pg_constraint c "
                         + "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) "
-                        + "WHERE c.contype = 'f' AND c.confrelid = 'tenant_acme.products'::regclass");
+                        + "WHERE c.contype = 'f' AND a.attname = 'product_id' AND c.confrelid = 'tenant_acme.products'::regclass");
         for (Map<String, Object> fk : fks) {
             jdbc.update("DELETE FROM " + fk.get("tbl") + " WHERE " + fk.get("col") + " IN " + in);
         }
