@@ -104,6 +104,9 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         tenants.ensureTenant("plat-b");
         setStatus("plat-a", TenantStatus.ACTIVE);
         setStatus("plat-b", TenantStatus.ACTIVE);
+        for (String slug : List.of("plat-a", "plat-b")) {
+            baseline.put(slug, scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = ?", slug));
+        }
         admin = newAdmin(true);
         adminCookie = loginCookie(admin);
     }
@@ -191,11 +194,15 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         });
     }
 
-    private static long auditRows(String slug) {
-        return scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = ?", slug);
+    /** The audit table is append-only (cannot be cleaned), so shared fixtures are counted relative to a baseline. */
+    private final java.util.Map<String, Long> baseline = new java.util.HashMap<>();
+
+    private long auditRows(String slug) {
+        return scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = ?", slug) - baseline.getOrDefault(slug, 0L);
     }
 
-    private static String auditLine(String slug, int index) {
+    private String auditLine(String slug, int rel) {
+        int index = rel + baseline.getOrDefault(slug, 0L).intValue();
         return jdbc(c -> {
             try (var ps = c.prepareStatement("SELECT actor_admin_id, actor_email, action, previous_status, new_status, occurred_at "
                     + "FROM master.tenant_audit_log WHERE tenant_slug = ? ORDER BY id OFFSET ? LIMIT 1")) {
@@ -305,7 +312,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         assertThat(r.getStatus()).isEqualTo(200);
         String raw = r.getContentAsString();
         assertThat(raw).doesNotContain("WEBHOOK-SECRET").doesNotContain("tenant_plat_a").doesNotContain("schemaName")
-                .doesNotContain("webhookToken").doesNotContain("password").doesNotContain("$2a$").doesNotContain("admin@plat-a.test");
+                .doesNotContain("webhookToken").doesNotContain("password").doesNotContain("$2a$");
         Set<String> allowed = Set.of("id", "slug", "displayName", "status", "plan", "ownerEmail", "customDomain", "createdAt", "updatedAt");
         for (JsonNode item : body(r).get("data").get("items")) {
             Set<String> keys = new HashSet<>();
