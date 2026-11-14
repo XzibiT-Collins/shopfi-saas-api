@@ -63,7 +63,9 @@ class PaymentSettlementServiceTest {
         assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
         assertEquals(PaymentStatus.COMPLETED, order.getStatus());
         assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
-        assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", null, null, "{}"));
+        assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        verify(cartRepository, times(1)).deleteAllByUserEmail("c@example.com");
+        verify(eventPublisher, times(1)).publishEvent(payment);
         verify(orderService, times(1)).finalizeReservedStock(order);
         verify(bookkeepingService, times(1)).recordSale(order, payment);
         verify(productRepository, times(1)).incrementSoldCount(5L, 2);
@@ -80,7 +82,7 @@ class PaymentSettlementServiceTest {
     @Test
     void unknownReferenceIsNotFound() {
         when(paymentRepository.findOrderIdByProviderReference("NOPE")).thenReturn(Optional.empty());
-        assertEquals(Outcome.NOT_FOUND, service.applySuccess("NOPE", null, null, null, "{}"));
+        assertEquals(Outcome.NOT_FOUND, service.applySuccess("NOPE", null, new BigDecimal("1250"), "GHS", "{}"));
         assertEquals(Outcome.NOT_FOUND, service.applyFailure("NOPE", null, null, "{}"));
     }
 
@@ -90,7 +92,7 @@ class PaymentSettlementServiceTest {
         payment.setStatus(PaymentStatus.FAILED);
         when(reservationService.reserveForLatePayment("ORD-1", order.getItems())).thenReturn(true);
 
-        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", null, null, "{}"));
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
         assertEquals(PaymentStatus.COMPLETED, order.getStatus());
         verify(orderService).finalizeReservedStock(order);
     }
@@ -102,7 +104,7 @@ class PaymentSettlementServiceTest {
         payment.setStatus(PaymentStatus.CANCELLED);
         when(reservationService.reserveForLatePayment(any(), any())).thenReturn(true);
 
-        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", null, null, "{}"));
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
         assertEquals(OrderProcessingStatus.PENDING, order.getDeliveryStatus());
     }
 
@@ -110,9 +112,10 @@ class PaymentSettlementServiceTest {
     void lateSuccessWithoutStockKeepsOrderClosedAndFlagsRefund() {
         order.setStatus(PaymentStatus.CANCELLED);
         payment.setStatus(PaymentStatus.CANCELLED);
-        when(reservationService.reserveForLatePayment(any(), any())).thenThrow(new RuntimeException("Insufficient stock"));
+        when(reservationService.reserveForLatePayment(any(), any()))
+                .thenThrow(new com.example.perfume_budget.exception.BadRequestException("Insufficient stock for: X"));
 
-        assertEquals(Outcome.COMPLETED_REFUND_REQUIRED, service.applySuccess("REF123456", "card", null, null, "{}"));
+        assertEquals(Outcome.COMPLETED_REFUND_REQUIRED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
         assertEquals(PaymentStatus.CANCELLED, order.getStatus());
         assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
         assertTrue(payment.isRefundRequired());
@@ -135,5 +138,45 @@ class PaymentSettlementServiceTest {
         assertEquals(Outcome.UNCHANGED, service.applyFailure("REF123456", "card", "x", "{}"));
         assertEquals(PaymentStatus.COMPLETED, order.getStatus());
         verifyNoInteractions(orderService);
+    }
+
+    @Test
+    void transientReserveFailurePropagatesAndLeavesPaymentUnsettled_thenRetryCompletes() {
+        order.setStatus(PaymentStatus.CANCELLED);
+        payment.setStatus(PaymentStatus.CANCELLED);
+        when(reservationService.reserveForLatePayment(any(), any()))
+                .thenThrow(new IllegalStateException("Hikari timeout"))
+                .thenReturn(true);
+
+        assertThrows(IllegalStateException.class,
+                () -> service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertEquals(PaymentStatus.CANCELLED, payment.getStatus());
+        assertFalse(payment.isRefundRequired());
+        verify(paymentRepository, never()).save(any(Payment.class));
+
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertEquals(PaymentStatus.COMPLETED, order.getStatus());
+    }
+
+    @Test
+    void successWithoutProviderAmountOrCurrencyFailsClosed() {
+        assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", null, "GHS", "{}"));
+        assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), null, "{}"));
+        assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), " ", "{}"));
+        assertEquals(PaymentStatus.INITIATED, order.getStatus());
+        verifyNoInteractions(orderService, bookkeepingService, cartRepository, eventPublisher);
+    }
+
+    @Test
+    void failureNeverFlipsRefundRequiredState() {
+        order.setStatus(PaymentStatus.CANCELLED);
+        payment.setStatus(PaymentStatus.COMPLETED);
+        payment.setRefundRequired(true);
+        assertEquals(Outcome.UNCHANGED, service.applyFailure("REF123456", "card", "x", "{}"));
+        assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
+        assertTrue(payment.isRefundRequired());
+        assertEquals(PaymentStatus.CANCELLED, order.getStatus());
+        verifyNoInteractions(orderService);
+        verify(paymentRepository, never()).save(any(Payment.class));
     }
 }

@@ -32,9 +32,11 @@ class WebhookProcessorImplTest {
     }
 
     @Test
-    void chargeSuccessWithoutAmountOrStatusStillApplied() {
+    void chargeSuccessWithoutAmountOrCurrencyFailsClosed() {
         processor.processWebhook(body("charge.success", ""));
-        verify(settlement).applySuccess(eq("REF123"), eq("card"), eq(null), eq(null), anyString());
+        processor.processWebhook(body("charge.success", ",\"amount\":1250"));
+        processor.processWebhook(body("charge.success", ",\"currency\":\"GHS\""));
+        verifyNoInteractions(settlement);
     }
 
     @Test
