@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
  * deliberately no PUT/PATCH/DELETE here and no endpoint that touches the audit log.
  */
 @RestController
+@org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPER_ADMIN')")
 @RequestMapping("/api/v1/platform/tenants")
 @RequiredArgsConstructor
 public class PlatformTenantController {

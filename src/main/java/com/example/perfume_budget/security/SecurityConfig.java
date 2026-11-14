@@ -63,34 +63,51 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, com.example.perfume_budget.theme.ThemeWriteRateLimiter themeWriteRateLimiter) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, com.example.perfume_budget.theme.ThemeWriteRateLimiter themeWriteRateLimiter,
+                                                   @org.springframework.beans.factory.annotation.Value("${tenant.dev-endpoints.enabled:false}") boolean devEndpointsEnabled) throws Exception {
         http
                 .addFilterBefore(new com.example.perfume_budget.security.cors.CanonicalPathGuardFilter(), org.springframework.web.filter.CorsFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/v1/dev/**").permitAll()
+                        // SEC-03: deny by default. Only the explicit, method-specific allow-list below is public;
+                        // everything else needs authentication (anyRequest) and, where listed, a role. Controller
+                        // methods ALSO carry @PreAuthorize (defence in depth; AuthorizationMatrixStructureTest enforces it).
+                        // Dev tenant trigger: open only where the controller bean exists (dev); denyAll everywhere else.
+                        .requestMatchers("/api/v1/dev/**").access((authentication, context) ->
+                                new org.springframework.security.authorization.AuthorizationDecision(devEndpointsEnabled))
                         .requestMatchers("/ws/**").permitAll()
-                        .requestMatchers("/swagger-ui/**").permitAll()
-                        .requestMatchers("/swagger-ui.html").permitAll()
-                        .requestMatchers("/v3/api-docs/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
-                        .requestMatchers("/api/v1/auth/me").authenticated()
-                        .requestMatchers("/api/v1/auth/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/auth/me").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/verify-otp",
+                                "/api/v1/auth/verify-login-otp", "/api/v1/auth/resend-otp", "/api/v1/auth/resend-login-otp",
+                                "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/auth/refresh",
+                                "/api/v1/auth/forgot-password", "/api/v1/auth/reset-password").permitAll()
+                        .requestMatchers("/api/v1/auth/**").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/theme").permitAll()
                         .requestMatchers(HttpMethod.PUT, "/api/v1/theme").hasRole("ADMIN")
-                        .requestMatchers("/api/v1/category/**").permitAll()
-                        .requestMatchers("/api/v1/product/**").permitAll()
-                        .requestMatchers("/api/v1/webhook/**").permitAll()
+                        // Catalog: storefront reads are public; every other category/product route is ADMIN
+                        // (FRONT_DESK may also search the admin product list).
+                        .requestMatchers(HttpMethod.GET, "/api/v1/category/all").permitAll()
+                        .requestMatchers("/api/v1/category/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product/featured", "/api/v1/product/listing",
+                                "/api/v1/product/search", "/api/v1/product/*").permitAll()
+                        .requestMatchers("/api/v1/product/**").hasRole("ADMIN")
+                        // Paystack webhook: unauthenticated by design, authenticated by per-tenant token + HMAC signature.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/webhook/*").permitAll()
                         // Platform control plane: auth endpoints and public onboarding are open; everything else
                         // under /platform needs a platform-claim SUPER_ADMIN token (JWTFilter.authenticatePlatform).
-                        .requestMatchers("/api/v1/platform/auth/me").hasRole("SUPER_ADMIN")
-                        .requestMatchers("/api/v1/platform/auth/**").permitAll()
-                        .requestMatchers("/api/v1/platform/onboarding/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/platform/auth/me").hasRole("SUPER_ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/platform/auth/login", "/api/v1/platform/auth/refresh",
+                                "/api/v1/platform/auth/logout").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/platform/onboarding/signup",
+                                "/api/v1/platform/onboarding/verify", "/api/v1/platform/onboarding/resend").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/platform/onboarding/status").permitAll()
                         .requestMatchers("/api/v1/platform/**").hasRole("SUPER_ADMIN")
-                        .requestMatchers("/actuator/health").permitAll()
-                        .requestMatchers("/actuator/prometheus").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/prometheus").permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2Login(oauth2 -> oauth2

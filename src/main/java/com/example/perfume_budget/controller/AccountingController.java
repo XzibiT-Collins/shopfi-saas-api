@@ -17,6 +17,7 @@ import java.util.List;
 
 @Slf4j
 @RestController
+@org.springframework.security.access.prepost.PreAuthorize("hasRole('ADMIN')")
 @RequestMapping("/api/v1/admin/accounting")
 @RequiredArgsConstructor
 public class AccountingController {
