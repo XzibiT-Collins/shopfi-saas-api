@@ -272,6 +272,22 @@ class AuthTenantFixesIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
+    void refreshCookieFromAnotherTenant_isInvalid_evenWhenTheSameEmailExistsOnThisTenant() throws Exception {
+        // The dangerous case: if only the user lookup rejected it, a same-email account on B would receive a session.
+        String email = "twin" + SEQ.incrementAndGet() + "@x.test";
+        newUser(acme, email, "Twinpass1!a", true, UserRole.CUSTOMER);
+        newUser(bravo, email, "Twinpass1!b", true, UserRole.CUSTOMER);
+        MockHttpServletResponse in = login(acme, email, "Twinpass1!a");
+        assertThat(in.getStatus()).isEqualTo(200);
+
+        MockHttpServletResponse r = call(with(post("/api/v1/auth/refresh"), BRAVO, in.getCookie("refreshToken")));
+        assertJson401(r);
+        assertThat(r.getCookie("accessToken")).isNull();
+        // and A's access cookie never authenticates the same-email account on B
+        assertJson401(call(with(get("/api/v1/auth/me"), BRAVO, in.getCookie("accessToken"))));
+    }
+
+    @Test
     void logoutAlwaysClearsCookies_evenWithoutAnyCookie() throws Exception {
         assertCleared(call(with(post("/api/v1/auth/logout"), ACME)));
         assertCleared(call(with(post("/api/v1/auth/logout"), BRAVO, new Cookie("accessToken", "garbage"))));
