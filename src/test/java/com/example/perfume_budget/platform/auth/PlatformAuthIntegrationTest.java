@@ -383,6 +383,12 @@ class PlatformAuthIntegrationTest extends AbstractPostgresIntegrationTest {
             assertThat(r.getStatus()).as(typed).isEqualTo(200);
             assertThat(status(get("/api/v1/platform/auth/me").cookie(asCookie(r, "platformAccessToken")))).isEqualTo(200);
         }
+        // a validly signed token whose subject differs in case from the stored email still resolves the admin
+        var key = PlatformJwtService.deriveKey("404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970");
+        String lowerSubject = io.jsonwebtoken.Jwts.builder().subject(mixed.toLowerCase()).claim("tenant", "__platform__")
+                .claim("role", "SUPER_ADMIN").claim("typ", "access").issuedAt(new java.util.Date())
+                .expiration(new java.util.Date(System.currentTimeMillis() + 60_000)).signWith(key).compact();
+        assertThat(status(get("/api/v1/platform/auth/me").cookie(new Cookie("platformAccessToken", lowerSubject)))).isEqualTo(200);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> admins.saveAndFlush(PlatformAdmin.builder()
                 .email(mixed.toLowerCase()).password("x").fullName("Dup").isActive(true).build()))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
