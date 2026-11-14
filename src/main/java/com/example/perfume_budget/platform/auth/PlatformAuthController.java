@@ -40,6 +40,7 @@ public class PlatformAuthController {
         return ResponseEntity.ok(CustomApiResponse.success("Logged out", null));
     }
 
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPER_ADMIN')")
     @GetMapping("/me")
     public ResponseEntity<CustomApiResponse<PlatformAuthResponse>> me(@AuthenticationPrincipal PlatformPrincipal principal) {
         return ResponseEntity.ok(CustomApiResponse.success(
