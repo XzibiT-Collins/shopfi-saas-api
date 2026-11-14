@@ -55,8 +55,12 @@ class CheckoutApiIntegrationTest extends AbstractCheckoutIntegrationTest {
         Customer c = ready("a2@acme.test", p, 1);
 
         // hostile client-controlled hints must not influence the URL
+        // a foreign Origin is refused outright (no order, no provider call); forwarded-host style hints are ignored
+        assertThat(mvc.perform(as(post("/api/v1/cart/checkout").header("Origin", "https://evil.example"), c)).andReturn()
+                .getResponse().getStatus()).isEqualTo(403);
+        assertThat(initiated).isEmpty();
         mvc.perform(as(post("/api/v1/cart/checkout").header("X-Forwarded-Host", "evil.example")
-                .header("Origin", "https://evil.example").header("Referer", "https://evil.example/x"), c)).andReturn();
+                .header("X-Forwarded-Proto", "http").header("Referer", "https://evil.example/x"), c)).andReturn();
         assertThat(initiated).hasSize(1);
         String cb = initiated.get(0).callbackUrl();
         assertThat(cb).endsWith("://" + ACME_DOMAIN + "/checkout/callback");
