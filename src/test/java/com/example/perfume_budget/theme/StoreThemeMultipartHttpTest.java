@@ -476,14 +476,35 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
 
     // ------------------------------------------------------------------------------------------ THEME-04d AC3: Origin
 
+    /**
+     * MAIN-RED-01: the layer that answers a duplicated Origin is DOMAIN-01's CORS filter (it runs before the theme
+     * controller), so the status is 403 "Invalid CORS request", not the controller's 400. Whoever answers, the
+     * response must carry no tenant data, no CORS grant and must not be cacheable by a shared cache.
+     */
     @Test
-    void getWithTwoOriginHeaders_is400_noStore_notCacheable() throws Exception {
+    void getWithTwoOriginHeaders_isRejectedByCors403_noStore_noCorsGrant_notCacheable() throws Exception {
         String twice = "GET /api/v1/theme HTTP/1.1\r\nHost: " + HOST + "\r\nOrigin: " + ORIGIN
                 + "\r\nOrigin: https://other.shopfi.test\r\nConnection: close\r\n\r\n";
         Resp r = exchange(twice, null);
-        assertThat(r.status()).as(r.body()).isEqualTo(400);
-        assertThat(r.body()).contains("INVALID_FORMAT").contains("\"path\":\"Origin\"");
-        assertThat(r.headers().toLowerCase()).contains("cache-control: no-store").doesNotContain("s-maxage");
+        String h = r.headers().toLowerCase();
+        assertThat(r.status()).as(r.headers() + r.body()).isEqualTo(403);
+        assertThat(r.body()).contains("Invalid CORS request").doesNotContain("\"tokens\"");
+        assertThat(h).contains("cache-control: no-cache, no-store, max-age=0, must-revalidate").contains("vary: origin")
+                .doesNotContain("s-maxage").doesNotContain("max-age=60")
+                .doesNotContain("public").doesNotContain("etag:");
+        assertThat(h).doesNotContain("access-control-allow-origin").doesNotContain("access-control-allow-credentials");
+    }
+
+    @Test
+    void getWithTwoOriginHeaders_orderSwapped_isAlsoRejected_andNoSingleOriginLeaksThroughEither() throws Exception {
+        String twice = "GET /api/v1/theme HTTP/1.1\r\nHost: " + HOST + "\r\nOrigin: https://other.shopfi.test"
+                + "\r\nOrigin: " + ORIGIN + "\r\nConnection: close\r\n\r\n";
+        Resp r = exchange(twice, null);
+        assertThat(r.status()).as(r.headers() + r.body()).isEqualTo(403);
+        assertThat(r.headers().toLowerCase()).contains("cache-control: no-cache, no-store, max-age=0, must-revalidate")
+                .doesNotContain("access-control-allow-origin")
+                .doesNotContain("s-maxage");
+        assertThat(r.body()).doesNotContain("\"tokens\"");
     }
 
     @Test
@@ -497,6 +518,10 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
 
     @Test
     void getWithOneOrigin_isStill200() throws Exception {
-        assertThat(exchange(head("GET", "/api/v1/theme", null, -1, false), null).status()).isEqualTo(200);
+        Resp r = exchange(head("GET", "/api/v1/theme", null, -1, false), null);
+        assertThat(r.status()).as(r.body()).isEqualTo(200);
+        // positive counterpart of the duplicate-Origin rejection: one valid Origin is granted CORS and is cacheable
+        assertThat(r.headers().toLowerCase()).contains("access-control-allow-origin: " + ORIGIN).contains("s-maxage=300");
+        assertThat(r.body()).contains("\"tokens\"");
     }
 }
