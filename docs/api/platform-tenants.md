@@ -239,6 +239,9 @@ How a console (or an auditor with SQL access) should read it, per tenant ordered
   `PROVISIONING` it is running or dead (a reprovision reclaims it after the stuck window, with a RECLAIM row).
   A retried approve on an `ACTIVE` tenant older than 60 s (`platform.tenants.reconcile-grace-seconds`) closes the gap with a
   RECONCILE row. Never infer that nothing happened because the OUTCOME is missing.
+* A `RECLAIM` row sitting between two `INTENT` rows of a tenant marks the EARLIER `INTENT` as dead: that saga died while
+  `PROVISIONING` and was moved to `FAILED`; the later `INTENT` belongs to the reprovision that followed. Do not read the earlier
+  INTENT as an action still in progress, and do not expect an `OUTCOME` for it.
 * `RECONCILE` rows attribute the repair to the admin who retried, not to the original actor: the original actor is the one on
   the INTENT row.
 * Reprovision of an `ACTIVE` tenant is a 409 (illegal), so only `approve` retries reconcile.
@@ -249,16 +252,22 @@ BCrypt hash for a tenant whose owner already exists).
 
 ## Deployment notes (PLAT-02b)
 
-* **Database role.** The `tenant_audit_log` triggers only bind SQL issued through the application; the table OWNER (and any
-  superuser) can drop or disable them. Run the application as a NON-owner role: connect with a role that has
-  `INSERT, SELECT` on `master.tenant_audit_log` (plus `USAGE` on its identity sequence) and no `UPDATE`, `DELETE`,
-  `TRUNCATE`, `TRIGGER`, `ALTER`. Flyway migrations (which create and own the table) must run as a different, privileged
-  migration role (for example a separate Flyway user), never as the runtime role. Nothing in this repository enforces this:
-  it is a deployment responsibility, see the comment in `render.yaml`.
+* **What the audit triggers do and do not protect (known limitation).** The V6 triggers reject `UPDATE`, `DELETE` and
+  `TRUNCATE` on `master.tenant_audit_log` for ANY SQL, including SQL issued by the application, so a bug or an injected
+  statement running as the application cannot rewrite history. They do NOT protect against the table owner or a superuser: an
+  owner can `DROP TRIGGER` or `ALTER TABLE ... DISABLE TRIGGER` and then change rows. Today the application uses a single
+  database role for everything (Flyway migrations at boot via `TenantSchemaMigrator`/`TenantFlywayInitializer`, tenant
+  `CREATE SCHEMA`/`DROP SCHEMA` DDL in the provisioning saga, and normal queries), so that role is necessarily the owner
+  and **the tamper resistance is NOT enforced against a compromised application credential or database administrator**.
+  Splitting migrations/DDL from a runtime role with only `INSERT, SELECT` on `tenant_audit_log` is the intended hardening, but
+  it is NOT deliverable with the current code and must not be assumed in deployment; it is tracked as a separate security
+  item (SEC-01). Until then, protect the audit trail with database-side controls (restricted access to the credential,
+  database audit logging, off-host log shipping).
 * **Single instance.** After every action the CORS decision cache is dropped with `TenantOriginPolicy.invalidateAll()`, which
-  clears the cache of the JVM that handled the request only. With more than one platform/API instance the other instances keep
-  their cached allow/deny decision for up to the cache TTL (30 s allowed, 10 s denied) after a suspend, reactivate, approve
-  or reprovision. Tenant resolution itself (the 423 for a suspended tenant) reads the registry on every request and is not
+  clears the cache of the JVM that handled the request only. With more than one API instance the other instances converge only
+  when their cached decision expires: the cache TTL (30 s allowed, 10 s denied) plus, under registry-lookup pressure, the
+  stale-allow grace of 120 s (DOMAIN-01c), so a suspended tenant's origin can still be allowed on another instance for up to
+  about 150 s. Tenant resolution itself (the 423 for a suspended tenant) reads the registry on every request and is not
   affected. Run a single instance, or add a cluster-wide invalidation (for example Redis pub/sub) before scaling out.
 
 ## Examples
