@@ -31,12 +31,13 @@ public class OtpServiceImpl implements OtpService {
     private static final long RESET_PASSWORD_TOKEN_EXPIRATION_MINUTES = 15;
     /** Wrong guesses allowed per issued code; the code is destroyed on the last one (a new code must be requested). */
     static final int MAX_OTP_ATTEMPTS = 5;
-    // Every key embeds the tenant slug (see tenantScope()): the same email on two tenants has independent OTPs,
+    // Every key embeds the tenant scope (see buildKey()): the same email on two tenants has independent OTPs,
     // and a login challenge, OTP or reset token issued for one tenant can never be redeemed on another.
-    private static final String REGISTRATION_OTP_PREFIX = "otp:registration:";
-    private static final String LOGIN_OTP_CODE_PREFIX = "otp:login:code:";
-    private static final String LOGIN_OTP_EMAIL_PREFIX = "otp:login:email:";
-    private static final String RESET_TOKEN_PREFIX = "otp:reset:";
+    private static final String KEY_ROOT = "otp";
+    private static final String REGISTRATION_OTP_KIND = "registration";
+    private static final String LOGIN_OTP_CODE_KIND = "login:code";
+    private static final String LOGIN_OTP_EMAIL_KIND = "login:email";
+    private static final String RESET_PASSWORD_KIND = "reset";
     private static final String ATTEMPTS_PREFIX = "otp:attempts:";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -74,8 +75,9 @@ public class OtpServiceImpl implements OtpService {
 
     @Override
     public void requestResetPasswordToken(String email, String fullName){
+        String tenantSlug = tenantScope(); // fail before any Redis write when there is no tenant (platform scope has no reset flow)
         String resetPasswordToken = generatePasswordResetToken(email);
-        ResetPasswordEvent event = new ResetPasswordEvent(email, fullName, resetPasswordToken, tenantScope());
+        ResetPasswordEvent event = new ResetPasswordEvent(email, fullName, resetPasswordToken, tenantSlug);
         eventPublisher.publishEvent(event);
     }
 
@@ -203,7 +205,7 @@ public class OtpServiceImpl implements OtpService {
         return false;
     }
 
-    /** Tenant slug of the current request; a tenant-less OTP/reset operation is a programming error. */
+    /** Tenant slug of the current request (also the event payload); a tenant-less OTP/reset operation is a programming error. */
     private static String tenantScope() {
         String slug = TenantContext.getSlug();
         if (slug == null || TenantContext.PLATFORM_SLUG.equals(slug)) {
@@ -212,19 +214,33 @@ public class OtpServiceImpl implements OtpService {
         return slug;
     }
 
+    /**
+     * Single place where every OTP/reset Redis key is built (TENANT-09 scheme). The key is always scoped by the
+     * current request's tenant (same prefix the cache layer uses), so a challenge token, OTP or reset token minted
+     * for one tenant can never be looked up, redeemed or overwritten from another tenant. Format:
+     * {@code otp:<kind>:<tenant>:<id>}. Fails closed (AUTH-01) when no scope is bound at all
+     * (the neutral-schema fallback of the cache prefix is never used for OTP keys).
+     */
+    private String buildKey(String kind, String id) {
+        if (TenantContext.getSlug() == null) {
+            throw new IllegalStateException("OTP and reset-token operations require a resolved tenant");
+        }
+        return KEY_ROOT + ":" + kind + ":" + TenantContext.getCachePrefix() + ":" + id;
+    }
+
     private String buildRegistrationOtpKey(String email) {
-        return REGISTRATION_OTP_PREFIX + tenantScope() + ":" + email;
+        return buildKey(REGISTRATION_OTP_KIND, email);
     }
 
     private String buildLoginOtpCodeKey(String challengeToken) {
-        return LOGIN_OTP_CODE_PREFIX + tenantScope() + ":" + challengeToken;
+        return buildKey(LOGIN_OTP_CODE_KIND, challengeToken);
     }
 
     private String buildLoginOtpEmailKey(String challengeToken) {
-        return LOGIN_OTP_EMAIL_PREFIX + tenantScope() + ":" + challengeToken;
+        return buildKey(LOGIN_OTP_EMAIL_KIND, challengeToken);
     }
 
     private String buildResetKey(String hashedToken) {
-        return RESET_TOKEN_PREFIX + tenantScope() + ":" + hashedToken;
+        return buildKey(RESET_PASSWORD_KIND, hashedToken);
     }
 }
