@@ -22,6 +22,7 @@ import com.example.perfume_budget.service.interfaces.FeatureFlagService;
 import com.example.perfume_budget.service.interfaces.OtpService;
 import com.example.perfume_budget.utils.AuthCookieUtil;
 import com.example.perfume_budget.utils.AuthUserUtil;
+import com.example.perfume_budget.validation.PasswordPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -88,7 +89,7 @@ public class AuthServiceImpl implements AuthService {
         checkDuplicateRegistration(request.email().strip().toLowerCase());
 
         User newUser = UserMapper.toUser(request);
-        newUser.setPassword(passwordEncoder.encode(request.password().strip()));
+        newUser.setPassword(passwordEncoder.encode(PasswordPolicy.normalize(request.password())));
 
         User user = userRepository.save(newUser);
         otpService.sendRegistrationOtp(user.getEmail());
@@ -134,9 +135,15 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public void resendRegistrationOtp(String email) {
-        User user = userRepository.findByEmail(email.strip().toLowerCase())
-                .orElseThrow(() -> new BadCredentialsException("User not found"));
-        otpService.sendRegistrationOtp(user.getEmail());
+        // Anti-enumeration: the same work and the same (success) outcome whether the address is unknown, already
+        // verified or pending. Only a pending (unverified) account is actually emailed a code.
+        String normalized = email.strip().toLowerCase();
+        User user = userRepository.findByEmail(normalized).orElse(null);
+        if (user != null && !user.isEmailVerified()) {
+            otpService.sendRegistrationOtp(user.getEmail());
+        } else {
+            otpService.issueDecoyRegistrationOtp(normalized);
+        }
     }
 
     @Override
@@ -170,14 +177,16 @@ public class AuthServiceImpl implements AuthService {
             throw new IllegalArgumentException("Invalid or expired token");
         }
 
-        if(!resetPasswordRequest.password().equals(resetPasswordRequest.confirmPassword())){
+        // Login strips before authenticating, so the stripped value is what must be compared, stored and checked.
+        String newPassword = PasswordPolicy.normalize(resetPasswordRequest.password());
+        if(!newPassword.equals(PasswordPolicy.normalize(resetPasswordRequest.confirmPassword()))){
             throw new BadRequestException("Passwords do not match");
         }
 
         String email = otpService.getEmailFromResetPasswordToken(resetPasswordToken);
         User user = getActiveUserByEmail(email.strip().toLowerCase());
-        checkDuplicatePassword(user.getPassword(),resetPasswordRequest.password());
-        user.setPassword(passwordEncoder.encode(resetPasswordRequest.password()));
+        checkDuplicatePassword(user.getPassword(), newPassword);
+        user.setPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
 
         log.info("Password reset successful for user {}", email);
@@ -202,7 +211,7 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private void passwordsMatch(String password, String confirmPassword) {
-        if(!password.equals(confirmPassword)){
+        if(!PasswordPolicy.normalize(password).equals(PasswordPolicy.normalize(confirmPassword))){
             throw new BadRequestException("Passwords do not match.");
         }
     }

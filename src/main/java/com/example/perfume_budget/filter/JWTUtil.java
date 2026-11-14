@@ -34,6 +34,21 @@ public class JWTUtil {
     @Value("${application.security.jwt.refresh-token.expiration}")
     private long jwtRefreshExpirationMs;
 
+    /** Access-token lifetime in whole seconds (rounded up), the single source for the cookie Max-Age. */
+    public int accessTokenTtlSeconds(){
+        return toSeconds(jwtAccessExpirationMs);
+    }
+
+    /** Refresh-token lifetime in whole seconds (rounded up), the single source for the cookie Max-Age. */
+    public int refreshTokenTtlSeconds(){
+        return toSeconds(jwtRefreshExpirationMs);
+    }
+
+    private static int toSeconds(long millis){
+        long seconds = (millis + 999) / 1000;
+        return (int) Math.max(1, Math.min(Integer.MAX_VALUE, seconds));
+    }
+
     private SecretKey getKey(){
         byte[] keyBytes = Decoders.BASE64.decode(jwtSecret);
         return Keys.hmacShaKeyFor(keyBytes);

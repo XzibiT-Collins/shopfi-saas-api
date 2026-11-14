@@ -4,6 +4,8 @@ import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.auth.request.*;
 import com.example.perfume_budget.dto.auth.response.AuthResponse;
 import com.example.perfume_budget.dto.auth.response.LoginResponse;
+import com.example.perfume_budget.security.AuthRateLimiter;
+import com.example.perfume_budget.security.ClientIps;
 import com.example.perfume_budget.service.interfaces.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class AuthController {
     private final AuthService authService;
+    private final AuthRateLimiter authRateLimiter;
 
     @PostMapping("/register")
     public ResponseEntity<Void> register(@Valid @RequestBody RegistrationRequest request){
@@ -40,7 +43,9 @@ public class AuthController {
     }
 
     @PostMapping("/resend-otp")
-    public ResponseEntity<CustomApiResponse<?>> resendOtp(@RequestBody EmailRequest request){
+    public ResponseEntity<CustomApiResponse<?>> resendOtp(@Valid @RequestBody EmailRequest request, HttpServletRequest httpRequest){
+        // Throttle on the input (per IP and per tenant+email) before any account lookup.
+        authRateLimiter.checkResendOtp(ClientIps.rateLimitKey(httpRequest), request.email());
         authService.resendRegistrationOtp(request.email());
         return ResponseEntity.ok(CustomApiResponse.success("OTP resent successfully"));
     }
@@ -74,7 +79,7 @@ public class AuthController {
     }
 
     @PostMapping("/refresh")
-    public ResponseEntity<CustomApiResponse<?>> refreshToken(@CookieValue(name="refreshToken") String refreshToken, HttpServletResponse response){
+    public ResponseEntity<CustomApiResponse<?>> refreshToken(@CookieValue(name="refreshToken", required = false) String refreshToken, HttpServletResponse response){
         authService.refreshAccessToken(refreshToken, response);
         return ResponseEntity.ok(CustomApiResponse.success("Token refreshed successfully"));
     }

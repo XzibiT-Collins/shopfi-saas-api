@@ -12,6 +12,7 @@ import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.DeliveryDetailRepository;
+import com.example.perfume_budget.support.TestLinkBuilders;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -53,7 +54,7 @@ class EmailServiceImplTest {
                 templateEngine,
                 deliveryDetailRepository,
                 "admin@example.com",
-                "https://frontend.example.com/reset-password"
+                TestLinkBuilders.linkBuilder("shopfi.test", "https://frontend.example.com/reset-password")
         );
     }
 
@@ -73,14 +74,41 @@ class EmailServiceImplTest {
     void sendForgotPasswordEmail_buildsResetLinkAndDelegatesToTransport() {
         when(templateEngine.process(eq("forgot-password"), any(Context.class))).thenReturn("<p>reset</p>");
 
-        emailService.sendForgotPasswordEmail("user@example.com", "Jane Doe", "reset-token");
+        emailService.sendForgotPasswordEmail("user@example.com", "Jane Doe", "reset-token", "acme");
 
         ArgumentCaptor<Context> contextCaptor = ArgumentCaptor.forClass(Context.class);
         verify(templateEngine).process(eq("forgot-password"), contextCaptor.capture());
         assertEquals("Jane Doe", contextCaptor.getValue().getVariable("recipientName"));
-        assertEquals("https://frontend.example.com/reset-password?resetPasswordToken=reset-token",
+        // AUTH-01 AC1: the link targets the tenant's own origin (was the single global FRONTEND_CHANGE_PASSWORD_URL).
+        assertEquals("https://acme.shopfi.test/reset-password?resetPasswordToken=reset-token",
                 contextCaptor.getValue().getVariable("resetPasswordLink"));
         verify(mailTransport).send(new MailMessage("admin@example.com", "user@example.com", "Password Reset Request", "<p>reset</p>"));
+    }
+
+    @Test
+    void sendForgotPasswordEmail_customDomainTenantGetsItsCustomDomainLink() {
+        when(templateEngine.process(eq("forgot-password"), any(Context.class))).thenReturn("<p>reset</p>");
+
+        emailService.sendForgotPasswordEmail("user@example.com", "Jane Doe", "tok", "shop");
+
+        ArgumentCaptor<Context> contextCaptor = ArgumentCaptor.forClass(Context.class);
+        verify(templateEngine).process(eq("forgot-password"), contextCaptor.capture());
+        assertEquals("https://shop.example.com/reset-password?resetPasswordToken=tok",
+                contextCaptor.getValue().getVariable("resetPasswordLink"));
+    }
+
+    @Test
+    void sendForgotPasswordEmail_devWithoutBaseDomainFallsBackToTheConfiguredDevOrigin() {
+        EmailServiceImpl dev = new EmailServiceImpl(mailTransport, templateEngine, deliveryDetailRepository,
+                "admin@example.com", TestLinkBuilders.linkBuilder("", "http://localhost:3000/reset-password"));
+        when(templateEngine.process(eq("forgot-password"), any(Context.class))).thenReturn("<p>reset</p>");
+
+        dev.sendForgotPasswordEmail("user@example.com", "Jane Doe", "tok", "acme");
+
+        ArgumentCaptor<Context> contextCaptor = ArgumentCaptor.forClass(Context.class);
+        verify(templateEngine).process(eq("forgot-password"), contextCaptor.capture());
+        assertEquals("http://localhost:3000/reset-password?tenant=acme&resetPasswordToken=tok",
+                contextCaptor.getValue().getVariable("resetPasswordLink"));
     }
 
     @Test

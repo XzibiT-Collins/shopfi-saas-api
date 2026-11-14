@@ -5,6 +5,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.perfume_budget.repository.DeliveryDetailRepository;
+import com.example.perfume_budget.support.TestLinkBuilders;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.thymeleaf.TemplateEngine;
@@ -26,7 +27,7 @@ class ForgotPasswordEmailLoggingTest {
         TemplateEngine engine = mock(TemplateEngine.class);
         when(engine.process(eq("forgot-password"), any(Context.class))).thenReturn("<p>reset</p>");
         EmailServiceImpl service = new EmailServiceImpl(transport, engine, mock(DeliveryDetailRepository.class),
-                "admin@example.com", "https://frontend.example.com/reset-password");
+                "admin@example.com", TestLinkBuilders.linkBuilder("shopfi.test", "https://frontend.example.com/reset-password"));
         String token = "SECRET-RESET-TOKEN-0123456789";
 
         Logger logger = (Logger) LoggerFactory.getLogger(EmailServiceImpl.class);
@@ -36,7 +37,7 @@ class ForgotPasswordEmailLoggingTest {
         appender.start();
         logger.addAppender(appender);
         try {
-            service.sendForgotPasswordEmail("user@example.com", "Jane", token);
+            service.sendForgotPasswordEmail("user@example.com", "Jane", token, "acme");
         } finally {
             logger.detachAppender(appender);
             logger.setLevel(old);

@@ -6,6 +6,7 @@ import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.DeliveryDetailRepository;
+import com.example.perfume_budget.tenancy.TenantLinkBuilder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -19,20 +20,20 @@ public class EmailServiceImpl implements EmailService{
     private final TemplateEngine templateEngine;
     private final DeliveryDetailRepository deliveryDetailRepository;
     private final String adminEmail;
-    private final String changePasswordUrl;
+    private final TenantLinkBuilder tenantLinkBuilder;
 
     public EmailServiceImpl(
             MailTransport mailTransport,
             TemplateEngine templateEngine,
             DeliveryDetailRepository deliveryDetailRepository,
             @Value("${perfume.budget.admin.email}") String adminEmail,
-            @Value("${frontend.change-password-url}") String changePasswordUrl
+            TenantLinkBuilder tenantLinkBuilder
     ) {
         this.mailTransport = mailTransport;
         this.templateEngine = templateEngine;
         this.deliveryDetailRepository = deliveryDetailRepository;
         this.adminEmail = adminEmail;
-        this.changePasswordUrl = changePasswordUrl;
+        this.tenantLinkBuilder = tenantLinkBuilder;
     }
 
     @Override
@@ -89,10 +90,10 @@ public class EmailServiceImpl implements EmailService{
     }
 
     @Override
-    public void sendForgotPasswordEmail(String recipientEmail, String recipientName, String token) {
+    public void sendForgotPasswordEmail(String recipientEmail, String recipientName, String token, String tenantSlug) {
         try{
             Context context = new Context();
-            String resetPasswordUrl = changePasswordUrl+"?resetPasswordToken=" + token;
+            String resetPasswordUrl = tenantLinkBuilder.resetPasswordLink(tenantSlug, token);
             context.setVariable("recipientName", recipientName);
             context.setVariable("resetPasswordLink", resetPasswordUrl);
 

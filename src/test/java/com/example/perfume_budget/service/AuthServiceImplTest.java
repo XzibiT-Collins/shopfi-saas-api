@@ -255,18 +255,35 @@ class AuthServiceImplTest {
 
     @Test
     void resendRegistrationOtp_Success() {
+        testUser.setEmailVerified(false);
         when(userRepository.findByEmail(anyString())).thenReturn(Optional.of(testUser));
 
         authService.resendRegistrationOtp("test@example.com");
 
         verify(otpService).sendRegistrationOtp(testUser.getEmail());
+        verify(otpService, never()).issueDecoyRegistrationOtp(anyString());
     }
 
     @Test
-    void resendRegistrationOtp_Failure_UserNotFound() {
+    void resendRegistrationOtp_UnknownEmail_succeedsSilently_noEnumeration() {
+        // AUTH-01 AC3: was BadCredentialsException("User not found"), which revealed that the account does not exist.
         when(userRepository.findByEmail(anyString())).thenReturn(Optional.empty());
 
-        assertThrows(BadCredentialsException.class, () -> authService.resendRegistrationOtp("test@example.com"));
+        assertDoesNotThrow(() -> authService.resendRegistrationOtp("Test@Example.com "));
+
+        verify(otpService, never()).sendRegistrationOtp(anyString());
+        verify(otpService).issueDecoyRegistrationOtp("test@example.com");
+    }
+
+    @Test
+    void resendRegistrationOtp_AlreadyVerifiedEmail_isIndistinguishableAndSendsNothing() {
+        testUser.setEmailVerified(true);
+        when(userRepository.findByEmail(anyString())).thenReturn(Optional.of(testUser));
+
+        assertDoesNotThrow(() -> authService.resendRegistrationOtp("test@example.com"));
+
+        verify(otpService, never()).sendRegistrationOtp(anyString());
+        verify(otpService).issueDecoyRegistrationOtp("test@example.com");
     }
 
     @Test
