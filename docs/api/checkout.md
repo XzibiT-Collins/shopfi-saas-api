@@ -40,11 +40,13 @@ Response 200 (`status`/`message`/`data` keep the Paystack shape; the order field
     "orderNumber": "ORD-20260101-0001",
     "paymentStatus": "INITIATED",
     "totalAmount": "GHS 220.00",
-    "expiresAt": "2026-01-01T13:00:00",
+    "expiresAt": "2026-01-01T13:00:00Z",
     "idempotentReplay": false
   }
 }
 ```
+
+`expiresAt` is an ISO-8601 instant in UTC with an explicit offset (`Z`), safe to parse with `Date`/`Instant`; it is order creation plus the reservation TTL.
 
 The storefront redirects to `data.data.authorization_url` (validate it against the Paystack origin) and remembers
 nothing else: the order number and reference come back in this response.
@@ -142,9 +144,14 @@ after cancellation is handled (see webhook).
 
 ## Orders
 
-`GET /api/v1/order/my-orders` (page) and `GET /api/v1/order/{orderNumber}` now include `reference` (the Paystack
+`GET /api/v1/order/my-orders` (page), `GET /api/v1/order/all` (admin) and `GET /api/v1/order/{orderNumber}` now include `reference` (the Paystack
 reference, null until initialised) so an order is found by the callback reference; `OrderResponse` also has
-`cancellable`. `my-orders` sorts only by `createdAt`, `orderNumber`, `status`, `deliveryStatus`, `id`
+`cancellable` (false once the payment is COMPLETED, FAILED or CANCELLED). Both also carry `refundRequired`: true means the
+customer paid but the order had already been cancelled/expired and could not be re-reserved, so the **merchant must
+refund**; the admin list `GET /api/v1/order/all` and the detail show it for that purpose. `GET /api/v1/order/{orderNumber}`
+returns 404 with `data.code` `ORDER_NOT_FOUND` for unknown, other customers' and other tenants' orders (identical body).
+`orderDate` is a zone-less server-local timestamp (legacy field); use `expiresAt` for anything time-critical.
+`my-orders` and `/all` sorts only by `createdAt`, `orderNumber`, `status`, `deliveryStatus`, `id`
 (`?sort=createdAt,desc`); any other sort property is 400 `INVALID_SORT`.
 
 ## Webhook behaviour (`POST /api/v1/webhook/{token}`, unchanged routing)
@@ -152,9 +159,9 @@ reference, null until initialised) so an order is found by the callback referenc
 The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 is verified with that tenant's secret
 (constant-time compare). Then, per event type:
 
-* `charge.success`: completes the payment (amount and currency must match the order when Paystack sends them). Idempotent.
+* `charge.success`: completes the payment. Amount and currency are required and must match the order; an event without them is ignored (fail closed) and the customer's verify poll settles it from the provider's own data. Idempotent.
   A late success for an order that is FAILED or CANCELLED/expired re-reserves the stock and completes it; if the stock
-  is gone the payment is recorded COMPLETED with `refundRequired` and the order stays closed.
+  is gone the payment is recorded COMPLETED with `refundRequired` and the order stays closed. Any other failure while re-reserving (database/pool timeout) is not treated as out of stock: nothing is changed and the next webhook or verify poll retries.
 * `charge.failed`: the only event that marks the payment/order FAILED and releases the stock. Never overrides COMPLETED.
 * any other event type: ignored.
 
