@@ -2,6 +2,7 @@ package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.enums.OrderProcessingStatus;
 import com.example.perfume_budget.enums.PaymentStatus;
+import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 import com.example.perfume_budget.repository.CartRepository;
@@ -61,6 +62,11 @@ public class PaymentSettlementService {
     @Transactional
     public Outcome applySuccess(String providerReference, String channel, BigDecimal providerAmountMinor,
                                 String providerCurrency, String gatewayResponseJson) {
+        if (providerAmountMinor == null || providerCurrency == null || providerCurrency.isBlank()) {
+            // Fail closed: money is only applied against provider-confirmed amount and currency.
+            log.warn("Success without provider amount/currency not applied (reference {})", providerReference);
+            return Outcome.MISMATCH;
+        }
         Long orderId = paymentRepository.findOrderIdByProviderReference(providerReference).orElse(null);
         if (orderId == null) {
             return Outcome.NOT_FOUND;
@@ -87,7 +93,10 @@ public class PaymentSettlementService {
             boolean reserved;
             try {
                 reserved = reservationService.reserveForLatePayment(order.getOrderNumber(), order.getItems());
-            } catch (RuntimeException e) {
+            } catch (BadRequestException e) {
+                // ONLY "Insufficient stock" is a business outcome. Any other failure (pool/lock timeout, transient DB
+                // error) propagates: this transaction rolls back, the payment stays unsettled and the next webhook or
+                // verify poll retries instead of wrongly flagging a refund.
                 reserved = false;
             }
             if (!reserved) {
@@ -161,11 +170,9 @@ public class PaymentSettlementService {
     }
 
     private static boolean amountMatches(Payment payment, BigDecimal providerAmountMinor, String providerCurrency) {
-        if (providerAmountMinor != null && payment.getAmount() != null
-                && payment.getAmount().movePointRight(2).compareTo(providerAmountMinor) != 0) {
+        if (payment.getAmount() == null || payment.getAmount().movePointRight(2).compareTo(providerAmountMinor) != 0) {
             return false;
         }
-        return providerCurrency == null || payment.getCurrency() == null
-                || payment.getCurrency().name().equalsIgnoreCase(providerCurrency);
+        return payment.getCurrency() != null && payment.getCurrency().name().equalsIgnoreCase(providerCurrency);
     }
 }

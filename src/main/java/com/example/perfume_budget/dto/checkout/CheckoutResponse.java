@@ -4,7 +4,7 @@ import com.example.perfume_budget.dto.payment.response.PaystackInitiateTransacti
 import com.example.perfume_budget.enums.PaymentStatus;
 import lombok.Builder;
 
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 /**
  * Checkout result. {@code status}/{@code message}/{@code data} keep the Paystack initialise shape (back compatible);
@@ -19,6 +19,6 @@ public record CheckoutResponse(
         String orderNumber,
         PaymentStatus paymentStatus,
         String totalAmount,
-        LocalDateTime expiresAt,
+        OffsetDateTime expiresAt,
         boolean idempotentReplay
 ) {}

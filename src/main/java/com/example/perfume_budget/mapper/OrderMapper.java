@@ -5,6 +5,7 @@ import com.example.perfume_budget.dto.order.OrderResponse;
 import com.example.perfume_budget.dto.tax.TaxCalculationResponse;
 import com.example.perfume_budget.model.Money;
 import com.example.perfume_budget.model.Order;
+import com.example.perfume_budget.model.Payment;
 
 import java.math.BigDecimal;
 
@@ -14,11 +15,20 @@ public class OrderMapper {
     }
 
     public static OrderResponse toOrderResponse(Order order){
-        return toOrderResponse(order, null);
+        return toOrderResponse(order, (String) null);
     }
 
     /** @param reference the Paystack reference of the order's payment (null when unknown / not initialised) */
+    public static OrderResponse toOrderResponse(Order order, Payment payment){
+        return toOrderResponse(order, payment == null ? null : payment.getProviderPaymentReference(),
+                payment != null && payment.isRefundRequired());
+    }
+
     public static OrderResponse toOrderResponse(Order order, String reference){
+        return toOrderResponse(order, reference, false);
+    }
+
+    public static OrderResponse toOrderResponse(Order order, String reference, boolean refundRequired){
 
         Money subtotal = order.getSubtotal();
         BigDecimal autoDiscount = amount(order.getAutomaticDiscountAmount());
@@ -28,6 +38,7 @@ public class OrderMapper {
                 .orderId(order.getId())
                 .orderNumber(order.getOrderNumber())
                 .reference(reference)
+                .refundRequired(refundRequired)
                 .cancellable(isCancellable(order))
                 .subtotal(subtotal.toString())
                 .originalSubtotal(originalSubtotal.toString())
@@ -64,14 +75,24 @@ public class OrderMapper {
     }
 
     public static OrderListResponse toOrderListResponse(Order order){
-        return toOrderListResponse(order, null);
+        return toOrderListResponse(order, (String) null);
+    }
+
+    public static OrderListResponse toOrderListResponse(Order order, Payment payment){
+        return toOrderListResponse(order, payment == null ? null : payment.getProviderPaymentReference(),
+                payment != null && payment.isRefundRequired());
     }
 
     public static OrderListResponse toOrderListResponse(Order order, String reference){
+        return toOrderListResponse(order, reference, false);
+    }
+
+    public static OrderListResponse toOrderListResponse(Order order, String reference, boolean refundRequired){
         return OrderListResponse.builder()
                 .orderId(order.getId())
                 .orderNumber(order.getOrderNumber())
                 .reference(reference)
+                .refundRequired(refundRequired)
                 .paymentStatus(order.getStatus())
                 .deliveryStatus(order.getDeliveryStatus())
                 .totalAmount(order.getTotalAmount().toString())

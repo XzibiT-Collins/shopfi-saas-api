@@ -251,7 +251,8 @@ public class OrderServiceImpl implements OrderService {
                 .orderNumber(order.getOrderNumber())
                 .paymentStatus(order.getStatus())
                 .totalAmount(order.getTotalAmount().toString())
-                .expiresAt(order.getCreatedAt() == null ? null : order.getCreatedAt().plusHours(expiryHours))
+                .expiresAt(order.getCreatedAt() == null ? null : order.getCreatedAt().plusHours(expiryHours)
+                        .atZone(java.time.ZoneId.systemDefault()).withZoneSameInstant(java.time.ZoneOffset.UTC).toOffsetDateTime())
                 .idempotentReplay(replay)
                 .build();
     }
@@ -275,7 +276,7 @@ public class OrderServiceImpl implements OrderService {
     public PageResponse<OrderListResponse> getMyOrders(Pageable pageable) {
         User user = authUserUtil.getCurrentUser();
         Page<Order> orders = orderRepository.findAllByUser(requireSortable(pageable), user);
-        Map<Long, String> refs = referencesFor(orders.getContent());
+        Map<Long, Payment> refs = referencesFor(orders.getContent());
         return PaginationUtil.createPageResponse(
                 orders.map(o -> OrderMapper.toOrderListResponse(o, refs.get(o.getId()))));
     }
@@ -292,7 +293,7 @@ public class OrderServiceImpl implements OrderService {
                                                         OrderProcessingStatus deliveryStatus,
                                                         Pageable pageable) {
         Page<Order> orders = orderRepository.findAllWithFilters(paymentStatus, deliveryStatus, requireSortable(pageable));
-        Map<Long, String> refs = referencesFor(orders.getContent());
+        Map<Long, Payment> refs = referencesFor(orders.getContent());
         return PaginationUtil.createPageResponse(
                 orders.map(o -> OrderMapper.toOrderListResponse(o, refs.get(o.getId()))));
     }
@@ -314,13 +315,12 @@ public class OrderServiceImpl implements OrderService {
         return pageable;
     }
 
-    private Map<Long, String> referencesFor(List<Order> orders) {
+    private Map<Long, Payment> referencesFor(List<Order> orders) {
         if (orders.isEmpty()) {
             return Map.of();
         }
         return paymentRepository.findAllByOrderIn(orders).stream()
-                .filter(p -> p.getProviderPaymentReference() != null)
-                .collect(Collectors.toMap(p -> p.getOrder().getId(), Payment::getProviderPaymentReference, (a, b) -> a));
+                .collect(Collectors.toMap(p -> p.getOrder().getId(), p -> p, (a, b) -> a));
     }
 
     @Override
@@ -378,11 +378,11 @@ public class OrderServiceImpl implements OrderService {
         Order order;
         if(user.getRoles() == UserRole.ADMIN){
             order = orderRepository.findByOrderNumber(cleanOrderNumber)
-                    .orElseThrow(() -> new ResourceNotFoundException(ORDER_NOT_FOUND));
+                    .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
 
         }else{
             order = orderRepository.findByOrderNumberAndUser(cleanOrderNumber,user)
-                    .orElseThrow(() -> new ResourceNotFoundException(ORDER_NOT_FOUND));
+                    .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
         }
         return order;
     }

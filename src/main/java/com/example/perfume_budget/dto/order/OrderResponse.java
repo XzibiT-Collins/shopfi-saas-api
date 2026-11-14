@@ -26,5 +26,6 @@ public record OrderResponse(
         LocalDateTime orderDate,
         DeliveryDetailResponse deliveryDetail,
         TaxCalculationResponse taxes,
+        boolean refundRequired,       // paid but the order could not be fulfilled any more: the merchant must refund
         boolean cancellable           // true while the owner may POST /api/v1/order/{orderNumber}/cancel
 ) {}

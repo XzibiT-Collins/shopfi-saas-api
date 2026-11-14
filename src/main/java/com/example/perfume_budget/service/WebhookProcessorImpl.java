@@ -51,6 +51,11 @@ public class WebhookProcessorImpl implements WebhookProcessor {
                         log.info("Ignoring charge.success with non-success status for reference {}", reference);
                         return;
                     }
+                    if (data.amount() == null || data.currency() == null || data.currency().isBlank()) {
+                        // Fail closed: left for the customer's verify poll, which uses the provider's own data.
+                        log.warn("Ignoring charge.success without amount/currency for reference {}", reference);
+                        return;
+                    }
                     var outcome = settlementService.applySuccess(reference, data.channel(), data.amount(),
                             data.currency(), body);
                     log.info("charge.success for reference {}: {}", reference, outcome);
