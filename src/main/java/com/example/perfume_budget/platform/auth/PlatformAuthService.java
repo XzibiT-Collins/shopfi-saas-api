@@ -40,11 +40,15 @@ public class PlatformAuthService {
     }
 
     public PlatformAuthResponse login(PlatformLoginRequest request, String ipKey, HttpServletResponse response) {
+        // Defense in depth behind bean validation: never feed BCrypt more than 72 bytes (silent truncation).
+        if (request.password().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > PlatformLoginRequest.MAX_PASSWORD_BYTES) {
+            throw new com.example.perfume_budget.exception.BadRequestException("Invalid request");
+        }
         limiter.checkLoginIp(ipKey);
         String email = request.email().strip().toLowerCase(Locale.ROOT);
         limiter.checkLoginEmail(email);
 
-        Optional<PlatformAdmin> found = admins.findByEmail(email);
+        Optional<PlatformAdmin> found = admins.findByEmailIgnoreCase(email);
         // Always exactly one BCrypt compare: against the real hash when the admin exists (even if inactive, so an
         // inactive account costs the same and never answers differently), otherwise against the dummy hash.
         String hash = found.map(PlatformAdmin::getPassword).orElse(dummyHash);
@@ -63,7 +67,7 @@ public class PlatformAuthService {
         String token = PlatformAuthCookies.read(request, PlatformAuthCookies.REFRESH_COOKIE);
         Optional<PlatformAdmin> admin = jwt.verify(token, PlatformJwtService.TYPE_REFRESH)
                 .map(Claims::getSubject)
-                .flatMap(admins::findByEmail)
+                .flatMap(admins::findByEmailIgnoreCase)
                 .filter(PlatformAdmin::isActive);
         if (admin.isEmpty()) {
             cookies.clear(response);

@@ -57,6 +57,17 @@ class PlatformJwtServiceTest {
     }
 
     @Test
+    void platformKeyToken_withoutExpOrIat_isRejected() {
+        var key = PlatformJwtService.deriveKey(SECRET);
+        String noExp = Jwts.builder().subject("root@x.test").claim("tenant", "__platform__").claim("role", "SUPER_ADMIN")
+                .claim("typ", "access").issuedAt(new Date()).signWith(key).compact();
+        String noIat = Jwts.builder().subject("root@x.test").claim("tenant", "__platform__").claim("role", "SUPER_ADMIN")
+                .claim("typ", "access").expiration(new Date(System.currentTimeMillis() + 60_000)).signWith(key).compact();
+        assertThat(svc.verify(noExp, "access")).as("no exp").isEmpty();
+        assertThat(svc.verify(noIat, "access")).as("no iat").isEmpty();
+    }
+
+    @Test
     void garbageAndNull_areRejectedWithoutThrowing() {
         assertThat(svc.verify(null, "access")).isEmpty();
         assertThat(svc.verify("", "access")).isEmpty();

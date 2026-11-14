@@ -45,7 +45,7 @@ class PlatformAdminBootstrapTest {
 
     @Test
     void createsActiveAdmin_withBcryptHash_neverThePlaintext() {
-        when(repo.existsByEmail("root@x.test")).thenReturn(false);
+        when(repo.existsByEmailIgnoreCase("root@x.test")).thenReturn(false);
         assertThat(boot(" Root@X.test ", "Str0ng-enough-pw").bootstrap()).isTrue();
         var cap = org.mockito.ArgumentCaptor.forClass(PlatformAdmin.class);
         verify(repo).saveAndFlush(cap.capture());
@@ -58,7 +58,7 @@ class PlatformAdminBootstrapTest {
 
     @Test
     void existingAdmin_isNeverModified() {
-        when(repo.existsByEmail("root@x.test")).thenReturn(true);
+        when(repo.existsByEmailIgnoreCase("root@x.test")).thenReturn(true);
         assertThat(boot("root@x.test", "An0ther-new-pass!").bootstrap()).isFalse();
         verify(repo, never()).saveAndFlush(any());
         verify(repo, never()).save(any());

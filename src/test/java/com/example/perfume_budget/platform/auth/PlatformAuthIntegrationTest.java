@@ -35,7 +35,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "platform.auth.login-ip.capacity=8",
         "platform.auth.login-ip.period-seconds=3600",
         "platform.auth.login-email.capacity=3",
-        "platform.auth.login-email.period-seconds=3600"
+        "platform.auth.login-email.period-seconds=3600",
+        "platform.auth.refresh-ip.capacity=3",
+        "platform.auth.refresh-ip.period-seconds=3600"
 })
 class PlatformAuthIntegrationTest extends AbstractPostgresIntegrationTest {
 
@@ -300,6 +302,90 @@ class PlatformAuthIntegrationTest extends AbstractPostgresIntegrationTest {
             r.setRemoteAddr(nextIp());
             return r;
         }).cookie(new Cookie("platformRefreshToken", tenantRefreshToken())))).isEqualTo(401);
+    }
+
+    @Test
+    void refreshIsThrottledPerIp_andOtherIpsAreUnaffected() throws Exception {
+        String ip = nextIp();
+        for (int i = 0; i < 3; i++) {
+            assertThat(refreshStatus(ip)).as("attempt %d", i).isEqualTo(401);
+        }
+        var blocked = mvc.perform(post("/api/v1/platform/auth/refresh").with(r -> {
+            r.setRemoteAddr(ip);
+            return r;
+        })).andReturn().getResponse();
+        assertThat(blocked.getStatus()).isEqualTo(429);
+        assertThat(blocked.getHeader("Retry-After")).isNotNull();
+        assertThat(refreshStatus(nextIp())).isEqualTo(401);
+    }
+
+    private int refreshStatus(String ip) throws Exception {
+        return status(post("/api/v1/platform/auth/refresh").with(r -> {
+            r.setRemoteAddr(ip);
+            return r;
+        }));
+    }
+
+    // ---- S7: BCrypt 72-byte limit enforced in bytes -----------------------------------------------------------
+
+    private PlatformAdmin adminWithPassword(String pw) {
+        return admins.save(PlatformAdmin.builder().email("bytes" + SEQ.incrementAndGet() + "@platform.test")
+                .password(encoder.encode(pw)).fullName("Root").isActive(true).build());
+    }
+
+    @Test
+    void passwordLimitIsInBytes_asciiBoundary72Ok_73Rejected_andTruncationInputCannotLogIn() throws Exception {
+        String p72 = "a".repeat(72);
+        PlatformAdmin a = adminWithPassword(p72);
+        assertThat(login(a.getEmail(), p72, nextIp()).getStatus()).isEqualTo(200);
+        MockHttpServletResponse over = login(a.getEmail(), p72 + "x", nextIp());
+        assertThat(over.getStatus()).as("73 bytes sharing the first 72 must not authenticate").isEqualTo(400);
+        assertThat(over.getCookie("platformAccessToken")).isNull();
+    }
+
+    @Test
+    void passwordLimitIsInBytes_multibyteBoundary() throws Exception {
+        String p72 = "\u00e9".repeat(36); // 36 chars, 72 bytes
+        PlatformAdmin a = adminWithPassword(p72);
+        assertThat(login(a.getEmail(), p72, nextIp()).getStatus()).isEqualTo(200);
+        // 37 chars (passes the 72-CHARACTER cap) but 74 bytes, sharing the first 72 bytes with the stored password
+        assertThat(login(a.getEmail(), p72 + "\u00e9", nextIp()).getStatus()).isEqualTo(400);
+        assertThat(login(a.getEmail(), "\u00e9".repeat(37), nextIp()).getStatus()).isEqualTo(400);
+    }
+
+    // ---- S8: exp and iat are mandatory ---------------------------------------------------------------------
+
+    @Test
+    void platformKeyTokenWithoutExpOrIat_isRejectedOnMe() throws Exception {
+        PlatformAdmin a = newAdmin(true);
+        var key = PlatformJwtService.deriveKey("404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970");
+        String good = io.jsonwebtoken.Jwts.builder().subject(a.getEmail()).claim("tenant", "__platform__")
+                .claim("role", "SUPER_ADMIN").claim("typ", "access").issuedAt(new java.util.Date())
+                .expiration(new java.util.Date(System.currentTimeMillis() + 60_000)).signWith(key).compact();
+        String noExp = io.jsonwebtoken.Jwts.builder().subject(a.getEmail()).claim("tenant", "__platform__")
+                .claim("role", "SUPER_ADMIN").claim("typ", "access").issuedAt(new java.util.Date()).signWith(key).compact();
+        String noIat = io.jsonwebtoken.Jwts.builder().subject(a.getEmail()).claim("tenant", "__platform__")
+                .claim("role", "SUPER_ADMIN").claim("typ", "access")
+                .expiration(new java.util.Date(System.currentTimeMillis() + 60_000)).signWith(key).compact();
+        assertThat(status(get("/api/v1/platform/auth/me").cookie(new Cookie("platformAccessToken", good)))).as("control").isEqualTo(200);
+        assertThat(status(get("/api/v1/platform/auth/me").cookie(new Cookie("platformAccessToken", noExp)))).isEqualTo(401);
+        assertThat(status(get("/api/v1/platform/auth/me").cookie(new Cookie("platformAccessToken", noIat)))).isEqualTo(401);
+    }
+
+    // ---- S10: case-insensitive admin lookup ------------------------------------------------------------------
+
+    @Test
+    void adminStoredWithMixedCaseEmail_canLogIn_andUseTheSession_andCannotBeDuplicated() throws Exception {
+        String mixed = "MiXed" + SEQ.incrementAndGet() + "@Platform.test";
+        admins.save(PlatformAdmin.builder().email(mixed).password(encoder.encode(PW)).fullName("Mixed").isActive(true).build());
+        for (String typed : List.of(mixed, mixed.toLowerCase(), mixed.toUpperCase())) {
+            MockHttpServletResponse r = login(typed, PW, nextIp());
+            assertThat(r.getStatus()).as(typed).isEqualTo(200);
+            assertThat(status(get("/api/v1/platform/auth/me").cookie(asCookie(r, "platformAccessToken")))).isEqualTo(200);
+        }
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> admins.saveAndFlush(PlatformAdmin.builder()
+                .email(mixed.toLowerCase()).password("x").fullName("Dup").isActive(true).build()))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     // ---- cookies do not interfere -----------------------------------------------------------------------------

@@ -88,7 +88,9 @@ public class PlatformJwtService {
             if (!TenantContext.PLATFORM_SLUG.equals(claims.get("tenant", String.class))
                     || !PlatformRole.SUPER_ADMIN.name().equals(claims.get("role", String.class))
                     || !type.equals(claims.get("typ", String.class))
-                    || claims.getSubject() == null) {
+                    || claims.getSubject() == null
+                    || claims.getExpiration() == null
+                    || claims.getIssuedAt() == null) {
                 return Optional.empty();
             }
             return Optional.of(claims);

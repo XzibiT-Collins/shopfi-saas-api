@@ -45,7 +45,7 @@ class PlatformAuthServiceTest {
 
     @Test
     void unknownEmail_stillComparesAgainstTheDummyHash_once() {
-        when(repo.findByEmail("nobody@x.test")).thenReturn(Optional.empty());
+        when(repo.findByEmailIgnoreCase("nobody@x.test")).thenReturn(Optional.empty());
         when(encoder.matches(anyString(), anyString())).thenReturn(false);
         assertThat(loginFailureMessage("nobody@x.test", "whatever-pass")).isEqualTo("Invalid email or password");
         verify(encoder, times(1)).matches("whatever-pass", "DUMMY-HASH");
@@ -53,7 +53,7 @@ class PlatformAuthServiceTest {
 
     @Test
     void wrongPassword_comparesOnce_sameMessage() {
-        when(repo.findByEmail("root@x.test")).thenReturn(Optional.of(admin(true)));
+        when(repo.findByEmailIgnoreCase("root@x.test")).thenReturn(Optional.of(admin(true)));
         when(encoder.matches(anyString(), anyString())).thenReturn(false);
         assertThat(loginFailureMessage("root@x.test", "wrong-pass")).isEqualTo("Invalid email or password");
         verify(encoder, times(1)).matches("wrong-pass", "REAL-HASH");
@@ -61,15 +61,24 @@ class PlatformAuthServiceTest {
 
     @Test
     void inactiveAdmin_withCorrectPassword_isRejectedGenerically_afterTheSameCompare() {
-        when(repo.findByEmail("root@x.test")).thenReturn(Optional.of(admin(false)));
+        when(repo.findByEmailIgnoreCase("root@x.test")).thenReturn(Optional.of(admin(false)));
         when(encoder.matches("right-pass", "REAL-HASH")).thenReturn(true);
         assertThat(loginFailureMessage("root@x.test", "right-pass")).isEqualTo("Invalid email or password");
         verify(encoder, times(1)).matches("right-pass", "REAL-HASH");
     }
 
     @Test
+    void passwordOver72Bytes_isRejectedBeforeAnyLookupOrCompare() {
+        var ex = org.assertj.core.api.Assertions.catchThrowable(() -> svc.login(
+                new PlatformLoginRequest("root@x.test", "\u00e9".repeat(37)), "1.1.1.9", new MockHttpServletResponse()));
+        assertThat(ex).isInstanceOf(com.example.perfume_budget.exception.BadRequestException.class);
+        verifyNoInteractions(repo);
+        verify(encoder, never()).matches(anyString(), anyString());
+    }
+
+    @Test
     void emailIsNormalised() {
-        when(repo.findByEmail("root@x.test")).thenReturn(Optional.of(admin(true)));
+        when(repo.findByEmailIgnoreCase("root@x.test")).thenReturn(Optional.of(admin(true)));
         when(encoder.matches("right-pass", "REAL-HASH")).thenReturn(true);
         var resp = new MockHttpServletResponse();
         assertThat(svc.login(new PlatformLoginRequest("  ROOT@X.test ", "right-pass"), "1.1.1.2", resp).role()).isEqualTo("SUPER_ADMIN");

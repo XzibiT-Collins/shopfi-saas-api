@@ -68,7 +68,7 @@ public class PlatformAdminBootstrap implements ApplicationRunner {
                     MIN_PASSWORD_LENGTH, MAX_PASSWORD_BYTES);
             return false;
         }
-        if (admins.existsByEmail(normalized)) {
+        if (admins.existsByEmailIgnoreCase(normalized)) {
             log.info("Platform super-admin already exists; bootstrap left it unchanged");
             return false;
         }

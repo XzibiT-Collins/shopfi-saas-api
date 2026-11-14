@@ -150,7 +150,7 @@ public class JWTFilter extends OncePerRequestFilter {
         String token = PlatformAuthCookies.read(request, PlatformAuthCookies.ACCESS_COOKIE);
         if (token != null) {
             PlatformAdmin admin = platformJwtService.verify(token, PlatformJwtService.TYPE_ACCESS)
-                    .flatMap(c -> platformAdminRepository.findByEmail(c.getSubject()))
+                    .flatMap(c -> platformAdminRepository.findByEmailIgnoreCase(c.getSubject()))
                     .filter(PlatformAdmin::isActive)
                     .orElse(null);
             if (admin == null) {
