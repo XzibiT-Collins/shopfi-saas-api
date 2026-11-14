@@ -35,7 +35,7 @@ request-headers variants) is set on every CORS response, rejected ones included.
 ## Allowed methods and headers (explicit, no wildcard)
 
 Methods: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS (`cors.allowed-methods`). Request headers: Content-Type, Accept,
-If-Match, If-None-Match (`cors.allowed-headers`). `Authorization` is deliberately absent: cookies are the credential.
+If-Match, If-None-Match, Idempotency-Key (PAY-01 checkout) (`cors.allowed-headers`). `Authorization` is deliberately absent: cookies are the credential.
 In non-prod profiles with header resolution on, `X-Tenant-ID` is added so a dev browser can send it. Exposed response
 headers: `ETag`, `Retry-After` (`cors.exposed-headers`). Preflight cache: 300 s (`cors.max-age-seconds`).
 

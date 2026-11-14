@@ -378,3 +378,8 @@ For issues or questions:
 **API Version:** 0.0.1-SNAPSHOT
 **Spring Boot Version:** 3.5.10
 **Spring Security Version:** 6.5.7
+
+
+## Cart, checkout, payment and order endpoints
+
+See [docs/api/checkout.md](docs/api/checkout.md) (PAY-01): `POST /api/v1/cart/checkout`, `POST /api/v1/cart/preview`, `GET /api/v1/payment/verify`, `POST /api/v1/order/{orderNumber}/cancel`, `GET /api/v1/order/my-orders`, `GET /api/v1/order/{orderNumber}`, webhook behaviour and error codes.

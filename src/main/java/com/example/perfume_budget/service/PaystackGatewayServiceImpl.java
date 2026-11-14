@@ -2,6 +2,7 @@ package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.dto.payment.request.PaystackInitiatePaymentRequest;
 import com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse;
+import com.example.perfume_budget.dto.payment.response.PaystackVerifyTransactionResponse;
 import com.example.perfume_budget.exception.PaymentException;
 import com.example.perfume_budget.service.interfaces.PaymentGatewayAPIService;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +27,7 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
     private String paystackUrl;
 
     private static final String INITIALIZE_ENDPOINT = "/transaction/initialize";
+    private static final String VERIFY_ENDPOINT = "/transaction/verify/";
 
     @Override
     public PaystackInitiateTransactionResponse initiatePaystackTransaction(PaystackInitiatePaymentRequest paystackRequest) {
@@ -69,6 +71,27 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
             throw new PaymentException("An unexpected error occurred while processing your payment");
         }
         throw new PaymentException("Payment initialization failed due to an unexpected error");
+    }
+
+    @Override
+    public PaystackVerifyTransactionResponse verifyPaystackTransaction(String reference) {
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("Authorization", "Bearer " + gatewayProvider.currentSecretOrThrow());
+            ResponseEntity<PaystackVerifyTransactionResponse> response = restTemplate.exchange(
+                    paystackUrl.trim() + VERIFY_ENDPOINT + java.net.URLEncoder.encode(reference, java.nio.charset.StandardCharsets.UTF_8),
+                    org.springframework.http.HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    PaystackVerifyTransactionResponse.class);
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                throw new PaymentException("Payment provider returned an unsuccessful response");
+            }
+            return response.getBody();
+        } catch (RestClientException e) {
+            // Class name only: the exception text may echo request details.
+            log.warn("Paystack verification failed: {}", e.getClass().getSimpleName());
+            throw new PaymentException("Could not verify the payment with the provider");
+        }
     }
 
     private void handleHttpClientError(HttpClientErrorException e) {

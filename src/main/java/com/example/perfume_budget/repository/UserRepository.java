@@ -5,6 +5,8 @@ import com.example.perfume_budget.enums.AuthProvider;
 import com.example.perfume_budget.enums.UserRole;
 import com.example.perfume_budget.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -16,6 +18,11 @@ import java.util.Optional;
 @Repository
 public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByEmail(String email);
+
+    /** Row lock used to serialise one customer's checkouts (double submit, concurrent tabs). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT u FROM User u WHERE u.id = :id")
+    Optional<User> lockById(@Param("id") Long id);
     boolean existsByEmail(String email);
 
     /**

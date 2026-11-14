@@ -28,6 +28,21 @@ public interface TenantRepository extends JpaRepository<Tenant, Long> {
 
     List<Tenant> findByStatus(TenantStatus status);
 
+    /** Registry page (PLAT-02). Reads {@code master.tenants} only, never a tenant schema. */
+    org.springframework.data.domain.Page<Tenant> findByStatus(TenantStatus status,
+                                                            org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * PLAT-02: a PROVISIONING row whose saga died (crash/kill) is moved to FAILED so it can be reprovisioned; only
+     * rows untouched since {@code cutoff} qualify, and the compare-and-set lets exactly one caller win.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Tenant t set t.status = com.example.perfume_budget.platform.enums.TenantStatus.FAILED, "
+            + "t.updatedAt = CURRENT_TIMESTAMP where t.id = :id "
+            + "and t.status = com.example.perfume_budget.platform.enums.TenantStatus.PROVISIONING "
+            + "and t.updatedAt < :cutoff")
+    int reclaimStuckProvisioning(@Param("id") Long id, @Param("cutoff") java.time.LocalDateTime cutoff);
+
     /**
      * Atomic compare-and-set used by provisioning to claim a PENDING/FAILED row; returns the number of
      * rows moved (0 = someone else owns it, so concurrent retries cannot both proceed).

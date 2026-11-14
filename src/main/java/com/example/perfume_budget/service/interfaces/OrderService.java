@@ -4,7 +4,7 @@ import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.order.OrderListResponse;
 import com.example.perfume_budget.dto.order.OrderResponse;
 import com.example.perfume_budget.dto.order.OrderStatusUpdateRequest;
-import com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse;
+import com.example.perfume_budget.dto.checkout.CheckoutResponse;
 import com.example.perfume_budget.enums.OrderProcessingStatus;
 import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.model.Order;
@@ -15,7 +15,14 @@ import java.util.List;
 
 public interface OrderService {
     // CUSTOMER
-    PaystackInitiateTransactionResponse checkout(String couponCode);
+    /**
+     * @param deliveryDetailId optional explicit delivery detail of the caller (default address when null)
+     * @param idempotencyKey   optional client key; a retry with the same key and request returns the same order
+     */
+    CheckoutResponse checkout(String couponCode, Long deliveryDetailId, String idempotencyKey);
+
+    /** Owner cancel of an unpaid order (404 when not the caller's). Idempotent. */
+    OrderResponse cancelMyOrder(String orderNumber);
     PageResponse<OrderListResponse> getMyOrders(Pageable pageable);
 
     OrderResponse getOrderByOrderNumber(String orderNumber);

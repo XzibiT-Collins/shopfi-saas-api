@@ -1,126 +1,70 @@
 package com.example.perfume_budget.service;
 
-import com.example.perfume_budget.enums.PaymentStatus;
-import com.example.perfume_budget.model.Order;
-import com.example.perfume_budget.model.Payment;
-import com.example.perfume_budget.repository.CartRepository;
-import com.example.perfume_budget.repository.OrderRepository;
-import com.example.perfume_budget.repository.PaymentRepository;
-import com.example.perfume_budget.repository.ProductRepository;
-import com.example.perfume_budget.service.interfaces.OrderService;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.context.ApplicationEventPublisher;
 
-import java.util.ArrayList;
+import java.math.BigDecimal;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+/** PAY-01 AC5b: event types are handled explicitly; only charge.failed is a terminal failure. */
 @ExtendWith(MockitoExtension.class)
 class WebhookProcessorImplTest {
 
-    @Mock
-    private PaymentRepository paymentRepository;
-    @Mock
-    private ProductRepository productRepository;
-    @Mock
-    private OrderRepository orderRepository;
-    @Mock
-    private OrderService orderService;
-    @Mock
-    private CartRepository cartRepository;
-    @Mock
-    private ApplicationEventPublisher eventPublisher;
-    @Mock
-    private BookkeepingService bookkeepingService;
+    @Mock PaymentSettlementService settlement;
+    @InjectMocks WebhookProcessorImpl processor;
 
-    @InjectMocks
-    private WebhookProcessorImpl webhookProcessor;
-
-    private Payment testPayment;
-    private Order testOrder;
-
-    @BeforeEach
-    void setUp() {
-        testOrder = Order.builder()
-                .id(1L)
-                .orderNumber("ORD-123")
-                .items(new ArrayList<>())
-                .build();
-
-        testPayment = Payment.builder()
-                .id(1L)
-                .providerPaymentReference("REF123")
-                .status(PaymentStatus.PENDING)
-                .order(testOrder)
-                .customerEmail("test@example.com")
-                .build();
+    private static String body(String event, String extra) {
+        return "{\"event\":\"" + event + "\",\"unknownTop\":1,\"data\":{\"reference\":\"REF123\",\"channel\":\"card\"" + extra + "}}";
     }
 
     @Test
-    void processWebhook_Success() {
-        String body = "{\"event\":\"charge.success\",\"data\":{\"reference\":\"REF123\",\"channel\":\"card\"}}";
-        when(paymentRepository.findByProviderPaymentReference("REF123")).thenReturn(testPayment);
-        when(paymentRepository.save(any(Payment.class))).thenReturn(testPayment);
-
-        webhookProcessor.processWebhook(body);
-
-        verify(paymentRepository).save(testPayment);
-        verify(orderRepository).save(testOrder);
-        verify(cartRepository).deleteAllByUserEmail("test@example.com");
-        verify(orderService).finalizeReservedStock(testOrder);
-        verify(bookkeepingService).recordSale(eq(testOrder), eq(testPayment));
-        verify(eventPublisher).publishEvent(any(Payment.class));
+    void chargeSuccessIsApplied() {
+        processor.processWebhook(body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\",\"status\":\"success\""));
+        verify(settlement).applySuccess(eq("REF123"), eq("card"), eq(new BigDecimal("1250")), eq("GHS"), anyString());
+        verifyNoMoreInteractions(settlement);
     }
 
     @Test
-    void processWebhook_Failure() {
-        String body = "{\"event\":\"charge.failed\",\"data\":{\"reference\":\"REF123\",\"channel\":\"card\",\"message\":\"Declined\"}}";
-        when(paymentRepository.findByProviderPaymentReference("REF123")).thenReturn(testPayment);
-        when(paymentRepository.save(any(Payment.class))).thenReturn(testPayment);
-        when(orderRepository.save(any(Order.class))).thenReturn(testOrder);
-
-        webhookProcessor.processWebhook(body);
-
-        verify(paymentRepository).save(testPayment);
-        verify(orderService).releaseStock(anyString());
+    void chargeSuccessWithoutAmountOrCurrencyFailsClosed() {
+        processor.processWebhook(body("charge.success", ""));
+        processor.processWebhook(body("charge.success", ",\"amount\":1250"));
+        processor.processWebhook(body("charge.success", ",\"currency\":\"GHS\""));
+        verifyNoInteractions(settlement);
     }
 
     @Test
-    void processWebhook_PaymentNotFound() {
-        String body = "{\"event\":\"charge.success\",\"data\":{\"reference\":\"REF_NONE\"}}";
-        when(paymentRepository.findByProviderPaymentReference("REF_NONE")).thenReturn(null);
-
-        webhookProcessor.processWebhook(body);
-
-        verify(paymentRepository, never()).save(any());
+    void chargeSuccessWithNonSuccessStatusIsIgnored() {
+        processor.processWebhook(body("charge.success", ",\"status\":\"abandoned\""));
+        verifyNoInteractions(settlement);
     }
 
     @Test
-    void processWebhook_AlreadyProcessed() {
-        String body = "{\"event\":\"charge.success\",\"data\":{\"reference\":\"REF123\"}}";
-        testPayment.setStatus(PaymentStatus.COMPLETED);
-        when(paymentRepository.findByProviderPaymentReference("REF123")).thenReturn(testPayment);
-
-        webhookProcessor.processWebhook(body);
-
-        verify(paymentRepository, never()).save(any());
+    void chargeFailedIsTheOnlyFailure() {
+        processor.processWebhook(body("charge.failed", ",\"message\":\"Declined\""));
+        verify(settlement).applyFailure(eq("REF123"), eq("card"), eq("Declined"), anyString());
+        verifyNoMoreInteractions(settlement);
     }
 
     @Test
-    void processWebhook_IgnoresCancelledPayment() {
-        String body = "{\"event\":\"charge.success\",\"data\":{\"reference\":\"REF123\",\"channel\":\"card\"}}";
-        testPayment.setStatus(PaymentStatus.CANCELLED);
-        when(paymentRepository.findByProviderPaymentReference("REF123")).thenReturn(testPayment);
+    void otherEventTypesAreIgnored() {
+        for (String e : new String[]{"transfer.success", "refund.processed", "charge.dispute.create", "customeridentification.failed", "invoice.payment_failed", "whatever"}) {
+            processor.processWebhook(body(e, ""));
+        }
+        verifyNoInteractions(settlement);
+    }
 
-        webhookProcessor.processWebhook(body);
-
-        verify(paymentRepository, never()).save(any());
-        verifyNoInteractions(orderRepository, cartRepository, bookkeepingService, eventPublisher);
+    @Test
+    void malformedOrIncompleteBodiesAreSwallowed() {
+        processor.processWebhook("not json");
+        processor.processWebhook("{\"event\":\"charge.success\"}");
+        processor.processWebhook("{\"event\":\"charge.success\",\"data\":{\"reference\":\" \"}}");
+        verify(settlement, never()).applySuccess(any(), any(), any(), any(), any());
     }
 }

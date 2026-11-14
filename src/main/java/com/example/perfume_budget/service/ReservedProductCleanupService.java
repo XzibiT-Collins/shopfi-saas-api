@@ -2,35 +2,33 @@ package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.enums.InventoryAllocationStatus;
 import com.example.perfume_budget.enums.InventoryReferenceType;
-import com.example.perfume_budget.enums.OrderProcessingStatus;
-import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.model.InventoryAllocation;
-import com.example.perfume_budget.model.Order;
-import com.example.perfume_budget.model.Payment;
 import com.example.perfume_budget.repository.InventoryAllocationRepository;
-import com.example.perfume_budget.repository.OrderRepository;
-import com.example.perfume_budget.repository.PaymentRepository;
-import com.example.perfume_budget.service.interfaces.InventoryManagementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * Expires abandoned unpaid orders: finds order reservations older than the cutoff and cancels each order in its own
+ * transaction through {@link OrderLifecycleService#expire} (row lock + status re-check, so a cancel, a webhook or a
+ * second job run racing on the same order releases its stock exactly once). Runs under the tenant bound by the caller
+ * ({@code ReservedProductCleanupTask} loops active tenants with {@code TenantRunner}); this class never switches tenant.
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ReservedProductCleanupService {
-    private static final String RESERVATION_EXPIRED_REASON = "Reservation expired after 1 hour";
 
     private final InventoryAllocationRepository inventoryAllocationRepository;
-    private final InventoryManagementService inventoryManagementService;
-    private final OrderRepository orderRepository;
-    private final PaymentRepository paymentRepository;
+    private final OrderLifecycleService orderLifecycleService;
 
-    @Transactional
+    @Value("${inventory.reservation.expiry-hours:1}")
+    private long expiryHours;
+
     public int cleanupExpiredReservations(LocalDateTime cutoff) {
         List<InventoryAllocation> staleReservations = inventoryAllocationRepository
                 .findByReferenceTypeAndStatusAndCreatedAtBefore(
@@ -43,50 +41,23 @@ public class ReservedProductCleanupService {
             return 0;
         }
 
+        String reason = "Reservation expired after " + expiryHours + (expiryHours == 1 ? " hour" : " hours");
         int cleanedOrders = 0;
         for (String orderNumber : staleReservations.stream()
                 .map(InventoryAllocation::getReferenceId)
                 .distinct()
                 .toList()) {
-
-            Order order = orderRepository.findByOrderNumber(orderNumber).orElse(null);
-            if (order == null) {
-                log.warn("Skipping cleanup for unknown order {}", orderNumber);
-                continue;
+            try {
+                if (orderLifecycleService.expire(orderNumber, reason)) {
+                    cleanedOrders++;
+                }
+            } catch (RuntimeException e) {
+                // one bad order must not stop the rest of this tenant's cleanup
+                log.error("Expiry failed for order {}: {}", orderNumber, e.getMessage());
             }
-
-            if (order.getStatus() == PaymentStatus.COMPLETED || order.getStatus() == PaymentStatus.CANCELLED) {
-                log.debug("Skipping cleanup for order {} because it is already {}", orderNumber, order.getStatus());
-                continue;
-            }
-
-            inventoryManagementService.releaseOrderInventory(orderNumber);
-            cancelOrder(order);
-            orderRepository.save(order);
-
-            paymentRepository.findByOrder_OrderNumber(orderNumber)
-                    .ifPresent(payment -> cancelPayment(payment, orderNumber));
-
-            cleanedOrders++;
         }
 
         log.info("Cleaned up {} expired reserved order(s)", cleanedOrders);
         return cleanedOrders;
-    }
-
-    private void cancelOrder(Order order) {
-        order.setStatus(PaymentStatus.CANCELLED);
-        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
-    }
-
-    private void cancelPayment(Payment payment, String orderNumber) {
-        if (payment.getStatus() == PaymentStatus.COMPLETED || payment.getStatus() == PaymentStatus.CANCELLED) {
-            return;
-        }
-
-        payment.setStatus(PaymentStatus.CANCELLED);
-        payment.setFailureReason(RESERVATION_EXPIRED_REASON);
-        paymentRepository.save(payment);
-        log.info("Cancelled payment for expired reservation on order {}", orderNumber);
     }
 }
