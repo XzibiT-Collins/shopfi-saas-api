@@ -24,7 +24,7 @@ public class CorsProperties {
     /** Explicit methods; a wildcard is rejected at startup because credentials are allowed. */
     private List<String> allowedMethods = new ArrayList<>(List.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
     /** Explicit request headers; a wildcard is rejected at startup. Cookies are the credential, so no Authorization. */
-    private List<String> allowedHeaders = new ArrayList<>(List.of("Content-Type", "Accept", "If-Match", "If-None-Match"));
+    private List<String> allowedHeaders = new ArrayList<>(List.of("Content-Type", "Accept", "If-Match", "If-None-Match", "Idempotency-Key"));
     /** Response headers a browser may read from a tenant/platform origin (API-01 AC0b). */
     private List<String> exposedHeaders = new ArrayList<>(List.of("ETag", "Retry-After"));
     /** Preflight cache lifetime in seconds. */

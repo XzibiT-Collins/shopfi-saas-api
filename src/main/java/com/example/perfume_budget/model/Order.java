@@ -66,6 +66,19 @@ public class Order {
 
     private String paymentReference;
 
+    /** Client-supplied Idempotency-Key of the checkout that created this order (null for keyless checkouts). */
+    @Column(name = "idempotency_key", length = 64, updatable = false)
+    private String idempotencyKey;
+
+    /** SHA-256 of the normalised checkout request (cart lines + coupon + delivery detail). */
+    @Column(name = "request_fingerprint", length = 64, updatable = false)
+    private String requestFingerprint;
+
+    /** Delivery detail chosen at checkout (falls back to the customer's default when null, e.g. legacy orders). */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "delivery_detail_id")
+    private DeliveryDetail deliveryDetail;
+
     @ManyToOne
     private Coupon coupon;
 

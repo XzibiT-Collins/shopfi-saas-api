@@ -22,6 +22,12 @@ public interface InventoryAllocationRepository extends JpaRepository<InventoryAl
             InventoryAllocationStatus status
     );
 
+    boolean existsByReferenceTypeAndReferenceIdAndStatus(
+            InventoryReferenceType referenceType,
+            String referenceId,
+            InventoryAllocationStatus status
+    );
+
     List<InventoryAllocation> findByReferenceTypeAndReferenceIdOrderByIdAsc(
             InventoryReferenceType referenceType,
             String referenceId

@@ -12,7 +12,9 @@ import com.example.perfume_budget.projection.OnlineOrderStatusProjection;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
@@ -32,6 +34,36 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     Optional<Order> findByOrderNumber(String cleanOrderNumber);
 
     Optional<Order> findByOrderNumberAndUser(String cleanOrderNumber, User user);
+
+    /**
+     * Row lock on one order (SELECT ... FOR UPDATE). Every state transition that can release or consume the
+     * order's stock reservation (webhook success/failure, provider verify, owner cancel, expiry job) takes this lock
+     * first and re-reads the status, so each reservation is released or consumed exactly once.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT o FROM Order o WHERE o.id = :id")
+    Optional<Order> lockById(@Param("id") Long id);
+
+    @Query("SELECT o.id FROM Order o WHERE o.orderNumber = :orderNumber AND o.user = :user")
+    Optional<Long> findIdByOrderNumberAndUser(@Param("orderNumber") String orderNumber, @Param("user") User user);
+
+    @Query("SELECT o.id FROM Order o WHERE o.orderNumber = :orderNumber")
+    Optional<Long> findIdByOrderNumber(@Param("orderNumber") String orderNumber);
+
+    Optional<Order> findByUserAndIdempotencyKey(User user, String idempotencyKey);
+
+    /** The customer's open (payment initiated) orders for the same normalised request, newest first. */
+    @Query("""
+        SELECT o FROM Order o
+        WHERE o.user = :user
+          AND o.requestFingerprint = :fingerprint
+          AND o.status = com.example.perfume_budget.enums.PaymentStatus.INITIATED
+          AND o.createdAt > :cutoff
+        ORDER BY o.createdAt DESC
+        """)
+    List<Order> findOpenByFingerprint(@Param("user") User user,
+                                      @Param("fingerprint") String fingerprint,
+                                      @Param("cutoff") LocalDateTime cutoff);
 
     @Query("""
         SELECT u.id AS userId, u.fullName AS fullName, u.email AS email,

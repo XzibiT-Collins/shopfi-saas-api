@@ -39,6 +39,15 @@ public class OrderController {
         );
     }
 
+    /** Owner cancel of an unpaid order; releases its stock reservation once. 404 for anyone else's order. */
+    @PreAuthorize("hasRole('CUSTOMER')")
+    @PostMapping("/{orderNumber}/cancel")
+    public ResponseEntity<CustomApiResponse<OrderResponse>> cancelOrder(@PathVariable String orderNumber){
+        return ResponseEntity.ok().body(
+                CustomApiResponse.success(orderService.cancelMyOrder(orderNumber))
+        );
+    }
+
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/all")
     public ResponseEntity<CustomApiResponse<PageResponse<OrderListResponse>>> getAllOrders(

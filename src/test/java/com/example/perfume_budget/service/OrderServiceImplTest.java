@@ -1,6 +1,7 @@
 package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.dto.PageResponse;
+import com.example.perfume_budget.dto.checkout.CheckoutResponse;
 import com.example.perfume_budget.dto.order.OrderListResponse;
 import com.example.perfume_budget.dto.order.OrderResponse;
 import com.example.perfume_budget.dto.order.OrderStatusUpdateRequest;
@@ -74,6 +75,12 @@ class OrderServiceImplTest {
     private DiscountCalculationUtil discountCalculationUtil;
     @Mock
     private EffectivePriceService effectivePriceService;
+    @Mock
+    private UserRepository userRepository;
+    @Mock
+    private CheckoutCallbackUrlProvider callbackUrlProvider;
+    @Mock
+    private OrderLifecycleService lifecycleService;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -157,6 +164,11 @@ class OrderServiceImplTest {
                 .build();
         testOrder.getItems().add(orderItem);
 
+        lenient().when(userRepository.lockById(1L)).thenReturn(Optional.of(testUser));
+        // the real pricing code path, over the mocked collaborators
+        org.springframework.test.util.ReflectionTestUtils.setField(orderService, "pricingService",
+                new CheckoutPricingService(effectivePriceService, couponRepository, discountCalculationUtil, taxService));
+        org.springframework.test.util.ReflectionTestUtils.setField(orderService, "expiryHours", 1L);
         // By default no product/shop discount: effective price echoes the product's base price.
         lenient().when(effectivePriceService.activeShopDiscount()).thenReturn(Optional.empty());
         lenient().when(effectivePriceService.now()).thenReturn(java.time.LocalDateTime.now());
@@ -191,7 +203,7 @@ class OrderServiceImplTest {
                 .build();
         when(gatewayAPIService.initiatePaystackTransaction(any())).thenReturn(mockResponse);
 
-        PaystackInitiateTransactionResponse result = orderService.checkout(null);
+        CheckoutResponse result = orderService.checkout(null, null, null);
 
         assertNotNull(result);
         verify(orderRepository, atLeastOnce()).save(any(Order.class));
@@ -206,7 +218,7 @@ class OrderServiceImplTest {
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
         when(couponRepository.findByCode("DISCOUNT10")).thenReturn(Optional.of(testCoupon));
         doNothing().when(discountCalculationUtil).checkIfCouponIsValid(testCoupon);
-        when(discountCalculationUtil.applyDiscount(eq(testCoupon), any(BigDecimal.class))).thenReturn(new BigDecimal("180.00"));
+        when(discountCalculationUtil.calculateDiscount(eq(testCoupon), any(BigDecimal.class))).thenReturn(new BigDecimal("20.00"));
 
         TaxCalculationResult mockTaxResult = new TaxCalculationResult(
                 new ArrayList<>(),
@@ -223,11 +235,12 @@ class OrderServiceImplTest {
                 .build();
         when(gatewayAPIService.initiatePaystackTransaction(any())).thenReturn(mockResponse);
 
-        PaystackInitiateTransactionResponse result = orderService.checkout("DISCOUNT10");
+        CheckoutResponse result = orderService.checkout("DISCOUNT10", null, null);
 
         assertNotNull(result);
         verify(discountCalculationUtil).checkIfCouponIsValid(testCoupon);
-        verify(discountCalculationUtil).applyDiscount(eq(testCoupon), any(BigDecimal.class));
+        verify(discountCalculationUtil).calculateDiscount(eq(testCoupon), any(BigDecimal.class));
+        verify(discountCalculationUtil).recordCouponUsage(testCoupon);
     }
 
     @Test
@@ -235,7 +248,7 @@ class OrderServiceImplTest {
         when(authUserUtil.getCurrentUser()).thenReturn(testUser);
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.empty());
 
-        assertThrows(BadRequestException.class, () -> orderService.checkout(null));
+        assertThrows(BadRequestException.class, () -> orderService.checkout(null, null, null));
     }
 
     @Test
@@ -245,7 +258,7 @@ class OrderServiceImplTest {
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
 
-        assertThrows(BadRequestException.class, () -> orderService.checkout(null));
+        assertThrows(BadRequestException.class, () -> orderService.checkout(null, null, null));
     }
 
     @Test
@@ -255,7 +268,7 @@ class OrderServiceImplTest {
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
         when(couponRepository.findByCode("INVALID")).thenReturn(Optional.empty());
 
-        assertThrows(BadRequestException.class, () -> orderService.checkout("INVALID"));
+        assertThrows(BadRequestException.class, () -> orderService.checkout("INVALID", null, null));
     }
 
     @Test
@@ -275,7 +288,7 @@ class OrderServiceImplTest {
         when(orderRepository.save(any(Order.class))).thenReturn(testOrder);
         when(gatewayAPIService.initiatePaystackTransaction(any())).thenThrow(new PaymentException("Payment failed"));
 
-        assertThrows(PaymentException.class, () -> orderService.checkout(null));
+        assertThrows(PaymentException.class, () -> orderService.checkout(null, null, null));
         verify(inventoryManagementService).releaseOrderInventory("ORD-123");
     }
 
@@ -286,7 +299,7 @@ class OrderServiceImplTest {
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
 
-        assertThrows(BadRequestException.class, () -> orderService.checkout(null));
+        assertThrows(BadRequestException.class, () -> orderService.checkout(null, null, null));
         verifyNoInteractions(orderRepository, paymentRepository, gatewayAPIService);
     }
 

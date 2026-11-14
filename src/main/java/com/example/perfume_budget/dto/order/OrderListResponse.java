@@ -10,6 +10,8 @@ import java.time.LocalDateTime;
 public record OrderListResponse (
         Long orderId,
         String orderNumber,
+        String reference,
+        boolean refundRequired,
         PaymentStatus paymentStatus,
         OrderProcessingStatus deliveryStatus,
         String totalAmount,
