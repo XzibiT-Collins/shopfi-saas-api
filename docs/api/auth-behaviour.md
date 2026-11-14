@@ -94,3 +94,18 @@ at least 8 characters (UTF-16 units), at most 72 UTF-8 bytes, one `A-Z`, one `0-
 `POST /delivery-detail/add-address`: `label` is optional and defaults to `HOME` (was a DB `NOT NULL` failure when
 omitted); `landmark` is optional and stored as `null` (was `@NotNull`, 400). `PUT .../update/{id}` is unchanged
 (omitted fields are left as they are).
+
+## SEC-03: deny by default, 401 vs 403
+
+`SecurityConfig` now permits anonymous access only through an explicit, method-specific allow-list (see
+[authorization-matrix.md](authorization-matrix.md)). Consequences for clients:
+
+* Category and product **mutations and admin reads** (`POST/PUT/DELETE /category/**`, `GET /category/{id}`,
+  `POST/PUT/DELETE /product/**`, `GET /product/admin/listing`, `GET /product/main/{id}`) answer **401** to an anonymous
+  caller, a foreign-tenant token and a platform token (it used to be **403**, produced by `@PreAuthorize` after a
+  permitAll matcher). A signed-in non-admin still gets **403**. `GET /product/admin/search` also allows `FRONT_DESK`.
+* `GET /category/all`, `GET /product/{featured,listing,search,<slug>}` and `GET /theme` stay public.
+* Unlisted methods/paths under former `permitAll` prefixes (`/auth/**`, `/webhook/**`, `/platform/auth|onboarding/**`,
+  swagger) are now authenticated-only (401 anonymous) instead of falling through to a 404/405.
+* `/api/v1/admin/accounting/**` requires `ADMIN` (it previously only required a login).
+* `/api/v1/dev/**` is `denyAll` (401/403) unless `tenant.dev-endpoints.enabled=true`.
