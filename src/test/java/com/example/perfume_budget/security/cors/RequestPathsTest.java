@@ -1,6 +1,13 @@
 package com.example.perfume_budget.security.cors;
 
+import com.example.perfume_budget.filter.JWTFilter;
+import com.example.perfume_budget.filter.JWTUtil;
+import com.example.perfume_budget.platform.auth.PlatformJwtService;
 import com.example.perfume_budget.platform.model.Tenant;
+import com.example.perfume_budget.platform.repository.PlatformAdminRepository;
+import com.example.perfume_budget.tenancy.TenantIdentity;
+import com.example.perfume_budget.tenancy.TenantRequiredFilter;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
 import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.tenancy.TenantResolutionFilter;
@@ -93,5 +100,49 @@ class RequestPathsTest {
         filter.doFilter(r, new MockHttpServletResponse(), chain);
         assertThat(seen.get()).isEqualTo(TenantScope.PLATFORM);
         Mockito.verifyNoInteractions(registry);
+    }
+
+    @Test
+    void jwtFilterTreatsPublicPlatformPathsOnTheDecodedPath_withoutTheGuard() throws Exception {
+        PlatformJwtService jwt = mock(PlatformJwtService.class);
+        when(jwt.verify(anyString(), anyString())).thenReturn(java.util.Optional.empty());
+        JWTFilter filter = new JWTFilter(mock(JWTUtil.class), mock(UserDetailsService.class), jwt, mock(PlatformAdminRepository.class));
+        for (String uri : List.of("/api/v1/%70latform/auth/login", "/api/v1/plat%66orm/auth/refresh",
+                "/api/v1/platform/%6fnboarding/signup")) {
+            TenantContext.set(TenantIdentity.platform());
+            try {
+                MockHttpServletRequest r = req(uri);
+                r.setCookies(new jakarta.servlet.http.Cookie("platformAccessToken", "stale-or-garbage"));
+                MockHttpServletResponse resp = new MockHttpServletResponse();
+                MockFilterChain chain = new MockFilterChain();
+                filter.doFilter(r, resp, chain);
+                // decoded path is a public platform path: token processing is skipped, a stale cookie cannot yield 401
+                assertThat(chain.getRequest()).as("chain reached for " + uri).isNotNull();
+                assertThat(resp.getStatus()).as(uri).isEqualTo(200);
+            } finally {
+                TenantContext.clear();
+            }
+        }
+        // control: a non-public platform path with a garbage cookie is a 401
+        TenantContext.set(TenantIdentity.platform());
+        try {
+            MockHttpServletRequest r = req("/api/v1/platform/tenants");
+            r.setCookies(new jakarta.servlet.http.Cookie("platformAccessToken", "garbage"));
+            MockHttpServletResponse resp = new MockHttpServletResponse();
+            filter.doFilter(r, resp, new MockFilterChain());
+            assertThat(resp.getStatus()).isEqualTo(401);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    @Test
+    void tenantRequiredFilterTreatsEncodedPlatformPathAsNeutralOnTheDecodedPath() throws Exception {
+        TenantContext.clear();
+        MockHttpServletResponse resp = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        new TenantRequiredFilter().doFilter(req("/api/v1/%70latform/auth/login"), resp, chain);
+        assertThat(chain.getRequest()).as("neutral decoded platform path is not rejected as 'no tenant'").isNotNull();
+        assertThat(resp.getStatus()).isEqualTo(200);
     }
 }
