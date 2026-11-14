@@ -197,6 +197,25 @@ public class GlobalExceptionHandler {
         );
     }
 
+    /**
+     * Controller methods that mix {@code @Valid @RequestBody} with constraint annotations on other parameters
+     * (e.g. reset-password's {@code @NotBlank @RequestParam}) get Spring's built-in method validation, which throws
+     * this instead of a BindException. Same 400 shape as {@link #handleBindException}; it used to fall through to
+     * the catch-all and answer 500 for an invalid body.
+     */
+    @ExceptionHandler(org.springframework.web.method.annotation.HandlerMethodValidationException.class)
+    public ResponseEntity<CustomApiResponse<Map<String,String>>> handleHandlerMethodValidation(
+            org.springframework.web.method.annotation.HandlerMethodValidationException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getParameterValidationResults().forEach(result -> result.getResolvableErrors().forEach(error -> {
+            String key = error instanceof org.springframework.validation.FieldError fe
+                    ? fe.getField()
+                    : String.valueOf(result.getMethodParameter().getParameterName());
+            errors.put(key, error.getDefaultMessage());
+        }));
+        return ResponseEntity.badRequest().body(CustomApiResponse.error("Validation failed", errors));
+    }
+
     @ExceptionHandler(DisabledException.class)
     public ResponseEntity<CustomApiResponse<String>> handleUnauthorizedAccess(DisabledException ex){
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(CustomApiResponse.error(ex.getMessage()));
