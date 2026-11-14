@@ -271,6 +271,12 @@ public class PlatformTenantService {
                 throw new TenantProvisioningFailedException(claimed.getSlug());
             } catch (InvalidProvisioningRequestException bad) {
                 throw new TenantProvisioningFailedException(claimed.getSlug());
+            } catch (org.springframework.dao.DataIntegrityViolationException hookFailure) {
+                // Only the claim hook (INTENT insert) can surface this here: the saga maps its own races to
+                // TenantAlreadyExistsException. It is a server fault with nothing provisioned, never a "lost race" 409.
+                log.error("Tenant {}: claim failed ({}); nothing was provisioned", claimed.getSlug(),
+                        hookFailure.getClass().getSimpleName());
+                throw new org.springframework.dao.DataAccessResourceFailureException("tenant action could not be recorded");
             }
             // Saga committed ACTIVE. Two independent best-effort steps: dropping the password hash (retryable, repeated by
             // reconcile) and the OUTCOME audit row. Neither can undo or fail an action that already succeeded.

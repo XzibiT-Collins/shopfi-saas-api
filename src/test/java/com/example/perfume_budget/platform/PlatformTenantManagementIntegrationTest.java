@@ -586,12 +586,17 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
 
     /** Real database fault injection: an audit insert of this slug+phase raises inside PostgreSQL (rolled back, class-only log). */
     private void failAuditWrites(String slug, TenantAuditPhase phase) {
+        failAuditWrites(slug, phase, null);
+    }
+
+    private void failAuditWrites(String slug, TenantAuditPhase phase, String sqlState) {
         String name = "p2b_fail_audit_" + SEQ.incrementAndGet();
         jdbc(c -> {
             try (var st = c.createStatement()) {
                 st.execute("CREATE OR REPLACE FUNCTION master." + name + "() RETURNS trigger AS $f$ BEGIN "
                         + "IF NEW.tenant_slug = '" + slug + "' AND NEW.phase = '" + phase.name() + "' THEN "
-                        + "RAISE EXCEPTION 'injected jdbc:postgresql://db.internal password=hunter2'; END IF; RETURN NEW; END; $f$ LANGUAGE plpgsql");
+                        + "RAISE EXCEPTION 'injected jdbc:postgresql://db.internal password=hunter2'"
+                        + (sqlState == null ? "" : " USING ERRCODE = '" + sqlState + "'") + "; END IF; RETURN NEW; END; $f$ LANGUAGE plpgsql");
                 st.execute("CREATE TRIGGER " + name + " BEFORE INSERT ON master.tenant_audit_log FOR EACH ROW EXECUTE FUNCTION master." + name + "()");
             }
             return null;
@@ -612,6 +617,22 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
             return null;
         });
         injected.add("master.tenant_signups:" + name);
+    }
+
+    /** The claim transaction (status -> PROVISIONING for this slug) fails AT COMMIT, i.e. after the claim hook already ran. */
+    private void failClaimCommit(String slug) {
+        String name = "p2b_fail_claim_" + SEQ.incrementAndGet();
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE OR REPLACE FUNCTION master." + name + "() RETURNS trigger AS $f$ BEGIN "
+                        + "IF NEW.slug = '" + slug + "' AND NEW.status = 'PROVISIONING' THEN "
+                        + "RAISE EXCEPTION 'injected claim commit failure'; END IF; RETURN NEW; END; $f$ LANGUAGE plpgsql");
+                st.execute("CREATE CONSTRAINT TRIGGER " + name + " AFTER UPDATE ON master.tenants DEFERRABLE INITIALLY DEFERRED "
+                        + "FOR EACH ROW EXECUTE FUNCTION master." + name + "()");
+            }
+            return null;
+        });
+        injected.add("master.tenants:" + name);
     }
 
     private void dropInjectedFailures() {
@@ -735,6 +756,159 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         act("plat-a", "suspend");
         act("plat-a", "reactivate");
         assertThat(phases("plat-a")).isEqualTo("OUTCOME,OUTCOME");
+    }
+
+    // ---- PLAT-02b rework -----------------------------------------------------------------------------------------
+
+    @Test
+    void signupCleanup_deletesOnlyTheTargetTenantsHash_afterTheSaga_andInReconcile() throws Exception {
+        mk("p2-two-a", TenantStatus.PENDING, true);
+        mk("p2-two-b", TenantStatus.PENDING, true);
+        assertThat(act("p2-two-a", "approve").getStatus()).isEqualTo(200);
+        assertThat(signupRows("p2-two-a")).isZero();
+        assertThat(signupRows("p2-two-b")).isEqualTo(1);   // another tenant's credential is untouched
+
+        mk("p2-two-c", TenantStatus.ACTIVE, true);          // ACTIVE with a leftover hash
+        assertThat(signupRows("p2-two-c")).isEqualTo(1);
+        noGraceService().approve("p2-two-c", principal());
+        assertThat(signupRows("p2-two-c")).isZero();
+        assertThat(signupRows("p2-two-b")).isEqualTo(1);
+        assertThat(phases("p2-two-c")).isEqualTo("RECONCILE");
+    }
+
+    @Test
+    void laterSuspendAndReactivateOutcomes_doNotCompleteAnOpenApproveIntent() throws Exception {
+        mk("p2-f3", TenantStatus.PENDING, true);
+        failAuditWrites("p2-f3", TenantAuditPhase.OUTCOME);
+        assertThat(act("p2-f3", "approve").getStatus()).isEqualTo(200);
+        dropInjectedFailures();
+        assertThat(act("p2-f3", "suspend").getStatus()).isEqualTo(200);
+        assertThat(act("p2-f3", "reactivate").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-f3")).isEqualTo("INTENT,OUTCOME,OUTCOME");
+        noGraceService().approve("p2-f3", principal());
+        assertThat(phases("p2-f3")).isEqualTo("INTENT,OUTCOME,OUTCOME,RECONCILE");
+        noGraceService().approve("p2-f3", principal());
+        assertThat(phases("p2-f3")).isEqualTo("INTENT,OUTCOME,OUTCOME,RECONCILE"); // closed once
+    }
+
+    @Test
+    void reclaimRow_isAtomicWithTheReclaimCas_rolledBackTogether_andPresentWhenTheCasWins() throws Exception {
+        Tenant t = mk("p2-recl", TenantStatus.PROVISIONING, true);
+        jdbc(c -> {
+            try (var ps = c.prepareStatement("UPDATE master.tenants SET updated_at = now() - interval '3 hours' WHERE id = ?")) {
+                ps.setLong(1, t.getId());
+                return ps.executeUpdate();
+            }
+        });
+        failAuditWrites("p2-recl", TenantAuditPhase.RECLAIM);
+        MockHttpServletResponse r = act("p2-recl", "reprovision");
+        assertThat(r.getStatus()).isEqualTo(500);
+        assertThat(status("p2-recl")).isEqualTo("PROVISIONING"); // the CAS rolled back with the failed audit insert
+        assertThat(auditRows("p2-recl")).isZero();
+        dropInjectedFailures();
+        assertThat(act("p2-recl", "reprovision").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-recl")).isEqualTo("RECLAIM,INTENT,OUTCOME");
+    }
+
+    @Test
+    void intentRow_isAtomicWithTheClaim_itDoesNotPersistIfTheClaimTransactionFailsAfterTheHook() throws Exception {
+        mk("p2-atomic", TenantStatus.PENDING, true);
+        failClaimCommit("p2-atomic");
+        MockHttpServletResponse r = act("p2-atomic", "approve");
+        assertThat(r.getStatus()).isEqualTo(500);
+        assertThat(status("p2-atomic")).isEqualTo("PENDING");
+        assertThat(auditRows("p2-atomic")).isZero();              // no orphan INTENT for a claim that never committed
+        verify(migrator, never()).createTenantSchema("tenant_p2_atomic");
+        dropInjectedFailures();
+        assertThat(act("p2-atomic", "approve").getStatus()).isEqualTo(200);
+        assertThat(phases("p2-atomic")).isEqualTo("INTENT,OUTCOME");
+    }
+
+    @Test
+    void constraintViolationOnTheIntentInsert_isAGeneric500_notAReportedLostRace() throws Exception {
+        mk("p2-f4", TenantStatus.FAILED, true);
+        failAuditWrites("p2-f4", TenantAuditPhase.INTENT, "23514");
+        MockHttpServletResponse r = act("p2-f4", "reprovision");
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(500);
+        assertThat(r.getContentAsString()).doesNotContain("hunter2").doesNotContain("db.internal").doesNotContain("already");
+        assertThat(status("p2-f4")).isEqualTo("FAILED");
+        verify(migrator, never()).createTenantSchema("tenant_p2_f4");
+        assertThat(auditRows("p2-f4")).isZero();
+        assertThat(signupRows("p2-f4")).isEqualTo(1);
+    }
+
+    @Test
+    void sagaClaim_hookSeesTheStatusFromTheClaimTransaction_andItsFailureIsNotALostRace() throws Exception {
+        var req = new com.example.perfume_budget.tenancy.ProvisioningRequest("p2-claimx", "Shop", "p2-claimx@p2.test", "Owner",
+                encoder.encode("Own3r-Passw0rd!"), TenantPlan.FREE);
+        mk("p2-claimx", TenantStatus.FAILED, true);
+        java.util.concurrent.atomic.AtomicReference<TenantStatus> seen = new java.util.concurrent.atomic.AtomicReference<>();
+        assertThatThrownBy(() -> provisioningService.provision(req, t -> {
+            seen.set(t.getStatus());
+            throw new org.springframework.dao.DataIntegrityViolationException("check violated");
+        })).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThat(seen.get()).isEqualTo(TenantStatus.FAILED);
+        assertThat(status("p2-claimx")).isEqualTo("FAILED");     // claim rolled back
+
+        for (TenantStatus st : List.of(TenantStatus.ACTIVE, TenantStatus.SUSPENDED, TenantStatus.PROVISIONING)) {
+            String slug = "p2-claim-" + st.name().toLowerCase();
+            mk(slug, st, true);
+            var r2 = new com.example.perfume_budget.tenancy.ProvisioningRequest(slug, "Shop", slug + "@p2.test", "Owner",
+                    encoder.encode("Own3r-Passw0rd!"), TenantPlan.FREE);
+            java.util.concurrent.atomic.AtomicInteger called = new java.util.concurrent.atomic.AtomicInteger();
+            assertThatThrownBy(() -> provisioningService.provision(r2, t -> called.incrementAndGet()))
+                    .isInstanceOf(com.example.perfume_budget.tenancy.TenantAlreadyExistsException.class);
+            assertThat(called.get()).as(st.name()).isZero();
+        }
+    }
+
+    // ---- V7 phase column ---------------------------------------------------------------------------------------
+
+    private int insertAudit(String phaseColumnAndValue, String slug) {
+        String cols = phaseColumnAndValue == null ? "" : ", phase";
+        String vals = phaseColumnAndValue == null ? "" : ", '" + phaseColumnAndValue.replace("'", "''") + "'";
+        return jdbc(c -> {
+            try (var st = c.createStatement()) {
+                return st.executeUpdate("INSERT INTO master.tenant_audit_log (actor_admin_id, actor_email, tenant_id, tenant_slug, action, "
+                        + "previous_status, new_status" + cols + ") VALUES (1, 'a@b.c', 999001, '" + slug + "', 'APPROVE', 'PENDING', 'ACTIVE'" + vals + ")");
+            }
+        });
+    }
+
+    @Test
+    void phaseColumn_acceptsTheFourPhases_rejectsEverythingElse() {
+        for (String ph : List.of("INTENT", "OUTCOME", "RECLAIM", "RECONCILE")) {
+            assertThat(insertAudit(ph, "p2b-phase-ok")).as(ph).isEqualTo(1);
+        }
+        for (String bad : new String[]{"intent", "BOGUS", "", " OUTCOME", "OUTCOME "}) {
+            assertThatThrownBy(() -> insertAudit(bad, "p2b-phase-bad")).as("'" + bad + "'").hasMessageContaining("ck_tenant_audit_log_phase");
+        }
+        assertThatThrownBy(() -> jdbc(c -> {
+            try (var st = c.createStatement()) {
+                return st.executeUpdate("INSERT INTO master.tenant_audit_log (actor_admin_id, actor_email, tenant_id, tenant_slug, action, "
+                        + "previous_status, new_status, phase) VALUES (1, 'a@b.c', 999001, 'p2b-phase-bad', 'APPROVE', 'PENDING', 'ACTIVE', NULL)");
+            }
+        })).hasMessageContaining("phase");
+        assertThat(scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = 'p2b-phase-bad'")).isZero();
+    }
+
+    @Test
+    void rowsWithoutAPhase_readBackAsOutcome_columnDefaultIsOutcome() throws Exception {
+        assertThat(insertAudit(null, "p2b-phase-default")).isEqualTo(1);   // what every pre-V7 INSERT looks like
+        assertThat(scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = 'p2b-phase-default' AND phase = 'OUTCOME'"))
+                .isEqualTo(1);
+        List<TenantAuditLog> rows = audits.findByTenantSlugOrderByIdAsc("p2b-phase-default");
+        assertThat(rows).extracting(TenantAuditLog::getPhase).containsExactly(TenantAuditPhase.OUTCOME);
+        // and the default is declared as OUTCOME in the catalog, so rows that existed before V7 were back-filled the same way
+        String columnDefault = jdbc(c -> {
+            try (var ps = c.prepareStatement("SELECT column_default FROM information_schema.columns WHERE table_schema = 'master' "
+                    + "AND table_name = 'tenant_audit_log' AND column_name = 'phase'");
+                 ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getString(1);
+            }
+        });
+        assertThat(columnDefault).contains("'OUTCOME'");
     }
 
     // ---- concurrency ---------------------------------------------------------------------------------------------
