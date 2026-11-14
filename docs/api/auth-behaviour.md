@@ -109,3 +109,12 @@ omitted); `landmark` is optional and stored as `null` (was `@NotNull`, 400). `PU
   swagger) are now authenticated-only (401 anonymous) instead of falling through to a 404/405.
 * `/api/v1/admin/accounting/**` requires `ADMIN` (it previously only required a login).
 * `/api/v1/dev/**` is `denyAll` (401/403) unless `tenant.dev-endpoints.enabled=true`.
+
+## SEC-03b: hardening follow-ups (client-visible effects)
+
+* **Public catalog shape.** `GET /product/listing`, `/product/search` and `/product/featured` no longer return `stockQuantity`, `isActive` or `isEnlisted`. Availability is `isOutOfStock` (unchanged); the public queries only ever return active, enlisted products. The storefront already reads only `isOutOfStock` and treats missing `isActive`/`isEnlisted` as true and a missing `stockQuantity` as `null`, so no frontend change is required. `GET /product/admin/listing`, `/product/admin/search` and `/product/main/{id}` keep the full shape (exact stock, flags) for `ADMIN` (search also `FRONT_DESK`). Public responses cached before the deploy may still carry the old fields for up to the cache TTL (10 minutes by default).
+* **Swagger / OpenAPI.** `/swagger-ui*` and `/v3/api-docs*` are available only outside prod (the prod profile disables springdoc; the paths answer 401 anonymous).
+* **Actuator.** Only `GET`/`HEAD /actuator/health` (status, no details) is public. `/actuator/prometheus` requires `Authorization: Bearer <PROMETHEUS_SCRAPE_TOKEN>` (at least 16 characters; unset = closed). `/actuator/metrics`, `/info`, `/env` and every other actuator path answer 401 to anonymous callers.
+* **HEAD.** `HEAD` is allowed on every public `GET` read (same matcher) and follows the role rule on guarded routes.
+* **`POST /cart/preview`** for a customer who has no cart row yet now answers `400 Cart is empty, add items and try again.` (it was a `500` "cannot execute INSERT in a read-only transaction"). The preview never creates a cart.
+* **`GET /auth/me`** is allowed for any signed-in tenant user (the `@PreAuthorize` is commented out in the controller); a platform token on this route is `401`.
