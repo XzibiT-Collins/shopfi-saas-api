@@ -22,6 +22,7 @@ Consequences for clients:
 * `POST /auth/logout` always returns `204` and always clears both cookies (`Max-Age=0`), even when the access token
   is unusable or absent.
 * The server does not clear a foreign cookie it ignores (that would sign the user out of the other shop).
+* The same applies to public data endpoints such as `GET /api/v1/theme`: another tenant's cookie yields the normal anonymous `200` for the requesting tenant only (never a `401`, never the other tenant's data), and a write with that cookie is `401`.
 
 ## 2. `/auth/refresh`
 

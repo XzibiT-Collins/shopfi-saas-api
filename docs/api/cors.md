@@ -27,6 +27,8 @@ Tenant origin rules, all enforced before the registry is consulted unless noted:
 - Prod profile: `https` and the default port only. Other profiles also accept `http` and an explicit port 1-65535.
 - SUSPENDED/PENDING/unknown tenants get no CORS headers (Spring answers 403 "Invalid CORS request").
 
+Several `Origin` headers (e.g. on `GET /api/v1/theme`) are rejected here too, before any controller runs: 403, no CORS grant, and the response is not cacheable (`Cache-Control: no-cache, no-store, max-age=0, must-revalidate`, `Vary: Origin`).
+
 A rejected origin is answered with 403 and no `Access-Control-Allow-*` header; a preflight is answered by the CORS
 filter and never reaches tenant resolution. `Access-Control-Allow-Origin` always echoes the single matched origin,
 never `*`, and credentials are only enabled alongside an exact origin. `Vary: Origin` (plus the request-method and

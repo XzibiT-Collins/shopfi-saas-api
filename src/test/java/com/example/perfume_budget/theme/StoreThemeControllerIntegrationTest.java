@@ -285,9 +285,43 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         assertThat(m.getResponse().getStatus()).isEqualTo(401);
     }
 
+    /**
+     * MAIN-RED-01. GET /theme is public (theme-contract 5.1) and since AUTH-01 a cookie that does not belong to the
+     * resolved tenant is IGNORED (anonymous), never a 401 (auth-behaviour 1). So a tenant-A admin cookie on tenant
+     * B's origin gets B's public theme, exactly what an anonymous caller gets, and no identity is established.
+     */
     @Test
-    void getWithCrossTenantCookie_isRejectedToo() throws Exception {
-        assertThat(mvc.perform(get(URL).header("Origin", B).cookie(auth(adminA))).andReturn().getResponse().getStatus()).isEqualTo(401);
+    void getWithCrossTenantCookie_isTreatedAsAnonymous_200_onlyTheRequestingTenantsPublicTheme() throws Exception {
+        assertThat(mvc.perform(putJson(A, adminA, doc("#7c2d12").toString())).andReturn().getResponse().getStatus()).isEqualTo(200);
+        MvcResult anonymous = fetch(B);
+        MvcResult withForeignCookie = mvc.perform(get(URL).header("Origin", B).cookie(auth(adminA))).andReturn();
+        assertThat(withForeignCookie.getResponse().getStatus()).isEqualTo(200);
+        // only B's data: not A's colour, and byte-identical to what an anonymous caller of B gets (incl. ETag)
+        assertThat(primaryOf(withForeignCookie)).isNotEqualTo("#7c2d12").isEqualTo(primaryOf(anonymous));
+        assertThat(withForeignCookie.getResponse().getContentAsString()).isEqualTo(anonymous.getResponse().getContentAsString());
+        assertThat(withForeignCookie.getResponse().getHeader("ETag")).isEqualTo(anonymous.getResponse().getHeader("ETag"));
+        assertThat(withForeignCookie.getResponse().getHeader("Set-Cookie")).isNull();
+        // the foreign cookie is not accepted as identity on B: a write is 401 (not 403, which would mean "identified")
+        assertThat(mvc.perform(putJson(B, adminA, doc("#111111").toString())).andReturn().getResponse().getStatus()).isEqualTo(401);
+        assertThat(primaryOf(fetch(B))).isEqualTo(primaryOf(anonymous));
+    }
+
+    /** A token whose tenant claim is A but whose subject is a real, ADMIN user of B must still not authenticate on B. */
+    @Test
+    void foreignTenantTokenForAnEmailThatExistsInThisTenant_isNotIdentity() throws Exception {
+        String forged = token(a, b.adminEmail(), "ADMIN", 1L); // claim tenant=A, subject = B's admin
+        String bBefore = etagOf(B);
+        assertThat(mvc.perform(putJson(B, forged, doc("#111111").toString())).andReturn().getResponse().getStatus()).isEqualTo(401);
+        assertThat(etagOf(B)).isEqualTo(bBefore);
+    }
+
+    /** Same-tenant behaviour is untouched: the cookie IS identity on its own tenant (CUSTOMER 403, ADMIN 200). */
+    @Test
+    void sameTenantCookie_isStillIdentity() throws Exception {
+        assertThat(mvc.perform(putJson(A, customerA, doc("#222222").toString())).andReturn().getResponse().getStatus()).isEqualTo(403);
+        MvcResult ok = mvc.perform(putJson(A, adminA, doc("#7c2d12").toString())).andReturn();
+        assertThat(ok.getResponse().getStatus()).isEqualTo(200);
+        assertThat(mvc.perform(get(URL).header("Origin", A).cookie(auth(adminA))).andReturn().getResponse().getStatus()).isEqualTo(200);
     }
 
     // ------------------------------------------------------------------------------------------ PUT success
