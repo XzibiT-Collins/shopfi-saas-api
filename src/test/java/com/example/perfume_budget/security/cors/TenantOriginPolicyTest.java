@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atMost;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -209,5 +210,98 @@ class TenantOriginPolicyTest {
         assertThat(TenantOriginPolicy.subdomainSlug("ab.shopfi.test", "shopfi.test")).isNull();
         assertThat(TenantOriginPolicy.subdomainSlug("acme.shopfi.test", "")).isNull();
         assertThat(TenantOriginPolicy.subdomainSlug("acme.shopfi.test", null)).isNull();
+    }
+
+    // ---- DOMAIN-01b S2: per-client budget and protected refresh lane -----------------------------------------------
+
+    private static final long SEC = 1_000_000_000L;
+
+    @Test
+    void oneClientFloodingUnknownSlugsCannotStarveOtherClientsOrAKnownTenantsRefresh() {
+        cors.getTenantCache().setMaxLookupsPerSecond(50);
+        cors.getTenantCache().setMaxLookupsPerIpPerSecond(5);
+        TenantOriginPolicy p = policy(true);
+        assertThat(p.isAllowed("https://acme.shopfi.test", "10.0.0.9")).isTrue();
+        now.addAndGet(31 * SEC); // acme's 30 s entry expires
+        // attacker: 500 unknown-slug lookups inside one second from ONE address
+        for (int i = 0; i < 500; i++) {
+            p.isAllowed("https://flood" + i + ".shopfi.test", "6.6.6.6");
+            now.addAndGet(SEC / 1000);
+        }
+        verify(registry, atMost(7)).findBySlug(Mockito.startsWith("flood"));
+        // a known tenant is refreshed from the protected lane and stays allowed on every request
+        for (int i = 0; i < 100; i++) {
+            assertThat(p.isAllowed("https://acme.shopfi.test", "10.0.0.9")).as("request %d", i).isTrue();
+        }
+        // another client's never-seen origin still gets its lookup: the global budget was not drained by one IP
+        active("fresh");
+        assertThat(p.isAllowed("https://fresh.shopfi.test", "7.7.7.7")).isTrue();
+    }
+
+    @Test
+    void manyAddressFloodDegradesGracefully_knownTenantsStayAllowed_unknownKeysFailClosed() {
+        cors.getTenantCache().setMaxLookupsPerSecond(10);
+        cors.getTenantCache().setMaxLookupsPerIpPerSecond(10);
+        cors.getTenantCache().setMaxRefreshesPerSecond(5);
+        TenantOriginPolicy p = policy(true);
+        assertThat(p.isAllowed("https://acme.shopfi.test", "1.1.1.1")).isTrue();
+        now.addAndGet(31 * SEC);
+        for (int i = 0; i < 400; i++) {
+            p.isAllowed("https://m" + i + ".shopfi.test", "9.9." + (i / 250) + "." + (i % 250));
+        }
+        verify(registry, atMost(12)).findBySlug(Mockito.startsWith("m"));
+        assertThat(p.isAllowed("https://acme.shopfi.test", "1.1.1.1")).as("refresh lane").isTrue();
+        // documented limitation: a never-seen (new) tenant's first call can be denied while the flood lasts
+        active("brandnew");
+        assertThat(p.isAllowed("https://brandnew.shopfi.test", "2.2.2.2")).isFalse();
+    }
+
+    @Test
+    void staleAllowIsServedWithinTheGraceWindowOnly_whenRefreshBudgetOrRegistryFails() {
+        cors.getTenantCache().setMaxRefreshesPerSecond(1);
+        cors.getTenantCache().setStaleGraceSeconds(60);
+        TenantOriginPolicy p = policy(true);
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isTrue();
+        now.addAndGet(31 * SEC);
+        when(registry.findBySlug("acme")).thenThrow(new RuntimeException("db down"));
+        assertThat(p.isAllowed("https://acme.shopfi.test")).as("stale allow during an outage").isTrue();
+        now.addAndGet(60 * SEC);
+        assertThat(p.isAllowed("https://acme.shopfi.test")).as("past the grace window: fail closed").isFalse();
+    }
+
+    @Test
+    void suspensionIsPickedUpByTheRefreshLane() {
+        TenantOriginPolicy p = policy(true);
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isTrue();
+        when(registry.findBySlug("acme")).thenReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, null)));
+        now.addAndGet(31 * SEC);
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isFalse();
+    }
+
+    // ---- DOMAIN-01b S3: custom domain collides with a slug host ------------------------------------------------------
+
+    @Test
+    void customDomainUnderTheBaseDomainWinsOverTheSlug_likeTheResolutionFilter() {
+        // tenant ydom owns custom_domain=acme.shopfi.test; the resolution filter would process the request as ydom
+        when(registry.findByCustomDomain("acme.shopfi.test")).thenReturn(Optional.of(tenant("ydom", TenantStatus.SUSPENDED, "acme.shopfi.test")));
+        assertThat(policy(true).isAllowed("https://acme.shopfi.test"))
+                .as("origin must not be approved for ACTIVE acme while it resolves as suspended ydom").isFalse();
+        when(registry.findByCustomDomain("acme.shopfi.test")).thenReturn(Optional.of(tenant("ydom", TenantStatus.ACTIVE, "acme.shopfi.test")));
+        assertThat(policy(true).isAllowed("https://acme.shopfi.test")).isTrue();
+    }
+
+    // ---- DOMAIN-01b S4: invalidateAll() racing an in-flight lookup ------------------------------------------------
+
+    @Test
+    void invalidateAllDuringALookupPreventsStoringTheStaleAnswer() {
+        TenantOriginPolicy[] holder = new TenantOriginPolicy[1];
+        when(registry.findBySlug("acme")).thenAnswer(inv -> {
+            holder[0].invalidateAll(); // e.g. a suspension commits and invalidates while this lookup is in flight
+            return Optional.of(tenant("acme", TenantStatus.ACTIVE, null)); // the pre-commit row
+        });
+        holder[0] = policy(true);
+        assertThat(holder[0].isAllowed("https://acme.shopfi.test")).isTrue(); // this request saw the old row
+        when(registry.findBySlug("acme")).thenReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, null)));
+        assertThat(holder[0].isAllowed("https://acme.shopfi.test")).as("the stale ACTIVE was not cached").isFalse();
     }
 }

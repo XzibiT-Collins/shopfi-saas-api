@@ -48,12 +48,23 @@ Registry decisions are cached per host (`s:<slug>` / `d:<custom-domain>`) in two
 | `cors.tenant-cache.ttl-seconds` (`CORS_TENANT_CACHE_TTL_SECONDS`) | 30 | allowed decisions; a suspension propagates within this time |
 | `cors.tenant-cache.negative-ttl-seconds` (`CORS_TENANT_CACHE_NEGATIVE_TTL_SECONDS`) | 10 | denied decisions; a freshly activated tenant becomes usable within this time |
 | `cors.tenant-cache.max-entries` / `negative-max-entries` | 5000 / 2000 | separate bounds, so a flood of unknown slugs cannot evict allowed entries |
-| `cors.tenant-cache.max-lookups-per-second` | 50 | one shared budget for cache misses; when empty the origin is denied (fail closed, not cached) |
+| `cors.tenant-cache.max-lookups-per-ip-per-second` | 5 | registry lookups for never-seen (or only denied) hosts, per client address; checked FIRST so one client cannot drain the global budget |
+| `cors.tenant-cache.max-lookups-per-second` | 50 | the global budget for never-seen hosts; when either budget is empty the origin is denied (fail closed, not cached) |
+| `cors.tenant-cache.max-refreshes-per-second` | 100 | a SEPARATE budget for refreshing a host that was recently ALLOWED; unknown hosts cannot use it |
+| `cors.tenant-cache.stale-grace-seconds` | 120 | how long past its TTL an ALLOWED decision is still served if the refresh budget is empty or the registry errors; worst-case suspension propagation under attack is `ttl-seconds + stale-grace-seconds` |
 
 A registry error also denies the origin and is not cached. `TenantOriginPolicy.invalidateAll()` drops every decision
 immediately; PLAT-03's suspend/activate operations should call it. The cache is per JVM instance. Note that tenant
 resolution itself (`TenantResolutionFilter`) still checks the status per request, so a suspended tenant's API calls
 fail (423) regardless of this cache; the cache only governs whether a browser may read the response.
+
+## Path matching caveat (percent-encoding)
+
+Zone decisions (CORS zone, platform tenant scope, platform token handling) use ONE canonical path: the percent-decoded
+path within the application, lower-cased (`security/cors/RequestPaths`), never `getRequestURI()`. A request under
+`/api/v1/platform` whose raw path differs from the decoded one (`/api/v1/%70latform/...`, `plat%66orm`, `%6fnboarding`,
+`;` parameters, `//`) is answered 400 by `CanonicalPathGuardFilter` before CORS, so a tenant origin can never be granted
+credentialed access on a path the router reads as a platform path.
 
 ## WebSocket
 

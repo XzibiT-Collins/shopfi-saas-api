@@ -41,7 +41,17 @@ public class CorsProperties {
         private long negativeTtlSeconds = 10;
         private int maxEntries = 5000;
         private int negativeMaxEntries = 2000;
-        /** Registry lookups allowed per second on cache misses (all keys together); beyond it the origin is denied. */
+        /** Registry lookups per second for keys never seen allowed (all clients together); beyond it the origin is denied. */
         private int maxLookupsPerSecond = 50;
+        /** The same budget per client address (checked first), so one client cannot drain the global budget. */
+        private int maxLookupsPerIpPerSecond = 5;
+        private int maxTrackedIps = 10_000;
+        /** Separate budget, per second, for refreshing a key that was recently ALLOWED; unknown keys cannot use it. */
+        private int maxRefreshesPerSecond = 100;
+        /**
+         * How long past its TTL an ALLOWED decision may still be served when the refresh budget is exhausted or the
+         * registry fails. Worst-case suspension propagation under attack is ttl-seconds + this.
+         */
+        private long staleGraceSeconds = 120;
     }
 }

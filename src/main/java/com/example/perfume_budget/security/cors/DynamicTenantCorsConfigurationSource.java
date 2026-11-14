@@ -1,5 +1,6 @@
 package com.example.perfume_budget.security.cors;
 
+import com.example.perfume_budget.security.ClientIps;
 import com.example.perfume_budget.security.cors.TenantOriginPolicy.ParsedOrigin;
 import com.example.perfume_budget.tenancy.TenantResolutionProperties;
 import jakarta.servlet.http.HttpServletRequest;
@@ -33,7 +34,7 @@ import java.util.Set;
 @Component
 public class DynamicTenantCorsConfigurationSource implements CorsConfigurationSource {
 
-    static final String PLATFORM_PREFIX = "/api/v1/platform";
+    static final String PLATFORM_PREFIX = RequestPaths.PLATFORM_PREFIX;
     static final String ONBOARDING_PREFIX = "/api/v1/platform/onboarding";
 
     private final TenantOriginPolicy policy;
@@ -67,20 +68,18 @@ public class DynamicTenantCorsConfigurationSource implements CorsConfigurationSo
             return null;
         }
         String origin = values.nextElement();
+        String client = ClientIps.rateLimitKey(request);
         if (values.hasMoreElements()) {
             return deny(); // several Origin headers: ambiguous, same rule as the theme controller
         }
-        String path = request.getRequestURI();
-        if (path == null) {
-            return deny();
-        }
+        String path = RequestPaths.canonical(request);
         if (isUnder(path, ONBOARDING_PREFIX)) {
             return onboarding(origin);
         }
         if (path.startsWith(PLATFORM_PREFIX)) {
             return platform(origin);
         }
-        return tenant(origin);
+        return tenant(origin, client);
     }
 
     private CorsConfiguration platform(String origin) {
@@ -101,8 +100,8 @@ public class DynamicTenantCorsConfigurationSource implements CorsConfigurationSo
         return ok ? allow(origin, List.of("GET", "POST", "OPTIONS"), List.of("Content-Type", "Accept"), false) : deny();
     }
 
-    private CorsConfiguration tenant(String origin) {
-        return policy.isAllowed(origin) ? allow(origin, props.getAllowedMethods(), tenantHeaders, true) : deny();
+    private CorsConfiguration tenant(String origin, String client) {
+        return policy.isAllowed(origin, client) ? allow(origin, props.getAllowedMethods(), tenantHeaders, true) : deny();
     }
 
     private CorsConfiguration allow(String origin, List<String> methods, List<String> headers, boolean credentials) {

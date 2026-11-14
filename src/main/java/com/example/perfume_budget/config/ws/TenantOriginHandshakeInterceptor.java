@@ -31,11 +31,16 @@ public class TenantOriginHandshakeInterceptor implements HandshakeInterceptor {
         if (origins == null || origins.isEmpty()) {
             return true;
         }
-        if (origins.size() == 1 && (policy.isAllowed(origins.get(0)) || WebUtils.isSameOrigin(request))) {
+        if (origins.size() == 1 && (policy.isAllowed(origins.get(0), clientKey(request)) || WebUtils.isSameOrigin(request))) {
             return true;
         }
         response.setStatusCode(HttpStatus.FORBIDDEN);
         return false;
+    }
+
+    private static String clientKey(ServerHttpRequest request) {
+        return request instanceof org.springframework.http.server.ServletServerHttpRequest s
+                ? com.example.perfume_budget.security.ClientIps.rateLimitKey(s.getServletRequest()) : "-";
     }
 
     @Override

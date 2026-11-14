@@ -68,8 +68,13 @@ public class TenantOriginPolicy {
     private final Cache deniedCache;
     private final long ttlNanos;
     private final long negativeTtlNanos;
+    private final long graceNanos;
     private final TokenBucketRateLimiter missLimiter;
+    private final TokenBucketRateLimiter ipMissLimiter;
+    private final TokenBucketRateLimiter refreshLimiter;
     private final LongSupplier clock;
+    /** Bumped by {@link #invalidateAll()}; a lookup that started under an older generation never stores its result. */
+    private final java.util.concurrent.atomic.AtomicLong generation = new java.util.concurrent.atomic.AtomicLong();
 
     @Autowired
     public TenantOriginPolicy(TenantRegistryService registry, TenantResolutionProperties tenantProps,
@@ -88,7 +93,12 @@ public class TenantOriginPolicy {
         this.negativeTtlNanos = Duration.ofSeconds(Math.max(1, c.getNegativeTtlSeconds())).toNanos();
         this.allowedCache = new Cache(Math.max(1, c.getMaxEntries()));
         this.deniedCache = new Cache(Math.max(1, c.getNegativeMaxEntries()));
+        this.graceNanos = Duration.ofSeconds(Math.max(0, c.getStaleGraceSeconds())).toNanos();
         this.missLimiter = new TokenBucketRateLimiter(Math.max(1, c.getMaxLookupsPerSecond()),
+                Duration.ofSeconds(1), 4, clock);
+        this.ipMissLimiter = new TokenBucketRateLimiter(Math.max(1, c.getMaxLookupsPerIpPerSecond()),
+                Duration.ofSeconds(1), Math.max(1, c.getMaxTrackedIps()), clock);
+        this.refreshLimiter = new TokenBucketRateLimiter(Math.max(1, c.getMaxRefreshesPerSecond()),
                 Duration.ofSeconds(1), 4, clock);
         this.staticOrigins = normaliseConfigured(corsProps.getAllowedOrigins(), "cors.allowed-origins");
         assertNoWildcard(corsProps.getAllowedMethods(), "cors.allowed-methods");
@@ -143,6 +153,14 @@ public class TenantOriginPolicy {
 
     /** True if the origin is in the static list or belongs to an ACTIVE tenant (rules (a), (b), (c)). */
     public boolean isAllowed(String origin) {
+        return isAllowed(origin, "-");
+    }
+
+    /**
+     * @param clientKey the rate-limit key of the caller (see {@code ClientIps#rateLimitKey}); registry lookups for
+     *                  keys never seen before are budgeted per client first, then globally
+     */
+    public boolean isAllowed(String origin, String clientKey) {
         ParsedOrigin p = parse(origin);
         if (p == null) {
             return false;
@@ -150,13 +168,13 @@ public class TenantOriginPolicy {
         if (staticOrigins.contains(p.canonical())) {
             return true;
         }
-        return isActiveTenantOrigin(p);
+        return isActiveTenantOrigin(p, clientKey == null ? "-" : clientKey);
     }
 
     /** True if the origin is an ACTIVE tenant's subdomain or custom domain (no static list). */
     public boolean isTenantOrigin(String origin) {
         ParsedOrigin p = parse(origin);
-        return p != null && isActiveTenantOrigin(p);
+        return p != null && isActiveTenantOrigin(p, "-");
     }
 
     /** Whether the origin passes the scheme/port rules for tenant hosts (https and default port only in prod). */
@@ -164,52 +182,85 @@ public class TenantOriginPolicy {
         return !prod || ("https".equals(p.scheme()) && p.port() == 0);
     }
 
-    private boolean isActiveTenantOrigin(ParsedOrigin p) {
+    /**
+     * Mirrors {@code TenantResolutionFilter}: a custom domain match wins over the slug, and the decision is taken
+     * for THAT tenant, so an origin approved here is always processed as the same tenant (DOMAIN-01b S3).
+     */
+    private boolean isActiveTenantOrigin(ParsedOrigin p, String clientKey) {
         if (!schemeAndPortAllowed(p)) {
             return false;
         }
         String host = p.host();
         String base = tenantProps.getBaseDomain() == null ? "" : tenantProps.getBaseDomain().strip().toLowerCase(Locale.ROOT);
+        String slug = null;
         if (!base.isEmpty() && (host.equals(base) || host.endsWith("." + base))) {
-            String slug = subdomainSlug(host, base);
-            return slug != null && cachedActive("s:" + slug, () -> registry.findBySlug(slug));
-        }
-        if (tenantProps.isPlatformDomain(host) || IPV4.matcher(host).matches() || !host.contains(".")) {
+            slug = subdomainSlug(host, base);
+            if (slug == null) {
+                return false; // syntactically not a tenant host: no registry access for garbage
+            }
+        } else if (tenantProps.isPlatformDomain(host) || IPV4.matcher(host).matches() || !host.contains(".")) {
             return false;
         }
-        return cachedActive("d:" + host, () -> registry.findByCustomDomain(host));
+        if (tenantProps.isPlatformDomain(host)) {
+            return false;
+        }
+        final String slugFinal = slug;
+        return cachedActive("h:" + host, clientKey, () -> {
+            java.util.Optional<Tenant> byDomain = registry.findByCustomDomain(host);
+            if (byDomain.isPresent()) {
+                return byDomain;
+            }
+            return slugFinal == null ? java.util.Optional.<Tenant>empty() : registry.findBySlug(slugFinal);
+        });
     }
 
-    private boolean cachedActive(String key, java.util.function.Supplier<java.util.Optional<Tenant>> lookup) {
+    private boolean cachedActive(String key, String clientKey, java.util.function.Supplier<java.util.Optional<Tenant>> lookup) {
         long now = clock.getAsLong();
-        Boolean hit = allowedCache.get(key, now);
-        if (hit != null) {
+        int state = allowedCache.state(key, now, graceNanos);
+        if (state == Cache.FRESH) {
             return true;
         }
-        if (deniedCache.get(key, now) != null) {
+        if (state == Cache.MISSING && deniedCache.state(key, now, 0) == Cache.FRESH) {
             return false;
         }
-        if (missLimiter.tryAcquire("registry") != 0) {
+        // state is MISSING (never seen or only denied/expired) or STALE (a recently ALLOWED key past its TTL).
+        boolean stale = state == Cache.STALE;
+        if (stale) {
+            // Protected lane: refreshing a known-allowed key has its own budget that unknown keys cannot drain.
+            if (refreshLimiter.tryAcquire("refresh") != 0) {
+                return true; // serve the stale ALLOW (bounded by the grace window) rather than failing a known tenant
+            }
+        } else if (ipMissLimiter.tryAcquire(clientKey) != 0 || missLimiter.tryAcquire("registry") != 0) {
             log.warn("CORS registry lookups are rate limited; denying origin without caching");
-            return false;
+            return false; // fail closed, only for keys never seen allowed
         }
+        long gen = generation.get();
         boolean active;
         try {
             active = lookup.get().map(t -> t.getStatus() == TenantStatus.ACTIVE).orElse(false);
         } catch (RuntimeException e) {
-            log.warn("CORS tenant lookup failed; denying origin: {}", e.toString());
-            return false;
+            log.warn("CORS tenant lookup failed: {}", e.toString());
+            return stale; // a known-allowed key stays allowed within the grace window; unknown keys fail closed
         }
-        if (active) {
-            allowedCache.put(key, now + ttlNanos);
-        } else {
-            deniedCache.put(key, now + negativeTtlNanos);
+        if (generation.get() == gen) { // invalidateAll() during the lookup: do not store a possibly stale answer
+            if (active) {
+                deniedCache.remove(key);
+                allowedCache.put(key, now + ttlNanos);
+            } else {
+                allowedCache.remove(key);
+                deniedCache.put(key, now + negativeTtlNanos);
+            }
         }
         return active;
     }
 
-    /** Drops every cached decision (call after a tenant is suspended, activated or its domain changes). */
+    /**
+     * Drops every cached decision (call after a tenant is suspended, activated or its domain changes, AFTER the DB
+     * transaction has committed, or a concurrent lookup could read the old row and be re-cached). Per JVM
+     * instance only: other instances converge within the TTL (plus the stale grace window under lookup pressure).
+     */
     public void invalidateAll() {
+        generation.incrementAndGet();
         allowedCache.clear();
         deniedCache.clear();
     }
@@ -245,8 +296,12 @@ public class TenantOriginPolicy {
         }
     }
 
-    /** Access-ordered, size-bounded map of key to expiry. Expired entries are dropped on read. */
+    /** Access-ordered, size-bounded map of key to expiry. */
     private static final class Cache {
+        static final int MISSING = 0;
+        static final int FRESH = 1;
+        static final int STALE = 2;
+
         private final Map<String, Long> map;
 
         Cache(int maxEntries) {
@@ -258,20 +313,28 @@ public class TenantOriginPolicy {
             };
         }
 
-        synchronized Boolean get(String key, long now) {
+        /** FRESH before expiry, STALE within {@code graceNanos} after it, otherwise MISSING (and dropped). */
+        synchronized int state(String key, long now, long graceNanos) {
             Long expiry = map.get(key);
             if (expiry == null) {
-                return null;
+                return MISSING;
             }
-            if (now - expiry >= 0) {
-                map.remove(key);
-                return null;
+            if (now - expiry < 0) {
+                return FRESH;
             }
-            return Boolean.TRUE;
+            if (now - expiry < graceNanos) {
+                return STALE;
+            }
+            map.remove(key);
+            return MISSING;
         }
 
         synchronized void put(String key, long expiry) {
             map.put(key, expiry);
+        }
+
+        synchronized void remove(String key) {
+            map.remove(key);
         }
 
         synchronized void clear() {
