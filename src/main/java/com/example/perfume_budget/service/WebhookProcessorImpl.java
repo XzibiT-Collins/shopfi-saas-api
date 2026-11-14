@@ -1,144 +1,69 @@
 package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.dto.payment.request.PaystackWebhook;
-import com.example.perfume_budget.enums.PaymentStatus;
-import com.example.perfume_budget.model.Order;
-import com.example.perfume_budget.model.Payment;
-import com.example.perfume_budget.model.Product;
-import com.example.perfume_budget.repository.CartRepository;
-import com.example.perfume_budget.repository.OrderRepository;
-import com.example.perfume_budget.repository.PaymentRepository;
-import com.example.perfume_budget.repository.ProductRepository;
-import com.example.perfume_budget.service.interfaces.OrderService;
+import com.example.perfume_budget.dto.payment.request.WebhookData;
 import com.example.perfume_budget.service.interfaces.WebhookProcessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-
+/**
+ * Applies a signature-verified Paystack event. Runs async under the tenant context propagated by the TaskDecorator.
+ *
+ * <p>Event types are handled explicitly (PAY-01 AC5b):
+ * <ul>
+ *   <li>{@code charge.success} completes the payment (also a late success on a failed/cancelled-but-unpaid order);</li>
+ *   <li>{@code charge.failed} is the only event that marks a payment FAILED;</li>
+ *   <li>every other event type is ignored (never a terminal state change).</li>
+ * </ul>
+ * All state changes go through {@link PaymentSettlementService} (idempotent, order row lock).
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class WebhookProcessorImpl implements WebhookProcessor {
-    private final PaymentRepository paymentRepository;
-    private final ProductRepository productRepository;
-    private final OrderRepository orderRepository;
-    private final OrderService orderService;
-    private final CartRepository cartRepository;
-    private final ApplicationEventPublisher eventPublisher;
-    private final BookkeepingService bookkeepingService;
+
+    static final String EVENT_CHARGE_SUCCESS = "charge.success";
+    static final String EVENT_CHARGE_FAILED = "charge.failed";
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private final PaymentSettlementService settlementService;
 
     @Async("webhookTaskExecutor")
-    @Transactional
     @Override
     public void processWebhook(String body) {
         try {
-            ObjectMapper objectMapper = new ObjectMapper();
-            PaystackWebhook payload = objectMapper.readValue(body, PaystackWebhook.class);
-
-            String reference = payload.data().reference().trim();
-            log.info("Webhook received: {}", payload);
-            Payment payment = paymentRepository.findByProviderPaymentReference(reference);
-            if(payment == null){
-                log.info("Payment object not found for provider reference {}", reference);
+            PaystackWebhook payload = MAPPER.readValue(body, PaystackWebhook.class);
+            WebhookData data = payload.data();
+            String event = payload.event();
+            if (event == null || data == null || data.reference() == null || data.reference().isBlank()) {
+                log.info("Ignoring webhook without event/reference");
                 return;
             }
+            String reference = data.reference().trim();
 
-            if(payment.getStatus() == PaymentStatus.COMPLETED || payment.getStatus() == PaymentStatus.FAILED || payment.getStatus() == PaymentStatus.CANCELLED){
-                log.info("Payment already processed for reference: {}, ignoring processing request.",reference);
-                return;
-            }
-
-            // store payload
-            payment.setGatewayResponse(body);
-
-            if ("charge.success".equals(payload.event())) {
-                if (payment.getOrder() != null && payment.getOrder().getStatus() == PaymentStatus.CANCELLED) {
-                    log.info("Ignoring webhook success for cancelled order {}", payment.getOrder().getOrderNumber());
-                    payment.setStatus(PaymentStatus.CANCELLED);
-                    paymentRepository.save(payment);
-                    return;
+            switch (event) {
+                case EVENT_CHARGE_SUCCESS -> {
+                    if (data.status() != null && !"success".equalsIgnoreCase(data.status())) {
+                        log.info("Ignoring charge.success with non-success status for reference {}", reference);
+                        return;
+                    }
+                    var outcome = settlementService.applySuccess(reference, data.channel(), data.amount(),
+                            data.currency(), body);
+                    log.info("charge.success for reference {}: {}", reference, outcome);
                 }
-                log.info("Payment successful for reference {}", reference);
-                payment.setStatus(PaymentStatus.COMPLETED);
-                payment.setPaymentMethod(payload.data().channel());
-                payment.setPaidAt(LocalDateTime.now());
-
-                handlePaymentSuccess(payment);
-            } else {
-                log.info("Payment failed for reference {}", reference);
-                payment.setStatus(PaymentStatus.FAILED);
-                payment.setPaymentMethod(payload.data().channel());
-                payment.setFailureReason(payload.data().message());
-                handlePaymentFailure(payment);
+                case EVENT_CHARGE_FAILED -> {
+                    var outcome = settlementService.applyFailure(reference, data.channel(), data.message(), body);
+                    log.info("charge.failed for reference {}: {}", reference, outcome);
+                }
+                default -> log.info("Ignoring unhandled webhook event type for reference {}", reference);
             }
-        }catch (Exception e){
-            log.error("Error processing webhook: {}", e.getMessage());
+        } catch (Exception e) {
+            // Never log the body or the parsed payload: it carries the customer's email and card details.
+            log.error("Error processing webhook: {}", e.getClass().getSimpleName());
         }
-    }
-
-    private void handlePaymentSuccess(Payment payment) {
-        Payment savedPayment = paymentRepository.save(payment);
-
-        // get Order and update order paymentStatus
-        Order successfulOrder = savedPayment.getOrder();
-        if(successfulOrder == null){
-            log.info("Order not found for successful payment with reference: {}", savedPayment.getSystemReference());
-            return;
-        }
-
-        successfulOrder.setPaymentReference(savedPayment.getSystemReference() != null
-                ? savedPayment.getSystemReference()
-                : savedPayment.getProviderPaymentReference());
-        successfulOrder.setStatus(savedPayment.getStatus());
-
-        orderRepository.save(successfulOrder);
-
-        // clear user cart
-        cartRepository.deleteAllByUserEmail(payment.getCustomerEmail());
-
-        // increment product sold count
-        updateProductSoldCount(successfulOrder);
-
-        orderService.finalizeReservedStock(successfulOrder);
-
-        // Record sale
-        bookkeepingService.recordSale(successfulOrder, savedPayment);
-
-        // Notify customer and admin on successful payment processing
-        eventPublisher.publishEvent(savedPayment);
-        log.info("Payment Success Event Published successfully for Ref: {}", savedPayment.getSystemReference());
-    }
-
-    private void updateProductSoldCount(Order successfulOrder) {
-        // Update the sold count of each product by the quantity ordered
-        successfulOrder.getItems().forEach(item ->
-                productRepository.incrementSoldCount(item.getProductId(), item.getQuantity())
-        );
-    }
-
-    private void handlePaymentFailure(Payment payment) {
-        Payment savedPayment = paymentRepository.save(payment);
-        // get Order and update order paymentStatus
-        Order failedOrder = savedPayment.getOrder();
-        if(failedOrder == null){
-            log.info("Order not found for failed payment with reference: {}", savedPayment.getSystemReference());
-            return;
-        }
-
-        failedOrder.setPaymentReference(savedPayment.getSystemReference() != null
-                ? savedPayment.getSystemReference()
-                : savedPayment.getProviderPaymentReference());
-        failedOrder.setStatus(savedPayment.getStatus());
-
-        failedOrder = orderRepository.save(failedOrder);
-
-        // Release stock after failed payment
-        orderService.releaseStock(failedOrder.getOrderNumber());
     }
 }

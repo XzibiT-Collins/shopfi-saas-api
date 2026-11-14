@@ -95,6 +95,20 @@ public class GlobalExceptionHandler {
     public ResponseEntity<CustomApiResponse<String>> handleUnauthorizedException(UnauthorizedException ex){
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(CustomApiResponse.error(ex.getMessage()));
     }
+    /** Errors with a stable machine code (checkout/payment, docs/api/checkout.md): {description, data:{code,...}}. */
+    @ExceptionHandler(ApiCodeException.class)
+    public ResponseEntity<CustomApiResponse<Object>> handleApiCodeException(ApiCodeException ex){
+        return ResponseEntity.status(ex.getStatus()).body(CustomApiResponse.error(ex.getMessage(), ex.body()));
+    }
+
+    /** An unknown/invalid Pageable sort property is a client error (400), never a 500. */
+    @ExceptionHandler(org.springframework.data.mapping.PropertyReferenceException.class)
+    public ResponseEntity<CustomApiResponse<Object>> handleInvalidSortProperty(
+            org.springframework.data.mapping.PropertyReferenceException ex){
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(
+                CustomApiResponse.error("Unsupported sort property.", java.util.Map.of("code", "INVALID_SORT")));
+    }
+
     @ExceptionHandler(PaymentException.class)
     public ResponseEntity<CustomApiResponse<String>> handleUnauthorizedException(PaymentException ex){
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage()));

@@ -65,6 +65,21 @@ public class Payment {
 
     private LocalDateTime paidAt;
 
+    /** Paystack authorization_url, kept so an idempotent replay returns the same payment page. */
+    @Column(name = "authorization_url", length = 512)
+    private String authorizationUrl;
+
+    @Column(name = "access_code", length = 128)
+    private String accessCode;
+
+    @Column(name = "last_provider_check_at")
+    private LocalDateTime lastProviderCheckAt;
+
+    /** True when the customer paid for an order that could not be fulfilled any more (needs a manual refund). */
+    @Column(name = "refund_required", nullable = false)
+    @Builder.Default
+    private boolean refundRequired = false;
+
     @CreatedDate
     @Column(name = "created_at", nullable =false, updatable = false)
     private LocalDateTime createdAt;

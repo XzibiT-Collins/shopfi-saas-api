@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 @Slf4j
 @Service
@@ -26,7 +27,8 @@ public class PaystackWebhookServiceImpl implements WebhookService {
 
             // Verify with THIS tenant's secret (tenant already set on the thread by the controller).
             String computedHash = hmacSha512(body, gatewayProvider.currentSecretOrThrow());
-            if (!computedHash.equals(signature)) {
+            if (signature == null || !MessageDigest.isEqual(
+                    computedHash.getBytes(StandardCharsets.UTF_8), signature.getBytes(StandardCharsets.UTF_8))) {
                 log.warn("Invalid Paystack signature");
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Invalid signature");
             }

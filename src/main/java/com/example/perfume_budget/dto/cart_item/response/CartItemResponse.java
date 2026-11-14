@@ -14,5 +14,6 @@ public record CartItemResponse(
         String originalUnitPrice,  // pre-discount per-unit price (== unitPrice when not on sale)
         boolean onSale,
         BigDecimal discountPercentage,
-        Integer quantity
+        Integer quantity,
+        String lineTotal           // effective unit price x quantity, server computed ("GHS 59.98"); never multiply on the client
 ) {}

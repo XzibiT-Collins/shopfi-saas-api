@@ -2,6 +2,8 @@ package com.example.perfume_budget.utils;
 
 import com.example.perfume_budget.enums.DiscountType;
 import com.example.perfume_budget.exception.BadRequestException;
+import com.example.perfume_budget.exception.CouponRejectedException;
+import com.example.perfume_budget.exception.CouponRejectedException.Reason;
 import com.example.perfume_budget.model.Coupon;
 import com.example.perfume_budget.repository.CouponRepository;
 import lombok.RequiredArgsConstructor;
@@ -21,19 +23,19 @@ public class DiscountCalculationUtil {
         LocalDate now = LocalDateTime.now().toLocalDate();
 
         if (!Boolean.TRUE.equals(coupon.getIsActive())) {
-            throw new BadRequestException("Coupon is inactive");
+            throw new CouponRejectedException(Reason.INACTIVE, "Coupon is inactive");
         }
 
         if (now.isBefore(coupon.getStartDate())) {
-            throw new BadRequestException("Coupon is not yet active");
+            throw new CouponRejectedException(Reason.NOT_STARTED, "Coupon is not yet active");
         }
 
         if (now.isAfter(coupon.getExpirationDate())) {
-            throw new BadRequestException("Coupon has expired");
+            throw new CouponRejectedException(Reason.EXPIRED, "Coupon has expired");
         }
 
         if (coupon.getUsageLimit() != null && coupon.getUsageCount() >= coupon.getUsageLimit()) {
-            throw new BadRequestException("Coupon usage limit has been reached");
+            throw new CouponRejectedException(Reason.USAGE_LIMIT, "Coupon usage limit has been reached");
         }
     }
 
@@ -46,7 +48,7 @@ public class DiscountCalculationUtil {
     public BigDecimal calculateDiscount(Coupon coupon, BigDecimal orderSubtotal) {
         if (coupon.getMinimumCartAmountForDiscount() != null &&
                 orderSubtotal.compareTo(coupon.getMinimumCartAmountForDiscount()) < 0) {
-            throw new BadRequestException("Order total must be at least " +
+            throw new CouponRejectedException(Reason.MIN_AMOUNT, "Order total must be at least " +
                     coupon.getMinimumCartAmountForDiscount() + " to use this coupon");
         }
 
@@ -73,6 +75,11 @@ public class DiscountCalculationUtil {
                     .min(base);
             case FLAT -> value.min(base);
         };
+    }
+
+    /** Counts one use of the coupon (called only when an order is actually created, never by a preview). */
+    public void recordCouponUsage(Coupon coupon) {
+        updateCouponUsage(coupon);
     }
 
     private void updateCouponUsage(Coupon coupon) {

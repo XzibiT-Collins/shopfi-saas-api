@@ -14,6 +14,11 @@ public class OrderMapper {
     }
 
     public static OrderResponse toOrderResponse(Order order){
+        return toOrderResponse(order, null);
+    }
+
+    /** @param reference the Paystack reference of the order's payment (null when unknown / not initialised) */
+    public static OrderResponse toOrderResponse(Order order, String reference){
 
         Money subtotal = order.getSubtotal();
         BigDecimal autoDiscount = amount(order.getAutomaticDiscountAmount());
@@ -22,6 +27,8 @@ public class OrderMapper {
         return OrderResponse.builder()
                 .orderId(order.getId())
                 .orderNumber(order.getOrderNumber())
+                .reference(reference)
+                .cancellable(isCancellable(order))
                 .subtotal(subtotal.toString())
                 .originalSubtotal(originalSubtotal.toString())
                 .automaticDiscountAmount(
@@ -38,7 +45,9 @@ public class OrderMapper {
                         .stream().map(OrderItemMapper::toOrderItemResponse)
                         .toList())
                 .deliveryDetail(
-                        order.getUser().getDeliveryAddresses().stream()
+                        order.getDeliveryDetail() != null
+                                ? DeliveryDetailMapper.toDeliveryDetailResponse(order.getDeliveryDetail())
+                                : order.getUser().getDeliveryAddresses().stream()
                                 .filter(d -> Boolean.TRUE.equals(d.getIsDefault()))
                                 .findFirst()
                                 .map(DeliveryDetailMapper::toDeliveryDetailResponse)
@@ -55,14 +64,25 @@ public class OrderMapper {
     }
 
     public static OrderListResponse toOrderListResponse(Order order){
+        return toOrderListResponse(order, null);
+    }
+
+    public static OrderListResponse toOrderListResponse(Order order, String reference){
         return OrderListResponse.builder()
                 .orderId(order.getId())
                 .orderNumber(order.getOrderNumber())
+                .reference(reference)
                 .paymentStatus(order.getStatus())
                 .deliveryStatus(order.getDeliveryStatus())
                 .totalAmount(order.getTotalAmount().toString())
                 .orderDate(order.getCreatedAt())
                 .build();
+    }
+
+    /** The owner may cancel only while payment has not settled: PENDING or INITIATED. */
+    public static boolean isCancellable(Order order) {
+        return order.getStatus() == com.example.perfume_budget.enums.PaymentStatus.PENDING
+                || order.getStatus() == com.example.perfume_budget.enums.PaymentStatus.INITIATED;
     }
 
     private static BigDecimal amount(Money money) {
