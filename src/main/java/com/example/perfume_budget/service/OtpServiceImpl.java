@@ -6,6 +6,7 @@ import com.example.perfume_budget.events.ResetPasswordEvent;
 import com.example.perfume_budget.events.UserRegistrationEvent;
 import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.service.interfaces.OtpService;
+import com.example.perfume_budget.tenancy.TenantContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -29,9 +30,11 @@ public class OtpServiceImpl implements OtpService {
     private final ApplicationEventPublisher eventPublisher;
     private static final long LOGIN_OTP_EXPIRATION_MINUTES = 5;
     private static final long RESET_PASSWORD_TOKEN_EXPIRATION_MINUTES = 15;
-    private static final String REGISTRATION_OTP_PREFIX = "otp:registration:";
-    private static final String LOGIN_OTP_CODE_PREFIX = "otp:login:code:";
-    private static final String LOGIN_OTP_EMAIL_PREFIX = "otp:login:email:";
+    private static final String KEY_ROOT = "otp";
+    private static final String REGISTRATION_OTP_KIND = "registration";
+    private static final String LOGIN_OTP_CODE_KIND = "login:code";
+    private static final String LOGIN_OTP_EMAIL_KIND = "login:email";
+    private static final String RESET_PASSWORD_KIND = "reset";
 
     @Override
     public void sendRegistrationOtp(String email){
@@ -78,7 +81,7 @@ public class OtpServiceImpl implements OtpService {
 
     @Override
     public void invalidateResetPasswordToken(String passwordResetToken) {
-        redisTemplate.delete(passwordResetToken);
+        redisTemplate.delete(buildResetPasswordKey(passwordResetToken));
     }
 
     @Override
@@ -99,13 +102,13 @@ public class OtpServiceImpl implements OtpService {
 
     @Override
     public boolean verifyResetPasswordToken(String passwordResetToken) {
-        String storedToken =(String) redisTemplate.opsForValue().get(passwordResetToken);
+        String storedToken =(String) redisTemplate.opsForValue().get(buildResetPasswordKey(passwordResetToken));
         return storedToken != null;
     }
 
     @Override
     public String getEmailFromResetPasswordToken(String passwordResetToken) {
-        return (String) redisTemplate.opsForValue().get(passwordResetToken);
+        return (String) redisTemplate.opsForValue().get(buildResetPasswordKey(passwordResetToken));
     }
 
 
@@ -145,7 +148,7 @@ public class OtpServiceImpl implements OtpService {
     }
 
     private void saveResetPasswordToken(String hashedToken, String email){
-        redisTemplate.opsForValue().set(hashedToken, email, Duration.ofMinutes(RESET_PASSWORD_TOKEN_EXPIRATION_MINUTES));
+        redisTemplate.opsForValue().set(buildResetPasswordKey(hashedToken), email, Duration.ofMinutes(RESET_PASSWORD_TOKEN_EXPIRATION_MINUTES));
     }
 
     private String generatePasswordResetToken(String email){
@@ -154,15 +157,29 @@ public class OtpServiceImpl implements OtpService {
         return hashedToken;
     }
 
+    /**
+     * Single place where every OTP/reset Redis key is built. The key is always scoped by the
+     * current request's tenant (same prefix the cache layer uses), so a challenge token, OTP or
+     * reset token minted for one tenant can never be looked up, redeemed or overwritten from
+     * another tenant. Format: {@code otp:<kind>:<tenant>:<id>}.
+     */
+    private String buildKey(String kind, String id) {
+        return KEY_ROOT + ":" + kind + ":" + TenantContext.getCachePrefix() + ":" + id;
+    }
+
     private String buildRegistrationOtpKey(String email) {
-        return REGISTRATION_OTP_PREFIX + email;
+        return buildKey(REGISTRATION_OTP_KIND, email);
     }
 
     private String buildLoginOtpCodeKey(String challengeToken) {
-        return LOGIN_OTP_CODE_PREFIX + challengeToken;
+        return buildKey(LOGIN_OTP_CODE_KIND, challengeToken);
     }
 
     private String buildLoginOtpEmailKey(String challengeToken) {
-        return LOGIN_OTP_EMAIL_PREFIX + challengeToken;
+        return buildKey(LOGIN_OTP_EMAIL_KIND, challengeToken);
+    }
+
+    private String buildResetPasswordKey(String token) {
+        return buildKey(RESET_PASSWORD_KIND, token);
     }
 }

@@ -3,6 +3,9 @@ package com.example.perfume_budget.platform.repository;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -24,4 +27,14 @@ public interface TenantRepository extends JpaRepository<Tenant, Long> {
     boolean existsByOwnerEmail(String ownerEmail);
 
     List<Tenant> findByStatus(TenantStatus status);
+
+    /**
+     * Atomic compare-and-set used by provisioning to claim a PENDING/FAILED row; returns the number of
+     * rows moved (0 = someone else owns it, so concurrent retries cannot both proceed).
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Tenant t set t.status = :to, t.updatedAt = CURRENT_TIMESTAMP "
+            + "where t.id = :id and t.status in :from")
+    int transitionStatus(@Param("id") Long id, @Param("from") java.util.Collection<TenantStatus> from,
+                         @Param("to") TenantStatus to);
 }

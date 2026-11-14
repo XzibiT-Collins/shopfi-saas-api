@@ -5,6 +5,7 @@ import com.example.perfume_budget.exception.handlers.CustomAccessDeniedHandler;
 import com.example.perfume_budget.exception.handlers.JwtAuthenticationEntryPoint;
 import com.example.perfume_budget.filter.JWTFilter;
 import com.example.perfume_budget.filter.SiteVisitFilter;
+import com.example.perfume_budget.tenancy.TenantRequiredFilter;
 import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.security.oauth2.CustomOAuth2UserService;
 import com.example.perfume_budget.security.oauth2.HttpCookieOAuth2AuthorizationRequestRepository;
@@ -79,7 +80,6 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/test/**").permitAll()
                         .requestMatchers("/api/v1/dev/**").permitAll()
                         .requestMatchers("/ws/**").permitAll()
                         .requestMatchers("/swagger-ui/**").permitAll()
@@ -111,6 +111,7 @@ public class SecurityConfig {
                         .failureHandler(oAuth2AuthenticationFailureHandler)
                 )
                 .addFilterBefore(tenantResolutionFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new TenantRequiredFilter(), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(siteVisitFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .userDetailsService(userDetailsService)

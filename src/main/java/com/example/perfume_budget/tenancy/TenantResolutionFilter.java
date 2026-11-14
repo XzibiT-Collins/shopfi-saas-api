@@ -10,6 +10,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -25,7 +27,7 @@ import java.util.Optional;
  * host. The backend's own {@code Host} is therefore useless for identifying a tenant — the
  * signal is the browser-set <b>{@code Origin}</b> header (fallback {@code Referer}) = the
  * tenant frontend host, matched to a custom domain or {@code <slug>.base-domain}. The
- * {@code X-Tenant-ID} header is honoured only in non-prod for testing.
+ * {@code X-Tenant-ID} header is honoured only in non-prod (never when the {@code prod} profile is active) for testing.
  *
  * <p>Cross-tenant isolation ultimately rests on the JWT {@code tenant}-claim check in
  * {@link com.example.perfume_budget.filter.JWTFilter}, since the auth cookie is shared on the
@@ -38,14 +40,19 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
 
     private static final String PLATFORM_PATH_PREFIX = "/api/v1/platform";
     private static final String OAUTH2_PATH_PREFIX = "/oauth2";
-    // Infra + webhook: run neutral. Webhook resolves its tenant from the master route table.
+    // EXPLICIT ALLOW-LIST of paths that may run with no tenant (TenantContext null): infra/docs,
+    // static/error, and the payment webhook (resolves its tenant from the master route table by
+    // token). "/oauth2" and platform paths are handled separately in doFilterInternal. Every
+    // other request must carry a tenant signal or is rejected with 4xx.
     private static final String[] BYPASS_PREFIXES = {
             "/actuator", "/swagger-ui", "/v3/api-docs", "/swagger-ui.html",
-            "/ws", "/test", "/login/oauth2", "/api/v1/webhook"
+            "/ws", "/login/oauth2", "/api/v1/webhook",
+            "/error", "/favicon.ico"
     };
 
     private final TenantRegistryService tenantRegistryService;
     private final TenantResolutionProperties properties;
+    private final Environment environment;
 
     @Override
     protected void doFilterInternal(@NonNull HttpServletRequest request,
@@ -82,7 +89,8 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
                     response.sendError(HttpServletResponse.SC_NOT_FOUND, "Unknown tenant");
                     return;
                 }
-                // No tenant signal at all (server-to-server, health tooling): run neutral.
+                // No tenant signal: leave the context unbound. TenantRequiredFilter (next in the
+                // chain) rejects it unless the path is on the neutral allow-list.
                 filterChain.doFilter(request, response);
                 return;
             }
@@ -120,7 +128,7 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
         }
 
         // Dev/test header, non-prod only.
-        if (properties.getHeaderResolution().isEnabled()) {
+        if (properties.getHeaderResolution().isEnabled() && !environment.acceptsProfiles(Profiles.of("prod"))) {
             String headerSlug = request.getHeader(properties.getHeaderName());
             if (headerSlug != null && !headerSlug.isBlank()) {
                 return tenantRegistryService.findBySlug(headerSlug.trim().toLowerCase());
@@ -163,7 +171,16 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
         return null;
     }
 
-    private boolean isBypass(String path) {
+    /**
+     * True for paths allowed to run with no tenant bound: the explicit allow-list
+     * (BYPASS_PREFIXES), platform control-plane paths and OAuth2 endpoints. Used by
+     * {@link TenantRequiredFilter} to decide which unresolved requests to reject.
+     */
+    static boolean isNeutralPath(String path) {
+        return isBypass(path) || path.startsWith(PLATFORM_PATH_PREFIX) || path.startsWith(OAUTH2_PATH_PREFIX);
+    }
+
+    private static boolean isBypass(String path) {
         for (String prefix : BYPASS_PREFIXES) {
             if (path.startsWith(prefix)) {
                 return true;
