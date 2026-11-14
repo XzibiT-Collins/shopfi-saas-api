@@ -250,7 +250,12 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         TestTenant a = tenants.ensureTenant("plat-a");
         String access = tenants.runAs(a, () -> jwtUtil.generateAccessToken(a.adminEmail(), "ADMIN", 1L, "Admin"));
         String refresh = tenants.runAs(a, () -> jwtUtil.generateRefreshToken(a.adminEmail(), "ADMIN", 1L, "Admin"));
-        List<Cookie> forged = List.of(new Cookie("accessToken", access), new Cookie("refreshToken", refresh),
+        // worst case: a tenant user whose email equals a real platform admin's email
+        String sameEmailAccess = tenants.runAs(a, () -> jwtUtil.generateAccessToken(admin.getEmail(), "ADMIN", 1L, "Admin"));
+        String sameEmailRefresh = tenants.runAs(a, () -> jwtUtil.generateRefreshToken(admin.getEmail(), "ADMIN", 1L, "Admin"));
+        List<Cookie> forged = List.of(new Cookie("platformAccessToken", sameEmailAccess),
+                new Cookie("platformAccessToken", sameEmailRefresh), new Cookie("accessToken", sameEmailAccess),
+                new Cookie("accessToken", access), new Cookie("refreshToken", refresh),
                 new Cookie("accessToken", refresh), new Cookie("platformAccessToken", access),
                 new Cookie("platformAccessToken", refresh), new Cookie("platformRefreshToken", refresh));
         for (Cookie c : forged) {
