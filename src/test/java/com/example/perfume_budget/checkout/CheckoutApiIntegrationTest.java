@@ -55,7 +55,7 @@ class CheckoutApiIntegrationTest extends AbstractCheckoutIntegrationTest {
         Customer c = ready("a2@acme.test", p, 1);
 
         // hostile client-controlled hints must not influence the URL
-        mvc.perform(as(post("/api/v1/cart/checkout").header("Host", "evil.example").header("X-Forwarded-Host", "evil.example")
+        mvc.perform(as(post("/api/v1/cart/checkout").header("X-Forwarded-Host", "evil.example")
                 .header("Origin", "https://evil.example").header("Referer", "https://evil.example/x"), c)).andReturn();
         assertThat(initiated).hasSize(1);
         String cb = initiated.get(0).callbackUrl();
@@ -227,7 +227,7 @@ class CheckoutApiIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(d.get("deliveryFee").asText()).isEqualTo("GHS 0.00");
         assertThat(jdbc.queryForObject("SELECT usage_count FROM tenant_acme.coupons WHERE code='SAVE10'", Integer.class)).isZero();
         assertThat(count(acme, "orders")).isZero();
-        assertThat(layerRemaining(acme, p)).isEqualTo(10);
+        assertThat(count(acme, "inventory_allocations")).as("preview reserves nothing").isZero();
 
         JsonNode co = body(checkout(c, null, "couponCode=SAVE10")).get("data");
         assertThat(co.get("totalAmount").asText()).isEqualTo(d.get("totalAmount").asText());

@@ -99,8 +99,8 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
 
     protected long product(TestTenant t, String name, String price, int stock) {
         String slug = name.toLowerCase().replace(' ', '-') + "-" + UUID.randomUUID().toString().substring(0, 6);
-        return jdbc.queryForObject("INSERT INTO " + t.schemaName() + ".products (name, slug, sku, stock_quantity, sold_count, is_active, is_enlisted, "
-                + "price_amount, price_currency, created_at) VALUES (?, ?, ?, ?, 0, true, true, ?, 'GHS', now()) RETURNING id",
+        return jdbc.queryForObject("INSERT INTO " + t.schemaName() + ".products (version, name, slug, sku, stock_quantity, sold_count, is_active, is_enlisted, "
+                + "price_amount, price_currency, created_at) VALUES (0, ?, ?, ?, ?, 0, true, true, ?, 'GHS', now()) RETURNING id",
                 Long.class, name, slug, slug, stock, new BigDecimal(price));
     }
 
