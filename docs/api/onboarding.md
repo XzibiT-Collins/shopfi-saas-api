@@ -377,13 +377,12 @@ adminLoginUrl = storefrontUrl + <onboarding.admin-login-path>                   
 
 ## 11. CORS
 
-What is configured today (`SecurityConfig.corsConfigurationSource`, one global config for `/**`):
+Onboarding is its own CORS zone (DOMAIN-01; see `docs/api/cors.md`, `security/cors/DynamicTenantCorsConfigurationSource`):
 
-- Allowed origins: the exact list in `cors.allowed-origins` (`CORS_ALLOWED_ORIGINS`). Default in the base `application.properties` (used when `CORS_ALLOWED_ORIGINS` is unset, so also in dev): `http://localhost:3000, http://localhost:8080, http://localhost:4200, https://perfume-budget-gs-fe.vercel.app`; `application-prod.properties` has no default and requires the env var. Exact-match only (no wildcards or patterns).
-- Methods and headers from `cors.allowed-methods` / `cors.allowed-headers` (default `*`), `allowCredentials=true`.
-- **No `exposedHeaders` is configured.** A cross-origin browser `fetch` therefore cannot read `Retry-After` (not a CORS-safelisted response header). Until the backend exposes it, the frontend should not depend on the header cross-origin, and should fall back to the documented windows (60 s for resend, 15 min for lockout, a few minutes otherwise) or go through a same-origin proxy.
-- An `Origin` header that is **not** in the allow-list is rejected by the CORS layer with `403` and the plain-text body `Invalid CORS request` (not the JSON envelope), for simple requests as well as preflights. Clients without an `Origin` (curl, server-to-server) are unaffected.
-- There is **no onboarding-specific CORS rule**. The origin that serves the signup wizard (the platform or marketing site, not a tenant host) must be present in `CORS_ALLOWED_ORIGINS`. Tenant storefront origins do not need to be, and a tenant-less `Origin` is not a tenant failure on platform paths. A wizard served at an origin not in the list is blocked by the browser even though the server would answer.
+- Allowed origins for `/api/v1/platform/onboarding/**`: the exact list in `platform.cors.allowed-origins` (`PLATFORM_CORS_ALLOWED_ORIGINS`) plus the hosts in `tenant.platform-domains` (apex). Default is EMPTY in the base and prod properties, so the origin that serves the signup wizard (the platform or marketing site, not a tenant host) must be configured or the browser blocks the call. Tenant origins and `cors.allowed-origins` are not accepted here. Exact-match only (no wildcards).
+- Methods GET, POST, OPTIONS; headers `Content-Type`, `Accept`; credentials are NOT allowed (use `credentials: "omit"`).
+- `Retry-After` and `ETag` are exposed (`Access-Control-Expose-Headers: ETag, Retry-After`), so a cross-origin browser `fetch` can read `Retry-After` on 429 responses.
+- An `Origin` header that is **not** allowed is rejected by the CORS layer with `403` and the plain-text body `Invalid CORS request` (not the JSON envelope), for simple requests as well as preflights. Clients without an `Origin` (curl, server-to-server) are unaffected, and a tenant-less `Origin` is not a tenant failure on platform paths.
 - No cookies are involved, so `credentials: "include"` is unnecessary for these endpoints.
 
 ## 12. Guidance for frontend implementers
@@ -404,7 +403,7 @@ Flow: `signup` -> OTP screen -> `verify` -> progress screen polling `status` -> 
 ## 13. Known gaps (for the board, not fixed here)
 
 1. No machine-readable error codes in the shared envelope; clients must key on HTTP status. A stable `code` field would need a change in `GlobalExceptionHandler` and every client.
-2. `Retry-After` is not exposed via CORS (section 11).
+2. (Resolved by DOMAIN-01: `Retry-After` is now exposed via CORS, section 11.)
 3. No slug-availability endpoint (section 8).
 4. FAILED owners get at most 3 resends; after that the signup is stuck until the 24 h purge, which only runs on slug or e-mail reuse.
 5. Rate limits are per JVM; there is no shared (Redis) limiter.

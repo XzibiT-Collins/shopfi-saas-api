@@ -57,7 +57,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "tenant.base-domain=shopfi.test",
         "spring.datasource.hikari.maximum-pool-size=4",
         "spring.datasource.hikari.minimum-idle=0",
-        "cors.allowed-origins=https://wizard.shopfi.test",
+        "platform.cors.allowed-origins=https://wizard.shopfi.test",
         // generous limits so the scenarios do not trip them; resend-email stays at its default (3) on purpose
         "onboarding.signup-ip.capacity=1000",
         "onboarding.signup-email.capacity=1000",
@@ -411,13 +411,13 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
                 .header("Origin", "https://wizard.shopfi.test")).andReturn();
         assertEquals(404, wizardOrigin.getResponse().getStatus());
         assertEquals("Unknown tenant", body(wizardOrigin).get("description").asText());
-        // an Origin outside cors.allowed-origins is rejected by the CORS layer itself (403, plain text, not the envelope)
+        // an Origin outside platform.cors.allowed-origins is rejected by the CORS layer itself (403, plain text, not the envelope)
         MvcResult blocked = mvc.perform(get(BASE + "/status").param("slug", "no-such-shop")
                 .header("Origin", "https://unknown.example")).andReturn();
         assertEquals(403, blocked.getResponse().getStatus());
         assertEquals("Invalid CORS request", blocked.getResponse().getContentAsString());
 
-        // configured origin passes preflight; an unlisted one does not; Retry-After is not exposed (documented gap)
+        // configured origin passes preflight; an unlisted one does not; Retry-After is exposed (DOMAIN-01)
         MvcResult ok = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options(BASE + "/signup")
                 .header("Origin", "https://wizard.shopfi.test").header("Access-Control-Request-Method", "POST")
                 .header("Access-Control-Request-Headers", "content-type")).andReturn();
@@ -428,8 +428,9 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
         assertEquals(403, bad.getResponse().getStatus());
         MvcResult actualCors = mvc.perform(get(BASE + "/status").param("slug", "no-such-shop")
                 .header("Origin", "https://wizard.shopfi.test")).andReturn();
-        assertNull(actualCors.getResponse().getHeader("Access-Control-Expose-Headers"),
-                "doc section 11 says no exposed headers are configured; update the doc if this changes");
+        String exposed = actualCors.getResponse().getHeader("Access-Control-Expose-Headers");
+        assertNotNull(exposed, "doc section 11 says Retry-After and ETag are exposed; update the doc if this changes");
+        assertTrue(exposed.contains("Retry-After") && exposed.contains("ETag"), exposed);
     }
 
     // ------------------------------------------------------------------------------------------ OpenAPI (AC3)
