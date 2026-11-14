@@ -16,6 +16,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atMost;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -292,16 +295,80 @@ class TenantOriginPolicyTest {
 
     // ---- DOMAIN-01b S4: invalidateAll() racing an in-flight lookup ------------------------------------------------
 
+    // ---- stale lane under exhausted budgets (DOMAIN-01b S2 core) --------------------------------------------------
+
     @Test
-    void invalidateAllDuringALookupPreventsStoringTheStaleAnswer() {
-        TenantOriginPolicy[] holder = new TenantOriginPolicy[1];
-        when(registry.findBySlug("acme")).thenAnswer(inv -> {
-            holder[0].invalidateAll(); // e.g. a suspension commits and invalidates while this lookup is in flight
-            return Optional.of(tenant("acme", TenantStatus.ACTIVE, null)); // the pre-commit row
-        });
-        holder[0] = policy(true);
-        assertThat(holder[0].isAllowed("https://acme.shopfi.test")).isTrue(); // this request saw the old row
-        when(registry.findBySlug("acme")).thenReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, null)));
-        assertThat(holder[0].isAllowed("https://acme.shopfi.test")).as("the stale ACTIVE was not cached").isFalse();
+    void recentlyAllowedTenantsStayAllowedWhileTheBudgetsAreExhausted_unseenHostsAndPastGraceAreDenied() {
+        cors.getTenantCache().setMaxRefreshesPerSecond(1);
+        cors.getTenantCache().setMaxLookupsPerSecond(3);
+        cors.getTenantCache().setMaxLookupsPerIpPerSecond(3);
+        cors.getTenantCache().setStaleGraceSeconds(60);
+        active("bravo");
+        TenantOriginPolicy p = policy(true);
+        assertThat(p.isAllowed("https://acme.shopfi.test", "1.1.1.1")).isTrue();
+        assertThat(p.isAllowed("https://bravo.shopfi.test", "1.1.1.1")).isTrue();
+        now.addAndGet(31 * SEC); // both entries are past the 30 s TTL, inside the 60 s grace
+        // attackers (one IP, then many IPs) exhaust the lookup budgets with never-seen hosts
+        for (int i = 0; i < 50; i++) {
+            p.isAllowed("https://junk" + i + ".shopfi.test", "6.6.6.6");
+            p.isAllowed("https://junk" + (100 + i) + ".shopfi.test", "6.6." + i + ".1");
+        }
+        // the registry now says bravo is suspended, but the refresh budget (1 token) is spent by acme's refresh
+        doReturn(Optional.of(tenant("bravo", TenantStatus.SUSPENDED, null))).when(registry).findBySlug("bravo");
+        Mockito.clearInvocations(registry);
+        assertThat(p.isAllowed("https://acme.shopfi.test", "1.1.1.1")).as("refreshed through the protected lane").isTrue();
+        verify(registry, times(1)).findBySlug("acme");
+        assertThat(p.isAllowed("https://bravo.shopfi.test", "1.1.1.1"))
+                .as("refresh budget empty: the recently allowed tenant is served stale, NOT denied").isTrue();
+        verify(registry, never()).findBySlug("bravo");
+        // never-seen hosts fail closed while the budgets are empty
+        active("brandnew");
+        assertThat(p.isAllowed("https://brandnew.shopfi.test", "2.2.2.2")).isFalse();
+        // past the grace window the stale ALLOW is gone: bravo is no longer served from cache
+        now.addAndGet(61 * SEC);
+        assertThat(p.isAllowed("https://bravo.shopfi.test", "1.1.1.1")).isFalse();
+    }
+
+    @Test
+    void staleAllowSurvivesRegistryErrors_butUnseenHostsFailClosed() {
+        cors.getTenantCache().setStaleGraceSeconds(60);
+        TenantOriginPolicy p = policy(true);
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isTrue();
+        now.addAndGet(31 * SEC);
+        doThrow(new RuntimeException("db down")).when(registry).findBySlug(anyString());
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isTrue();
+        assertThat(p.isAllowed("https://neverseen.shopfi.test")).isFalse();
+    }
+
+    // ---- DOMAIN-01b S4: deterministic invalidate race ------------------------------------------------------------
+
+    @Test
+    void invalidateAllWhileALookupIsInFlight_doesNotStoreThatResult_butLaterLookupsAreCached() throws Exception {
+        java.util.concurrent.CountDownLatch inLookup = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(inv -> {
+            inLookup.countDown();
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            return Optional.of(tenant("acme", TenantStatus.ACTIVE, null)); // the row as read BEFORE the commit
+        }).when(registry).findBySlug("acme");
+        TenantOriginPolicy p = policy(true);
+        java.util.concurrent.ExecutorService ex = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<Boolean> inFlight = ex.submit(() -> p.isAllowed("https://acme.shopfi.test"));
+            assertThat(inLookup.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            // the suspension commits and the cache is invalidated while the lookup is still running
+            doReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, null))).when(registry).findBySlug("acme");
+            p.invalidateAll();
+            release.countDown();
+            assertThat(inFlight.get(10, java.util.concurrent.TimeUnit.SECONDS)).as("that request saw the old row").isTrue();
+        } finally {
+            ex.shutdownNow();
+        }
+        Mockito.clearInvocations(registry);
+        assertThat(p.isAllowed("https://acme.shopfi.test")).as("the stale ACTIVE was NOT cached").isFalse();
+        verify(registry, times(1)).findBySlug("acme");
+        // a lookup started after the invalidation IS cached
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isFalse();
+        verify(registry, times(1)).findBySlug("acme");
     }
 }
