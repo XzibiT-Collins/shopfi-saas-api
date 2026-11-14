@@ -54,7 +54,8 @@ class AuthorizationMatrixStructureTest {
 
     /** Reads open to any signed-in user of the tenant (no role): documented decision, reviewed in the matrix doc. */
     static final Set<String> AUTHENTICATED_READS = Set.of(
-            "TaxController#calculateTaxes", "TaxController#getAllTaxes");
+            "TaxController#calculateTaxes", "TaxController#getAllTaxes",
+            "AuthController#getAuthenticatedUser"); // GET /auth/me: matcher authenticated()
 
     @Test
     void everyControllerMutationHasPreAuthorizeOrAnExplicitDecision() throws Exception {
@@ -140,9 +141,15 @@ class AuthorizationMatrixStructureTest {
     static List<Class<?>> controllers() throws Exception {
         ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
         scanner.addIncludeFilter(new AnnotationTypeFilter(RestController.class));
+        // DevTenantController is @ConditionalOnProperty: evaluate it as enabled so the guard sees it
+        ((org.springframework.core.env.ConfigurableEnvironment) scanner.getEnvironment()).getPropertySources().addFirst(
+                new org.springframework.core.env.MapPropertySource("sec03", java.util.Map.of("tenant.dev-endpoints.enabled", "true")));
         List<Class<?>> out = new ArrayList<>();
         for (BeanDefinition bd : scanner.findCandidateComponents("com.example.perfume_budget")) {
-            out.add(Class.forName(bd.getBeanClassName()));
+            Class<?> c = Class.forName(bd.getBeanClassName());
+            if (c.getEnclosingClass() == null) { // top-level only: ignore nested test fixtures
+                out.add(c);
+            }
         }
         return out;
     }
