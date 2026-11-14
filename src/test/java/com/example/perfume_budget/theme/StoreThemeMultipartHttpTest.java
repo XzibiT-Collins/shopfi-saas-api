@@ -1,5 +1,6 @@
 package com.example.perfume_budget.theme;
 
+import com.example.perfume_budget.config.MultipartTempDirInitializer;
 import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.support.AbstractPostgresIntegrationTest;
 import com.example.perfume_budget.support.TestTenant;
@@ -100,17 +101,18 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
 
     record Resp(int status, String headers, String body) {}
 
+    /** The JVM spools into SPOOL/instance-<pid>-<uuid> (THEME-04d); the marker file is not a spooled part. */
     private static void clearSpool() throws IOException {
-        try (Stream<Path> s = Files.list(SPOOL)) {
-            for (Path p : s.toList()) {
-                Files.deleteIfExists(p);
-            }
+        for (Path p : spooled()) {
+            Files.deleteIfExists(p);
         }
     }
 
     private static List<Path> spooled() throws IOException {
-        try (Stream<Path> s = Files.list(SPOOL)) {
-            return s.toList();
+        try (Stream<Path> s = Files.walk(SPOOL)) {
+            return s.filter(Files::isRegularFile)
+                    .filter(p -> !p.getFileName().toString().equals(MultipartTempDirInitializer.MARKER))
+                    .toList();
         }
     }
 
@@ -197,6 +199,107 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
         assertThat(r.body()).contains("INVALID_FORMAT").contains(SHAPE_400).doesNotContain("Unexpected error");
         assertThat(r.headers().toLowerCase()).contains("cache-control: no-store");
         assertThat(spooled()).isEmpty();
+    }
+
+    // ------------------------------------------------------------------------------------------ THEME-04d AC1: boundary
+
+    private void assertBoundaryRejected(String contentType) throws Exception {
+        limiter.reset(); // the test profile allows only 3 writes/min
+        byte[] body = validMultipartStart("xyz");
+        Resp r = exchange(head("PUT", "/api/v1/theme", contentType, body.length, true), body);
+        assertThat(r.status()).as(contentType + " -> " + r.body()).isEqualTo(400);
+        assertThat(r.body()).contains("INVALID_FORMAT").contains(SHAPE_400).doesNotContain("Unexpected error");
+        assertThat(r.headers().toLowerCase()).contains("cache-control: no-store");
+        assertThat(spooled()).isEmpty();
+    }
+
+    @Test
+    void emptyBoundary_is400_notTheGeneric500() throws Exception {
+        assertBoundaryRejected("multipart/form-data; boundary=");
+    }
+
+    @Test
+    void quotedEmptyBoundary_is400() throws Exception {
+        assertBoundaryRejected("multipart/form-data; boundary=\"\"");
+    }
+
+    @Test
+    void whitespaceBoundary_is400() throws Exception {
+        assertBoundaryRejected("multipart/form-data; boundary=   ");
+        assertBoundaryRejected("multipart/form-data; boundary=\"   \"");
+    }
+
+    @Test
+    void overLongBoundary_is400() throws Exception {
+        assertBoundaryRejected("multipart/form-data; boundary=" + "a".repeat(71));
+    }
+
+    @Test
+    void boundaryWithIllegalCharacters_is400() throws Exception {
+        assertBoundaryRejected("multipart/form-data; boundary=ab@cd");
+        assertBoundaryRejected("multipart/form-data; boundary=ab cd");   // unquoted space
+        assertBoundaryRejected("multipart/form-data; boundary=\"abc \""); // trailing space
+        assertBoundaryRejected("multipart/form-data; boundary=a<b>");
+        assertBoundaryRejected("multipart/form-data; boundary=a,b");     // Tomcat would split at the comma
+    }
+
+    @Test
+    void duplicateBoundaryParameters_are400() throws Exception {
+        assertBoundaryRejected("multipart/form-data; boundary=xyz; boundary=abc");
+        assertBoundaryRejected("multipart/form-data; boundary=xyz; BOUNDARY=xyz");
+    }
+
+    @Test
+    void uppercaseBoundaryName_emptyIs400_validIsAccepted() throws Exception {
+        assertBoundaryRejected("multipart/form-data; BOUNDARY=");
+        assertBoundaryRejected("multipart/form-data; Boundary=\"\"");
+        byte[] body = validBody("xyz");
+        Resp ok = exchange(head("PUT", "/api/v1/theme", "multipart/form-data; BOUNDARY=xyz", body.length, true), body);
+        assertThat(ok.status()).as(ok.body()).isEqualTo(200);
+    }
+
+    @Test
+    void quotedValidBoundary_stillWorks() throws Exception {
+        byte[] body = validBody("a b+c");
+        Resp ok = exchange(head("PUT", "/api/v1/theme", "multipart/form-data; boundary=\"a b+c\"", body.length, true), body);
+        assertThat(ok.status()).as(ok.body()).isEqualTo(200);
+    }
+
+    @Test
+    void maximumLengthBoundary_70chars_isAccepted() throws Exception {
+        String b = "b".repeat(70);
+        byte[] body = validBody(b);
+        Resp ok = exchange(head("PUT", "/api/v1/theme", "multipart/form-data; boundary=" + b, body.length, true), body);
+        assertThat(ok.status()).as(ok.body()).isEqualTo(200);
+    }
+
+    @Test
+    void normalValidUpload_is200() throws Exception {
+        byte[] body = validBody("xyz");
+        Resp ok = exchange(head("PUT", "/api/v1/theme", "multipart/form-data; boundary=xyz", body.length, true), body);
+        assertThat(ok.status()).as(ok.body()).isEqualTo(200);
+        assertThat(spooled()).isEmpty();
+    }
+
+    @Test
+    void resolverMultipartException_onThemePath_isMappedTo400_byTheAdviceSafetyNet() throws Exception {
+        // Direct unit check of the safety net (the guard normally answers first).
+        var handler = new com.example.perfume_budget.exception.handlers.GlobalExceptionHandler();
+        var theme = new org.springframework.mock.web.MockHttpServletRequest("PUT", "/api/v1/theme");
+        theme.setServletPath("/api/v1/theme");
+        var other = new org.springframework.mock.web.MockHttpServletRequest("PUT", "/api/v1/products");
+        other.setServletPath("/api/v1/products");
+        var ex = new org.springframework.web.multipart.MultipartException("Failed to parse multipart servlet request");
+        var r1 = handler.handleMultipartException(ex, theme);
+        assertThat(r1.getStatusCode().value()).isEqualTo(400);
+        assertThat(String.valueOf(r1.getBody())).contains("INVALID_FORMAT");
+        assertThat(handler.handleMultipartException(ex, other).getStatusCode().value()).isEqualTo(500); // unchanged elsewhere
+    }
+
+    private static byte[] validBody(String b) {
+        String t = ThemeTestDocs.defaults().toString();
+        return ("--" + b + "\r\nContent-Disposition: form-data; name=\"theme\"; filename=\"t.json\"\r\n"
+                + "Content-Type: application/json\r\n\r\n" + t + "\r\n--" + b + "--\r\n").getBytes(StandardCharsets.UTF_8);
     }
 
     @Test
@@ -300,6 +403,8 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
                 Thread.sleep(50);
             }
             assertThat(spooled()).as("part spooled in the dedicated multipart location").isNotEmpty();
+            assertThat(spooled().get(0).getParent().getFileName().toString())
+                    .as("each JVM spools into its own instance-<pid>-<uuid> subdirectory").startsWith("instance-");
         }
     }
 
@@ -367,5 +472,31 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
         assertThat(r.headers().toLowerCase()).contains("vary: referer"); // our "Origin, Referer" merged with CORS's Origin line
         Resp o = exchange(head("GET", "/api/v1/theme", null, -1, false), null);
         assertThat(o.headers().toLowerCase()).contains("s-maxage=300");
+    }
+
+    // ------------------------------------------------------------------------------------------ THEME-04d AC3: Origin
+
+    @Test
+    void getWithTwoOriginHeaders_is400_noStore_notCacheable() throws Exception {
+        String twice = "GET /api/v1/theme HTTP/1.1\r\nHost: " + HOST + "\r\nOrigin: " + ORIGIN
+                + "\r\nOrigin: https://other.shopfi.test\r\nConnection: close\r\n\r\n";
+        Resp r = exchange(twice, null);
+        assertThat(r.status()).as(r.body()).isEqualTo(400);
+        assertThat(r.body()).contains("INVALID_FORMAT").contains("\"path\":\"Origin\"");
+        assertThat(r.headers().toLowerCase()).contains("cache-control: no-store").doesNotContain("s-maxage");
+    }
+
+    @Test
+    void getWithAFoldedOriginList_isNeverServedAsAPublicTheme() throws Exception {
+        String folded = "GET /api/v1/theme HTTP/1.1\r\nHost: " + HOST + "\r\nOrigin: " + ORIGIN
+                + ", https://other.shopfi.test\r\nConnection: close\r\n\r\n";
+        Resp r = exchange(folded, null);
+        assertThat(r.status()).as(r.body()).isIn(400, 403);
+        assertThat(r.headers().toLowerCase()).doesNotContain("s-maxage");
+    }
+
+    @Test
+    void getWithOneOrigin_isStill200() throws Exception {
+        assertThat(exchange(head("GET", "/api/v1/theme", null, -1, false), null).status()).isEqualTo(200);
     }
 }

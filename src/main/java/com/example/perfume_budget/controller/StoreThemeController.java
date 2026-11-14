@@ -70,7 +70,26 @@ public class StoreThemeController {
     public ResponseEntity<CustomApiResponse<JsonNode>> getTheme(
             HttpServletRequest request,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false) String ifNoneMatch) {
+        if (multipleOrigins(request)) {
+            // THEME-04d: the tenant is taken from the FIRST Origin, but CDNs key a multi-valued Origin differently
+            // (first, last, joined or ignored), so such a request could be cached under another tenant's key.
+            throw bad("Origin", "INVALID_FORMAT", "exactly one Origin header is allowed");
+        }
         return getTheme(TenantResolutionFilter.tenantSignalIsOrigin(request), ifNoneMatch);
+    }
+
+    /** More than one Origin header line, or one line folded into a comma list. */
+    static boolean multipleOrigins(HttpServletRequest request) {
+        java.util.Enumeration<String> values = request.getHeaders("Origin");
+        int lines = 0;
+        while (values != null && values.hasMoreElements()) {
+            String v = values.nextElement();
+            lines++;
+            if (lines > 1 || (v != null && v.indexOf(',') >= 0)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     ResponseEntity<CustomApiResponse<JsonNode>> getTheme(boolean tenantFromOrigin, String ifNoneMatch) {
