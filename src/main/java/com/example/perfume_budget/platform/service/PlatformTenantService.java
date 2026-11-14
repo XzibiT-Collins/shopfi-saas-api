@@ -277,22 +277,25 @@ public class PlatformTenantService {
     /**
      * A retried approve/reprovision on an ACTIVE tenant: repair what a crash after the saga may have left. In ONE
      * transaction: delete a leftover signup row (BCrypt hash) and, if a hash was deleted or the newest INTENT has no later
-     * OUTCOME/RECONCILE row (older than the grace period, so an in-flight winner is not raced), append a RECONCILE row
+     * OUTCOME/RECONCILE row; nothing is touched while the newest INTENT is younger than the grace period without an OUTCOME (an in-flight winner is not raced), append a RECONCILE row
      * (ACTIVE -> ACTIVE) naming the retrying admin. Nothing to repair: nothing written (plain idempotent no-op).
      * A failure here never changes the response of the no-op.
      */
     private void reconcile(PlatformPrincipal actor, Tenant tenant, TenantAction action) {
         bestEffort("reconcile", tenant, () -> masterTx.executeWithoutResult(s -> {
+            TenantAuditLog intent = auditRepository
+                    .findFirstByTenantIdAndPhaseOrderByIdDesc(tenant.getId(), TenantAuditPhase.INTENT).orElse(null);
+            boolean outcomeWritten = intent != null && auditRepository.existsByTenantIdAndPhaseAndIdGreaterThan(
+                    tenant.getId(), TenantAuditPhase.OUTCOME, intent.getId());
+            boolean inFlight = intent != null && !outcomeWritten && intent.getOccurredAt() != null
+                    && intent.getOccurredAt().isAfter(java.time.Instant.now().minus(reconcileGrace));
+            if (inFlight) {
+                return; // the winner of the saga is most likely still finishing its own steps: do not race it
+            }
             int hashes = signupRepository.deleteByTenantId(tenant.getId());
-            boolean outcomeMissing = auditRepository
-                    .findFirstByTenantIdAndPhaseOrderByIdDesc(tenant.getId(), TenantAuditPhase.INTENT)
-                    .filter(i -> i.getOccurredAt() == null
-                            || i.getOccurredAt().isBefore(java.time.Instant.now().minus(reconcileGrace)))
-                    .map(i -> !auditRepository.existsByTenantIdAndPhaseAndIdGreaterThan(
-                            tenant.getId(), TenantAuditPhase.OUTCOME, i.getId())
-                            && !auditRepository.existsByTenantIdAndPhaseAndIdGreaterThan(
-                            tenant.getId(), TenantAuditPhase.RECONCILE, i.getId()))
-                    .orElse(false);
+            boolean outcomeMissing = intent != null && !outcomeWritten
+                    && !auditRepository.existsByTenantIdAndPhaseAndIdGreaterThan(
+                    tenant.getId(), TenantAuditPhase.RECONCILE, intent.getId());
             if (hashes > 0 || outcomeMissing) {
                 audit(actor, tenant, action, TenantAuditPhase.RECONCILE, TenantStatus.ACTIVE, TenantStatus.ACTIVE);
                 log.warn("Reconciled ACTIVE tenant {} (hashDeleted={}, outcomeMissing={})",
@@ -306,7 +309,7 @@ public class PlatformTenantService {
         try {
             step.run();
         } catch (Exception e) {
-            log.error("Tenant {}: {} failed ({}); left for reconciliation", tenant.getSlug(), what,
+            log.error("Tenant {}: {} failed ({}); the INTENT row and reconciliation cover it", tenant.getSlug(), what,
                     e.getClass().getSimpleName());
         }
     }
