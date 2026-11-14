@@ -30,6 +30,11 @@ import org.springframework.data.domain.Sort;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -434,6 +439,151 @@ class PlatformTenantServiceTest {
         TenantActionResponse r = service.reprovision("acme", ADMIN);
         assertThat(r.changed()).isFalse();
         verifyNoInteractions(saga, audits);
+    }
+
+    // ---- PLAT-02b rework ------------------------------------------------------------------------------------------
+
+    static final String SECRET = "jdbc:postgresql://db.internal:5432/x password=hunter2 owner@acme.test $2a$12$" + "a".repeat(53);
+
+    /** Captures everything PlatformTenantService logs (message, arguments, stack traces) for the duration of a test. */
+    private ListAppender<ILoggingEvent> captureLogs() {
+        ListAppender<ILoggingEvent> app = new ListAppender<>();
+        app.start();
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PlatformTenantService.class)).addAppender(app);
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PlatformTenantService.class)).setLevel(Level.DEBUG);
+        return app;
+    }
+
+    private static void release(ListAppender<ILoggingEvent> app) {
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PlatformTenantService.class)).detachAppender(app);
+    }
+
+    private static void assertLoggedClassOnly(ListAppender<ILoggingEvent> app, String className) {
+        assertThat(app.list).isNotEmpty();
+        for (ILoggingEvent e : app.list) {
+            assertThat(e.getFormattedMessage()).doesNotContain("hunter2").doesNotContain("jdbc:").doesNotContain("db.internal")
+                    .doesNotContain("owner@acme.test").doesNotContain("$2a$");
+            assertThat(e.getThrowableProxy()).as("no stack trace / exception message is logged").isNull();
+        }
+        assertThat(app.list).anyMatch(e -> e.getLevel() == Level.ERROR && e.getFormattedMessage().contains(className));
+    }
+
+    @Test
+    void bestEffortFailures_logOnlyTheExceptionClass_neverMessageUrlHashOrEmail() {
+        Tenant t = stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        sagaClaimsAndSucceeds(t);
+        when(signups.deleteByTenantId(1L)).thenThrow(new IllegalStateException(SECRET));
+        when(audits.saveAndFlush(any())).thenAnswer(inv -> {
+            TenantAuditLog l = inv.getArgument(0);
+            if (l.getPhase() == TenantAuditPhase.OUTCOME) {
+                throw new java.io.UncheckedIOException(new java.io.IOException(SECRET));
+            }
+            return l;
+        });
+        ListAppender<ILoggingEvent> app = captureLogs();
+        try {
+            assertThat(service.reprovision("acme", ADMIN).changed()).isTrue();
+            assertLoggedClassOnly(app, "IllegalStateException");
+            assertThat(app.list).anyMatch(e -> e.getFormattedMessage().contains("UncheckedIOException"));
+        } finally {
+            release(app);
+        }
+    }
+
+    @Test
+    void failureBranchAuditThrow_logsOnlyTheClass() {
+        stub("acme", TenantStatus.FAILED);
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenThrow(new TenantProvisioningException("acme", true, new RuntimeException(SECRET)));
+        when(audits.saveAndFlush(any())).thenThrow(new IllegalStateException(SECRET));
+        ListAppender<ILoggingEvent> app = captureLogs();
+        try {
+            assertThatThrownBy(() -> service.reprovision("acme", ADMIN)).isInstanceOf(TenantProvisioningFailedException.class);
+            assertLoggedClassOnly(app, "IllegalStateException");
+        } finally {
+            release(app);
+        }
+    }
+
+    @Test
+    void claimOnARowThatBecameFailed_isRejectedInsideTheClaim_forApprove_noIntentWritten() {
+        stub("acme", TenantStatus.PENDING); // what the service read
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenAnswer(inv -> {
+            // the claim transaction saw FAILED (another approve failed the saga meanwhile): approve on FAILED is illegal
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(tenant("acme", TenantStatus.FAILED));
+            return null;
+        });
+        assertThatThrownBy(() -> service.approve("acme", ADMIN)).isInstanceOf(IllegalTenantTransitionException.class)
+                .hasMessage("Cannot approve a tenant that is FAILED");
+        verify(audits, never()).saveAndFlush(any());
+        verify(signups, never()).deleteByTenantId(anyLong());
+    }
+
+    @Test
+    void intentRecordsTheStatusSeenInsideTheClaim_notTheEarlierRead() {
+        stub("acme", TenantStatus.FAILED); // reprovision read FAILED...
+        verifiedSignup();
+        when(saga.provision(any(), any())).thenAnswer(inv -> {
+            // ...and the claim transaction agrees (FAILED); a PENDING there would be illegal for reprovision
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(tenant("acme", TenantStatus.FAILED));
+            return null;
+        });
+        service.reprovision("acme", ADMIN);
+        assertThat(allAudits()).extracting(TenantAuditLog::getPreviousStatus).containsExactly(TenantStatus.FAILED, TenantStatus.FAILED);
+
+        org.mockito.Mockito.reset(audits);
+        stub("acme", TenantStatus.FAILED);
+        org.mockito.Mockito.doAnswer(inv -> {
+            inv.<java.util.function.Consumer<Tenant>>getArgument(1).accept(tenant("acme", TenantStatus.PENDING));
+            return null;
+        }).when(saga).provision(any(), any());
+        assertThatThrownBy(() -> service.reprovision("acme", ADMIN)).isInstanceOf(IllegalTenantTransitionException.class);
+        verify(audits, never()).saveAndFlush(any());
+    }
+
+    private TenantAuditLog intent(java.time.Instant at) {
+        return TenantAuditLog.builder().id(5L).tenantId(1L).tenantSlug("acme").phase(TenantAuditPhase.INTENT)
+                .action(TenantAction.APPROVE).previousStatus(TenantStatus.PENDING).newStatus(TenantStatus.PROVISIONING)
+                .occurredAt(at).build();
+    }
+
+    @Test
+    void reconcile_graceIsMeasuredFromTheLaterOfIntentAndTenantUpdate() {
+        Tenant t = stub("acme", TenantStatus.ACTIVE);
+        when(audits.findFirstByTenantIdAndPhaseOrderByIdDesc(1L, TenantAuditPhase.INTENT))
+                .thenReturn(Optional.of(intent(java.time.Instant.now().minusSeconds(3600)))); // old intent, no outcome
+        when(signups.deleteByTenantId(1L)).thenReturn(1);
+        // a slow saga that only just went ACTIVE: its own OUTCOME is about to be written, do not reconcile
+        t.setUpdatedAt(LocalDateTime.now().minusSeconds(5));
+        service.approve("acme", ADMIN);
+        verify(signups, never()).deleteByTenantId(anyLong());
+        verify(audits, never()).saveAndFlush(any());
+        // the tenant went ACTIVE long ago too: now it is reconciled
+        t.setUpdatedAt(LocalDateTime.now().minusHours(2));
+        service.approve("acme", ADMIN);
+        assertThat(onlyAudit().getPhase()).isEqualTo(TenantAuditPhase.RECONCILE);
+    }
+
+    @Test
+    void reconcile_onlyAnOutcomeOfTheSameActionAndStatusCompletesTheIntent() {
+        Tenant t = stub("acme", TenantStatus.ACTIVE);
+        t.setUpdatedAt(LocalDateTime.now().minusHours(2));
+        when(audits.findFirstByTenantIdAndPhaseOrderByIdDesc(1L, TenantAuditPhase.INTENT))
+                .thenReturn(Optional.of(intent(java.time.Instant.now().minusSeconds(3600))));
+        // a later OUTCOME exists, but not an APPROVE one starting at PENDING (e.g. suspend/reactivate rows)
+        when(audits.existsByTenantIdAndPhaseAndIdGreaterThan(1L, TenantAuditPhase.OUTCOME, 5L)).thenReturn(true);
+        service.approve("acme", ADMIN);
+        assertThat(onlyAudit().getPhase()).isEqualTo(TenantAuditPhase.RECONCILE);
+
+        org.mockito.Mockito.reset(audits);
+        when(audits.findFirstByTenantIdAndPhaseOrderByIdDesc(1L, TenantAuditPhase.INTENT))
+                .thenReturn(Optional.of(intent(java.time.Instant.now().minusSeconds(3600))));
+        when(audits.existsByTenantIdAndPhaseAndActionAndPreviousStatusAndIdGreaterThan(1L, TenantAuditPhase.OUTCOME,
+                TenantAction.APPROVE, TenantStatus.PENDING, 5L)).thenReturn(true);
+        service.approve("acme", ADMIN);
+        verify(audits, never()).saveAndFlush(any());
     }
 
     // ---- throttle -------------------------------------------------------------------------------------------

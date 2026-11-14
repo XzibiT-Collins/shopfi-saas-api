@@ -197,6 +197,29 @@ class TenantOriginPolicyTest {
     }
 
     @Test
+    void resetBudgets_refillsTheSameCapacity_withoutChangingFailClosedBehaviour() {
+        cors.getTenantCache().setMaxLookupsPerSecond(5);
+        TenantOriginPolicy p = policy(true);
+        for (int i = 0; i < 50; i++) {
+            p.isAllowed("https://flood" + i + ".shopfi.test");
+        }
+        verify(registry, times(5)).findBySlug(Mockito.startsWith("flood"));
+        // production semantics: the empty budget fails closed and invalidateAll() does NOT refill it
+        p.invalidateAll();
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isFalse();
+        // test support: resetBudgets refills exactly the configured capacity (5), not more, and still fails closed after
+        p.resetBudgets();
+        Mockito.clearInvocations(registry);
+        for (int i = 0; i < 50; i++) {
+            p.isAllowed("https://again" + i + ".shopfi.test");
+        }
+        verify(registry, times(5)).findBySlug(Mockito.startsWith("again"));
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isFalse();
+        p.resetBudgets();
+        assertThat(p.isAllowed("https://acme.shopfi.test")).isTrue();
+    }
+
+    @Test
     void registryErrorFailsClosedAndIsNotCached() {
         when(registry.findBySlug("acme")).thenThrow(new RuntimeException("db down"))
                 .thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE, null)));
