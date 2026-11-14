@@ -79,8 +79,8 @@
     "cloudinaryImageUrl": {
       "type": "string",
       "maxLength": 512,
-      "pattern": "^https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/[A-Za-z0-9_\\-./,:%]+$",
-      "description": "Cloudinary delivery URL. Server additionally requires the stored value or the tenant's own branding folder."
+      "pattern": "^https://res\\.cloudinary\\.com/[A-Za-z0-9_-]+/image/upload/(?:v[0-9]{1,12}/)?shopfi/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?/branding/(?:(?:logo|background)(?:-[0-9a-f]{16})?|section-[a-z0-9-]+)\\.(?:png|jpe?g|webp)$",
+      "description": "Cloudinary delivery URL of a branding image: an optional v<digits> segment, then shopfi/<tenant>/branding/<logo|background|section-<id>>[-<16 hex>].<png|jpg|jpeg|webp>. No transformation segments and no SVG. The server additionally requires the tenant's own folder (or the stored value)."
     },
     "link": {
       "type": "string",
