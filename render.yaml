@@ -62,6 +62,7 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
+      # Platform super-admin bootstrap: optional, may be removed once the first admin exists (never alters an existing admin)
       - key: PLATFORM_ADMIN_EMAIL
         sync: false
       - key: PLATFORM_ADMIN_PASSWORD

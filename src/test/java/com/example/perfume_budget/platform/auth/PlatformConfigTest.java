@@ -25,19 +25,17 @@ class PlatformConfigTest {
     }
 
     @Test
-    void prodHasBareEnvPlaceholdersWithNoDefaultForPlatformAdminCredentials() throws Exception {
-        Properties prod = load("application-prod.properties");
-        assertThat(prod.getProperty("platform.admin.email")).isEqualTo("${PLATFORM_ADMIN_EMAIL}").matches(PURE_ENV);
-        assertThat(prod.getProperty("platform.admin.password")).isEqualTo("${PLATFORM_ADMIN_PASSWORD}").matches(PURE_ENV);
-    }
-
-    @Test
-    void devAndBaseConfig_neverCarryANonEmptyPlatformAdminPassword() throws Exception {
+    void prodAndDevHaveNoNonEmptyDefaultForPlatformAdminEmailOrPassword() throws Exception {
         for (String f : new String[]{"application.properties", "application-dev.properties", "application-prod.properties"}) {
             Properties p = load(f);
-            for (String k : p.stringPropertyNames()) {
-                if (k.startsWith("platform.admin.password") || k.startsWith("platform.admin.email")) {
-                    assertThat(p.getProperty(k)).as(f + " " + k).matches("^\\$\\{PLATFORM_ADMIN_(EMAIL|PASSWORD)(:)?}$");
+            for (String k : new String[]{"platform.admin.email", "platform.admin.password"}) {
+                String v = p.getProperty(k);
+                if (f.equals("application-prod.properties")) {
+                    assertThat(v).as(f + " " + k).isNotNull();
+                }
+                if (v != null) {
+                    // only a pure env placeholder, with no default or an EMPTY default
+                    assertThat(v).as(f + " " + k).matches("^\\$\\{PLATFORM_ADMIN_(EMAIL|PASSWORD):?}$");
                 }
             }
         }

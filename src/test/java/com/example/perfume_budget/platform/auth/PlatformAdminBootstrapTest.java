@@ -28,6 +28,14 @@ class PlatformAdminBootstrapTest {
     }
 
     @Test
+    void emptyValues_createNothing_andNeverWrite() {
+        assertThat(boot("", "").bootstrap()).isFalse();
+        verifyNoInteractions(repo);
+        verify(repo, never()).saveAndFlush(any());
+        verify(repo, never()).save(any());
+    }
+
+    @Test
     void weakOrOversizedPassword_orBadEmail_isRefused() {
         assertThat(boot("root@x.test", "short").bootstrap()).isFalse();
         assertThat(boot("root@x.test", "x".repeat(73)).bootstrap()).isFalse();
