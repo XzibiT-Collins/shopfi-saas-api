@@ -206,7 +206,7 @@ GROUP BY auth_provider;
 **Fix:** Ensure Google Console has exact redirect URI: `http://localhost:8080/oauth2/callback/google`
 
 ### Issue: Cookies not being set
-**Fix:** Check CORS configuration allows credentials and frontend origin is listed
+**Fix:** Tenant storefront origins are allowed from the tenant registry (active tenant on `<slug>.TENANT_BASE_DOMAIN` or its custom domain; https, default port in prod); anything else must be in `CORS_ALLOWED_ORIGINS`. Platform console: `PLATFORM_CORS_ALLOWED_ORIGINS`. See `docs/api/cors.md`
 
 ### Issue: Can't find OAuth2 endpoints
 **Fix:** Make sure application started successfully and check logs for errors
@@ -301,10 +301,11 @@ Required (no default):
 | Cloudinary | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` |
 | Seed admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD` |
 | Platform super-admin (first login) | `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` (12 to 72 bytes), optional `PLATFORM_ADMIN_FULL_NAME`. Insert-only: creates the first SUPER_ADMIN at boot if that email does not exist, never changes an existing one (rotate a password in the DB, not via env). Unset or empty = bootstrap skipped with one WARN (no DB access), same in dev and prod; after the first super-admin exists both variables can be removed from the environment, and changing them later never alters an existing admin. Login: `POST /api/v1/platform/auth/login`. |
-| URLs / CORS | `FRONTEND_CHANGE_PASSWORD_URL`, `CORS_ALLOWED_ORIGINS` |
+| URLs | `FRONTEND_CHANGE_PASSWORD_URL` |
+| CORS | `PLATFORM_CORS_ALLOWED_ORIGINS` (platform-admin console origin(s); empty = the platform API is unreachable from browsers), optional `CORS_ALLOWED_ORIGINS` (non-tenant origins only: tenant subdomains and custom domains are allowed automatically from the tenant registry). See `docs/api/cors.md`. |
 | Tenancy | `TENANT_BASE_DOMAIN` (e.g. `shopfi.app`, tenants are `<slug>.TENANT_BASE_DOMAIN`), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts) |
 
-Optional (safe defaults): `PORT`/`SERVER_PORT`, `PAYSTACK_URL`, `NOTIFICATION_EMAIL_PROVIDER`,
+Optional (safe defaults): `CORS_TENANT_CACHE_TTL_SECONDS` (30), `CORS_TENANT_CACHE_NEGATIVE_TTL_SECONDS` (10), `PORT`/`SERVER_PORT`, `PAYSTACK_URL`, `NOTIFICATION_EMAIL_PROVIDER`,
 `NOTIFICATION_EMAIL_FROM_ADDRESS`, `NOTIFICATION_EMAIL_FROM_NAME`, `RESEND_API_KEY`, `RESEND_BASE_URL`,
 `MANAGEMENT_HEALTH_MAIL_ENABLED`, `REDIS_CACHE_TTL_MINUTES`, `INVENTORY_RESERVATION_EXPIRY_HOURS`,
 `INVENTORY_RESERVATION_CLEANUP_INTERVAL_MS`, `DISCOUNT_CACHE_EVICT_INTERVAL_MS`.

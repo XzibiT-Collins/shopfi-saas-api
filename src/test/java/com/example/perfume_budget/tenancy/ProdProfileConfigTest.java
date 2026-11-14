@@ -33,7 +33,7 @@ class ProdProfileConfigTest {
                 "platform.encryption.key", "platform.api-base-url", "storage.cloudinary.api-key",
                 "storage.cloudinary.api-secret", "storage.cloudinary.cloud-name",
                 "perfume.budget.admin.password", "perfume.budget.admin.email",
-                "frontend.change-password-url", "cors.allowed-origins", "tenant.base-domain",
+                "frontend.change-password-url", "tenant.base-domain",
                 "tenant.platform-domains", "application.oauth2.authorized-redirect-uris"
         };
         for (String k : mustBeBareEnv) {
@@ -57,5 +57,13 @@ class ProdProfileConfigTest {
         assertThat(p.getProperty("spring.jpa.hibernate.ddl-auto")).isEqualTo("validate");
         assertThat(p.getProperty("spring.flyway.enabled")).isEqualTo("false");
         assertThat(p.getProperty("application.security.cookie.secure")).isEqualTo("true");
+    }
+
+    @Test
+    void corsHasNoDefaultOriginsAndPlatformCorsIsEmptyByDefault() throws Exception {
+        Properties p = prod();
+        // DOMAIN-01: tenant origins come from the registry, so both lists default to EMPTY (no localhost, no tenant).
+        assertThat(p.getProperty("cors.allowed-origins")).isEqualTo("${CORS_ALLOWED_ORIGINS:}");
+        assertThat(p.getProperty("platform.cors.allowed-origins")).isEqualTo("${PLATFORM_CORS_ALLOWED_ORIGINS:}");
     }
 }
