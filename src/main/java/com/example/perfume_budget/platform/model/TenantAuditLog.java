@@ -1,6 +1,7 @@
 package com.example.perfume_budget.platform.model;
 
 import com.example.perfume_budget.platform.enums.TenantAction;
+import com.example.perfume_budget.platform.enums.TenantAuditPhase;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
@@ -56,4 +57,8 @@ public class TenantAuditLog {
     @Enumerated(EnumType.STRING)
     @Column(name = "new_status", nullable = false, updatable = false, length = 20)
     private TenantStatus newStatus;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, updatable = false, length = 10)
+    private TenantAuditPhase phase;
 }

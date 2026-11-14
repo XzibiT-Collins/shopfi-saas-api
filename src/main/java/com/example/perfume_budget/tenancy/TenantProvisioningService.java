@@ -63,13 +63,22 @@ public class TenantProvisioningService {
      * @throws TenantProvisioningException         failed after registration; compensated, status FAILED, retryable
      */
     public ProvisioningResult provision(ProvisioningRequest request) {
+        return provision(request, null);
+    }
+
+    /**
+     * Same as {@link #provision(ProvisioningRequest)}; {@code onClaimed} (nullable) runs INSIDE master tx #1 right after
+     * this caller won the claim, so whatever it writes commits atomically with the claim and only for the winner
+     * (PLAT-02b: the audit INTENT row). If it throws, the claim rolls back and nothing was provisioned.
+     */
+    public ProvisioningResult provision(ProvisioningRequest request, java.util.function.Consumer<Tenant> onClaimed) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException(
                     "TenantProvisioningService must not run inside a transaction (master and tenant boundaries are separate)");
         }
         ValidatedRequest v = validate(request);
 
-        Tenant tenant = claimOrRegister(v);
+        Tenant tenant = claimOrRegister(v, onClaimed);
         Long tenantId = tenant.getId();
         log.info("Provisioning tenant {} -> schema {}", v.slug(), v.schemaName());
 
@@ -129,7 +138,7 @@ public class TenantProvisioningService {
     }
 
     /** Master tx #1: insert a new PROVISIONING row, or atomically claim a PENDING/FAILED one for the same owner. */
-    private Tenant claimOrRegister(ValidatedRequest v) {
+    private Tenant claimOrRegister(ValidatedRequest v, java.util.function.Consumer<Tenant> onClaimed) {
         try {
             return masterTx.execute(s -> {
                 Tenant existing = tenantRepository.findBySlug(v.slug()).orElse(null);
@@ -137,7 +146,7 @@ public class TenantProvisioningService {
                     if (tenantRepository.existsByOwnerEmail(v.ownerEmail())) {
                         throw new TenantAlreadyExistsException("owner email already registered");
                     }
-                    return tenantRepository.saveAndFlush(Tenant.builder()
+                    Tenant created = tenantRepository.saveAndFlush(Tenant.builder()
                             .slug(v.slug())
                             .displayName(v.displayName())
                             .schemaName(v.schemaName())
@@ -145,6 +154,10 @@ public class TenantProvisioningService {
                             .plan(v.plan())
                             .ownerEmail(v.ownerEmail())
                             .build());
+                    if (onClaimed != null) {
+                        onClaimed.accept(created);
+                    }
+                    return created;
                 }
                 if (!existing.getOwnerEmail().equalsIgnoreCase(v.ownerEmail())) {
                     throw new TenantAlreadyExistsException("slug already registered");
@@ -153,6 +166,9 @@ public class TenantProvisioningService {
                         List.of(TenantStatus.PENDING, TenantStatus.FAILED), TenantStatus.PROVISIONING);
                 if (moved != 1) {
                     throw new TenantAlreadyExistsException("tenant is not in a provisionable state");
+                }
+                if (onClaimed != null) {
+                    onClaimed.accept(existing);
                 }
                 return existing;
             });
