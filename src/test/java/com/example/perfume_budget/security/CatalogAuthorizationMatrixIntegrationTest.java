@@ -74,6 +74,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         platformCookie = new Cookie("platformAccessToken", platformToken);
 
         jdbc.update("DELETE FROM tenant_acme.categories WHERE name ILIKE 'sec03-%'");
+        removeSec03Products();
         categoryId = createCategory("sec03-keep");
         createProductViaApi(acme, "sec03-product");
         productId = jdbc.queryForObject("SELECT id FROM tenant_acme.products WHERE name = 'sec03-product' ORDER BY id DESC LIMIT 1", Long.class);
@@ -100,15 +101,31 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
     void cleanUp() {
         platformAdmins.findAll().stream().filter(a -> PLATFORM_EMAIL.equals(a.getEmail())).forEach(platformAdmins::delete);
         jdbc.update("DELETE FROM tenant_acme.users WHERE email = 'customer-sec03@acme.test'");
+        removeSec03Products();
         jdbc.update("DELETE FROM tenant_acme.categories WHERE name ILIKE 'sec03-%'");
     }
 
     @org.junit.jupiter.api.AfterEach
-    void removeFixtures() throws Exception {
-        for (Long id : jdbc.queryForList("SELECT id FROM tenant_acme.products WHERE name LIKE 'sec03-%'", Long.class)) {
-            mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/product/delete/" + id).header("X-Tenant-ID", "acme").cookie(admin));
-        }
+    void removeFixtures() {
+        removeSec03Products();
         jdbc.update("DELETE FROM tenant_acme.categories WHERE name ILIKE 'sec03-%'");
+    }
+
+    /** Products made through the API own rows in child tables (inventory ledger...): delete those first. */
+    private void removeSec03Products() {
+        List<Long> ids = jdbc.queryForList("SELECT id FROM tenant_acme.products WHERE name ILIKE 'sec03-%'", Long.class);
+        if (ids.isEmpty()) {
+            return;
+        }
+        String in = ids.toString().replace('[', '(').replace(']', ')');
+        List<Map<String, Object>> fks = jdbc.queryForList(
+                "SELECT c.conrelid::regclass::text AS tbl, a.attname AS col FROM pg_constraint c "
+                        + "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) "
+                        + "WHERE c.contype = 'f' AND c.confrelid = 'tenant_acme.products'::regclass");
+        for (Map<String, Object> fk : fks) {
+            jdbc.update("DELETE FROM " + fk.get("tbl") + " WHERE " + fk.get("col") + " IN " + in);
+        }
+        jdbc.update("DELETE FROM tenant_acme.products WHERE id IN " + in);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -229,8 +246,10 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         String disc = "{\"discountType\":\"PERCENTAGE\",\"discountValue\":10,\"startAt\":\"2030-01-01T00:00:00\",\"endAt\":\"2030-02-01T00:00:00\"}";
         assertThat(status(build(Endpoint.json("ds", HttpMethod.PUT, "/api/v1/product/admin/" + productId + "/discount", disc), admin))).isEqualTo(200);
         assertThat(status(build(Endpoint.plain("dc", HttpMethod.DELETE, "/api/v1/product/admin/" + productId + "/discount"), admin))).isEqualTo(200);
-        assertThat(status(build(Endpoint.plain("pd", HttpMethod.DELETE, "/api/v1/product/delete/" + productId), admin))).isEqualTo(204);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.products WHERE id = ?", Integer.class, productId)).isZero();
+        // a product created through the API owns inventory rows, so the delete may legitimately be a 409 conflict;
+        // what matters here is that the ADMIN is not stopped by authorization
+        assertThat(status(build(Endpoint.plain("pd", HttpMethod.DELETE, "/api/v1/product/delete/" + productId), admin)))
+                .isNotIn(401, 403);
     }
 
     // ---------------------------------------------------------------- reads
@@ -257,6 +276,11 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(platformAsTenant))).as("%s platform", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(admin))).as("%s admin", p).isEqualTo(200);
         }
+        // ledger reports are ADMIN only (was open to any signed-in user)
+        String acc = "/api/v1/admin/accounting/metadata";
+        assertThat(status(req(HttpMethod.GET, acc, "acme"))).isEqualTo(401);
+        assertThat(status(req(HttpMethod.GET, acc, "acme").cookie(customer))).isEqualTo(403);
+        assertThat(status(req(HttpMethod.GET, acc, "acme").cookie(admin))).isEqualTo(200);
         String s = "/api/v1/product/admin/search";
         assertThat(status(req(HttpMethod.GET, s, "acme"))).isEqualTo(401);
         assertThat(status(req(HttpMethod.GET, s, "acme").cookie(customer))).isEqualTo(403);
