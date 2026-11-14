@@ -210,6 +210,9 @@ public class MultipartTempDirInitializer implements InitializingBean, Disposable
     }
 
     static Long pidOf(String name) {
+        if (!name.startsWith(INSTANCE_PREFIX)) {
+            return null;
+        }
         String rest = name.substring(INSTANCE_PREFIX.length());
         int dash = rest.indexOf('-');
         if (dash <= 0) {

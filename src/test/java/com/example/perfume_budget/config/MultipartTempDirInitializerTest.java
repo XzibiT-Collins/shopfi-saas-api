@@ -130,7 +130,7 @@ class MultipartTempDirInitializerTest {
 
     @Test
     void refusesFilesystemRoot_home_andTheTempDirItself() throws Exception {
-        assertThatThrownBy(() -> init(Path.of("/"))).isInstanceOf(IllegalStateException.class).hasMessageContaining("root");
+        assertThatThrownBy(() -> init(Path.of("/"))).isInstanceOf(IllegalStateException.class).hasMessageContaining("filesystem root");
         String oldHome = System.getProperty("user.home");
         String oldTmp = System.getProperty("java.io.tmpdir");
         Path fakeHome = Files.createDirectory(root.resolve("home"));
@@ -140,8 +140,8 @@ class MultipartTempDirInitializerTest {
         try {
             System.setProperty("user.home", fakeHome.toString());
             System.setProperty("java.io.tmpdir", fakeTmp.toString());
-            assertThatThrownBy(() -> init(fakeHome)).isInstanceOf(IllegalStateException.class).hasMessageContaining("home");
-            assertThatThrownBy(() -> init(fakeTmp)).isInstanceOf(IllegalStateException.class).hasMessageContaining("temp directory");
+            assertThatThrownBy(() -> init(fakeHome)).isInstanceOf(IllegalStateException.class).hasMessageContaining("user's home directory");
+            assertThatThrownBy(() -> init(fakeTmp)).isInstanceOf(IllegalStateException.class).hasMessageContaining("system temp directory itself");
         } finally {
             System.setProperty("user.home", oldHome);
             System.setProperty("java.io.tmpdir", oldTmp);
@@ -180,5 +180,13 @@ class MultipartTempDirInitializerTest {
         assertThat(a.instanceDir()).doesNotExist();
         assertThat(b.instanceDir()).isDirectory();
         assertThat(base.resolve(MultipartTempDirInitializer.MARKER)).exists();
+    }
+
+    @Test
+    void pidOf_parsesOnlyOurInstanceNames() {
+        assertThat(MultipartTempDirInitializer.pidOf("instance-123-abc")).isEqualTo(123L);
+        assertThat(MultipartTempDirInitializer.pidOf("instance-x-abc")).isNull();
+        assertThat(MultipartTempDirInitializer.pidOf("instance-")).isNull();
+        assertThat(MultipartTempDirInitializer.pidOf("xyz")).isNull(); // shorter than the prefix: must not throw
     }
 }
