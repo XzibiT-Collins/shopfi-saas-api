@@ -265,6 +265,16 @@ public class TenantOriginPolicy {
         deniedCache.clear();
     }
 
+    /**
+     * Test support: refills the registry-lookup, per-client and refresh budgets. Does not change their capacity, rate or
+     * the fail-closed behaviour, and nothing in production calls it ({@code invalidateAll()} clears caches only).
+     */
+    void resetBudgets() {
+        missLimiter.reset();
+        ipMissLimiter.reset();
+        refreshLimiter.reset();
+    }
+
     private static Set<String> normaliseConfigured(java.util.List<String> configured, String property) {
         Set<String> out = new HashSet<>();
         if (configured == null) {

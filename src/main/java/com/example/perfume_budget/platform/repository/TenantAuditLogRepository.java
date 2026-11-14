@@ -22,6 +22,12 @@ public interface TenantAuditLogRepository extends Repository<TenantAuditLog, Lon
     Optional<TenantAuditLog> findFirstByTenantIdAndPhaseOrderByIdDesc(Long tenantId,
                                                                       com.example.perfume_budget.platform.enums.TenantAuditPhase phase);
 
+    /** True if an OUTCOME-style row of exactly this action and starting status exists after {@code id}. */
+    boolean existsByTenantIdAndPhaseAndActionAndPreviousStatusAndIdGreaterThan(
+            Long tenantId, com.example.perfume_budget.platform.enums.TenantAuditPhase phase,
+            com.example.perfume_budget.platform.enums.TenantAction action,
+            com.example.perfume_budget.platform.enums.TenantStatus previousStatus, Long id);
+
     boolean existsByTenantIdAndPhaseAndIdGreaterThan(Long tenantId,
                                                      com.example.perfume_budget.platform.enums.TenantAuditPhase phase, Long id);
 }

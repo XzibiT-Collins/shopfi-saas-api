@@ -228,7 +228,6 @@ public class PlatformTenantService {
                 tenant = require(slug);
                 log.warn("Platform admin {} reclaimed stuck PROVISIONING tenant {}", actor.id(), slug);
             }
-            TenantStatus previous = tenant.getStatus(); // PENDING (approve) or FAILED (reprovision / reclaimed)
 
             // Credentials: the verified signup row (BCrypt hash only). Never provision without a verified owner.
             TenantSignup signup = signupRepository.findByTenantId(tenant.getId()).orElse(null);
@@ -244,19 +243,31 @@ public class PlatformTenantService {
             ProvisioningRequest request = new ProvisioningRequest(tenant.getSlug(), tenant.getDisplayName(),
                     tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash(), tenant.getPlan());
             final Tenant claimed = tenant;
+            // The status the claim actually moved from, captured INSIDE the claim transaction by the hook below (the
+            // status read above may be stale if another caller changed it meanwhile).
+            final java.util.concurrent.atomic.AtomicReference<TenantStatus> claimedFrom =
+                    new java.util.concurrent.atomic.AtomicReference<>(tenant.getStatus()); // fallback until the hook runs
             try {
                 // The saga performs the atomic PENDING/FAILED -> PROVISIONING claim; exactly one concurrent caller wins.
                 // The INTENT row is written inside that claim transaction: only the winner writes it, it is committed
                 // before any DDL runs, and if the insert fails the claim rolls back and nothing is provisioned.
-                provisioningService.provision(request, t -> audit(actor, claimed, action, TenantAuditPhase.INTENT,
-                        previous, TenantStatus.PROVISIONING));
+                provisioningService.provision(request, t -> {
+                    TenantStatus from = t.getStatus();
+                    // The state machine must hold on the row the claim really moved, not only on the earlier read: e.g. an
+                    // approve that read PENDING must not succeed through the claim if the row became FAILED meanwhile.
+                    if (TenantStateMachine.decide(action, from) != Decision.TRANSITION) {
+                        throw new IllegalTenantTransitionException(action, from, "");
+                    }
+                    claimedFrom.set(from);
+                    audit(actor, claimed, action, TenantAuditPhase.INTENT, from, TenantStatus.PROVISIONING);
+                });
             } catch (TenantAlreadyExistsException lost) {
                 return noOpNow(action, claimed.getId());
             } catch (TenantProvisioningException failed) {
                 // Best effort and never fatal: a failing audit write must not replace the generic 500 (the INTENT row
                 // already records that the action was accepted). Log the class only, never the message or cause.
                 bestEffort("outcome audit (FAILED)", claimed, () -> masterTx.executeWithoutResult(
-                        s -> audit(actor, claimed, action, TenantAuditPhase.OUTCOME, previous, TenantStatus.FAILED)));
+                        s -> audit(actor, claimed, action, TenantAuditPhase.OUTCOME, claimedFrom.get(), TenantStatus.FAILED)));
                 throw new TenantProvisioningFailedException(claimed.getSlug());
             } catch (InvalidProvisioningRequestException bad) {
                 throw new TenantProvisioningFailedException(claimed.getSlug());
@@ -266,9 +277,9 @@ public class PlatformTenantService {
             bestEffort("signup hash delete", claimed, () -> masterTx.executeWithoutResult(
                     s -> signupRepository.deleteByTenantId(claimed.getId())));
             bestEffort("outcome audit (ACTIVE)", claimed, () -> masterTx.executeWithoutResult(
-                    s -> audit(actor, claimed, action, TenantAuditPhase.OUTCOME, previous, TenantStatus.ACTIVE)));
+                    s -> audit(actor, claimed, action, TenantAuditPhase.OUTCOME, claimedFrom.get(), TenantStatus.ACTIVE)));
             log.info("Platform admin {} {} tenant {}", actor.id(), action, slug);
-            return response(action, true, false, previous, require(slug));
+            return response(action, true, false, claimedFrom.get(), require(slug));
         } finally {
             originPolicy.invalidateAll();
         }
@@ -285,10 +296,20 @@ public class PlatformTenantService {
         bestEffort("reconcile", tenant, () -> masterTx.executeWithoutResult(s -> {
             TenantAuditLog intent = auditRepository
                     .findFirstByTenantIdAndPhaseOrderByIdDesc(tenant.getId(), TenantAuditPhase.INTENT).orElse(null);
-            boolean outcomeWritten = intent != null && auditRepository.existsByTenantIdAndPhaseAndIdGreaterThan(
-                    tenant.getId(), TenantAuditPhase.OUTCOME, intent.getId());
-            boolean inFlight = intent != null && !outcomeWritten && intent.getOccurredAt() != null
-                    && intent.getOccurredAt().isAfter(java.time.Instant.now().minus(reconcileGrace));
+            // Only an OUTCOME of the SAME action and starting status, written after that INTENT, completes it (a later
+            // suspend/reactivate OUTCOME says nothing about this approve/reprovision).
+            boolean outcomeWritten = intent != null && auditRepository
+                    .existsByTenantIdAndPhaseAndActionAndPreviousStatusAndIdGreaterThan(tenant.getId(),
+                            TenantAuditPhase.OUTCOME, intent.getAction(), intent.getPreviousStatus(), intent.getId());
+            // In flight = the winner is probably still finishing: measured from the later of the INTENT and the tenant's
+            // last status change, so a slow saga that only just went ACTIVE is not reconciled before its own OUTCOME.
+            java.time.Instant last = intent == null ? null : intent.getOccurredAt();
+            if (tenant.getUpdatedAt() != null) {
+                java.time.Instant upd = tenant.getUpdatedAt().atZone(java.time.ZoneId.systemDefault()).toInstant();
+                last = last == null || upd.isAfter(last) ? upd : last;
+            }
+            boolean inFlight = intent != null && !outcomeWritten && last != null
+                    && last.isAfter(java.time.Instant.now().minus(reconcileGrace));
             if (inFlight) {
                 return; // the winner of the saga is most likely still finishing its own steps: do not race it
             }
