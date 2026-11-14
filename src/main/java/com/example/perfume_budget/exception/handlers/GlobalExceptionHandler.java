@@ -105,6 +105,22 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(413).body(CustomApiResponse.error(maxFileSizeErrorText));
     }
 
+    /**
+     * Safety net (THEME-04d): a multipart parse failure that got past ThemeWriteGuardFilter on the theme endpoint is a
+     * client error (400 INVALID_FORMAT in the theme error shape), never a 500. Everywhere else the previous generic
+     * behaviour is kept unchanged.
+     */
+    @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
+    public ResponseEntity<?> handleMultipartException(
+            org.springframework.web.multipart.MultipartException ex, jakarta.servlet.http.HttpServletRequest request) {
+        if ("PUT".equals(request.getMethod()) && com.example.perfume_budget.theme.ThemeRequestSizeFilter.isThemePath(request)) {
+            log.debug("Theme multipart rejected by resolver: {}", ex.getClass().getSimpleName());
+            return ResponseEntity.badRequest().body(CustomApiResponse.error("Theme validation failed",
+                    java.util.List.of(new com.example.perfume_budget.theme.ThemeFieldError("$", "INVALID_FORMAT", "malformed multipart request"))));
+        }
+        return handleGenericException(ex);
+    }
+
     @ExceptionHandler(InvalidFileException.class)
     public ResponseEntity<CustomApiResponse<String>> handleInvalidFileException(InvalidFileException ex) {
         return ResponseEntity.status(413).body(CustomApiResponse.error(ex.getMessage()));

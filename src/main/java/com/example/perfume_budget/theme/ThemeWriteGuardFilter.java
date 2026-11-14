@@ -79,8 +79,17 @@ public class ThemeWriteGuardFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
             return;
         }
-        // A missing boundary is rejected by the container's parser (IOFileUploadException "no multipart boundary")
-        // and mapped to 400 below; no separate header check, so MockMvc-built multipart requests behave as before.
+        // A boundary parameter that is PRESENT but invalid (empty, "", blank, > 70 chars, illegal characters, duplicated)
+        // is rejected here: Tomcat's getParts() does not throw for an empty boundary and Spring's resolver then fails
+        // later in DispatcherServlet (it used to surface as 500). A boundary that is ABSENT is deliberately left to the
+        // container's parser ("no multipart boundary" -> mapped to 400 below): MockMvc's multipart builder emits a
+        // Content-Type without boundary (a test-client artifact) and serves its parts itself, so an explicit
+        // "boundary required" check here would break every MockMvc multipart request.
+        if (MultipartBoundary.isInvalid(request.getContentType())) {
+            request.setAttribute(FAILURE_ATTR, 400);
+            reject(response, 400, "Theme validation failed", malformed());
+            return;
+        }
         Collection<Part> parts;
         try {
             parts = request.getParts();
@@ -121,10 +130,20 @@ public class ThemeWriteGuardFilter extends OncePerRequestFilter {
         if (ct == null || ct.isBlank()) {
             return false;
         }
+        int semi = ct.indexOf(';');
+        String type = (semi < 0 ? ct : ct.substring(0, semi)).trim();
+        if (!type.equalsIgnoreCase("multipart/form-data")) {
+            return false; // the controller answers 415 for other types
+        }
+        // Lexical match above so a malformed parameter list (which Spring's parser rejects) still reaches the
+        // boundary check; a header that is otherwise unparsable is left to the controller (415) as before.
+        if (MultipartBoundary.isInvalid(ct)) {
+            return true;
+        }
         try {
             return MediaType.MULTIPART_FORM_DATA.equalsTypeAndSubtype(MediaType.parseMediaType(ct));
         } catch (InvalidMediaTypeException e) {
-            return false; // the controller answers 415
+            return false;
         }
     }
 
