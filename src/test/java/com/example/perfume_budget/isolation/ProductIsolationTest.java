@@ -53,7 +53,15 @@ class ProductIsolationTest extends AbstractTenantIsolationTest {
     @Test
     void ac1_tenantAdminTokenIsRejectedOnOtherTenant() throws Exception {
         TestTenant acme = tenants.acme();
+        tenants.bravo(); // the target tenant must exist, otherwise the request is rejected as an unknown tenant (vacuous)
+        // AUTH-01 (merged with main): an auth cookie minted for another tenant is IGNORED (the cookie is shared on the
+        // single API host), so the request is anonymous. The path is permitAll at URL level with @PreAuthorize on the
+        // method, hence the denial is exactly what an anonymous caller gets (JSON 403), never admin data. Main asserted
+        // a plain-text 401 from JWTFilter; that 401 is what AUTH-01 AC2 removed (it locked users out of login/logout).
+        int anonymous = mockMvc.perform(get("/api/v1/product/admin/listing").header("X-Tenant-ID", "bravo"))
+                .andReturn().getResponse().getStatus();
+        assertThat(anonymous).isIn(401, 403);
         mockMvc.perform(get("/api/v1/product/admin/listing").header("X-Tenant-ID", "bravo").cookie(adminCookie(acme)))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().is(anonymous));
     }
 }
