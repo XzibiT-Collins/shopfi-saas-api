@@ -2,7 +2,7 @@ package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
-import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.enums.CurrencyCode;
 import com.example.perfume_budget.model.Category;
 import com.example.perfume_budget.model.Money;
@@ -81,8 +81,8 @@ class ProductListingCacheIntegrationTest extends AbstractPostgresIntegrationTest
         Page<Product> productPage = new PageImpl<>(List.of(product), pageable, 1);
         when(productRepository.findAllByIsActiveTrueAndIsEnlistedTrue(pageable)).thenReturn(productPage);
 
-        PageResponse<ProductListing> first = productService.getProductListings(pageable);
-        PageResponse<ProductListing> second = productService.getProductListings(pageable);
+        PageResponse<PublicProductListing> first = productService.getProductListings(pageable);
+        PageResponse<PublicProductListing> second = productService.getProductListings(pageable);
 
         assertEquals(1, first.content().size());
         assertEquals(1, second.content().size());
@@ -90,7 +90,7 @@ class ProductListingCacheIntegrationTest extends AbstractPostgresIntegrationTest
 
         productService.deleteProduct(1L);
 
-        PageResponse<ProductListing> third = productService.getProductListings(pageable);
+        PageResponse<PublicProductListing> third = productService.getProductListings(pageable);
         assertEquals(1, third.content().size());
         verify(productRepository, times(2)).findAllByIsActiveTrueAndIsEnlistedTrue(pageable);
         verify(productRepository).deleteById(1L);
@@ -112,8 +112,8 @@ class ProductListingCacheIntegrationTest extends AbstractPostgresIntegrationTest
         when(productRepository.findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrue())
                 .thenReturn(List.of(product));
 
-        List<ProductListing> first = productService.getFeaturedProducts();
-        List<ProductListing> second = productService.getFeaturedProducts();
+        List<PublicProductListing> first = productService.getFeaturedProducts();
+        List<PublicProductListing> second = productService.getFeaturedProducts();
 
         assertEquals(1, first.size());
         assertEquals(1, second.size());

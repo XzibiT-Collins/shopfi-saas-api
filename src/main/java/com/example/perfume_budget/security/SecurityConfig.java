@@ -91,6 +91,7 @@ public class SecurityConfig {
                         .requestMatchers(request -> apiDocsEnabled && isReadMethod(request) && matchesAny(request, apiDocsPaths)).permitAll()
                         .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/auth/me").authenticated()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/auth/me").authenticated()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/verify-otp",
                                 "/api/v1/auth/verify-login-otp", "/api/v1/auth/resend-otp", "/api/v1/auth/resend-login-otp",
                                 "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/auth/refresh",
@@ -116,6 +117,7 @@ public class SecurityConfig {
                         // Platform control plane: auth endpoints and public onboarding are open; everything else
                         // under /platform needs a platform-claim SUPER_ADMIN token (JWTFilter.authenticatePlatform).
                         .requestMatchers(HttpMethod.GET, "/api/v1/platform/auth/me").hasRole("SUPER_ADMIN")
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/platform/auth/me").hasRole("SUPER_ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/v1/platform/auth/login", "/api/v1/platform/auth/refresh",
                                 "/api/v1/platform/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/platform/onboarding/signup",
