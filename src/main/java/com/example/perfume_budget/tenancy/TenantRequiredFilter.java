@@ -29,7 +29,7 @@ public class TenantRequiredFilter extends OncePerRequestFilter {
     protected void doFilterInternal(@NonNull HttpServletRequest request,
                                     @NonNull HttpServletResponse response,
                                     @NonNull FilterChain filterChain) throws ServletException, IOException {
-        if (TenantContext.get() == null && !TenantResolutionFilter.isNeutralPath(request.getRequestURI())) {
+        if (TenantContext.get() == null && !TenantResolutionFilter.isNeutralPath(com.example.perfume_budget.security.cors.RequestPaths.canonical(request))) {
             log.warn("Rejecting {} {}: no tenant signal", request.getMethod(), request.getRequestURI());
             boolean hasAuthCookie = request.getCookies() != null && Arrays.stream(request.getCookies())
                     .anyMatch(c -> "accessToken".equals(c.getName()) || "refreshToken".equals(c.getName()));

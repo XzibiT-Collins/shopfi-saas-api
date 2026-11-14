@@ -1,7 +1,7 @@
 package com.example.perfume_budget.config.ws;
 
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
+import com.example.perfume_budget.security.cors.TenantOriginPolicy;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -27,14 +27,16 @@ import java.util.Map;
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final AuthChannelInterceptor authChannelInterceptor;
 
-    @Value("${cors.allowed-origins}")
-    private String allowedOrigins;
+    private final TenantOriginPolicy originPolicy;
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry){
         registry.addEndpoint("/ws")
-                .setAllowedOrigins(allowedOrigins)
-                .addInterceptors(new HandshakeInterceptor() {
+                // Spring's own origin check is static, so it is switched to "any" here and the real decision is made by
+                // TenantOriginHandshakeInterceptor (same TenantOriginPolicy as REST CORS) and by the Spring Security
+                // CorsFilter, which also fronts /ws/**. A disallowed Origin never reaches a session.
+                .setAllowedOriginPatterns("*")
+                .addInterceptors(new TenantOriginHandshakeInterceptor(originPolicy), new HandshakeInterceptor() {
                     @Override
                     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response, WebSocketHandler wsHandler, Map<String, Object> attributes) {
                         if (request instanceof ServletServerHttpRequest servletRequest) {

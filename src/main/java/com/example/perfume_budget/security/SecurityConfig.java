@@ -5,6 +5,7 @@ import com.example.perfume_budget.exception.handlers.CustomAccessDeniedHandler;
 import com.example.perfume_budget.exception.handlers.JwtAuthenticationEntryPoint;
 import com.example.perfume_budget.filter.JWTFilter;
 import com.example.perfume_budget.filter.SiteVisitFilter;
+import com.example.perfume_budget.security.cors.DynamicTenantCorsConfigurationSource;
 import com.example.perfume_budget.tenancy.TenantRequiredFilter;
 import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.security.oauth2.CustomOAuth2UserService;
@@ -27,14 +28,8 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
-import org.springframework.beans.factory.annotation.Value;
 
-import java.util.Arrays;
-import java.util.List;
 
 @RequiredArgsConstructor
 @Configuration
@@ -53,15 +48,7 @@ public class SecurityConfig {
     private final TenantResolutionFilter tenantResolutionFilter;
     private final TenantAwareAuthorizationRequestResolver authorizationRequestResolver;
     private final HttpCookieOAuth2AuthorizationRequestRepository cookieAuthorizationRequestRepository;
-
-    @Value("${cors.allowed-origins}")
-    private String allowedOrigins;
-
-    @Value("${cors.allowed-methods}")
-    private String allowedMethods;
-
-    @Value("${cors.allowed-headers}")
-    private String allowedHeaders;
+    private final DynamicTenantCorsConfigurationSource corsConfigurationSource;
 
     @Bean
     public PasswordEncoder passwordEncoder(){
@@ -76,8 +63,9 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
+                .addFilterBefore(new com.example.perfume_budget.security.cors.CanonicalPathGuardFilter(), org.springframework.web.filter.CorsFilter.class)
                 .csrf(AbstractHttpConfigurer::disable)
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/v1/dev/**").permitAll()
@@ -126,24 +114,5 @@ public class SecurityConfig {
                         .accessDeniedHandler(customAccessDeniedHandler)
                 );
         return http.build();
-    }
-
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(csvToList(allowedOrigins));
-        configuration.setAllowedMethods(csvToList(allowedMethods));
-        configuration.setAllowedHeaders(csvToList(allowedHeaders));
-        configuration.setAllowCredentials(true);
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
-    }
-
-    private List<String> csvToList(String value) {
-        return Arrays.stream(value.split(","))
-                .map(String::trim)
-                .filter(entry -> !entry.isBlank())
-                .toList();
     }
 }

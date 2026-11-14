@@ -154,7 +154,8 @@ public class JWTFilter extends OncePerRequestFilter {
      */
     private void authenticatePlatform(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String path = request.getRequestURI();
+        // Decoded path, never the raw URI (DOMAIN-01b S1); the 400 guard filter already refuses obfuscated variants.
+        String path = com.example.perfume_budget.security.cors.RequestPaths.decoded(request);
         if (PLATFORM_PUBLIC_AUTH_PATHS.contains(path) || path.startsWith(PLATFORM_ONBOARDING_PREFIX)) {
             chain.doFilter(request, response);
             return;

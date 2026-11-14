@@ -30,6 +30,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @TestPropertySource(properties = {
         "tenant.base-domain=shopfi.test",
         "cors.allowed-origins=https://acme.shopfi.test",
+        "platform.cors.allowed-origins=https://console.shopfi.example",
         "spring.datasource.hikari.maximum-pool-size=4",
         "spring.datasource.hikari.minimum-idle=0",
         "platform.auth.login-ip.capacity=8",
@@ -43,6 +44,7 @@ class PlatformAuthIntegrationTest extends AbstractPostgresIntegrationTest {
 
     static final String PW = "Sup3r-Admin-pass!";
     static final String ACME_ORIGIN = "https://acme.shopfi.test";
+    static final String CONSOLE_ORIGIN = "https://console.shopfi.example";
     static final AtomicInteger SEQ = new AtomicInteger();
 
     @Autowired MockMvc mvc;
@@ -222,7 +224,11 @@ class PlatformAuthIntegrationTest extends AbstractPostgresIntegrationTest {
         Cookie tenantAsTenantCookie = new Cookie("accessToken", tenantAccessToken());
         Cookie tenantAsPlatformCookie = new Cookie("platformAccessToken", tenantAccessToken());
         for (String path : List.of("/api/v1/platform/auth/me", "/api/v1/platform/tenants", "/api/v1/platform/anything/else")) {
+            // DOMAIN-01 / PLAT-03 AC3: a tenant origin is refused by CORS on platform paths (403) before any token check,
+            // so the replay assertion keeps its power by using the platform console origin, which CORS accepts.
             assertThat(status(get(path).header("Origin", ACME_ORIGIN).cookie(tenantAsTenantCookie)))
+                    .as("tenant origin on %s", path).isEqualTo(403);
+            assertThat(status(get(path).header("Origin", CONSOLE_ORIGIN).cookie(tenantAsTenantCookie)))
                     .as("tenant cookie on %s", path).isEqualTo(401);
             assertThat(status(get(path).cookie(tenantAsTenantCookie))).as("no origin %s", path).isEqualTo(401);
             assertThat(status(get(path).cookie(tenantAsPlatformCookie))).as("tenant token in platform cookie %s", path).isEqualTo(401);
