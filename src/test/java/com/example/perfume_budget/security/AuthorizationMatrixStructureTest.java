@@ -118,7 +118,7 @@ class AuthorizationMatrixStructureTest {
                 "markReceiptPrinted");
 
         // --- platform control plane
-        expect(SUPER_ADMIN, "PlatformTenantController", "list", "approve", "suspend", "reactivate", "reprovision");
+        expect(SUPER_ADMIN, "PlatformTenantController", "list", "detail", "audit", "approve", "suspend", "reactivate", "reprovision");
         expect(SUPER_ADMIN, "PlatformAuthController", "me");
 
         // --- intentionally public (permitAll in SecurityConfig; mutations are protected by another mechanism)

@@ -4,6 +4,8 @@ import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.exception.RateLimitExceededException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.platform.auth.PlatformPrincipal;
+import com.example.perfume_budget.platform.dto.PlatformAuditPage;
+import com.example.perfume_budget.platform.dto.PlatformAuditRow;
 import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.PlatformTenantSummary;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
@@ -28,6 +30,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.transaction.annotation.Transactional;
+import jakarta.persistence.criteria.Predicate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -97,7 +102,62 @@ public class PlatformTenantService {
 
     // ------------------------------------------------------------------------------------------ list
 
+    public static final int MAX_SEARCH_LENGTH = 100;
+    /** Upper bound for {@code page} (the offset page*size must never overflow an int or reach the database as nonsense). */
+    public static final int MAX_PAGE = 1_000_000;
+    /** Audit sort keys to entity properties (allow-list). */
+    static final Map<String, String> AUDIT_SORT_FIELDS = Map.of("id", "id", "occurredAt", "occurredAt");
+
+    private record Paging(int page, int size, String key, String property, Sort.Direction dir) {
+        PageRequest request() {
+            // The unique id is always the final tiebreaker so equal sort keys never reorder between pages.
+            return PageRequest.of(page, size, Sort.by(dir, property).and(Sort.by(dir, "id")));
+        }
+
+        String dirName() {
+            return dir.name().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
+    private static Paging paging(Integer page, Integer size, String sortKey, String direction, String defaultKey,
+                                 Map<String, String> allowed, Sort.Direction defaultDir) {
+        int p = page == null ? 0 : page;
+        if (p < 0) {
+            throw new BadRequestException("page must be >= 0");
+        }
+        if (p > MAX_PAGE) {
+            throw new BadRequestException("page must be <= " + MAX_PAGE);
+        }
+        if (size != null && size < 1) {
+            throw new BadRequestException("size must be >= 1");
+        }
+        int effectiveSize = size == null ? DEFAULT_PAGE_SIZE : Math.min(size, MAX_PAGE_SIZE);
+        String key = sortKey == null || sortKey.isBlank() ? defaultKey : sortKey.strip();
+        String property = allowed.get(key);
+        if (property == null) {
+            throw new BadRequestException("Unsupported sort field");
+        }
+        Sort.Direction dir;
+        if (direction == null || direction.isBlank()) {
+            dir = defaultDir;
+        } else if (direction.equalsIgnoreCase("asc")) {
+            dir = Sort.Direction.ASC;
+        } else if (direction.equalsIgnoreCase("desc")) {
+            dir = Sort.Direction.DESC;
+        } else {
+            throw new BadRequestException("direction must be asc or desc");
+        }
+        return new Paging(p, effectiveSize, key, property, dir);
+    }
+
+    @Transactional(readOnly = true)
     public PlatformTenantPage list(String statusFilter, Integer page, Integer size, String sortKey, String direction) {
+        return list(statusFilter, page, size, sortKey, direction, null);
+    }
+
+    @Transactional(readOnly = true)
+    public PlatformTenantPage list(String statusFilter, Integer page, Integer size, String sortKey, String direction,
+                                   String search) {
         TenantStatus status = null;
         if (statusFilter != null && !statusFilter.isBlank()) {
             try {
@@ -106,37 +166,84 @@ public class PlatformTenantService {
                 throw new BadRequestException("Unknown status filter");
             }
         }
-        int p = page == null ? 0 : page;
-        if (p < 0) {
-            throw new BadRequestException("page must be >= 0");
-        }
-        if (size != null && size < 1) {
-            throw new BadRequestException("size must be >= 1");
-        }
-        int effectiveSize = size == null ? DEFAULT_PAGE_SIZE : Math.min(size, MAX_PAGE_SIZE);
-        String key = sortKey == null || sortKey.isBlank() ? "createdAt" : sortKey.strip();
-        String property = SORT_FIELDS.get(key);
-        if (property == null) {
-            throw new BadRequestException("Unsupported sort field");
-        }
-        Sort.Direction dir;
-        if (direction == null || direction.isBlank()) {
-            dir = Sort.Direction.DESC;
-        } else if (direction.equalsIgnoreCase("asc")) {
-            dir = Sort.Direction.ASC;
-        } else if (direction.equalsIgnoreCase("desc")) {
-            dir = Sort.Direction.DESC;
+        Paging pg = paging(page, size, sortKey, direction, "createdAt", SORT_FIELDS, Sort.Direction.DESC);
+        String term = normalizeSearch(search);
+        // Without a search term the pre-PLAT-04 queries are used unchanged.
+        Page<Tenant> result;
+        if (term != null) {
+            result = tenantRepository.findAll(filter(status, term), pg.request());
+        } else if (status == null) {
+            result = tenantRepository.findAll(pg.request());
         } else {
-            throw new BadRequestException("direction must be asc or desc");
+            result = tenantRepository.findByStatus(status, pg.request());
         }
-        // The unique id is always the final tiebreaker so equal sort keys never reorder between pages.
-        PageRequest pageable = PageRequest.of(p, effectiveSize, Sort.by(dir, property).and(Sort.by(dir, "id")));
-        Page<Tenant> result = status == null
-                ? tenantRepository.findAll(pageable)
-                : tenantRepository.findByStatus(status, pageable);
         List<PlatformTenantSummary> items = result.getContent().stream().map(PlatformTenantSummary::from).toList();
-        return new PlatformTenantPage(items, p, effectiveSize, result.getTotalElements(), result.getTotalPages(),
-                key, dir.name().toLowerCase(java.util.Locale.ROOT));
+        return new PlatformTenantPage(items, pg.page(), pg.size(), result.getTotalElements(), result.getTotalPages(),
+                pg.key(), pg.dirName());
+    }
+
+    /** Blank means no search. Control characters are a 400. Longer than {@link #MAX_SEARCH_LENGTH} is a 400 (never silently truncated). */
+    private static String normalizeSearch(String search) {
+        if (search == null) {
+            return null;
+        }
+        if (search.chars().anyMatch(Character::isISOControl)) {
+            // checked on the raw input, before strip(): e.g. a NUL byte would otherwise surface as a database error
+            throw new BadRequestException("search contains invalid characters");
+        }
+        if (search.isBlank()) {
+            return null;
+        }
+        String t = search.strip();
+        if (t.length() > MAX_SEARCH_LENGTH) {
+            throw new BadRequestException("search must be at most " + MAX_SEARCH_LENGTH + " characters");
+        }
+        return t;
+    }
+
+    /**
+     * Escapes LIKE wildcards so user input only ever matches literally. The term is NOT case-folded here: it is bound as
+     * is and lowered by the database ({@code lower(:pattern)}), the same function that lowers the column, so Java and
+     * Postgres can never disagree on folding (e.g. U+0130).
+     */
+    static String likePattern(String term) {
+        String escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+        return "%" + escaped + "%";
+    }
+
+    /** Status filter plus case-insensitive contains-search on slug, display name and owner email; all parameterised. */
+    private static Specification<Tenant> filter(TenantStatus status, String term) {
+        return (root, query, cb) -> {
+            List<Predicate> all = new java.util.ArrayList<>();
+            if (status != null) {
+                all.add(cb.equal(root.get("status"), status));
+            }
+            if (term != null) {
+                var pattern = cb.lower(cb.literal(likePattern(term)));
+                all.add(cb.or(
+                        cb.like(cb.lower(root.get("slug")), pattern, '\\'),
+                        cb.like(cb.lower(root.get("displayName")), pattern, '\\'),
+                        cb.like(cb.lower(root.get("ownerEmail")), pattern, '\\')));
+            }
+            return cb.and(all.toArray(new Predicate[0]));
+        };
+    }
+
+    /** Tenant detail (PLAT-04): registry fields only, same shape as a list row. */
+    @Transactional(readOnly = true)
+    public PlatformTenantSummary detail(String slug) {
+        return PlatformTenantSummary.from(require(slug));
+    }
+
+    /** Audit trail of one existing tenant (PLAT-04). Newest first by default; writes nothing. */
+    @Transactional(readOnly = true)
+    public PlatformAuditPage audit(String slug, Integer page, Integer size, String sortKey, String direction) {
+        Paging pg = paging(page, size, sortKey, direction, "id", AUDIT_SORT_FIELDS, Sort.Direction.DESC);
+        Tenant tenant = require(slug);
+        Page<TenantAuditLog> result = auditRepository.findByTenantId(tenant.getId(), pg.request());
+        List<PlatformAuditRow> items = result.getContent().stream().map(PlatformAuditRow::from).toList();
+        return new PlatformAuditPage(items, pg.page(), pg.size(), result.getTotalElements(), result.getTotalPages(),
+                pg.key(), pg.dirName());
     }
 
     // ------------------------------------------------------------------------------------------ suspend / reactivate

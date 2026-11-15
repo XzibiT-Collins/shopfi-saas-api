@@ -168,6 +168,8 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | PlatformAuthController | POST | `/api/v1/platform/auth/logout` | permitAll (explicit POST) | - | mutates |
 | PlatformAuthController | GET | `/api/v1/platform/auth/me` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` | reads tenant data |
 | PlatformTenantController | GET | `/api/v1/platform/tenants` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data |
+| PlatformTenantController | GET | `/api/v1/platform/tenants/{slug}` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data |
+| PlatformTenantController | GET | `/api/v1/platform/tenants/{slug}/audit` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data |
 | PlatformTenantController | POST | `/api/v1/platform/tenants/{slug}/approve` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates |
 | PlatformTenantController | POST | `/api/v1/platform/tenants/{slug}/suspend` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates |
 | PlatformTenantController | POST | `/api/v1/platform/tenants/{slug}/reactivate` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates |

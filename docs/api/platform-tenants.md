@@ -14,9 +14,9 @@ return tenant business data.
 
 | Status | Meaning |
 |---|---|
-| 400 | bad query parameter (`status`, `page`, `size`, `sort`, `direction`) |
+| 400 | bad query parameter (`status`, `page`, `size`, `sort`, `direction`, `search`) |
 | 401 / 403 | not authenticated / not SUPER_ADMIN |
-| 404 | tenant not found. An unknown slug and a malformed slug give the identical response |
+| 404 | tenant not found (detail, audit and every action). An unknown slug and a malformed slug give the identical response |
 | 409 | illegal transition for the tenant's current status, or approve/reprovision without verified credentials (exact texts below) |
 | 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30), `Retry-After` header (seconds) set. Standard error envelope, exactly `{"description": "Too many tenant actions, slow down", "data": null}` |
 | 500 | the provisioning saga failed; the tenant is now `FAILED` and may be reprovisioned |
@@ -31,7 +31,7 @@ upper case** (`Acme` is not `acme`), is answered exactly like an unknown tenant:
 
 Query: `status` (optional, one of `PENDING|PROVISIONING|ACTIVE|SUSPENDED|FAILED`, case-insensitive), `page` (0-based, default 0),
 `size` (default 20, **capped at 100**: a larger value is silently reduced and the response reports the effective `size`),
-`sort` (`createdAt` default, `slug`, `displayName`, `status`), `direction` (`desc` default, `asc`). The unique id is always the
+`sort` (`createdAt` default, `slug`, `displayName`, `status`), `direction` (`desc` default, `asc`), `search` (PLAT-04, see below). The unique id is always the
 final tiebreaker, so paging is stable.
 
 Fields are registry fields only. `schemaName`, `webhookToken` and anything from a tenant schema are never returned.
@@ -64,6 +64,117 @@ signup. It is personal data, so the console must not log it, cache it in shared 
   }
 }
 ```
+
+### `search` (PLAT-04)
+
+Optional. A trimmed, case-insensitive "contains" match on `slug`, `displayName` or `ownerEmail` (any of the three), combined
+with `status` by AND. Blank or whitespace-only means no search. Longer than **100 characters** (after trimming) is a `400`
+(`search must be at most 100 characters`), never silently truncated. Control characters (NUL, newline, ...) are a `400` (`search contains invalid characters`). `%`, `_` and `\` are matched literally (escaped; `100%`
+does not match everything and `a_c` does not match `abc`), quotes and any other character are plain data, and the term is a
+bound query parameter, never concatenated into SQL. The response envelope is unchanged (`totalElements` counts the matches).
+
+## GET /api/v1/platform/tenants/{slug} (PLAT-04)
+
+Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description": "Tenant not found", "data": null}`).
+`data` is exactly one list row (same nine keys, same reading rules: `ownerEmail` is personal data for SUPER_ADMIN only;
+`schemaName`, `webhookToken` and tenant-schema data are never returned). Read-only, writes nothing.
+
+```json plat04:detail-response
+{
+  "description": null,
+  "data": {
+    "id": 12,
+    "slug": "acme",
+    "displayName": "Acme Perfumes",
+    "status": "ACTIVE",
+    "plan": "FREE",
+    "ownerEmail": "owner@acme.example",
+    "customDomain": null,
+    "createdAt": "2026-11-01T09:30:00.123456",
+    "updatedAt": "2026-11-01T09:31:10.654321"
+  }
+}
+```
+
+## GET /api/v1/platform/tenants/{slug}/audit (PLAT-04)
+
+The rows of `master.tenant_audit_log` for one tenant, **newest first** (`id` descending), paged. Query: `page` (0-based,
+default 0), `size` (default 20, capped at 100, response reports the effective size), `sort` (`id` default, `occurredAt`),
+`direction` (`desc` default, `asc`); the unique `id` is always the final tiebreaker. `page` is capped at **1,000,000**: a larger
+value (or a negative one) is `400 {"description": "page must be <= 1000000", ...}`, on the list too. Bad `page`/`size`/`sort`/`direction`: `400`
+like the list. Unknown or malformed slug: the same `404` as the detail. A tenant with no rows returns an empty `items`.
+The rows are looked up by the tenant's id (not its slug), so a slug reused after a purge starts with an empty history and never
+inherits the rows of the purged tenant. A purged tenant (registry row deleted) answers `404` even though its audit rows survive
+in the table.
+
+Row keys (exactly these eight; the console allow-list `parseAuditRows` keeps `id, occurredAt, actorEmail, action,
+previousStatus, newStatus, phase` and drops the rest):
+
+| key | type | notes |
+|---|---|---|
+| `id` | number | per-table identity, strictly increasing: the order the rows were written |
+| `tenantSlug` | string | the requested tenant |
+| `action` | string | `APPROVE`, `SUSPEND`, `REACTIVATE`, `REPROVISION` |
+| `phase` | string | `INTENT`, `OUTCOME`, `RECLAIM`, `RECONCILE` (meaning in the previous section) |
+| `actorEmail` | string | platform admin who acted (also on RECLAIM and RECONCILE); SUPER_ADMIN data, do not log or cache in shared storage |
+| `previousStatus`, `newStatus` | string | tenant statuses |
+| `occurredAt` | string | database time, UTC, always ending in `Z`. The fractional part has **variable length** (trailing zeros are trimmed) and may be absent: `2026-01-01T00:00:00Z`, `2026-01-01T00:00:00.5Z`, `2026-11-14T10:00:00.123456Z` are all valid. |
+
+Never returned: the internal admin id, the tenant id, password hashes, webhook tokens, schema names or any payload (the table
+holds none). The reading rules above are unchanged and apply to the rows ordered by `id` ascending: when paging newest first,
+reverse the page before applying them, and fetch older pages when an `INTENT`/`OUTCOME` pair straddles a page boundary.
+Timestamps: the tenant fields `createdAt` and `updatedAt` are `LocalDateTime` strings with **no offset** (server local time),
+while audit `occurredAt` is an instant ending in `Z`. They are different formats and must be parsed separately; never compare
+them directly.
+
+Paging caveats for clients: offset paging newest first can **repeat** a row (or shift one) if a new row is inserted between two
+fetches, so de-duplicate by `id` when stitching pages. To apply the reading rules to a trail that spans several pages, either
+load all pages up to a cap, or load contiguous pages starting from the newest end and judge only rows that are away from the
+oldest loaded boundary: an `INTENT` whose `OUTCOME`/`RECLAIM`/`RECONCILE` may lie on the next (older or newer) page must stay
+"undetermined" until that page is loaded. Never judge an `INTENT`/`OUTCOME` pair that straddles the page boundary.
+
+Deviation from the console's current parser input: it expects a bare array of rows; here the array is `data.items` inside the
+standard paging envelope (`page`, `size`, `totalElements`, `totalPages`, `sort`, `direction`), and rows carry an extra `tenantSlug`.
+
+```json plat04:audit-response
+{
+  "description": null,
+  "data": {
+    "items": [
+      {
+        "id": 42,
+        "tenantSlug": "acme",
+        "action": "REPROVISION",
+        "phase": "OUTCOME",
+        "actorEmail": "root@platform.example",
+        "previousStatus": "FAILED",
+        "newStatus": "ACTIVE",
+        "occurredAt": "2026-11-14T10:00:05.250000Z"
+      },
+      {
+        "id": 41,
+        "tenantSlug": "acme",
+        "action": "REPROVISION",
+        "phase": "INTENT",
+        "actorEmail": "root@platform.example",
+        "previousStatus": "FAILED",
+        "newStatus": "PROVISIONING",
+        "occurredAt": "2026-11-14T10:00:00.100000Z"
+      }
+    ],
+    "page": 0,
+    "size": 20,
+    "totalElements": 2,
+    "totalPages": 1,
+    "sort": "id",
+    "direction": "desc"
+  }
+}
+```
+
+Access and limits of the three read endpoints: SUPER_ADMIN only (class-level `@PreAuthorize` plus the `/platform/**` matcher),
+platform cookie required, same errors as above. They run in read-only transactions, never write an audit row and have no
+per-admin throttle (the `429` action throttle covers the four POST actions only, as the list always did).
 
 ## Actions
 
@@ -228,7 +339,7 @@ records. Idempotent no-ops and rejected calls write nothing, with the single exc
 Rows written before V7 are `OUTCOME` rows. Columns: `id`, `occurred_at` (database time), `actor_admin_id`, `actor_email` (the
 platform admin from the platform JWT, also on RECLAIM and RECONCILE), `tenant_id`, `tenant_slug` (no foreign key, survives a
 tenant purge), `action` (`APPROVE`, `SUSPEND`, `REACTIVATE`, `REPROVISION`), `previous_status`, `new_status`, `phase`. The
-table holds no passwords, hashes, tokens or payloads. There is no read endpoint yet.
+table holds no passwords, hashes, tokens or payloads. It is read through `GET /tenants/{slug}/audit` (PLAT-04).
 
 How a console (or an auditor with SQL access) should read it, per tenant ordered by `id`:
 

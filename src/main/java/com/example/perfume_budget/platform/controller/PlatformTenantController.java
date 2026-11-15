@@ -2,7 +2,9 @@ package com.example.perfume_budget.platform.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.platform.auth.PlatformPrincipal;
+import com.example.perfume_budget.platform.dto.PlatformAuditPage;
 import com.example.perfume_budget.platform.dto.PlatformTenantPage;
+import com.example.perfume_budget.platform.dto.PlatformTenantSummary;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
 import com.example.perfume_budget.platform.service.PlatformTenantService;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Platform tenant management (PLAT-02), contract in {@code docs/api/platform-tenants.md}. Authorised by
  * SecurityConfig ({@code /api/v1/platform/** -> SUPER_ADMIN}); the actor is the platform principal. There is
- * deliberately no PUT/PATCH/DELETE here and no endpoint that touches the audit log.
+ * deliberately no PUT/PATCH/DELETE here and no endpoint that writes the audit log (PLAT-04 added read-only detail and audit GETs).
  */
 @RestController
 @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPER_ADMIN')")
@@ -35,8 +37,26 @@ public class PlatformTenantController {
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
+            @RequestParam(required = false) String direction,
+            @RequestParam(required = false) String search) {
+        return ResponseEntity.ok(CustomApiResponse.success(service.list(status, page, size, sort, direction, search)));
+    }
+
+    /** Tenant detail (PLAT-04): the same registry fields as a list row. */
+    @GetMapping("/{slug}")
+    public ResponseEntity<CustomApiResponse<PlatformTenantSummary>> detail(@PathVariable String slug) {
+        return ResponseEntity.ok(CustomApiResponse.success(service.detail(slug)));
+    }
+
+    /** Audit trail of one tenant (PLAT-04), newest first by default. Read only: reads write no audit row. */
+    @GetMapping("/{slug}/audit")
+    public ResponseEntity<CustomApiResponse<PlatformAuditPage>> audit(
+            @PathVariable String slug,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String sort,
             @RequestParam(required = false) String direction) {
-        return ResponseEntity.ok(CustomApiResponse.success(service.list(status, page, size, sort, direction)));
+        return ResponseEntity.ok(CustomApiResponse.success(service.audit(slug, page, size, sort, direction)));
     }
 
     @PostMapping("/{slug}/approve")
