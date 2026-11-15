@@ -5,6 +5,7 @@ import com.example.perfume_budget.dto.product.request.ProductRequest;
 import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
 import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.enums.CurrencyCode;
 import com.example.perfume_budget.enums.DiscountSource;
 import com.example.perfume_budget.enums.UserRole;
@@ -216,7 +217,7 @@ class ProductServiceImplTest {
         Page<Product> productPage = new PageImpl<>(List.of(baseProduct));
         when(productRepository.findAllByIsActiveTrueAndIsEnlistedTrue(pageable)).thenReturn(productPage);
 
-        PageResponse<ProductListing> result = productService.getProductListings(pageable);
+        PageResponse<PublicProductListing> result = productService.getProductListings(pageable);
 
         assertEquals(1, result.content().size());
         assertEquals("Perfume A", result.content().get(0).productName());
@@ -228,7 +229,7 @@ class ProductServiceImplTest {
         Page<Product> productPage = new PageImpl<>(List.of(baseProduct));
         when(productRepository.findAll(any(Specification.class), eq(pageable))).thenReturn(productPage);
 
-        PageResponse<ProductListing> result = productService.searchProducts(1L, "Perfume", pageable);
+        PageResponse<PublicProductListing> result = productService.searchProducts(1L, "Perfume", pageable);
 
         assertEquals(1, result.content().size());
     }
@@ -433,7 +434,7 @@ class ProductServiceImplTest {
 
     @Test
     void getFeaturedProducts_ReturnsMappedFeaturedProducts() {
-        ProductListing featured = ProductListing.builder()
+        PublicProductListing featured = PublicProductListing.builder()
                 .productId(2L)
                 .productName("Featured Perfume")
                 .slug("featured-perfume")
@@ -441,7 +442,7 @@ class ProductServiceImplTest {
         when(productCatalogCacheService.getFeaturedProducts())
                 .thenReturn(List.of(featured));
 
-        List<ProductListing> result = productService.getFeaturedProducts();
+        List<PublicProductListing> result = productService.getFeaturedProducts();
 
         assertEquals(1, result.size());
         assertEquals("Featured Perfume", result.get(0).productName());
@@ -453,15 +454,15 @@ class ProductServiceImplTest {
         when(productCatalogCacheService.getFeaturedProducts())
                 .thenReturn(List.of());
 
-        List<ProductListing> result = productService.getFeaturedProducts();
+        List<PublicProductListing> result = productService.getFeaturedProducts();
 
         assertTrue(result.isEmpty());
     }
 
     @Test
     void getFeaturedProducts_ReturnsAtMost8Products() {
-        List<ProductListing> eightProducts = java.util.stream.IntStream.rangeClosed(1, 8)
-                .mapToObj(i -> ProductListing.builder()
+        List<PublicProductListing> eightProducts = java.util.stream.IntStream.rangeClosed(1, 8)
+                .mapToObj(i -> PublicProductListing.builder()
                         .productId((long) i)
                         .productName("Featured " + i)
                         .slug("featured-" + i)
@@ -470,7 +471,7 @@ class ProductServiceImplTest {
         when(productCatalogCacheService.getFeaturedProducts())
                 .thenReturn(eightProducts);
 
-        List<ProductListing> result = productService.getFeaturedProducts();
+        List<PublicProductListing> result = productService.getFeaturedProducts();
 
         assertEquals(8, result.size());
     }

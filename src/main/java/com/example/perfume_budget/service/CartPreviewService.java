@@ -55,8 +55,10 @@ public class CartPreviewService {
                     .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "DELIVERY_DETAIL_NOT_FOUND",
                             "Delivery address not found."));
         }
-        Cart cart = cartUtil.getCurrentUserCart();
-        if (cart.getItems().isEmpty()) {
+        // SEC-03b F10: this transaction is read-only, so a missing cart row must not be created here (INSERT would fail
+        // with "cannot execute INSERT in a read-only transaction", a 500). No cart row simply means an empty cart.
+        Cart cart = cartUtil.findCurrentUserCart().orElse(null);
+        if (cart == null || cart.getItems().isEmpty()) {
             throw new BadRequestException(EMPTY_CART);
         }
 

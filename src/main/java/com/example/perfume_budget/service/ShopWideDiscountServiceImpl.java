@@ -27,7 +27,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public ShopWideDiscountResponse setShopWideDiscount(ShopWideDiscountRequest request) {
         if (!request.endAt().isAfter(request.startAt())) {
             throw new BadRequestException("Discount end date must be after the start date.");
@@ -61,7 +61,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public void deactivate(Long id) {
         ShopWideDiscount discount = shopWideDiscountRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Shop-wide discount not found."));

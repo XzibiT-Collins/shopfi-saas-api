@@ -6,6 +6,7 @@ import com.example.perfume_budget.dto.product.request.ProductRequest;
 import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
 import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.enums.DiscountType;
 import com.example.perfume_budget.enums.UserRole;
 import com.example.perfume_budget.events.ViewCountEvent;
@@ -64,7 +65,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public ProductDetails createProduct(ProductRequest request) {
         checkIfImageIsPresentForEcommerceProduct(request);
 
@@ -186,22 +187,66 @@ public class ProductServiceImpl implements ProductService {
         }
     }
 
-    @Override
-    @Cacheable(
-            cacheNames = "customerProductListings",
-            key = "#pageable.pageNumber + ':' + #pageable.pageSize + ':' + #pageable.sort.toString()"
-    )
-    public PageResponse<ProductListing> getProductListings(Pageable pageable) {
-        log.info("Cache miss: customerProductListings");
-        Page<ProductListing> productListings = productRepository.findAllByIsActiveTrueAndIsEnlistedTrue(pageable)
-                .map(listingMapper());
-        return PaginationUtil.createPageResponse(productListings);
+    /** Cache names of the public (anonymous) catalog. NEW names (SEC-03b): entries written before the public DTO existed
+     *  live under the old names, are never read again and expire by TTL; a rollback to the old build is safe. */
+    static final String PUBLIC_LISTINGS_CACHE = "publicCustomerProductListings";
+    static final String PUBLIC_FEATURED_CACHE = "publicFeaturedProducts";
+
+    /** Public sort properties: the storefront's own sorts (createdAt, name, price.amount) and the id. Anything else is a
+     *  probe for hidden values (stock, cost, sku, counters, flags) and answers 400 INVALID_SORT. */
+    static final java.util.Set<String> PUBLIC_SORT_PROPERTIES = java.util.Set.of("id", "name", "createdAt", "price.amount");
+
+    /** Optional: absent in plain unit tests (no caching then). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private org.springframework.cache.CacheManager cacheManager;
+
+    static void requirePublicSort(Pageable pageable) {
+        for (org.springframework.data.domain.Sort.Order o : pageable.getSort()) {
+            if (!PUBLIC_SORT_PROPERTIES.contains(o.getProperty())) {
+                throw new com.example.perfume_budget.exception.ApiCodeException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "INVALID_SORT", "Unsupported sort property.");
+            }
+        }
+    }
+
+    private static boolean allPublic(java.util.Collection<?> items) {
+        return items.stream().allMatch(PublicProductListing.class::isInstance);
     }
 
     @Override
-    public PageResponse<ProductListing> searchProducts(Long categoryId, String searchTerm, Pageable pageable) {
+    public PageResponse<PublicProductListing> getProductListings(Pageable pageable) {
+        requirePublicSort(pageable);
+        String key = pageable.isPaged() ? pageable.getPageNumber() + ":" + pageable.getPageSize() + ":" + pageable.getSort() : null;
+        org.springframework.cache.Cache cache = (cacheManager == null || key == null) ? null : cacheManager.getCache(PUBLIC_LISTINGS_CACHE);
+        if (cache != null) {
+            org.springframework.cache.Cache.ValueWrapper hit = cache.get(key);
+            if (hit != null) {
+                // Defensive: only a page made of PublicProductListing may be served from the shared cache; anything else
+                // (an old-shape entry, a foreign writer) is a miss and is evicted.
+                if (hit.get() instanceof PageResponse<?> page && allPublic(page.content())) {
+                    @SuppressWarnings("unchecked")
+                    PageResponse<PublicProductListing> typed = (PageResponse<PublicProductListing>) page;
+                    return typed;
+                }
+                log.warn("Ignoring a non-public cached listing page under {}", PUBLIC_LISTINGS_CACHE);
+                cache.evict(key);
+            }
+        }
+        log.info("Cache miss: {}", PUBLIC_LISTINGS_CACHE);
+        Page<PublicProductListing> productListings = productRepository.findAllByIsActiveTrueAndIsEnlistedTrue(pageable)
+                .map(publicListingMapper());
+        PageResponse<PublicProductListing> fresh = PaginationUtil.createPageResponse(productListings);
+        if (cache != null) {
+            cache.put(key, fresh);
+        }
+        return fresh;
+    }
+
+    @Override
+    public PageResponse<PublicProductListing> searchProducts(Long categoryId, String searchTerm, Pageable pageable) {
+        requirePublicSort(pageable);
         Specification<Product> spec = ProductSpecification.filterProducts(categoryId, searchTerm);
-        Page<ProductListing> productListings = productRepository.findAll(spec, pageable).map(listingMapper());
+        Page<PublicProductListing> productListings = productRepository.findAll(spec, pageable).map(publicListingMapper());
         return PaginationUtil.createPageResponse(productListings);
     }
 
@@ -212,8 +257,22 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public List<ProductListing> getFeaturedProducts() {
-        return productCatalogCacheService.getFeaturedProducts();
+    public List<PublicProductListing> getFeaturedProducts() {
+        List<?> cached = productCatalogCacheService.getFeaturedProducts();
+        if (!allPublic(cached)) {
+            // an old-shape entry in the shared cache: drop it and rebuild (never serve it)
+            log.warn("Ignoring a non-public cached featured list under {}", PUBLIC_FEATURED_CACHE);
+            if (cacheManager != null && cacheManager.getCache(PUBLIC_FEATURED_CACHE) != null) {
+                cacheManager.getCache(PUBLIC_FEATURED_CACHE).clear();
+            }
+            cached = productCatalogCacheService.getFeaturedProducts();
+            if (!allPublic(cached)) {
+                throw new IllegalStateException("featured cache returned a non-public shape");
+            }
+        }
+        @SuppressWarnings("unchecked")
+        List<PublicProductListing> typed = (List<PublicProductListing>) cached;
+        return typed;
     }
 
     @Override
@@ -231,15 +290,17 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public ProductDetailsPageResponse getProductDetailsPage(String slug) {
+    public ProductDetailsPageResponse getProductDetailsPage(String slug, boolean countView) {
         ProductDetailsPageResponse response = productCatalogCacheService.getProductDetailsPage(slug);
-        updateProductViewCount(response.productId());
+        if (countView) {
+            updateProductViewCount(response.productId());
+        }
         return response;
     }
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public ProductDetails updateProduct(Long productId, ProductRequest request) {
         Product productToUpdate = productRepository.findById(productId).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
         checkIfImageIsPresentForEcommerceProductUpdate(request, productToUpdate);
@@ -249,7 +310,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public ProductDetails setProductDiscount(Long productId, ProductDiscountRequest request) {
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
@@ -263,7 +324,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public ProductDetails clearProductDiscount(Long productId) {
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
@@ -289,6 +350,12 @@ public class ProductServiceImpl implements ProductService {
                 throw new BadRequestException("Flat discount must be less than the product price.");
             }
         }
+    }
+
+    private Function<Product, PublicProductListing> publicListingMapper() {
+        ShopWideDiscount shop = effectivePriceService.activeShopDiscount().orElse(null);
+        LocalDateTime now = effectivePriceService.now();
+        return product -> ProductMapper.toPublicProductListing(product, effectivePriceService.compute(product, shop, now));
     }
 
     private Function<Product, ProductListing> listingMapper() {
@@ -488,7 +555,7 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    @CacheEvict(cacheNames = {"customerProductListings", "featuredProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public void deleteProduct(Long productId) {
         productRepository.deleteById(productId);
     }

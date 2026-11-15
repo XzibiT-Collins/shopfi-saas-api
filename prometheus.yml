@@ -5,5 +5,12 @@ global:
 scrape_configs:
   - job_name: 'perfume-budget'
     metrics_path: '/actuator/prometheus'
+    # SEC-03b: /actuator/prometheus requires "Authorization: Bearer <PROMETHEUS_SCRAPE_TOKEN>" (the app's env var, at
+    # least 16 characters). Generate it randomly: `openssl rand -hex 32`. Put the same value in ./prometheus-scrape-token
+    # (untracked) BEFORE `docker compose up`: if the file is missing Docker creates a DIRECTORY of that name and the
+    # mount fails. A scraper with a wrong or missing token gets 401 on every scrape (Prometheus shows the target as down).
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/scrape-token
     static_configs:
       - targets: ['app:8080']

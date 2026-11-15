@@ -1,6 +1,6 @@
 # Authorization matrix (SEC-03)
 
-Generated from the controllers and `SecurityConfig` at the SEC-03 fix. Guarded by `AuthorizationMatrixStructureTest` (every controller mutation and read must have `@PreAuthorize` or an explicit allow-list entry) and `CatalogAuthorizationMatrixIntegrationTest` (real filter chain, five actors).
+Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrixStructureTest` pins every controller handler (any verb, including `@RequestMapping(method = GET)`) to its intended `@PreAuthorize` expression in a hand-written table, cross-checks the `SecurityConfig` matchers against it, and checks every row of section 3 below (controller, verb, path, matcher kind and roles, `@PreAuthorize`) against the source; `CatalogAuthorizationMatrixIntegrationTest` exercises the real filter chain with six actors (anonymous, CUSTOMER, FRONT_DESK, ADMIN, foreign-tenant ADMIN, platform token).
 
 ## Model
 
@@ -15,7 +15,7 @@ Generated from the controllers and `SecurityConfig` at the SEC-03 fix. Guarded b
 | anonymous | 401 JSON (entry point) | normal response |
 | foreign-tenant ADMIN token / cookie | 401 (it is anonymous) | normal response, requesting tenant only |
 | platform SUPER_ADMIN token on a tenant route | 401 (anonymous) | normal response |
-| CUSTOMER / FRONT_DESK without the role | 403 JSON (access denied handler) | normal response |
+| CUSTOMER / FRONT_DESK without the role | 403 JSON (access denied handler); FRONT_DESK is allowed only where the matrix lists it | normal response |
 | ADMIN of the tenant | allowed | normal response |
 
 **Behaviour change (SEC-03):** an anonymous (or foreign-tenant) call to a category/product route that needs ADMIN used to return **403** (method security fired after the permitAll matcher, mapped by `GlobalExceptionHandler`); it now returns **401**, like every other protected route and like `PUT /api/v1/theme`. A signed-in non-admin still gets 403. Clients should treat 401 as "sign in / refresh once", 403 as "forbidden".
@@ -30,7 +30,10 @@ Generated from the controllers and `SecurityConfig` at the SEC-03 fix. Guarded b
 | `POST /api/v1/platform/auth/{login,refresh,logout}`, `POST /api/v1/platform/onboarding/{signup,verify,resend}`, `GET /api/v1/platform/onboarding/status` | platform sign-in and public onboarding; every other `/platform/**` is `SUPER_ADMIN` |
 | `/oauth2/**`, `/login/oauth2/**` | OAuth2 login redirects |
 | `/ws/**` | SockJS/STOMP handshake: Origin checked by `TenantOriginHandshakeInterceptor`; CONNECT authenticated by `AuthChannelInterceptor`; only user-destination messages are sent (no broadcast topics) |
-| `GET /swagger-ui/**`, `/swagger-ui.html`, `/v3/api-docs/**`, `GET /actuator/health`, `GET /actuator/prometheus` | tooling (see residual risks) |
+| `GET /swagger-ui/**`, `/swagger-ui.html`, `/v3/api-docs/**` | dev/test only: permitted only while `springdoc.*.enabled` is true; the prod profile disables springdoc and the matchers then require authentication (anonymous 401) |
+| `GET /actuator/health` | liveness probe (Render health check); status only, details are `never` |
+| `GET /actuator/prometheus` | NOT public: needs `Authorization: Bearer <shopfi.metrics.scrape-token>` (env `PROMETHEUS_SCRAPE_TOKEN`, at least 16 characters); with no token configured it is closed (401). Every other `/actuator/**` path (metrics, info, env, ...) is `denyAll` (401 anonymous) |
+| `HEAD` on every public `GET` above | permitted with the same matcher (HEAD is answered from the GET handler); `HEAD` on an admin route follows the admin rule |
 | `/api/v1/dev/**` | **denyAll** unless `tenant.dev-endpoints.enabled=true` (true only in the dev profile; prod sets it false; the controller bean is also conditional on it) |
 
 ## 3. Every controller endpoint
@@ -69,7 +72,7 @@ Generated from the controllers and `SecurityConfig` at the SEC-03 fix. Guarded b
 | AuthController | POST | `/api/v1/auth/resend-otp` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/resend-login-otp` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/login` | permitAll (explicit POST) | - | mutates |
-| AuthController | GET | `/api/v1/auth/me` | authenticated | `hasAnyRole('ADMIN', 'CUSTOMER')` | reads tenant data |
+| AuthController | GET | `/api/v1/auth/me` | authenticated (explicit) | - | reads own profile; the `@PreAuthorize` in the source is commented out, so any signed-in tenant user (ADMIN, CUSTOMER, FRONT_DESK) passes; a platform token on this tenant route is anonymous -> 401 |
 | AuthController | POST | `/api/v1/auth/logout` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/refresh` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/forgot-password` | permitAll (explicit POST) | - | mutates |
@@ -174,9 +177,16 @@ Generated from the controllers and `SecurityConfig` at the SEC-03 fix. Guarded b
 | TenantOnboardingController | GET | `/api/v1/platform/onboarding/status` | permitAll (explicit) | - | reads tenant data |
 | TenantOnboardingController | POST | `/api/v1/platform/onboarding/resend` | permitAll (explicit) | - | mutates |
 
-Rows with `@PreAuthorize` `-` and a non-public matcher: `TaxController` `GET /tax` and `GET /tax/all` (any signed-in user; needed by the customer checkout, rates are not secret).
+Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant user, decided in SEC-03b): `AuthController` `GET /auth/me`, `TaxController` `GET /tax` (tax calculation for a subtotal and coupon) and `GET /tax/all` (rate list). **Tax policy:** the storefront frontend calls neither (checkout totals come from `POST /cart/preview`), but rates are not secret (every checkout total shows them), the calculation is the same one a customer already triggers through checkout, and an API client may rely on it, so the routes stay open to signed-in users while the rate administration (`add-tax`, `update`, `{taxId}`, `delete`) is `ADMIN`. Revisit if rates ever become confidential.
 
-## 4. Fixed in SEC-03
+## 4. SEC-03b hardening
+
+* Public catalog reads (`/product/{featured,listing,search}`) now return `PublicProductListing`: no `stockQuantity`, `isActive`, `isEnlisted` (availability is `isOutOfStock`). The ADMIN/FRONT_DESK listings keep the full `ProductListing`.
+* Public catalog sort is allow-listed (`id`, `name`, `createdAt`, `price.amount`; anything else is `400 INVALID_SORT`) and public search matches the product name only (not the SKU). ADMIN/FRONT_DESK search and sort are unchanged.
+* Cache deploy note: the public listing/featured caches were renamed to `publicCustomerProductListings` / `publicFeaturedProducts`. Entries written by older builds under `customerProductListings` / `featuredProducts` are never read and simply expire (rollback to the old build is safe; it reads its own old names). A cached value that is not a `PublicProductListing` is treated as a miss and evicted.
+* Swagger/api-docs off in prod; `/actuator/prometheus` token-protected; other actuator paths denied; HEAD follows GET (see section 2).
+
+## 5. Fixed in SEC-03
 
 * `DELETE /api/v1/category/delete/{id}`: no `@PreAuthorize`, permitAll matcher: **anonymous deletion of tenant categories**. Now ADMIN at both levels.
 * `/api/v1/category/**` and `/api/v1/product/**` were permitAll for every method; now only the storefront GETs are.
@@ -185,8 +195,9 @@ Rows with `@PreAuthorize` `-` and a non-public matcher: `TaxController` `GET /ta
 * `/api/v1/dev/**` was permitAll in every profile (controller bean only in dev); now `denyAll` unless the dev flag is on.
 * Platform controllers carry `@PreAuthorize("hasRole('SUPER_ADMIN')")` in addition to the matcher.
 
-## 5. Residual risks / follow-ups
+## 6. Residual risks / follow-ups
 
-* `/actuator/prometheus` and swagger/api-docs are public by existing decision; restrict at the reverse proxy or behind a role (separate ticket).
-* `GET /api/v1/tax/all` is readable by any signed-in customer.
+* `GET /api/v1/tax` and `/tax/all` are readable by any signed-in tenant user (decision above).
 * STOMP: `SUBSCRIBE` is not authorised per destination; safe today because only `convertAndSendToUser` is used.
+* The prometheus scrape token is a shared secret in an env var; rotate it by changing the env var and the Prometheus credentials together. In `docker-compose.yml` Prometheus reads it from the untracked file `./prometheus-scrape-token`.
+* `GET /product/{slug}` records a view (async event) for non-admin callers, so a GET has a write side effect (a counter, no authorization impact). `HEAD /product/{slug}` returns the same response but records neither a view nor a site visit (`SiteVisitFilter` skips HEAD). A scraper misconfigured with a wrong prometheus token produces a 401 per scrape (no ERROR log from the app).

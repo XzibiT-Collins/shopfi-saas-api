@@ -49,6 +49,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
     TestTenant acme;
     TestTenant bravo;
     Cookie customer;
+    Cookie frontDesk;
     Cookie admin;
     Cookie foreignAdmin;
     Cookie platformAsTenant;
@@ -69,6 +70,14 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         Map<String, Object> row = jdbc.queryForMap("SELECT id, full_name FROM tenant_acme.users WHERE email = ?", email);
         customer = new Cookie("accessToken", tenants.runAs(acme, () -> jwtUtil.generateAccessToken(
                 email, "CUSTOMER", ((Number) row.get("id")).longValue(), (String) row.get("full_name"))));
+
+        String fdEmail = "frontdesk-sec03@acme.test";
+        tenants.runAs(acme, () -> userRepository.findByEmail(fdEmail).orElseGet(() -> userRepository.save(User.builder()
+                .fullName("FD").email(fdEmail).password(encoder.encode("Fdpass1!a")).roles(UserRole.FRONT_DESK)
+                .authProvider(AuthProvider.LOCAL).isActive(true).emailVerified(true).build())));
+        Map<String, Object> fdRow = jdbc.queryForMap("SELECT id, full_name FROM tenant_acme.users WHERE email = ?", fdEmail);
+        frontDesk = new Cookie("accessToken", tenants.runAs(acme, () -> jwtUtil.generateAccessToken(
+                fdEmail, "FRONT_DESK", ((Number) fdRow.get("id")).longValue(), (String) fdRow.get("full_name"))));
 
         platformAsTenant = new Cookie("accessToken", platformToken);
         platformCookie = new Cookie("platformAccessToken", platformToken);
@@ -100,7 +109,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
     @AfterAll
     void cleanUp() {
         platformAdmins.findAll().stream().filter(a -> PLATFORM_EMAIL.equals(a.getEmail())).forEach(platformAdmins::delete);
-        jdbc.update("DELETE FROM tenant_acme.users WHERE email = 'customer-sec03@acme.test'");
+        jdbc.update("DELETE FROM tenant_acme.users WHERE email IN ('customer-sec03@acme.test', 'frontdesk-sec03@acme.test')");
         removeSec03Products();
         jdbc.update("DELETE FROM tenant_acme.categories WHERE name ILIKE 'sec03-%'");
     }
@@ -222,6 +231,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
             assertThat(status(build(e, foreignAdmin))).as("%s foreign-tenant ADMIN token", e.name()).isEqualTo(401);
             assertThat(status(build(e, platformAsTenant))).as("%s platform token as tenant cookie", e.name()).isEqualTo(401);
             assertThat(status(build(e, platformCookie))).as("%s platform cookie", e.name()).isEqualTo(401);
+            assertThat(status(build(e, frontDesk))).as("%s FRONT_DESK", e.name()).isEqualTo(403);
             assertThat(snapshot()).as("%s must not change data on denial", e.name()).isEqualTo(before);
         }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.categories WHERE id = ?", Integer.class, categoryId)).isEqualTo(1);
@@ -276,6 +286,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         for (String p : adminOnly) {
             assertThat(status(req(HttpMethod.GET, p, "acme"))).as("%s anonymous", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(customer))).as("%s customer", p).isEqualTo(403);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("%s FRONT_DESK", p).isEqualTo(403);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(foreignAdmin))).as("%s foreign", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(platformAsTenant))).as("%s platform", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(admin))).as("%s admin", p).isEqualTo(200);
@@ -289,6 +300,85 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         assertThat(status(req(HttpMethod.GET, s, "acme"))).isEqualTo(401);
         assertThat(status(req(HttpMethod.GET, s, "acme").cookie(customer))).isEqualTo(403);
         assertThat(status(req(HttpMethod.GET, s, "acme").cookie(admin))).isEqualTo(200);
+        assertThat(status(req(HttpMethod.GET, s, "acme").cookie(frontDesk))).as("FRONT_DESK may search products").isEqualTo(200);
+    }
+
+    // ---------------------------------------------------------------- FRONT_DESK (SEC-03b F4)
+
+    @Test
+    void frontDesk_hasOnlyProductAdminSearch_andTheOperationalRoutes() throws Exception {
+        // allowed: 200 on the admin product search (matcher AND annotation allow ADMIN, FRONT_DESK)
+        assertThat(status(req(HttpMethod.GET, "/api/v1/product/admin/search", "acme").cookie(frontDesk))).isEqualTo(200);
+        // denied on every other product/category admin read and mutation (403, signed in but wrong role)
+        for (String p : List.of("/api/v1/product/admin/listing", "/api/v1/product/main/" + productId, "/api/v1/category/" + categoryId)) {
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("GET " + p).isEqualTo(403);
+        }
+        for (Endpoint e : catalogMutations()) {
+            assertThat(status(build(e, frontDesk))).as("%s FRONT_DESK", e.name()).isEqualTo(403);
+        }
+        // admin-only routes outside the catalog (derived from the annotations: hasRole('ADMIN') only)
+        for (String p : List.of("/api/v1/admin/accounting/metadata", "/api/v1/admin/front-desk/users", "/api/v1/coupon/all",
+                "/api/v1/payment-settings", "/api/v1/admin/feature-flags", "/api/v1/admin/product-families",
+                "/api/v1/admin/shop-discount/current", "/api/v1/order/all")) {
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK GET " + p).isEqualTo(403);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(admin))).as("ADMIN GET " + p).isNotIn(401, 403);
+        }
+        // customer-only routes
+        for (String p : List.of("/api/v1/cart", "/api/v1/order/my-orders", "/api/v1/delivery-detail")) {
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK GET " + p).isEqualTo(403);
+        }
+        // FRONT_DESK operational routes (annotation hasAnyRole('ADMIN','FRONT_DESK')): not a role failure. (Routes such as
+        // GET /admin/inventory/transfers additionally need a per-user front-desk PERMISSION and answer 403 from the service.)
+        for (String p : List.of("/api/v1/admin/inventory/locations", "/api/v1/admin/notifications",
+                "/api/v1/admin/notifications/unread-count")) {
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK GET " + p).isNotIn(401, 403);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(customer))).as("CUSTOMER GET " + p).isEqualTo(403);
+        }
+        // a FRONT_DESK of another tenant is anonymous here
+        assertThat(status(req(HttpMethod.GET, "/api/v1/product/admin/search", "bravo").cookie(frontDesk))).isEqualTo(401);
+    }
+
+    // ---------------------------------------------------------------- HEAD (SEC-03b F7)
+
+    @Test
+    void head_followsGet_publicWherePublic_andGuardedWhereGuarded() throws Exception {
+        for (String p : List.of("/api/v1/category/all", "/api/v1/product/featured", "/api/v1/product/listing",
+                "/api/v1/product/search", "/api/v1/theme", "/api/v1/product/no-such-slug-sec03")) {
+            assertThat(status(req(HttpMethod.HEAD, p, "acme"))).as("anonymous HEAD " + p).isNotIn(401, 403);
+        }
+        List<String> guarded = List.of("/api/v1/category/" + categoryId, "/api/v1/product/admin/listing",
+                "/api/v1/product/main/" + productId, "/api/v1/admin/accounting/metadata", "/api/v1/cart", "/api/v1/platform/tenants");
+        for (String p : guarded) {
+            String slug = p.startsWith("/api/v1/platform") ? null : "acme";
+            assertThat(status(req(HttpMethod.HEAD, p, slug))).as("anonymous HEAD " + p).isEqualTo(401);
+            assertThat(status(req(HttpMethod.HEAD, p, slug).cookie(foreignAdmin))).as("foreign HEAD " + p).isEqualTo(401);
+        }
+        assertThat(status(req(HttpMethod.HEAD, "/api/v1/product/admin/listing", "acme").cookie(customer))).isEqualTo(403);
+        assertThat(status(req(HttpMethod.HEAD, "/api/v1/product/admin/listing", "acme").cookie(frontDesk))).isEqualTo(403);
+        assertThat(status(req(HttpMethod.HEAD, "/api/v1/product/admin/search", "acme"))).isEqualTo(401);
+        assertThat(status(req(HttpMethod.HEAD, "/api/v1/product/admin/search", "acme").cookie(frontDesk))).isEqualTo(200);
+        assertThat(status(req(HttpMethod.HEAD, "/api/v1/product/admin/listing", "acme").cookie(admin))).isEqualTo(200);
+        // HEAD never reaches a mutation handler
+        assertThat(status(req(HttpMethod.HEAD, "/api/v1/category/delete/" + categoryId, "acme"))).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.categories WHERE id = ?", Integer.class, categoryId)).isEqualTo(1);
+    }
+
+    // ---------------------------------------------------------------- /tax policy (SEC-03b F8)
+
+    @Test
+    void taxReads_areOpenToSignedInUsersOnly_byDecision() throws Exception {
+        for (String p : List.of("/api/v1/tax/all", "/api/v1/tax?subtotal=10.00")) {
+            assertThat(status(req(HttpMethod.GET, p, "acme"))).as("anonymous " + p).isEqualTo(401);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(foreignAdmin))).as("foreign " + p).isEqualTo(401);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(customer))).as("CUSTOMER " + p).isEqualTo(200);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK " + p).isEqualTo(200);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(admin))).as("ADMIN " + p).isEqualTo(200);
+        }
+        // the rate administration stays ADMIN only
+        assertThat(status(req(HttpMethod.GET, "/api/v1/tax/1", "acme").cookie(customer))).isEqualTo(403);
+        assertThat(status(req(HttpMethod.DELETE, "/api/v1/tax/delete/1", "acme").cookie(customer))).isEqualTo(403);
+        assertThat(status(req(HttpMethod.GET, "/api/v1/auth/me", "acme").cookie(frontDesk))).isEqualTo(200);
+        assertThat(status(req(HttpMethod.GET, "/api/v1/auth/me", "acme").cookie(platformAsTenant))).isEqualTo(401);
     }
 
     // ---------------------------------------------------------------- other previously-open routes
@@ -335,7 +425,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
     /** Anonymous requests to EVERY controller endpoint that is not on the explicit public allow-list must be 401. */
     @Test
     void sweep_everyNonPublicControllerEndpointRejectsAnonymousWith401_andChangesNothing() throws Exception {
-        Set<String> publicIds = new java.util.HashSet<>(AuthorizationMatrixStructureTest.PUBLIC);
+        Set<String> publicIds = new java.util.HashSet<>(AuthorizationMatrixStructureTest.PUBLIC_MUTATIONS);
         publicIds.addAll(AuthorizationMatrixStructureTest.PUBLIC_READS);
         String before = snapshot();
         List<String> failures = new ArrayList<>();

@@ -7,6 +7,7 @@ import com.example.perfume_budget.dto.product.request.ProductRequest;
 import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
 import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.service.interfaces.ProductService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -40,12 +41,12 @@ public class ProductController {
     }
 
     @GetMapping("/featured")
-    public ResponseEntity<CustomApiResponse<List<ProductListing>>> getFeaturedProducts(){
+    public ResponseEntity<CustomApiResponse<List<PublicProductListing>>> getFeaturedProducts(){
         return ResponseEntity.ok().body(CustomApiResponse.success(productService.getFeaturedProducts()));
     }
 
     @GetMapping("/listing")
-    public ResponseEntity<CustomApiResponse<PageResponse<ProductListing>>> getProductListings(Pageable pageable){
+    public ResponseEntity<CustomApiResponse<PageResponse<PublicProductListing>>> getProductListings(Pageable pageable){
         return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductListings(pageable)));
     }
 
@@ -56,7 +57,7 @@ public class ProductController {
     }
 
     @GetMapping("/search")
-    public ResponseEntity<CustomApiResponse<PageResponse<ProductListing>>> searchProducts(
+    public ResponseEntity<CustomApiResponse<PageResponse<PublicProductListing>>> searchProducts(
             @RequestParam(required = false) Long categoryId,
             @RequestParam(required = false) String searchTerm,
             Pageable pageable){
@@ -73,8 +74,11 @@ public class ProductController {
     }
 
     @GetMapping("/{slug}")
-    public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(@PathVariable String slug){
-        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug)));
+    public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(
+            @PathVariable String slug, jakarta.servlet.http.HttpServletRequest request){
+        // HEAD runs this same handler; it must not bump the view counter (SEC-03b F11)
+        boolean countView = !"HEAD".equalsIgnoreCase(request.getMethod());
+        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug, countView)));
     }
 
     @PreAuthorize("hasRole('ADMIN')")

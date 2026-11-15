@@ -1,7 +1,7 @@
 package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
-import com.example.perfume_budget.dto.product.response.ProductListing;
+import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.mapper.ProductMapper;
 import com.example.perfume_budget.model.Product;
 import com.example.perfume_budget.model.ShopWideDiscount;
@@ -22,14 +22,14 @@ public class ProductCatalogCacheService {
     private final ProductRepository productRepository;
     private final EffectivePriceService effectivePriceService;
 
-    @Cacheable(cacheNames = "featuredProducts")
-    public List<ProductListing> getFeaturedProducts() {
+    @Cacheable(cacheNames = "publicFeaturedProducts")
+    public List<PublicProductListing> getFeaturedProducts() {
         log.info("Cache miss for featured products, querying database...");
         ShopWideDiscount shop = effectivePriceService.activeShopDiscount().orElse(null);
         var now = effectivePriceService.now();
         return productRepository.findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrue()
                 .stream()
-                .map(product -> ProductMapper.toProductListing(product, effectivePriceService.compute(product, shop, now)))
+                .map(product -> ProductMapper.toPublicProductListing(product, effectivePriceService.compute(product, shop, now)))
                 .toList();
     }
 

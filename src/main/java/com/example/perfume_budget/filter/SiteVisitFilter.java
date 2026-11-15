@@ -50,7 +50,9 @@ public class SiteVisitFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return path.startsWith("/actuator") ||
+        // HEAD is a probe/prefetch, not a visit (SEC-03b: HEAD became public on the storefront reads)
+        return "HEAD".equalsIgnoreCase(request.getMethod()) ||
+                path.startsWith("/actuator") ||
                 path.startsWith("/api/v1/auth/me")||
                 path.endsWith(".js") ||
                 path.endsWith(".css") ||
