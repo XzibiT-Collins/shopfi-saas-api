@@ -167,7 +167,7 @@ class OrderServiceImplTest {
         lenient().when(userRepository.lockById(1L)).thenReturn(Optional.of(testUser));
         // the real pricing code path, over the mocked collaborators
         org.springframework.test.util.ReflectionTestUtils.setField(orderService, "pricingService",
-                new CheckoutPricingService(effectivePriceService, couponRepository, discountCalculationUtil, taxService));
+                new CheckoutPricingService(effectivePriceService, couponRepository, orderRepository, discountCalculationUtil, taxService));
         org.springframework.test.util.ReflectionTestUtils.setField(orderService, "expiryHours", 1L);
         // By default no product/shop discount: effective price echoes the product's base price.
         lenient().when(effectivePriceService.activeShopDiscount()).thenReturn(Optional.empty());

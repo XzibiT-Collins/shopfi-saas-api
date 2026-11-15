@@ -27,6 +27,13 @@ public class PaymentSettingsController {
         return ResponseEntity.ok(CustomApiResponse.success(paymentSettingsService.get()));
     }
 
+    /** Revoke a leaked webhook URL: the old token stops resolving at once; paste the returned URL into Paystack. */
+    @PostMapping("/rotate-webhook-token")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<CustomApiResponse<PaymentSettingsResponse>> rotateWebhookToken() {
+        return ResponseEntity.ok(CustomApiResponse.success(paymentSettingsService.rotateWebhookToken()));
+    }
+
     @PutMapping
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<CustomApiResponse<PaymentSettingsResponse>> update(@RequestBody @Valid PaymentSettingsRequest request) {

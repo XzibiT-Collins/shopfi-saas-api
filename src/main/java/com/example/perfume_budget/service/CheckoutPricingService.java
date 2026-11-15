@@ -31,6 +31,7 @@ public class CheckoutPricingService {
 
     private final EffectivePriceService effectivePriceService;
     private final CouponRepository couponRepository;
+    private final com.example.perfume_budget.repository.OrderRepository orderRepository;
     private final DiscountCalculationUtil discountCalculationUtil;
     private final TaxService taxService;
 
@@ -78,6 +79,11 @@ public class CheckoutPricingService {
             coupon = couponRepository.findByCode(couponCode.strip().toUpperCase())
                     .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
             discountCalculationUtil.checkIfCouponIsValid(coupon);
+            Integer perUser = coupon.getPerUserUsageLimit();
+            if (perUser != null && cart.getUser() != null
+                    && orderRepository.countCouponRedemptionsByUser(cart.getUser().getId(), coupon.getId()) >= perUser) {
+                throw new CouponRejectedException(Reason.PER_USER_LIMIT, "You have already used this coupon the maximum number of times");
+            }
             couponDiscount = discountCalculationUtil.calculateDiscount(coupon, orderSubtotal);
         }
         BigDecimal discounted = orderSubtotal.subtract(couponDiscount).max(BigDecimal.ZERO);

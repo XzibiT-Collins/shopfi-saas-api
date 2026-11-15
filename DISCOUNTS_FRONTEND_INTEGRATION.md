@@ -249,7 +249,7 @@ GET /api/v1/admin/shop-discount/current
 ```
 
 - `200 OK` with `data` = `ShopWideDiscountResponse` when one is configured.
-- `404` (ResourceNotFound) when none is configured. Treat 404 as "no shop-wide discount" — show empty state, not an error toast.
+- `404` (ResourceNotFound) when none is in force right now (none configured, expired, or not started yet — API-04). Treat 404 as "no shop-wide discount" — show empty state, not an error toast.
 
 ### 4.5 Deactivate a shop-wide discount
 
@@ -347,7 +347,7 @@ Effective prices are date-windowed and the catalog is cached (up to ~60 min, plu
 | `/api/v1/product/admin/{productId}/discount` | PUT | ADMIN | `ProductDiscountRequest` | `ProductDetails` |
 | `/api/v1/product/admin/{productId}/discount` | DELETE | ADMIN | — | `ProductDetails` |
 | `/api/v1/admin/shop-discount` | PUT | ADMIN | `ShopWideDiscountRequest` | `ShopWideDiscountResponse` |
-| `/api/v1/admin/shop-discount/current` | GET | ADMIN | — | `ShopWideDiscountResponse` (404 if none) |
+| `/api/v1/admin/shop-discount/current` | GET | ADMIN | — | `ShopWideDiscountResponse` (404 if none **in force now**) |
 | `/api/v1/admin/shop-discount/{id}` | DELETE | ADMIN | — | `204` |
 
 Enum values: `discountType` ∈ `{ "PERCENTAGE", "FLAT" }`.
@@ -355,3 +355,70 @@ Enum values: `discountType` ∈ `{ "PERCENTAGE", "FLAT" }`.
 Money strings: `"<CURRENCY> <AMOUNT>"`, e.g. `"GHS 49.99"`.
 
 Timestamps (`startAt`, `endAt`, `discountEndsAt`): same serialization as existing API date fields (e.g. order `createdAt`) — send/parse in that same format.
+
+---
+
+## 8. Coupons (API-04)
+
+All routes are `ADMIN` only (anonymous `401`, customer `403`). Envelope as in section 2.
+
+| Route | Method | Body | Response |
+|---|---|---|---|
+| `/api/v1/coupon/add-coupon` | POST | `CouponRequest` | `CouponDetailResponse` (200) |
+| `/api/v1/coupon/{couponId}` | GET | — | `CouponDetailResponse` |
+| `/api/v1/coupon/all` | GET | `?page&size&sort` | `PageResponse<CouponListResponse>` |
+| `/api/v1/coupon/{couponId}` | PUT | `CouponRequest` (full replace) | `CouponDetailResponse` |
+| `/api/v1/coupon/{couponId}/deactivate` | POST | — | `CouponDetailResponse` (`isActive=false`) |
+| `/api/v1/coupon/{couponId}` | DELETE | — | `204` |
+
+### `CouponRequest`
+
+| Field | Rule |
+|---|---|
+| `couponCode` | Optional (omit or `null` to have one generated). When sent: 3-32 chars of `A-Z a-z 0-9 _ -` (first char alphanumeric). It is **trimmed and upper-cased** before it is stored, so the response `couponCode` is the canonical form and checkout/preview match it in any case. Blank (`""`, spaces) is `400`. Cannot change on update (send the same code or omit it). |
+| `discountType` | `PERCENTAGE` or `FLAT`, required. |
+| `discountValue` | Required, `> 0`, at most 2 decimals. `PERCENTAGE` must be `<= 100`. |
+| `maximumDiscountAmount` | **Now optional.** Cap for `PERCENTAGE` coupons only (`> 0` when sent, `null` = no cap). For `FLAT` it is **ignored and stored as `null`** (a flat coupon is already a fixed amount, bounded by the cart subtotal). Clients that still send a value for FLAT keep working. |
+| `minimumCartAmountForDiscount` | **Now optional**, `>= 0`, 2 decimals. |
+| `usageLimit` | Required integer `1..1000000`. |
+| `perUserUsageLimit` | **New**, optional integer `1..usageLimit`. One customer can hold at most this many redemptions (orders that are not `FAILED`/`CANCELLED`); enforced by checkout and shown as invalid by the cart preview. |
+| `isActive` | Required boolean. |
+| `startDate`, `expirationDate` | Required `yyyy-MM-dd`; `expirationDate` must not be before `startDate` (both days are valid; a one-day coupon has start = expiry). |
+
+Responses `CouponDetailResponse` now also carries `perUserUsageLimit`. `CouponListResponse` now also carries `discountValue`, `maximumDiscountAmount`, `minimumCartAmountForDiscount`, `perUserUsageLimit` and `startDate` (no more one GET per row). All changes are additive. Coupon decimals stay JSON numbers (currency GHS implied); the "GHS 45.00" string format used by product/order money is a documented follow-up, not changed here.
+
+### Errors
+
+| Status | Body | When |
+|---|---|---|
+| `400` | `{description:"Validation failed", data:{<field>:<message>}}` | any rule above (field-name keys; the cross-field rules use the keys `percentageWithinRange`, `percentageCapPositive`, `expirationNotBeforeStart`, `perUserLimitWithinTotal`) |
+| `400` | `{description:<message>}` | update: code changed, or `usageLimit` below the redemptions already made |
+| `404` | `{description:"Coupon not found."}` | unknown id (also another tenant's id) |
+| `409` | `{description:"A coupon with this code already exists.", data:{code:"COUPON_CODE_EXISTS"}}` | create with a code that exists (case-insensitive, also under a race). **Replaces** the old generic `"A constraint violation occurred"` 409 for this case. |
+| `409` | `{description:"This coupon has been redeemed and cannot be deleted. Deactivate it instead.", data:{code:"COUPON_REDEEMED"}}` | delete of a coupon that was ever redeemed |
+
+### Behaviour
+
+- **Revoke a leaked coupon: `POST /{id}/deactivate`.** It stops redemption immediately: the coupon row is locked by checkout and by deactivate, so a checkout that is already running either finishes first (and its order stands) or waits and is then rejected. Idempotent. The cart preview then reports `coupon.valid=false`, `reason=COUPON_INVALID`. `PUT` with `isActive:false` does the same.
+- **Already-redeemed coupons.** They can be edited (the usage limit cannot go below the redemptions made) and deactivated, never deleted (`409 COUPON_REDEEMED`). Existing orders keep the discount they were charged and their coupon reference. A coupon that reaches its usage limit is auto-deactivated; raising `usageLimit` through `PUT` with `isActive:true` re-opens it.
+- **Delete** is only for a coupon never redeemed (counter 0 and no order); the code is free to be created again afterwards.
+- Editing `discountType`/`discountValue` on a redeemed coupon changes future redemptions only.
+
+## 9. Payment settings (API-04)
+
+`ADMIN` only. Write-only secret semantics are unchanged: the secret key is never returned or logged; `secretConfigured` says whether one is stored.
+
+| Route | Method | Body | Response |
+|---|---|---|---|
+| `/api/v1/payment-settings` | GET | — | `PaymentSettingsResponse` |
+| `/api/v1/payment-settings` | PUT | `PaymentSettingsRequest` | `PaymentSettingsResponse` |
+| `/api/v1/payment-settings/rotate-webhook-token` | POST | — | `PaymentSettingsResponse` (new `webhookUrl`) |
+
+`PaymentSettingsRequest`: `secretKey` (optional on update, blank keeps the stored one), `publicKey` (required), `enabled`.
+`PaymentSettingsResponse`: `secretConfigured`, `publicKey`, `enabled`, `webhookUrl` (unchanged shape).
+
+**New format checks (400, field-keyed, the message never echoes the value):** `secretKey` must look like `sk_test_...` / `sk_live_...`, `publicKey` like `pk_test_...` / `pk_live_...` (letters, digits, `_`, 4-200 chars after the prefix); when both are sent they must be the same mode (key `keyModesConsistent`). The check is shape only; the keys are not verified against Paystack.
+
+**Webhook-token rotation.** `POST /rotate-webhook-token` mints a new token; the old webhook URL answers `404` from that moment. The admin must paste the returned `webhookUrl` into the Paystack dashboard; events Paystack sends to the old URL in between are not processed. Show a confirm dialog before calling it. Rotation works even before any key is saved.
+
+**Shop-wide discount (4.4):** `GET /api/v1/admin/shop-discount/current` now returns `404` unless a discount is active **and** inside its `startAt`..`endAt` window now (before it returned the newest active row even if expired or scheduled). `label` is limited to 100 characters (`400` otherwise).

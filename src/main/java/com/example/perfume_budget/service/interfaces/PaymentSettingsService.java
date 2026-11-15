@@ -8,4 +8,7 @@ public interface PaymentSettingsService {
     PaymentSettingsResponse save(PaymentSettingsRequest request);
 
     PaymentSettingsResponse get();
+
+    /** Mints a fresh webhook token; the previous webhook URL stops working immediately. */
+    PaymentSettingsResponse rotateWebhookToken();
 }

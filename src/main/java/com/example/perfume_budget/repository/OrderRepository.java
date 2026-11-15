@@ -89,6 +89,17 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         """)
     Optional<CustomerOrderSummary> getCustomerOrderSummaryByUserId(@Param("userId") Long userId);
 
+    boolean existsByCouponId(Long couponId);
+
+    /** Orders by this customer that still hold a redemption of the coupon (everything except FAILED / CANCELLED). */
+    @Query("""
+        SELECT COUNT(o.id) FROM Order o
+        WHERE o.user.id = :userId AND o.coupon.id = :couponId
+        AND o.status NOT IN (com.example.perfume_budget.enums.PaymentStatus.FAILED,
+                             com.example.perfume_budget.enums.PaymentStatus.CANCELLED)
+        """)
+    long countCouponRedemptionsByUser(@Param("userId") Long userId, @Param("couponId") Long couponId);
+
     @Query("""
         SELECT COUNT(o.id) AS totalUsages,
                COALESCE(SUM(o.discountAmount.amount), 0) AS totalDiscountGiven,

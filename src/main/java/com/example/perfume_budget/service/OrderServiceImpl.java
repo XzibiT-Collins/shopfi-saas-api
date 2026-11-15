@@ -66,6 +66,7 @@ public class OrderServiceImpl implements OrderService {
     private final DiscountCalculationUtil discountCalculationUtil;
     private final OrderLifecycleService lifecycleService;
     private final EffectivePriceService effectivePriceService;
+    private final com.example.perfume_budget.repository.CouponRepository couponRepository;
     /** Orders are sortable only by these (a free-form sort path would be a column/oracle probe: user.password...). */
     public static final java.util.Set<String> ORDER_SORT_PROPERTIES =
             java.util.Set.of("createdAt", "orderNumber", "status", "deliveryStatus", "id");
@@ -82,6 +83,14 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public CheckoutResponse checkout(String couponCode, Long deliveryDetailId, String idempotencyKey) {
         String key = normalizeIdempotencyKey(idempotencyKey);
+        if (couponCode != null && !couponCode.isBlank()) {
+            // API-04: row-lock the coupon FIRST (before the cart/products are read, so no stale product versions are
+            // held while waiting) and before it is read for pricing. An admin deactivate/edit/delete locks the same
+            // row, so it either lands first (this checkout then sees it and is rejected) or waits until this order is
+            // committed. It also makes the usage counter increment race-free. Released at commit. Lock order is always
+            // coupon -> customer row, and deactivate only ever takes the coupon, so there is no cycle.
+            couponRepository.lockByCode(couponCode.strip().toUpperCase());
+        }
         User principal = authUserUtil.getCurrentUser();
         // Serialise this customer's checkouts in this tenant (double submit, two tabs, a retry racing the original):
         // the second request waits here and then finds the first request's order instead of creating another.

@@ -63,6 +63,15 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
         return toResponse(config, currentTenant().getWebhookToken());
     }
 
+    @Override
+    @Transactional
+    public PaymentSettingsResponse rotateWebhookToken() {
+        Tenant tenant = currentTenant();
+        tenant.setWebhookToken(generateToken());
+        tenantRepository.save(tenant);
+        return toResponse(configRepository.findTopByOrderByIdAsc().orElse(null), tenant.getWebhookToken());
+    }
+
     private String ensureWebhookToken() {
         Tenant tenant = currentTenant();
         if (tenant.getWebhookToken() == null || tenant.getWebhookToken().isBlank()) {

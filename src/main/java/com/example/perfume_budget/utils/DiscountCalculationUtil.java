@@ -11,16 +11,17 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 @Component
 @RequiredArgsConstructor
 public class DiscountCalculationUtil {
     private final CouponRepository couponRepository;
+    private final Clock systemClock;
 
     public void checkIfCouponIsValid(Coupon coupon) {
-        LocalDate now = LocalDateTime.now().toLocalDate();
+        LocalDate now = LocalDate.now(systemClock);
 
         if (!Boolean.TRUE.equals(coupon.getIsActive())) {
             throw new CouponRejectedException(Reason.INACTIVE, "Coupon is inactive");
@@ -59,6 +60,8 @@ public class DiscountCalculationUtil {
                         ? calculated.min(coupon.getMaximumDiscountAmount())
                         : calculated;
             }
+            // API-04 decision: maximumDiscountAmount is a cap for PERCENTAGE coupons only. A FLAT coupon already is a
+            // fixed amount (bounded by the subtotal), so the field is ignored for it (and stored null on write).
             case FLAT -> computeDiscountAmount(DiscountType.FLAT, coupon.getDiscountValue(), orderSubtotal);
         };
     }

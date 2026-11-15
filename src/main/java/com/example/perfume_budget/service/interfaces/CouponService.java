@@ -11,4 +11,13 @@ public interface CouponService {
     CouponDetailResponse createCoupon(CouponRequest request);
     CouponDetailResponse getCouponById(Long couponId);
     PageResponse<CouponListResponse> getAllCoupons(Pageable pageable);
+
+    /** Full replace of the editable fields; the code is immutable. */
+    CouponDetailResponse updateCoupon(Long couponId, CouponRequest request);
+
+    /** Revoke: stops redemption immediately (idempotent). */
+    CouponDetailResponse deactivateCoupon(Long couponId);
+
+    /** Hard delete, only for a coupon that was never redeemed. */
+    void deleteCoupon(Long couponId);
 }
