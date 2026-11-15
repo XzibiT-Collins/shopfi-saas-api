@@ -106,7 +106,7 @@ Rules, evaluated in this order after the order row is locked:
 1. **Same status as now = 200 no-op** (nothing is changed, no e-mail, no audit row), for every status including the final
    ones, and regardless of `version`. A retry of a request that already succeeded is therefore a 200. *(Before ORD-01 a
    repeat on a final status was a 400; that is the only loosening.)*
-2. `version` (or `If-Match`) present and different from the order's current version: **409 `ORDER_VERSION_CONFLICT`**,
+2. `version` (or `If-Match`) present and different from the order's current version (**older or newer**; a version the server never issued is a conflict too): **409 `ORDER_VERSION_CONFLICT`**,
    `data.currentVersion`, `data.deliveryStatus`. Reload and retry.
 3. The order is already `DELIVERED` / `CANCELLED` and another status is requested: 400 `ORDER_FINAL_STATE` (same HTTP status
    and the same `description` text as before; only `data.code` is new).
@@ -134,10 +134,10 @@ A real cancel, atomic and exactly-once, whatever the payment state:
 The customer gets the usual status e-mail once, after the transaction commits. Stock is never released or returned twice
 (a repeat cancel is the no-op of rule 1; the inventory calls only touch `RESERVED` / `CONSUMED` rows).
 
-**Late payment of a cancelled order.** A `charge.success` (webhook or verify poll) for an order the **merchant** cancelled
+**Late payment of a cancelled order.** (It also moves the order's `version`, so an admin holding the old version gets a 409 and reloads to see `refundRequired`.) A `charge.success` (webhook or verify poll) for an order the **merchant** cancelled
 never revives the order: the payment is recorded `COMPLETED` with `refundRequired: true`, the order stays `CANCELLED`, and any
 straggling reservation is released. Orders cancelled by the customer or by expiry keep the checkout.md behaviour (a late
-payment re-reserves the stock when it can). `deliveryStatus = CANCELLED` now counts as closed in the settlement.
+payment re-reserves the stock when it can; the revived order is live again, so `cancelledAt` and `cancelSource` go back to `null`). `deliveryStatus = CANCELLED` now counts as closed in the settlement.
 
 ## POST /api/v1/order/{orderNumber}/refund-acknowledgement (ADMIN)
 

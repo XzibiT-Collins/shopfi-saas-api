@@ -330,6 +330,102 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         }
     }
 
+    // ------------------------------------------------------------------------------------------ rework (R1-R5, F2)
+
+    @Test
+    void revivedCustomerCancelledOrderNoLongerReportsCancellation() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("r1@acme.test", 2);
+        assertThat(cancel(o.c(), o.orderNumber()).getResponse().getStatus()).isEqualTo(200);
+        assertThat(detail(o.orderNumber()).get("cancelSource").asText()).isEqualTo("CUSTOMER");
+        long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
+        assertThat(webhook(g, event("charge.success", o.reference(), minor))).isEqualTo(200);
+        awaitPayment(o.orderNumber(), "COMPLETED");
+        JsonNode d = detail(o.orderNumber());
+        assertThat(d.get("deliveryStatus").asText()).isEqualTo("PENDING");
+        assertThat(d.get("cancelledAt").isNull()).isTrue();
+        assertThat(d.get("cancelSource").isNull()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT cancelled_at FROM tenant_acme.orders WHERE order_number = ?", java.sql.Timestamp.class, o.orderNumber())).isNull();
+    }
+
+    @Test
+    void adminCancelOfFailedOrCancelledPaymentOrderIsAdminSourcedAndNeverRevivedByALatePayment() throws Exception {
+        Gateway g = configureGateway(acme);
+        for (String dead : new String[]{"FAILED", "CANCELLED"}) {
+            Placed o = place("r2-" + dead + "@acme.test", 2);
+            jdbc.update("UPDATE tenant_acme.orders SET status = ? WHERE order_number = ?", dead, o.orderNumber());
+            jdbc.update("UPDATE tenant_acme.payments SET status = ? WHERE order_id = (SELECT id FROM tenant_acme.orders WHERE order_number = ?)", dead, o.orderNumber());
+            assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).as(dead).isEqualTo(200);
+            assertThat(jdbc.queryForObject("SELECT cancel_source FROM tenant_acme.orders WHERE order_number = ?", String.class, o.orderNumber())).as(dead).isEqualTo("ADMIN");
+            assertThat(jdbc.queryForObject("SELECT cancelled_by FROM tenant_acme.orders WHERE order_number = ?", String.class, o.orderNumber())).isEqualTo(acme.adminEmail());
+            assertThat(layerRemaining(acme, o.productId())).isEqualTo(10);
+
+            long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
+            assertThat(webhook(g, event("charge.success", o.reference(), minor))).isEqualTo(200);
+            awaitPayment(o.orderNumber(), "COMPLETED");
+            assertThat(refundFlag(o.orderNumber())).as(dead).isTrue();
+            assertThat(deliveryStatus(o.orderNumber())).as(dead).isEqualTo("CANCELLED");
+            assertThat(orderStatus(acme, o.orderNumber())).as(dead).isEqualTo("CANCELLED");
+            assertThat(layerRemaining(acme, o.productId())).as("not re-reserved " + dead).isEqualTo(10);
+            assertThat(reservedQty(acme, o.productId())).isZero();
+        }
+    }
+
+    @Test
+    void paidCancelRestockHitsTheLocationLedgerAndBalancesTheSaleDeduction() throws Exception {
+        if (jdbc.queryForObject("SELECT count(*) FROM tenant_acme.storage_locations WHERE is_ecommerce_fulfilment_source", Integer.class) == 0) {
+            jdbc.update("INSERT INTO tenant_acme.storage_locations (name, type, active, is_default_receiving, is_walk_in_sale_source, is_ecommerce_fulfilment_source, version, created_at) "
+                    + "VALUES ('Fulfilment Test', 'SHOP_FLOOR', true, false, false, true, 0, now())");
+        }
+        long loc = jdbc.queryForObject("SELECT id FROM tenant_acme.storage_locations WHERE is_ecommerce_fulfilment_source", Long.class);
+        Placed o = placePaid("r3@acme.test", 3);
+        String sql = "SELECT coalesce(sum(quantity),0) FROM tenant_acme.stock_transfers WHERE reference_id = ? AND transfer_type = ?";
+        assertThat(jdbc.queryForObject(sql, Integer.class, o.orderNumber(), "SALE_DEDUCTION")).isEqualTo(3);
+        assertThat(jdbc.queryForObject(sql, Integer.class, o.orderNumber(), "SALE_RETURN")).isZero();
+        int afterSale = jdbc.queryForObject("SELECT coalesce(sum(quantity_on_hand),0) FROM tenant_acme.location_stock WHERE product_id = ? AND location_id = ?", Integer.class, o.productId(), loc);
+        assertThat(afterSale).isEqualTo(-3);
+
+        assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        assertThat(jdbc.queryForObject(sql, Integer.class, o.orderNumber(), "SALE_RETURN")).isEqualTo(3);
+        Map<String, Object> ret = jdbc.queryForMap("SELECT to_location_id AS toloc, from_location_id AS fromloc FROM tenant_acme.stock_transfers WHERE reference_id = ? AND transfer_type = 'SALE_RETURN'", o.orderNumber());
+        assertThat(((Number) ret.get("toloc")).longValue()).isEqualTo(loc);
+        assertThat(ret.get("fromloc")).isNull();
+        assertThat(jdbc.queryForObject("SELECT coalesce(sum(quantity_on_hand),0) FROM tenant_acme.location_stock WHERE product_id = ? AND location_id = ?", Integer.class, o.productId(), loc))
+                .as("the return balances the deduction").isZero();
+
+        // retry does not return twice
+        setStatus(o.orderNumber(), "CANCELLED");
+        assertThat(jdbc.queryForObject(sql, Integer.class, o.orderNumber(), "SALE_RETURN")).isEqualTo(3);
+    }
+
+    @Test
+    void aVersionNewerThanTheCurrentOneIsRejectedWith409() throws Exception {
+        Placed o = placePaid("r5@acme.test", 1);
+        long v = detail(o.orderNumber()).get("version").asLong();
+        MvcResult newer = setStatus(o.orderNumber(), "PACKING", v + 1, null);
+        assertThat(status(newer)).isEqualTo(409);
+        assertThat(code(newer)).isEqualTo("ORDER_VERSION_CONFLICT");
+        assertThat(status(setStatus(o.orderNumber(), "PACKING", null, "\"" + (v + 5) + "\""))).isEqualTo(409);
+        assertThat(deliveryStatus(o.orderNumber())).isEqualTo("PENDING");
+    }
+
+    @Test
+    void latePaymentOnAMerchantCancelledOrderMovesTheVersion() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("f2@acme.test", 1);
+        MvcResult c = setStatus(o.orderNumber(), "CANCELLED");
+        long v = body(c).at("/data/version").asLong();
+        assertThat(detail(o.orderNumber()).get("refundRequired").asBoolean()).isFalse();
+        long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
+        webhook(g, event("charge.success", o.reference(), minor));
+        awaitPayment(o.orderNumber(), "COMPLETED");
+        JsonNode d = detail(o.orderNumber());
+        assertThat(d.get("refundRequired").asBoolean()).isTrue();
+        assertThat(d.get("version").asLong()).isGreaterThan(v);
+        // an admin still holding the old version is told to reload instead of overwriting blindly
+        assertThat(code(setStatus(o.orderNumber(), "PACKING", v, null))).isEqualTo("ORDER_VERSION_CONFLICT");
+    }
+
     // ------------------------------------------------------------------------------------------ transitions (item 4)
 
     @Test

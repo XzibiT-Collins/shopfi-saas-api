@@ -236,4 +236,26 @@ class OrderLifecycleServiceTest {
         service.expire("ORD-1", "expired");
         assertEquals(CancelSource.EXPIRY, order.getCancelSource());
     }
+
+    @Test
+    void aVersionNewerThanTheCurrentOneIsRejectedToo() {
+        ApiCodeException e = adminFails(OrderProcessingStatus.PACKING, 6L);
+        assertEquals(409, e.getStatus().value());
+        assertEquals("ORDER_VERSION_CONFLICT", e.getCode());
+        assertEquals(OrderProcessingStatus.PENDING, order.getDeliveryStatus());
+    }
+
+    @Test
+    void adminCancelOfFailedOrDeadPaymentOrderRecordsAdminAsSource() {
+        for (PaymentStatus s : new PaymentStatus[]{PaymentStatus.FAILED, PaymentStatus.CANCELLED}) {
+            order.setStatus(s);
+            order.setDeliveryStatus(OrderProcessingStatus.PENDING);
+            order.setCancelSource(null);
+            payment.setStatus(s);
+            admin(OrderProcessingStatus.CANCELLED, null);
+            assertEquals(CancelSource.ADMIN, order.getCancelSource(), s.name());
+            assertEquals("boss@shop.test", order.getCancelledBy());
+            assertNotNull(order.getCancelledAt());
+        }
+    }
 }

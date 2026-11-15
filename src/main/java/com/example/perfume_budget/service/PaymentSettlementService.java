@@ -110,8 +110,10 @@ public class PaymentSettlementService {
             paymentRepository.save(payment);
             if (order.getStatus() != PaymentStatus.CANCELLED) {
                 order.setStatus(PaymentStatus.CANCELLED);
-                orderRepository.save(order);
             }
+            // Always dirty the row so the version moves: an admin holding the old version sees refundRequired changed.
+            order.setUpdatedAt(LocalDateTime.now());
+            orderRepository.save(order);
             log.warn("Payment for merchant-cancelled order {} flagged for refund", order.getOrderNumber());
             return Outcome.COMPLETED_REFUND_REQUIRED;
         }
@@ -139,6 +141,10 @@ public class PaymentSettlementService {
             if (order.getDeliveryStatus() == OrderProcessingStatus.CANCELLED) {
                 order.setDeliveryStatus(OrderProcessingStatus.PENDING);
             }
+            // The order is live again: it must not keep reporting that it was cancelled.
+            order.setCancelledAt(null);
+            order.setCancelSource(null);
+            order.setCancelledBy(null);
             payment.setFailureReason(null);
             log.info("Late payment re-activated closed order {}", order.getOrderNumber());
         }
