@@ -18,6 +18,10 @@ public interface TenantAuditLogRepository extends Repository<TenantAuditLog, Lon
 
     long count();
 
+    /** Console read (PLAT-04): one tenant's rows, paged; the caller supplies a deterministic sort. */
+    org.springframework.data.domain.Page<TenantAuditLog> findByTenantSlug(String tenantSlug,
+                                                                          org.springframework.data.domain.Pageable pageable);
+
     /** Newest row of a phase for a tenant (used to detect an INTENT that never got its OUTCOME). */
     Optional<TenantAuditLog> findFirstByTenantIdAndPhaseOrderByIdDesc(Long tenantId,
                                                                       com.example.perfume_budget.platform.enums.TenantAuditPhase phase);
