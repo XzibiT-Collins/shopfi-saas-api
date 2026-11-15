@@ -103,6 +103,8 @@ public class PlatformTenantService {
     // ------------------------------------------------------------------------------------------ list
 
     public static final int MAX_SEARCH_LENGTH = 100;
+    /** Upper bound for {@code page} (the offset page*size must never overflow an int or reach the database as nonsense). */
+    public static final int MAX_PAGE = 1_000_000;
     /** Audit sort keys to entity properties (allow-list). */
     static final Map<String, String> AUDIT_SORT_FIELDS = Map.of("id", "id", "occurredAt", "occurredAt");
 
@@ -122,6 +124,9 @@ public class PlatformTenantService {
         int p = page == null ? 0 : page;
         if (p < 0) {
             throw new BadRequestException("page must be >= 0");
+        }
+        if (p > MAX_PAGE) {
+            throw new BadRequestException("page must be <= " + MAX_PAGE);
         }
         if (size != null && size < 1) {
             throw new BadRequestException("size must be >= 1");
@@ -196,10 +201,13 @@ public class PlatformTenantService {
         return t;
     }
 
-    /** Escapes LIKE wildcards so user input only ever matches literally. */
+    /**
+     * Escapes LIKE wildcards so user input only ever matches literally. The term is NOT case-folded here: it is bound as
+     * is and lowered by the database ({@code lower(:pattern)}), the same function that lowers the column, so Java and
+     * Postgres can never disagree on folding (e.g. U+0130).
+     */
     static String likePattern(String term) {
-        String escaped = term.toLowerCase(java.util.Locale.ROOT)
-                .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+        String escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
         return "%" + escaped + "%";
     }
 
@@ -211,7 +219,7 @@ public class PlatformTenantService {
                 all.add(cb.equal(root.get("status"), status));
             }
             if (term != null) {
-                String pattern = likePattern(term);
+                var pattern = cb.lower(cb.literal(likePattern(term)));
                 all.add(cb.or(
                         cb.like(cb.lower(root.get("slug")), pattern, '\\'),
                         cb.like(cb.lower(root.get("displayName")), pattern, '\\'),
@@ -232,7 +240,7 @@ public class PlatformTenantService {
     public PlatformAuditPage audit(String slug, Integer page, Integer size, String sortKey, String direction) {
         Paging pg = paging(page, size, sortKey, direction, "id", AUDIT_SORT_FIELDS, Sort.Direction.DESC);
         Tenant tenant = require(slug);
-        Page<TenantAuditLog> result = auditRepository.findByTenantSlug(tenant.getSlug(), pg.request());
+        Page<TenantAuditLog> result = auditRepository.findByTenantId(tenant.getId(), pg.request());
         List<PlatformAuditRow> items = result.getContent().stream().map(PlatformAuditRow::from).toList();
         return new PlatformAuditPage(items, pg.page(), pg.size(), result.getTotalElements(), result.getTotalPages(),
                 pg.key(), pg.dirName());

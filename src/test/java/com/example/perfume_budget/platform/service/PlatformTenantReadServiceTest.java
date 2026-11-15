@@ -37,7 +37,9 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -92,10 +94,10 @@ class PlatformTenantReadServiceTest {
 
     private Pageable auditPageable(Integer size, String sort, String direction) {
         when(tenants.findBySlug("acme")).thenReturn(Optional.of(tenant("acme")));
-        when(audits.findByTenantSlug(anyString(), any(Pageable.class))).thenReturn(Page.empty());
+        when(audits.findByTenantId(anyLong(), any(Pageable.class))).thenReturn(Page.empty());
         service.audit("acme", null, size, sort, direction);
         ArgumentCaptor<Pageable> c = ArgumentCaptor.forClass(Pageable.class);
-        verify(audits).findByTenantSlug(anyString(), c.capture());
+        verify(audits).findByTenantId(eq(5L), c.capture());
         return c.getValue();
     }
 
@@ -119,6 +121,12 @@ class PlatformTenantReadServiceTest {
     void audit_rejectsBadInput_beforeAnyQuery() {
         when(tenants.findBySlug("acme")).thenReturn(Optional.of(tenant("acme")));
         assertThatThrownBy(() -> service.audit("acme", -1, null, null, null)).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> service.audit("acme", PlatformTenantService.MAX_PAGE + 1, null, null, null))
+                .isInstanceOf(BadRequestException.class).hasMessage("page must be <= 1000000");
+        assertThatThrownBy(() -> service.audit("acme", Integer.MAX_VALUE, null, null, null)).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> service.list(null, Integer.MAX_VALUE, null, null, null)).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> service.list(null, PlatformTenantService.MAX_PAGE + 1, null, null, null, "x"))
+                .isInstanceOf(BadRequestException.class);
         assertThatThrownBy(() -> service.audit("acme", null, 0, null, null)).isInstanceOf(BadRequestException.class);
         assertThatThrownBy(() -> service.audit("acme", null, null, "actorEmail", null)).isInstanceOf(BadRequestException.class);
         assertThatThrownBy(() -> service.audit("acme", null, null, "tenantId", null)).isInstanceOf(BadRequestException.class);
@@ -158,7 +166,7 @@ class PlatformTenantReadServiceTest {
         TenantAuditLog row = TenantAuditLog.builder().id(1L).occurredAt(Instant.now()).actorAdminId(1L)
                 .actorEmail("a@b.test").tenantId(5L).tenantSlug("acme").action(TenantAction.SUSPEND)
                 .previousStatus(TenantStatus.ACTIVE).newStatus(TenantStatus.SUSPENDED).phase(TenantAuditPhase.OUTCOME).build();
-        when(audits.findByTenantSlug(anyString(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
+        when(audits.findByTenantId(anyLong(), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(row)));
         PlatformAuditPage p = service.audit("acme", 0, 5000, null, null);
         assertThat(p.size()).isEqualTo(100);
         assertThat(p.sort()).isEqualTo("id");
@@ -169,9 +177,9 @@ class PlatformTenantReadServiceTest {
     // ---- search
 
     @Test
-    void likePattern_escapesWildcardsAndBackslash_andLowerCases() {
-        assertThat(PlatformTenantService.likePattern("100%_Off\\x")).isEqualTo("%100\\%\\_off\\\\x%");
-        assertThat(PlatformTenantService.likePattern("O'Brien")).isEqualTo("%o'brien%");
+    void likePattern_escapesWildcardsAndBackslash_andLeavesCaseToTheDatabase() {
+        assertThat(PlatformTenantService.likePattern("100%_Off\\x")).isEqualTo("%100\\%\\_Off\\\\x%");
+        assertThat(PlatformTenantService.likePattern("O'Brien")).isEqualTo("%O'Brien%");
         assertThat(PlatformTenantService.likePattern("%")).isEqualTo("%\\%%");
         assertThat(PlatformTenantService.likePattern("_")).isEqualTo("%\\_%");
     }

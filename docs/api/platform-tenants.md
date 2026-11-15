@@ -100,10 +100,12 @@ Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description
 
 The rows of `master.tenant_audit_log` for one tenant, **newest first** (`id` descending), paged. Query: `page` (0-based,
 default 0), `size` (default 20, capped at 100, response reports the effective size), `sort` (`id` default, `occurredAt`),
-`direction` (`desc` default, `asc`); the unique `id` is always the final tiebreaker. Bad `page`/`size`/`sort`/`direction`: `400`
+`direction` (`desc` default, `asc`); the unique `id` is always the final tiebreaker. `page` is capped at **1,000,000**: a larger
+value (or a negative one) is `400 {"description": "page must be <= 1000000", ...}`, on the list too. Bad `page`/`size`/`sort`/`direction`: `400`
 like the list. Unknown or malformed slug: the same `404` as the detail. A tenant with no rows returns an empty `items`.
-Note: rows are keyed by the slug of an existing tenant; a purged tenant (its registry row deleted) answers `404` even though
-its audit rows survive in the table.
+The rows are looked up by the tenant's id (not its slug), so a slug reused after a purge starts with an empty history and never
+inherits the rows of the purged tenant. A purged tenant (registry row deleted) answers `404` even though its audit rows survive
+in the table.
 
 Row keys (exactly these eight; the console allow-list `parseAuditRows` keeps `id, occurredAt, actorEmail, action,
 previousStatus, newStatus, phase` and drops the rest):
@@ -116,11 +118,21 @@ previousStatus, newStatus, phase` and drops the rest):
 | `phase` | string | `INTENT`, `OUTCOME`, `RECLAIM`, `RECONCILE` (meaning in the previous section) |
 | `actorEmail` | string | platform admin who acted (also on RECLAIM and RECONCILE); SUPER_ADMIN data, do not log or cache in shared storage |
 | `previousStatus`, `newStatus` | string | tenant statuses |
-| `occurredAt` | string | database time, UTC with an explicit offset, e.g. `2026-11-14T10:00:00.123456Z` |
+| `occurredAt` | string | database time, UTC, always ending in `Z`. The fractional part has **variable length** (trailing zeros are trimmed) and may be absent: `2026-01-01T00:00:00Z`, `2026-01-01T00:00:00.5Z`, `2026-11-14T10:00:00.123456Z` are all valid. |
 
 Never returned: the internal admin id, the tenant id, password hashes, webhook tokens, schema names or any payload (the table
 holds none). The reading rules above are unchanged and apply to the rows ordered by `id` ascending: when paging newest first,
 reverse the page before applying them, and fetch older pages when an `INTENT`/`OUTCOME` pair straddles a page boundary.
+Timestamps: the tenant fields `createdAt` and `updatedAt` are `LocalDateTime` strings with **no offset** (server local time),
+while audit `occurredAt` is an instant ending in `Z`. They are different formats and must be parsed separately; never compare
+them directly.
+
+Paging caveats for clients: offset paging newest first can **repeat** a row (or shift one) if a new row is inserted between two
+fetches, so de-duplicate by `id` when stitching pages. To apply the reading rules to a trail that spans several pages, either
+load all pages up to a cap, or load contiguous pages starting from the newest end and judge only rows that are away from the
+oldest loaded boundary: an `INTENT` whose `OUTCOME`/`RECLAIM`/`RECONCILE` may lie on the next (older or newer) page must stay
+"undetermined" until that page is loaded. Never judge an `INTENT`/`OUTCOME` pair that straddles the page boundary.
+
 Deviation from the console's current parser input: it expects a bare array of rows; here the array is `data.items` inside the
 standard paging envelope (`page`, `size`, `totalElements`, `totalPages`, `sort`, `direction`), and rows carry an extra `tenantSlug`.
 

@@ -63,6 +63,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * console. Audit rows are produced by the real service flows (saga, reclaim, reconcile, suspend/reactivate).
  */
 @AutoConfigureMockMvc
+// Kept on purpose: the extra hibernate.generate_statistics property gives this class its OWN cached context (and Hikari
+// pool, 6 connections). Closing it after the class frees those Postgres connection slots for the following test classes
+// (leaked contexts exhaust the slots and make later tests skip).
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @TestPropertySource(properties = {
         "tenant.base-domain=shopfi.test",
@@ -738,5 +741,135 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
         }
         assertThat(allAuditRows()).isEqualTo(rows);
         assertThat(tenantRepository.findBySlug("p4-verbs")).isPresent();
+    }
+
+    // ---- review fixes (F1, F2, F3, F4, F6, F8) -------------------------------------------------------------------
+
+    private Set<Long> auditIds(String slug) throws Exception {
+        Set<Long> ids = new HashSet<>();
+        for (JsonNode i : body(read(BASE + "/" + slug + "/audit?size=100")).get("data").get("items")) {
+            assertThat(i.get("tenantSlug").asText()).isEqualTo(slug);
+            ids.add(i.get("id").asLong());
+        }
+        return ids;
+    }
+
+    @Test
+    void audit_prefixSlugs_acme_acmeStore_acmex_neverSeeEachOthersRows() throws Exception {
+        mk("p4-acme", TenantStatus.ACTIVE, false);
+        mk("p4-acme-store", TenantStatus.ACTIVE, false);
+        mk("p4-acmex", TenantStatus.ACTIVE, false);
+        act("p4-acme", "suspend");
+        act("p4-acme-store", "suspend");
+        act("p4-acme-store", "reactivate");
+        act("p4-acmex", "suspend");
+        act("p4-acmex", "reactivate");
+        act("p4-acmex", "suspend");
+        Set<Long> a = auditIds("p4-acme");
+        Set<Long> b = auditIds("p4-acme-store");
+        Set<Long> c = auditIds("p4-acmex");
+        assertThat(a).hasSize(1);
+        assertThat(b).hasSize(2);
+        assertThat(c).hasSize(3);
+        assertThat(a).doesNotContainAnyElementsOf(b).doesNotContainAnyElementsOf(c);
+        assertThat(b).doesNotContainAnyElementsOf(c);
+        for (String s : List.of("p4-acme", "p4-acme-store", "p4-acmex")) {
+            assertThat(body(read(BASE + "/" + s + "/audit")).get("data").get("totalElements").asInt())
+                    .isEqualTo(s.equals("p4-acme") ? 1 : s.equals("p4-acme-store") ? 2 : 3);
+        }
+    }
+
+    @Test
+    void audit_reusedSlug_doesNotInheritAPurgedTenantsHistory() throws Exception {
+        Tenant old = mk("p4-reuse", TenantStatus.ACTIVE, false);
+        act("p4-reuse", "suspend");
+        assertThat(auditIds("p4-reuse")).hasSize(1);
+        tenantRepository.deleteById(old.getId());
+        tenantRepository.flush();
+        assertThat(read(BASE + "/p4-reuse/audit").getStatus()).isEqualTo(404);   // purged: gone, rows remain in the table
+        assertThat(scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = 'p4-reuse'")).isEqualTo(1);
+        Tenant reborn = mk("p4-reuse", TenantStatus.ACTIVE, false);
+        assertThat(reborn.getId()).isNotEqualTo(old.getId());
+        JsonNode d = body(read(BASE + "/p4-reuse/audit")).get("data");
+        assertThat(d.get("items")).isEmpty();                                     // new tenant, empty history
+        assertThat(d.get("totalElements").asInt()).isZero();
+        act("p4-reuse", "suspend");
+        assertThat(auditIds("p4-reuse")).hasSize(1);
+        assertThat(scalar("SELECT count(*) FROM master.tenant_audit_log WHERE tenant_slug = 'p4-reuse'")).isEqualTo(2);
+    }
+
+    @Test
+    void reads_areNotCacheable_detailAuditSearchAndTheirErrors() throws Exception {
+        mk("p4-cache", TenantStatus.ACTIVE, false);
+        act("p4-cache", "suspend");
+        for (String path : List.of(BASE + "/p4-cache", BASE + "/p4-cache/audit", BASE + "?search=p4-cache", BASE,
+                BASE + "/p4-cache/audit?sort=bad", BASE + "/no-such-shop")) {
+            MockHttpServletResponse r = read(path);
+            assertThat(r.getHeader("Cache-Control")).as(path).contains("no-store");
+            assertThat(r.getHeader("Pragma")).as(path).isEqualTo("no-cache");
+        }
+    }
+
+    @Test
+    void page_isCapped_boundaryValues_onAuditAndList() throws Exception {
+        mk("p4-pagecap", TenantStatus.ACTIVE, false);
+        for (String base : List.of(BASE + "/p4-pagecap/audit", BASE)) {
+            assertThat(read(base + "?page=1000000").getStatus()).as(base).isEqualTo(200);
+            assertThat(body(read(base + "?page=1000000")).get("data").get("items")).isEmpty();
+            for (String bad : List.of("1000001", "2147483647", "-1", "2147483648", "9999999999")) {
+                MockHttpServletResponse r = read(base + "?page=" + bad);
+                assertThat(r.getStatus()).as(base + " page=" + bad).isEqualTo(400);
+                assertThat(keys(body(r))).isEqualTo(Set.of("description", "data"));
+            }
+            assertThat(read(base + "?page=1000001").getContentAsString())
+                    .isEqualTo("{\"description\":\"page must be <= 1000000\",\"data\":null}");
+            assertThat(read(base + "?page=1000000&size=100").getStatus()).as(base).isEqualTo(200);
+        }
+        assertThat(read(BASE + "?page=1000001&search=x").getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void audit_identicalTimestamps_pageStablyByIdTieBreak() throws Exception {
+        Tenant t = mk("p4-ties", TenantStatus.ACTIVE, false);
+        exec("INSERT INTO master.tenant_audit_log (occurred_at, actor_admin_id, actor_email, tenant_id, tenant_slug, action,"
+                + " previous_status, new_status, phase) SELECT TIMESTAMPTZ '2026-01-01 00:00:00+00', 1, 'tie@platform.test', "
+                + t.getId() + ", 'p4-ties', 'SUSPEND', 'ACTIVE', 'SUSPENDED', 'OUTCOME' FROM generate_series(1, 7)");
+        assertThat(scalar("SELECT count(DISTINCT occurred_at) FROM master.tenant_audit_log WHERE tenant_slug = 'p4-ties'")).isEqualTo(1);
+        List<Long> dbDesc = jdbc(c -> {
+            try (var ps = c.prepareStatement("SELECT id FROM master.tenant_audit_log WHERE tenant_slug = 'p4-ties' ORDER BY id DESC");
+                 ResultSet rs = ps.executeQuery()) {
+                List<Long> ids = new ArrayList<>();
+                while (rs.next()) {
+                    ids.add(rs.getLong(1));
+                }
+                return ids;
+            }
+        });
+        assertThat(dbDesc).hasSize(7);
+        for (String sort : List.of("occurredAt", "id")) {
+            for (String dir : List.of("desc", "asc")) {
+                List<Long> expected = new ArrayList<>(dbDesc);
+                if (dir.equals("asc")) {
+                    java.util.Collections.reverse(expected);
+                }
+                List<Long> paged = new ArrayList<>();
+                for (int p = 0; p < 4; p++) {
+                    JsonNode items = body(read(BASE + "/p4-ties/audit?size=2&page=" + p + "&sort=" + sort + "&direction=" + dir))
+                            .get("data").get("items");
+                    items.forEach(i -> paged.add(i.get("id").asLong()));
+                }
+                assertThat(paged).as(sort + " " + dir).isEqualTo(expected);
+            }
+        }
+    }
+
+    @Test
+    void search_foldingIsDoneByTheDatabase_dottedCapitalI_matchesItself() throws Exception {
+        mk("p4-ist", "\u0130stanbul Perfumes", "ist@p4i.test", TenantStatus.ACTIVE, false);
+        mk("p4-ist2", "Plain Shop", "ist2@p4i.test", TenantStatus.ACTIVE, false);
+        assertThat(slugs("?search=\u0130STANBUL")).containsExactly("p4-ist");
+        assertThat(slugs("?search=\u0130stanbul")).containsExactly("p4-ist");
+        assertThat(slugs("?search=" + "\u0130stanbul Perf")).containsExactly("p4-ist");
+        assertThat(slugs("?search=P4I.TEST&sort=slug&direction=asc")).containsExactly("p4-ist", "p4-ist2");
     }
 }
