@@ -394,12 +394,12 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     @Test
     void usageLimitHoldsUnderConcurrentCheckouts_counterEqualsOrders() throws Exception {
-        long p = product(acme, "Orchid", "100.00", 100);
         Map<String, Object> b = body("LIMIT3", "FLAT", "5");
         b.put("usageLimit", 3);
         createCoupon(acme, adminA, b);
+        // one product per customer: the coupon is the only shared row (same-product contention is API-05, see below)
         List<Customer> cs = new ArrayList<>();
-        for (int i = 0; i < 8; i++) cs.add(ready(acme, "lim" + i + "@acme.test", p));
+        for (int i = 0; i < 8; i++) cs.add(ready(acme, "lim" + i + "@acme.test", product(acme, "Orchid" + i, "100.00", 100)));
 
         List<Integer> statuses = runConcurrently(cs, "LIMIT3");
 
@@ -416,7 +416,7 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         long p = product(acme, "Daisy", "100.00", 100);
         long id = createCoupon(acme, adminA, body("RACEDZ", "FLAT", "5"));
         List<Customer> cs = new ArrayList<>();
-        for (int i = 0; i < 8; i++) cs.add(ready(acme, "rd" + i + "@acme.test", p));
+        for (int i = 0; i < 8; i++) cs.add(ready(acme, "rd" + i + "@acme.test", product(acme, "Daisy" + i, "100.00", 100)));
 
         ExecutorService ex = Executors.newFixedThreadPool(9);
         try {
