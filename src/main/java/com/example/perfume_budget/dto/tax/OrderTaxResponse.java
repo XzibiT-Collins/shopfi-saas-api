@@ -10,8 +10,8 @@ public record OrderTaxResponse(
         String taxName,
         /** Amount in {@code currency} (major units); the currency was implicit before ORD-01. */
         BigDecimal taxAmount,
-        /** @deprecated a PERCENT value (15.00 means 15%) with an undocumented unit; use {@code taxRatePercent}. */
-        @Deprecated BigDecimal taxRate,
+        /** DEPRECATED: a PERCENT value (15.00 means 15%) with an undocumented unit; use {@code taxRatePercent}. */
+        BigDecimal taxRate,
         String taxCode,
         String currency,              // ISO-4217 code of taxAmount, e.g. "GHS"
         String taxAmountFormatted,    // "GHS 12.50", same style as the other money strings

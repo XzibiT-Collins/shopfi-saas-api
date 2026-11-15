@@ -16,8 +16,8 @@ public record OrderListResponse (
         PaymentStatus paymentStatus,
         OrderProcessingStatus deliveryStatus,
         String totalAmount,
-        /** @deprecated zone-less server-local time; use {@code orderedAt}. */
-        @Deprecated LocalDateTime orderDate,
+        /** DEPRECATED: zone-less server-local time; use {@code orderedAt}. */
+        LocalDateTime orderDate,
         OffsetDateTime orderedAt,     // the same instant in UTC with an explicit offset (ISO-8601, "...Z")
         Long version                  // optimistic-concurrency token for PUT /order/update-order-status
 ){}

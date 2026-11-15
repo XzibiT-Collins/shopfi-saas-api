@@ -25,8 +25,8 @@ public record OrderResponse(
         PaymentStatus paymentStatus,
         OrderProcessingStatus deliveryStatus,
         List<OrderItemResponse> lineItems,
-        /** @deprecated zone-less server-local time; use {@code orderedAt}. */
-        @Deprecated LocalDateTime orderDate,
+        /** DEPRECATED: zone-less server-local time; use {@code orderedAt}. */
+        LocalDateTime orderDate,
         OffsetDateTime orderedAt,     // the same instant in UTC with an explicit offset (ISO-8601, "...Z")
         DeliveryDetailResponse deliveryDetail,
         TaxCalculationResponse taxes,
