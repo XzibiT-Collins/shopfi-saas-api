@@ -595,6 +595,10 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(listNumbers("from=" + utc.apply(days[1]))).containsExactlyInAnyOrder(os.get(1).orderNumber(), os.get(2).orderNumber());
         assertThat(listNumbers("to=" + utc.apply(days[1]))).containsExactly(os.get(0).orderNumber());
         // a date-only 'to' covers its whole UTC day, a date-only 'from' starts at its midnight
+        java.time.LocalDate d1 = java.time.Instant.parse(utc.apply(days[1])).atZone(java.time.ZoneOffset.UTC).toLocalDate();
+        assertThat(listNumbers("to=" + d1)).as("a date-only 'to' includes its whole UTC day").containsExactlyInAnyOrder(os.get(0).orderNumber(), os.get(1).orderNumber());
+        assertThat(listNumbers("from=" + d1)).as("a date-only 'from' starts at its UTC midnight").containsExactlyInAnyOrder(os.get(1).orderNumber(), os.get(2).orderNumber());
+        assertThat(listNumbers("from=" + d1 + "&to=" + d1)).containsExactly(os.get(1).orderNumber());
         java.time.LocalDate d0 = java.time.LocalDate.of(2026, 3, 1);
         assertThat(listNumbers("from=2000-01-01&to=2100-01-01")).hasSize(3);
         assertThat(listNumbers("from=2100-01-01")).isEmpty();
