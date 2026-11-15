@@ -117,6 +117,7 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | OrderController | POST | `/api/v1/order/{orderNumber}/cancel` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | mutates |
 | OrderController | GET | `/api/v1/order/all` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | OrderController | PUT | `/api/v1/order/update-order-status/{orderNumber}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
+| OrderController | POST | `/api/v1/order/{orderNumber}/refund-acknowledgement` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (ORD-01: clears refundRequired, audit row; see [orders.md](orders.md)) |
 | PaymentController | GET | `/api/v1/payment/verify` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | reads tenant data |
 | PaymentSettingsController | GET | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | PaymentSettingsController | PUT | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |

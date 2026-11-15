@@ -1,5 +1,6 @@
 package com.example.perfume_budget.mapper;
 
+import com.example.perfume_budget.dto.order.OrderAccountResponse;
 import com.example.perfume_budget.dto.order.OrderListResponse;
 import com.example.perfume_budget.dto.order.OrderResponse;
 import com.example.perfume_budget.dto.tax.TaxCalculationResponse;
@@ -8,6 +9,10 @@ import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 
 public class OrderMapper {
     private OrderMapper(){
@@ -28,7 +33,22 @@ public class OrderMapper {
         return toOrderResponse(order, reference, false);
     }
 
+    /** Admin view: same as the payment overload plus the owner's identity. */
+    public static OrderResponse toAdminOrderResponse(Order order, Payment payment){
+        return toOrderResponse(order, payment == null ? null : payment.getProviderPaymentReference(),
+                payment != null && payment.isRefundRequired(), true);
+    }
+
     public static OrderResponse toOrderResponse(Order order, String reference, boolean refundRequired){
+        return toOrderResponse(order, reference, refundRequired, false);
+    }
+
+    /** The order's creation instant as UTC with an explicit offset (the stored value is server-local, zone-less). */
+    public static OffsetDateTime toUtc(LocalDateTime local){
+        return local == null ? null : local.atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneOffset.UTC).toOffsetDateTime();
+    }
+
+    private static OrderResponse toOrderResponse(Order order, String reference, boolean refundRequired, boolean includeAccount){
 
         Money subtotal = order.getSubtotal();
         BigDecimal autoDiscount = amount(order.getAutomaticDiscountAmount());
@@ -52,6 +72,14 @@ public class OrderMapper {
                 .paymentStatus(order.getStatus())
                 .deliveryStatus(order.getDeliveryStatus())
                 .orderDate(order.getCreatedAt())
+                .orderedAt(toUtc(order.getCreatedAt()))
+                .version(order.getVersion())
+                .cancelledAt(toUtc(order.getCancelledAt()))
+                .cancelSource(order.getCancelSource() == null ? null : order.getCancelSource().name())
+                .account(includeAccount && order.getUser() != null
+                        ? OrderAccountResponse.builder().id(order.getUser().getId())
+                        .fullName(order.getUser().getFullName()).email(order.getUser().getEmail()).build()
+                        : null)
                 .lineItems(order.getItems()
                         .stream().map(OrderItemMapper::toOrderItemResponse)
                         .toList())
@@ -97,6 +125,8 @@ public class OrderMapper {
                 .deliveryStatus(order.getDeliveryStatus())
                 .totalAmount(order.getTotalAmount().toString())
                 .orderDate(order.getCreatedAt())
+                .orderedAt(toUtc(order.getCreatedAt()))
+                .version(order.getVersion())
                 .build();
     }
 

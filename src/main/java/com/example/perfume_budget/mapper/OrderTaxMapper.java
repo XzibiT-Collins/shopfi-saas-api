@@ -14,6 +14,10 @@ public class OrderTaxMapper {
                 .taxName(orderTax.getTaxName())
                 .taxAmount(orderTax.getTaxAmount().getAmount())
                 .taxRate(orderTax.getTaxRate())
+                .taxRatePercent(orderTax.getTaxRate())
+                .taxCode(orderTax.getTaxCode())
+                .currency(orderTax.getTaxAmount().getCurrencyCode() == null ? null : orderTax.getTaxAmount().getCurrencyCode().name())
+                .taxAmountFormatted(orderTax.getTaxAmount().toString())
                 .build();
     }
 }

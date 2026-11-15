@@ -1,5 +1,6 @@
 package com.example.perfume_budget.model;
 
+import com.example.perfume_budget.enums.CancelSource;
 import com.example.perfume_budget.enums.CurrencyCode;
 import com.example.perfume_budget.enums.OrderProcessingStatus;
 import com.example.perfume_budget.enums.PaymentStatus;
@@ -63,6 +64,22 @@ public class Order {
 
     @Enumerated(EnumType.STRING)
     private OrderProcessingStatus deliveryStatus;
+
+    /** Optimistic-concurrency token (ORD-01): every committed write of the order bumps it; admins echo it back. */
+    @Version
+    private Long version;
+
+    /** When/by whom/how the order was cancelled (null while it is not; legacy cancelled orders have no source). */
+    @Column(name = "cancelled_at")
+    private LocalDateTime cancelledAt;
+
+    /** E-mail of the admin who cancelled it (null for customer/expiry cancels). */
+    @Column(name = "cancelled_by")
+    private String cancelledBy;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cancel_source", length = 16)
+    private CancelSource cancelSource;
 
     private String paymentReference;
 

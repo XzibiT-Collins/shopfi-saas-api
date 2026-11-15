@@ -245,6 +245,50 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Override
     @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    public int restockConsumedOrderInventory(Order order) {
+        List<InventoryAllocation> allocations = inventoryAllocationRepository
+                .findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
+                        InventoryReferenceType.ORDER,
+                        order.getOrderNumber(),
+                        InventoryAllocationStatus.CONSUMED
+                );
+
+        Map<Long, Product> productById = new LinkedHashMap<>();
+        Map<Long, Integer> quantityByProduct = new LinkedHashMap<>();
+        int units = 0;
+        for (InventoryAllocation allocation : allocations) {
+            InventoryLayer layer = allocation.getLayer();
+            layer.setRemainingQuantity(layer.getRemainingQuantity() + allocation.getQuantity());
+            inventoryLayerRepository.save(layer);
+            allocation.setStatus(InventoryAllocationStatus.RETURNED);
+            inventoryAllocationRepository.save(allocation);
+            recordMovement(allocation.getProduct(),
+                    layer,
+                    InventoryMovementType.RETURN,
+                    InventoryReferenceType.ORDER,
+                    order.getOrderNumber(),
+                    allocation.getReferenceLineKey(),
+                    allocation.getQuantity(),
+                    allocation.getUnitCost(),
+                    allocation.getUnitSellingPrice(),
+                    "Returned to stock: order " + order.getOrderNumber() + " cancelled by the merchant");
+            productById.putIfAbsent(allocation.getProduct().getId(), allocation.getProduct());
+            quantityByProduct.merge(allocation.getProduct().getId(), allocation.getQuantity(), Integer::sum);
+            units += allocation.getQuantity();
+        }
+
+        quantityByProduct.forEach((productId, quantity) -> {
+            productRepository.incrementSoldCount(productId, -quantity);
+            locationLedgerSync.returnForEcommerceSale(productById.get(productId), quantity,
+                    order.getOrderNumber(), "Returned order " + order.getOrderNumber());
+        });
+        refreshProducts(new ArrayList<>(quantityByProduct.keySet()));
+        return units;
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items) {
         for (WalkInOrderItem item : items) {
             InventoryConsumption consumption = consumeInventory(getProduct(item.getProductId()),

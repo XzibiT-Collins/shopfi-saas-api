@@ -28,8 +28,17 @@ public interface OrderService {
     OrderResponse getOrderByOrderNumber(String orderNumber);
 
     // ADMIN
-    PageResponse<OrderListResponse> getAllOrders(PaymentStatus paymentStatus, OrderProcessingStatus deliveryStatus, Pageable pageable);
-    OrderResponse updateOrderStatus(String orderNumber, OrderStatusUpdateRequest request);
+    /**
+     * @param from   inclusive lower bound of the order time (ISO-8601 date or offset date-time), null = none
+     * @param to     upper bound: a date is inclusive of that whole (UTC) day, a date-time is exclusive; null = none
+     * @param search text search over order number, recipient name, phone and account e-mail (contains, case-insensitive)
+     */
+    PageResponse<OrderListResponse> getAllOrders(PaymentStatus paymentStatus, OrderProcessingStatus deliveryStatus,
+                                                 String from, String to, String search, Pageable pageable);
+    /** @param ifMatchVersion version from the If-Match header, merged with the body's {@code version} (they must agree) */
+    OrderResponse updateOrderStatus(String orderNumber, OrderStatusUpdateRequest request, Long ifMatchVersion);
+    /** The shop refunded a refund-required order by hand: clears the flag and records who/when. */
+    OrderResponse acknowledgeRefund(String orderNumber);
 
     void reserveStock(String orderNumber, List<OrderItem> orderItems);
 

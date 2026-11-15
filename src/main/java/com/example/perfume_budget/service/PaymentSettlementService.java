@@ -1,5 +1,6 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.enums.CancelSource;
 import com.example.perfume_budget.enums.OrderProcessingStatus;
 import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.exception.BadRequestException;
@@ -9,6 +10,7 @@ import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.repository.OrderRepository;
 import com.example.perfume_budget.repository.PaymentRepository;
 import com.example.perfume_budget.repository.ProductRepository;
+import com.example.perfume_budget.service.interfaces.InventoryManagementService;
 import com.example.perfume_budget.service.interfaces.OrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -53,6 +55,7 @@ public class PaymentSettlementService {
     private final OrderStockReservationService reservationService;
     private final BookkeepingService bookkeepingService;
     private final ApplicationEventPublisher eventPublisher;
+    private final InventoryManagementService inventoryManagementService;
 
     /**
      * @param providerAmountMinor amount the provider says it collected in minor units (pesewas), or null when the
@@ -86,8 +89,32 @@ public class PaymentSettlementService {
 
         payment.setGatewayResponse(gatewayResponseJson);
 
+        // deliveryStatus CANCELLED is closed too (ORD-01): before the real admin cancel, an admin "cancel" only set the
+        // delivery status and left the order payable.
         boolean wasClosed = order.getStatus() == PaymentStatus.CANCELLED || order.getStatus() == PaymentStatus.FAILED
-                || payment.getStatus() == PaymentStatus.CANCELLED || payment.getStatus() == PaymentStatus.FAILED;
+                || payment.getStatus() == PaymentStatus.CANCELLED || payment.getStatus() == PaymentStatus.FAILED
+                || order.getDeliveryStatus() == OrderProcessingStatus.CANCELLED;
+        // A merchant cancel is a decision: a late payment is NEVER used to revive such an order (customer cancel and
+        // expiry keep the PAY-01 behaviour). Orders cancelled by the old delivery-status-only "cancel" (payment still
+        // open, no cancel source) are treated the same way.
+        boolean cancelledByMerchant = order.getCancelSource() == CancelSource.ADMIN
+                || (order.getCancelSource() == null && order.getDeliveryStatus() == OrderProcessingStatus.CANCELLED
+                && order.getStatus() != PaymentStatus.CANCELLED && order.getStatus() != PaymentStatus.FAILED);
+        if (wasClosed && cancelledByMerchant) {
+            inventoryManagementService.releaseOrderInventory(order.getOrderNumber()); // only RESERVED rows: idempotent
+            payment.setStatus(PaymentStatus.COMPLETED);
+            payment.setPaymentMethod(channel);
+            payment.setPaidAt(LocalDateTime.now());
+            payment.setRefundRequired(true);
+            payment.setFailureReason("Paid after the merchant cancelled the order: refund required");
+            paymentRepository.save(payment);
+            if (order.getStatus() != PaymentStatus.CANCELLED) {
+                order.setStatus(PaymentStatus.CANCELLED);
+                orderRepository.save(order);
+            }
+            log.warn("Payment for merchant-cancelled order {} flagged for refund", order.getOrderNumber());
+            return Outcome.COMPLETED_REFUND_REQUIRED;
+        }
         if (wasClosed) {
             // The customer really paid. Take the goods back out of stock if we still can.
             boolean reserved;
