@@ -200,6 +200,18 @@ class CouponRedemptionIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(body(again).at("/data/idempotentReplay").asBoolean()).isTrue();
         assertThat(usage("LASTONE")).isEqualTo(1);
         assertThat(count(acme, "orders")).isEqualTo(1);
+
+        // with headroom the replay's reservation succeeds and must be given back
+        createCoupon(body("ROOMY", 5, null));
+        Customer d = ready("replay2@acme.test");
+        assertThat(checkout(d, "key-replay-0002", "couponCode=ROOMY").getResponse().getStatus()).isEqualTo(200);
+        for (int i = 0; i < 3; i++) {
+            MvcResult r = checkout(d, "key-replay-0002", "couponCode=roomy");
+            assertThat(body(r).at("/data/idempotentReplay").asBoolean()).isTrue();
+        }
+        // and a keyless retry of the same open order replays too
+        assertThat(body(checkout(d, null, "couponCode=ROOMY")).at("/data/idempotentReplay").asBoolean()).isTrue();
+        assertThat(usage("ROOMY")).isEqualTo(1);
     }
 
     @Test
