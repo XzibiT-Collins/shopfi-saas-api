@@ -88,7 +88,7 @@ class AuthorizationMatrixStructureTest {
         expect(ADMIN, "FeatureFlagController", "getAllFlags", "getFlag", "updateFlag");
         expect(ADMIN, "InventoryManagementController", "receiveStock", "adjustInventory", "getProductInventorySummary",
                 "getProductInventoryHistory");
-        expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus");
+        expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus", "acknowledgeRefund");
         expect(ADMIN, "PaymentSettingsController", "get", "update");
         expect(ADMIN, "ProductController", "createProduct", "updateProduct", "getAdminProductListings", "getProductDetails",
                 "setProductDiscount", "clearProductDiscount", "deleteProduct");

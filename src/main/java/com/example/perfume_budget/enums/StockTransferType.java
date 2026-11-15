@@ -4,5 +4,6 @@ public enum StockTransferType {
     TRANSFER,
     RECEIPT,
     SALE_DEDUCTION,
+    SALE_RETURN,
     ADJUSTMENT
 }

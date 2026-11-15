@@ -25,6 +25,9 @@ public interface LocationLedgerSync {
 
     void deductForEcommerceSale(Product product, int quantity, String referenceId, String note);
 
+    /** Puts units of a cancelled paid e-commerce order back at the e-commerce fulfilment source (reverse of the sale deduction). */
+    void returnForEcommerceSale(Product product, int quantity, String referenceId, String note);
+
     void deductAtDefaultReceiving(Product product, int quantity, InventoryReferenceType referenceType,
                                   String referenceId, String note);
 

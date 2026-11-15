@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Repository
-public interface OrderRepository extends JpaRepository<Order, Long> {
+public interface OrderRepository extends JpaRepository<Order, Long>, org.springframework.data.jpa.repository.JpaSpecificationExecutor<Order> {
     boolean existsByOrderNumber(String orderNumber);
 
     Page<Order> findAllByUser(Pageable pageable, User user);
@@ -150,16 +150,6 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
         ORDER BY totalOrders DESC, totalAmountSpent DESC
         """)
     List<TopCustomer> findTopCustomers(@Param("status") PaymentStatus status, Pageable pageable);
-
-    @Query("""
-        SELECT o FROM Order o
-        WHERE (:paymentStatus IS NULL OR o.status = :paymentStatus)
-        AND (:deliveryStatus IS NULL OR o.deliveryStatus = :deliveryStatus)
-        ORDER BY o.createdAt DESC
-        """)
-    Page<Order> findAllWithFilters(@Param("paymentStatus") PaymentStatus paymentStatus,
-                                   @Param("deliveryStatus") OrderProcessingStatus deliveryStatus,
-                                   Pageable pageable);
 
     @Query("""
         SELECT COUNT(o.id)

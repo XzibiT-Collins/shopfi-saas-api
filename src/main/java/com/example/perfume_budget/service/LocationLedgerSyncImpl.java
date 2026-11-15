@@ -91,6 +91,14 @@ public class LocationLedgerSyncImpl implements LocationLedgerSync {
 
     @Override
     @Transactional
+    public void returnForEcommerceSale(Product product, int quantity, String referenceId, String note) {
+        resolve(storageLocationRepository.findByIsEcommerceFulfilmentSourceTrue(), "e-commerce fulfilment source")
+                .ifPresent(location -> applyDelta(product, location, quantity, StockTransferType.SALE_RETURN,
+                        InventoryReferenceType.ORDER, referenceId, note, authUserUtil.getCurrentUser()));
+    }
+
+    @Override
+    @Transactional
     public void deductAtDefaultReceiving(Product product, int quantity, InventoryReferenceType referenceType,
                                          String referenceId, String note) {
         resolve(storageLocationRepository.findByIsDefaultReceivingTrue(), "default receiving")

@@ -39,6 +39,7 @@ class PaymentSettlementServiceTest {
     @Mock OrderStockReservationService reservationService;
     @Mock BookkeepingService bookkeepingService;
     @Mock ApplicationEventPublisher eventPublisher;
+    @Mock com.example.perfume_budget.service.interfaces.InventoryManagementService inventoryManagementService;
     @InjectMocks PaymentSettlementService service;
 
     private Order order;
@@ -120,6 +121,76 @@ class PaymentSettlementServiceTest {
         assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
         assertTrue(payment.isRefundRequired());
         verifyNoInteractions(orderService, bookkeepingService);
+    }
+
+    @Test
+    void lateSuccessOnMerchantCancelledOrderIsRefundRequiredAndNeverRevived() {
+        order.setStatus(PaymentStatus.CANCELLED);
+        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
+        order.setCancelSource(com.example.perfume_budget.enums.CancelSource.ADMIN);
+        payment.setStatus(PaymentStatus.CANCELLED);
+
+        assertEquals(Outcome.COMPLETED_REFUND_REQUIRED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
+        assertTrue(payment.isRefundRequired());
+        assertEquals(PaymentStatus.CANCELLED, order.getStatus());
+        assertEquals(OrderProcessingStatus.CANCELLED, order.getDeliveryStatus());
+        verifyNoInteractions(reservationService, orderService, bookkeepingService);
+        verify(inventoryManagementService).releaseOrderInventory("ORD-1");
+        verify(cartRepository, never()).deleteAllByUserEmail(any());
+    }
+
+    @Test
+    void deliveryStatusCancelledAloneCountsAsClosedForAnOpenPayment() {
+        // the pre-ORD-01 admin "cancel": delivery CANCELLED, order/payment still INITIATED and payable
+        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
+
+        assertEquals(Outcome.COMPLETED_REFUND_REQUIRED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertTrue(payment.isRefundRequired());
+        assertEquals(PaymentStatus.CANCELLED, order.getStatus(), "normalised to the refund-required state");
+        assertEquals(OrderProcessingStatus.CANCELLED, order.getDeliveryStatus());
+        verifyNoInteractions(orderService, bookkeepingService);
+        verify(inventoryManagementService).releaseOrderInventory("ORD-1");
+    }
+
+    @Test
+    void repeatedLateSuccessForMerchantCancelledOrderIsUnchanged() {
+        order.setStatus(PaymentStatus.CANCELLED);
+        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
+        order.setCancelSource(com.example.perfume_budget.enums.CancelSource.ADMIN);
+        payment.setStatus(PaymentStatus.CANCELLED);
+        service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}");
+        assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        verify(inventoryManagementService, times(1)).releaseOrderInventory("ORD-1");
+    }
+
+    @Test
+    void revivedOrderNoLongerReportsItWasCancelled() {
+        order.setStatus(PaymentStatus.CANCELLED);
+        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
+        order.setCancelSource(com.example.perfume_budget.enums.CancelSource.CUSTOMER);
+        order.setCancelledAt(java.time.LocalDateTime.now());
+        order.setCancelledBy("someone@shop.test");
+        payment.setStatus(PaymentStatus.CANCELLED);
+        when(reservationService.reserveForLatePayment(any(), any())).thenReturn(true);
+
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertEquals(OrderProcessingStatus.PENDING, order.getDeliveryStatus());
+        assertNull(order.getCancelledAt());
+        assertNull(order.getCancelSource());
+        assertNull(order.getCancelledBy());
+    }
+
+    @Test
+    void latePaymentOnMerchantCancelledOrderDirtiesTheOrderSoItsVersionMoves() {
+        order.setStatus(PaymentStatus.CANCELLED);
+        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
+        order.setCancelSource(com.example.perfume_budget.enums.CancelSource.ADMIN);
+        payment.setStatus(PaymentStatus.CANCELLED);
+        assertNull(order.getUpdatedAt());
+        service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}");
+        assertNotNull(order.getUpdatedAt());
+        verify(orderRepository).save(order);
     }
 
     @Test

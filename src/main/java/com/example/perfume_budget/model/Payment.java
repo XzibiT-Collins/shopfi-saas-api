@@ -80,6 +80,13 @@ public class Payment {
     @Builder.Default
     private boolean refundRequired = false;
 
+    /** Set when the merchant confirmed the manual refund (clears {@link #refundRequired}); history: order_audit_events. */
+    @Column(name = "refund_acknowledged_at")
+    private LocalDateTime refundAcknowledgedAt;
+
+    @Column(name = "refund_acknowledged_by")
+    private String refundAcknowledgedBy;
+
     @CreatedDate
     @Column(name = "created_at", nullable =false, updatable = false)
     private LocalDateTime createdAt;

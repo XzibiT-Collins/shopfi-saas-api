@@ -36,6 +36,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -285,17 +286,127 @@ public class OrderServiceImpl implements OrderService {
     @Transactional(readOnly = true)
     public OrderResponse getOrderByOrderNumber(String orderNumber) {
         Order order = getOrder(orderNumber);
-        return OrderMapper.toOrderResponse(order, referencesFor(List.of(order)).get(order.getId()));
+        Payment payment = referencesFor(List.of(order)).get(order.getId());
+        // Account identity (name/email/id of the owner) is for an ADMIN only; customers only ever see their own orders.
+        return authUserUtil.getCurrentUser().getRoles() == UserRole.ADMIN
+                ? OrderMapper.toAdminOrderResponse(order, payment)
+                : OrderMapper.toOrderResponse(order, payment);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public PageResponse<OrderListResponse> getAllOrders(PaymentStatus paymentStatus,
                                                         OrderProcessingStatus deliveryStatus,
+                                                        String from, String to, String search,
                                                         Pageable pageable) {
-        Page<Order> orders = orderRepository.findAllWithFilters(paymentStatus, deliveryStatus, requireSortable(pageable));
+        Pageable page = adminPage(pageable);
+        LocalDateTime fromTime = parseBound(from, "from", false);
+        LocalDateTime toTime = parseBound(to, "to", true);
+        if (fromTime != null && toTime != null && !fromTime.isBefore(toTime)) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_RANGE", "'from' must be before 'to'.");
+        }
+        String term = normalizeSearch(search);
+        Page<Order> orders = orderRepository.findAll(adminFilter(paymentStatus, deliveryStatus, fromTime, toTime, term), page);
         Map<Long, Payment> refs = referencesFor(orders.getContent());
         return PaginationUtil.createPageResponse(
                 orders.map(o -> OrderMapper.toOrderListResponse(o, refs.get(o.getId()))));
+    }
+
+    public static final int MAX_SEARCH_LENGTH = 100;
+    public static final int MAX_PAGE = 1_000_000;
+    public static final int MAX_PAGE_SIZE = 100;
+
+    /** Caps page/size, applies the sort whitelist and appends the unique id as the final tie-break. */
+    private Pageable adminPage(Pageable pageable) {
+        requireSortable(pageable);
+        if (pageable.getPageNumber() > MAX_PAGE) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "page must be <= " + MAX_PAGE + ".");
+        }
+        int size = Math.min(pageable.getPageSize(), MAX_PAGE_SIZE);
+        org.springframework.data.domain.Sort sort = pageable.getSort().isSorted()
+                ? pageable.getSort()
+                : org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt");
+        boolean hasId = sort.stream().anyMatch(o -> o.getProperty().equals("id"));
+        if (!hasId) {
+            org.springframework.data.domain.Sort.Direction dir = sort.iterator().next().getDirection();
+            sort = sort.and(org.springframework.data.domain.Sort.by(dir, "id"));
+        }
+        return org.springframework.data.domain.PageRequest.of(pageable.getPageNumber(), size, sort);
+    }
+
+    /** Blank = no search; control characters or more than {@link #MAX_SEARCH_LENGTH} characters are a 400 (never truncated). */
+    private static String normalizeSearch(String search) {
+        if (search == null) {
+            return null;
+        }
+        if (search.chars().anyMatch(Character::isISOControl)) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH", "q contains invalid characters.");
+        }
+        if (search.isBlank()) {
+            return null;
+        }
+        String t = search.strip();
+        if (t.length() > MAX_SEARCH_LENGTH) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH", "q must be at most " + MAX_SEARCH_LENGTH + " characters.");
+        }
+        return t;
+    }
+
+    /** LIKE wildcards in user input match literally; the pattern is lowered by the database like the column. */
+    static String likePattern(String term) {
+        return "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+    }
+
+    /** A date (UTC day) or an ISO-8601 date-time with offset; returned as the server-local time the column stores. */
+    private static LocalDateTime parseBound(String raw, String name, boolean upper) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String v = raw.strip();
+        try {
+            java.time.Instant instant;
+            if (v.length() <= 10) {
+                java.time.LocalDate d = java.time.LocalDate.parse(v);
+                instant = (upper ? d.plusDays(1) : d).atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
+            } else {
+                instant = OffsetDateTime.parse(v).toInstant();
+            }
+            return instant.atZone(java.time.ZoneId.systemDefault()).toLocalDateTime();
+        } catch (java.time.DateTimeException e) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_FILTER",
+                    "'" + name + "' must be an ISO-8601 date (2026-11-01) or date-time with offset (2026-11-01T10:00:00Z).");
+        }
+    }
+
+    private static org.springframework.data.jpa.domain.Specification<Order> adminFilter(
+            PaymentStatus paymentStatus, OrderProcessingStatus deliveryStatus,
+            LocalDateTime from, LocalDateTime to, String term) {
+        return (root, query, cb) -> {
+            List<jakarta.persistence.criteria.Predicate> all = new ArrayList<>();
+            if (paymentStatus != null) {
+                all.add(cb.equal(root.get("status"), paymentStatus));
+            }
+            if (deliveryStatus != null) {
+                all.add(cb.equal(root.get("deliveryStatus"), deliveryStatus));
+            }
+            if (from != null) {
+                all.add(cb.greaterThanOrEqualTo(root.<LocalDateTime>get("createdAt"), from));
+            }
+            if (to != null) {
+                all.add(cb.lessThan(root.<LocalDateTime>get("createdAt"), to));
+            }
+            if (term != null) {
+                var pattern = cb.lower(cb.literal(likePattern(term)));
+                var delivery = root.join("deliveryDetail", jakarta.persistence.criteria.JoinType.LEFT);
+                var owner = root.join("user", jakarta.persistence.criteria.JoinType.LEFT);
+                all.add(cb.or(
+                        cb.like(cb.lower(root.get("orderNumber")), pattern, '\\'),
+                        cb.like(cb.lower(delivery.get("recipientName")), pattern, '\\'),
+                        cb.like(cb.lower(delivery.get("phoneNumber")), pattern, '\\'),
+                        cb.like(cb.lower(owner.get("email")), pattern, '\\')));
+            }
+            return cb.and(all.toArray(new jakarta.persistence.criteria.Predicate[0]));
+        };
     }
 
     @Override
@@ -325,25 +436,24 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional
-    public OrderResponse updateOrderStatus(String orderNumber, OrderStatusUpdateRequest request) {
-        Order order = getOrder(orderNumber);
-        if(order.getDeliveryStatus() == OrderProcessingStatus.DELIVERED){
-            throw new BadRequestException("Order is already delivered and can not be updated.");
+    public OrderResponse updateOrderStatus(String orderNumber, OrderStatusUpdateRequest request, Long ifMatchVersion) {
+        Long bodyVersion = request.version();
+        if (bodyVersion != null && ifMatchVersion != null && !bodyVersion.equals(ifMatchVersion)) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "VERSION_MISMATCH",
+                    "The version in the body and the If-Match header differ.");
         }
-        if (order.getDeliveryStatus() == OrderProcessingStatus.CANCELLED) {
-            throw new BadRequestException("Order is already cancelled and can not be updated.");
-        }
-        if(order.getDeliveryStatus() != request.orderStatus()){
-            order.setDeliveryStatus(request.orderStatus());
-            eventPublisher.publishEvent(OrderStatusChangeEvent.builder()
-                            .orderNumber(orderNumber)
-                            .customerEmail(order.getUser().getEmail())
-                            .status(request.orderStatus())
-                    .build());
-            return OrderMapper.toOrderResponse(orderRepository.save(order));
-        }
+        Long expected = bodyVersion != null ? bodyVersion : ifMatchVersion;
+        OrderLifecycleService.AdminUpdate result = lifecycleService.adminUpdateStatus(
+                orderNumber, request.orderStatus(), expected, authUserUtil.getCurrentUser().getEmail());
+        return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+    }
 
-        return OrderMapper.toOrderResponse(order);
+    @Override
+    @Transactional
+    public OrderResponse acknowledgeRefund(String orderNumber) {
+        OrderLifecycleService.AdminUpdate result = lifecycleService.acknowledgeRefund(
+                orderNumber, authUserUtil.getCurrentUser().getEmail());
+        return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
     }
 
     @Override

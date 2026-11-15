@@ -26,6 +26,12 @@ public interface InventoryManagementService {
     void reserveOrderInventory(String orderNumber, List<OrderItem> orderItems);
     void releaseOrderInventory(String orderNumber);
     void finalizeReservedOrder(Order order);
+    /**
+     * Hands back the stock a PAID order consumed (admin cancel before dispatch): CONSUMED allocations go back to their
+     * layers and become RETURNED, so a second call finds nothing to return (never double-restocks).
+     * @return the number of units returned to stock
+     */
+    int restockConsumedOrderInventory(Order order);
     void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items);
 
     InventoryConsumption consumeInventory(Product product,

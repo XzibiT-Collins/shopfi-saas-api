@@ -328,27 +328,25 @@ class OrderServiceImplTest {
     }
 
     @Test
-    void updateOrderStatus_Success() {
-        when(authUserUtil.getCurrentUser()).thenReturn(testUser); // for getOrder
+    void updateOrderStatus_DelegatesToLifecycleWithActorAndVersion() {
         testUser.setRoles(UserRole.ADMIN);
-        when(orderRepository.findByOrderNumber("ORD-123")).thenReturn(Optional.of(testOrder));
-        when(orderRepository.save(any(Order.class))).thenReturn(testOrder);
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(lifecycleService.adminUpdateStatus("ORD-123", OrderProcessingStatus.PACKING, 3L, testUser.getEmail()))
+                .thenReturn(new OrderLifecycleService.AdminUpdate(testOrder, null));
 
-        OrderStatusUpdateRequest updateRequest = new OrderStatusUpdateRequest(OrderProcessingStatus.PACKING);
-        OrderResponse result = orderService.updateOrderStatus("ORD-123", updateRequest);
+        OrderResponse result = orderService.updateOrderStatus("ORD-123",
+                new OrderStatusUpdateRequest(OrderProcessingStatus.PACKING, 3L), null);
 
-        assertNotNull(result);
-        verify(eventPublisher).publishEvent(any(OrderStatusChangeEvent.class));
+        assertEquals("ORD-123", result.orderNumber());
+        assertNotNull(result.account());
     }
 
     @Test
-    void updateOrderStatus_Failure_AlreadyDelivered() {
-        testOrder.setDeliveryStatus(OrderProcessingStatus.DELIVERED);
-        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
-        testUser.setRoles(UserRole.ADMIN);
-        when(orderRepository.findByOrderNumber("ORD-123")).thenReturn(Optional.of(testOrder));
-
-        assertThrows(BadRequestException.class, () -> orderService.updateOrderStatus("ORD-123", new OrderStatusUpdateRequest(OrderProcessingStatus.PENDING)));
+    void updateOrderStatus_BodyAndIfMatchDisagreeingIs400() {
+        var e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class, () -> orderService.updateOrderStatus(
+                "ORD-123", new OrderStatusUpdateRequest(OrderProcessingStatus.PACKING, 3L), 4L));
+        assertEquals("VERSION_MISMATCH", e.getCode());
+        verifyNoInteractions(lifecycleService);
     }
 
     @Test
