@@ -132,7 +132,7 @@ class PublicCatalogExposureTest extends AbstractCheckoutIntegrationTest {
         mvc.perform(get("/api/v1/product/listing").header("X-Tenant-ID", "acme")).andReturn();
         mvc.perform(get("/api/v1/product/listing").header("X-Tenant-ID", "acme")).andReturn();
 
-        Cache cache = tenants.runAs(acme, () -> cacheManager.getCache("customerProductListings"));
+        Cache cache = tenants.runAs(acme, () -> cacheManager.getCache("publicCustomerProductListings"));
         Object nativeCache = cache.getNativeCache();
         assertThat(nativeCache).isInstanceOf(java.util.Map.class);
         java.util.Collection<?> values = ((java.util.Map<?, ?>) nativeCache).values();

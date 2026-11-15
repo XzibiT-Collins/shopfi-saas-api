@@ -118,3 +118,5 @@ omitted); `landmark` is optional and stored as `null` (was `@NotNull`, 400). `PU
 * **HEAD.** `HEAD` is allowed on every public `GET` read (same matcher) and follows the role rule on guarded routes.
 * **`POST /cart/preview`** for a customer who has no cart row yet now answers `400 Cart is empty, add items and try again.` (it was a `500` "cannot execute INSERT in a read-only transaction"). The preview never creates a cart.
 * **`GET /auth/me`** is allowed for any signed-in tenant user (the `@PreAuthorize` is commented out in the controller); a platform token on this route is `401`.
+* **Public sort / search.** `GET /product/listing` and `/product/search` accept only `sort` = `id`, `name`, `createdAt` or `price.amount` (the storefront's own sorts); any other property is `400` with `data.code = INVALID_SORT`. Anonymous `searchTerm` matches the product name only (SKU no longer matches). Admin/front-desk endpoints are unchanged.
+* **HEAD `/product/{slug}`** does not count a view and is not recorded as a site visit.

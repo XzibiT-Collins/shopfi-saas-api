@@ -22,7 +22,7 @@ public class ProductCatalogCacheService {
     private final ProductRepository productRepository;
     private final EffectivePriceService effectivePriceService;
 
-    @Cacheable(cacheNames = "featuredProducts")
+    @Cacheable(cacheNames = "publicFeaturedProducts")
     public List<PublicProductListing> getFeaturedProducts() {
         log.info("Cache miss for featured products, querying database...");
         ShopWideDiscount shop = effectivePriceService.activeShopDiscount().orElse(null);

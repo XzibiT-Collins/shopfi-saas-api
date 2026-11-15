@@ -22,7 +22,12 @@ public interface ProductService {
 
     PageResponse<ProductListing> searchAdminProducts(Long categoryId, String searchTerm, Pageable pageable);
     ProductDetails getProductDetails(Long productId);
-    ProductDetailsPageResponse getProductDetailsPage(String slug);
+    default ProductDetailsPageResponse getProductDetailsPage(String slug) {
+        return getProductDetailsPage(slug, true);
+    }
+
+    /** {@code countView=false} for HEAD: the response is identical but no view is recorded. */
+    ProductDetailsPageResponse getProductDetailsPage(String slug, boolean countView);
     ProductDetails updateProduct(Long productId, ProductRequest request);
     ProductDetails setProductDiscount(Long productId, ProductDiscountRequest request);
     ProductDetails clearProductDiscount(Long productId);

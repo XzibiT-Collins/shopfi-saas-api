@@ -25,8 +25,8 @@ public class ProductSpecification {
             if (searchTerm != null && !searchTerm.isBlank()) {
                 String pattern = "%" + searchTerm.toLowerCase() + "%";
                 Predicate nameLike = criteriaBuilder.like(criteriaBuilder.lower(root.get("name")), pattern);
-                Predicate skuLike = criteriaBuilder.like(criteriaBuilder.lower(root.get("sku")), pattern);
-                predicates.add(criteriaBuilder.or(nameLike, skuLike));
+                // public search matches ONLY public fields (name): matching the hidden sku would make SKUs enumerable
+                predicates.add(nameLike);
             }
 
             return criteriaBuilder.and(predicates.toArray(new Predicate[0]));

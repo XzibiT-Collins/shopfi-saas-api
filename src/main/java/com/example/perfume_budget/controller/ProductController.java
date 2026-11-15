@@ -74,8 +74,11 @@ public class ProductController {
     }
 
     @GetMapping("/{slug}")
-    public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(@PathVariable String slug){
-        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug)));
+    public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(
+            @PathVariable String slug, jakarta.servlet.http.HttpServletRequest request){
+        // HEAD runs this same handler; it must not bump the view counter (SEC-03b F11)
+        boolean countView = !"HEAD".equalsIgnoreCase(request.getMethod());
+        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug, countView)));
     }
 
     @PreAuthorize("hasRole('ADMIN')")

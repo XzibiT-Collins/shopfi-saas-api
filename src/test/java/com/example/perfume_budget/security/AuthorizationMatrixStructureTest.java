@@ -5,6 +5,10 @@ import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
+import org.springframework.stereotype.Controller;
+import org.springframework.util.ReflectionUtils;
+import org.springframework.context.annotation.Profile;
+import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.util.AntPathMatcher;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -166,7 +170,8 @@ class AuthorizationMatrixStructureTest {
             RequestMapping classMapping = AnnotatedElementUtils.findMergedAnnotation(c, RequestMapping.class);
             String base = classMapping != null && classMapping.path().length > 0 ? classMapping.path()[0] : "";
             PreAuthorize classLevel = AnnotatedElementUtils.findMergedAnnotation(c, PreAuthorize.class);
-            for (Method m : c.getDeclaredMethods()) {
+            // own AND inherited handler methods (an abstract base class may declare the mapping)
+            for (Method m : ReflectionUtils.getUniqueDeclaredMethods(c, mth -> !mth.isBridge() && !mth.isSynthetic())) {
                 RequestMapping mm = AnnotatedElementUtils.findMergedAnnotation(m, RequestMapping.class);
                 if (mm == null) {
                     continue;
@@ -309,9 +314,87 @@ class AuthorizationMatrixStructureTest {
             "\\.requestMatchers\\((?:HttpMethod\\.(\\w+),\\s*)?((?:\"[^\"]*\"\\s*,?\\s*)+)\\)\\s*\\.(permitAll|authenticated|denyAll|hasRole|hasAnyRole|access)\\(([^)]*)");
 
     /** Matchers of SecurityConfig in declaration order (string-pattern matchers only; the swagger/dev lambdas are SPECIAL or skipped). */
+    static String securityConfigSource() throws Exception {
+        return Files.readString(Path.of("src/main/java/com/example/perfume_budget/security/SecurityConfig.java"));
+    }
+
     static List<Rule> securityConfigRules() throws Exception {
-        String src = Files.readString(Path.of("src/main/java/com/example/perfume_budget/security/SecurityConfig.java"))
-                .replaceAll("//[^\n]*", "");
+        List<Rule> rules = securityConfigRules(securityConfigSource());
+        assertThat(auditAuthorizeBlock(securityConfigSource())).as("SecurityConfig uses only matcher styles this test understands").isEmpty();
+        return rules;
+    }
+
+    /** The two lambda rules that gate swagger/api-docs on the springdoc flags (public only while springdoc is enabled). */
+    static final List<String> ALLOWED_LAMBDA_RULES = List.of(
+            ".requestMatchers(request -> swaggerUiEnabled && isReadMethod(request) && matchesAny(request, swaggerPaths)).permitAll()",
+            ".requestMatchers(request -> apiDocsEnabled && isReadMethod(request) && matchesAny(request, apiDocsPaths)).permitAll()");
+
+    private static String authorizeBlock(String src) {
+        String clean = src.replaceAll("//[^\n]*", "").replaceAll("\\s+", " ");
+        int a = clean.indexOf(".authorizeHttpRequests(");
+        int b = clean.indexOf(".oauth2Login(");
+        assertThat(a).as("authorizeHttpRequests block").isGreaterThanOrEqualTo(0);
+        assertThat(b).as("end of authorizeHttpRequests block").isGreaterThan(a);
+        return clean.substring(a, b);
+    }
+
+    /**
+     * Fails (non-empty result) on anything the rule parser could silently drop: a lambda / custom RequestMatcher, an
+     * unknown authorization method, securityMatchers, an anyRequest() that is not the single final
+     * authenticated() rule, or a count mismatch between matcher occurrences and parsed rules.
+     */
+    static List<String> auditAuthorizeBlock(String src) {
+        List<String> problems = new ArrayList<>();
+        String block = authorizeBlock(src);
+        String normalizedBlock = block.replaceAll("\\s+", " ");
+        for (String lambda : ALLOWED_LAMBDA_RULES) {
+            normalizedBlock = normalizedBlock.replace(lambda.replaceAll("\\s+", " "), " ");
+        }
+        int allowedLambdas = (block.length() - normalizedBlock.length() > 0)
+                ? (int) ALLOWED_LAMBDA_RULES.stream().filter(l -> block.contains(l)).count() : 0;
+        int requestMatchers = count(normalizedBlock, "requestMatchers(");
+        List<Rule> parsed = securityConfigRules(src);
+        if (requestMatchers != parsed.size()) {
+            problems.add("requestMatchers( occurrences (" + requestMatchers + ") != parsed rules (" + parsed.size()
+                    + "): a matcher style the parser cannot read (lambda/custom RequestMatcher?)");
+        }
+        for (String banned : List.of("securityMatcher", "mvcMatchers", "antMatchers", "regexMatchers", "hasAuthority", "hasAnyAuthority",
+                "hasIpAddress", "fullyAuthenticated", "rememberMe", "anonymous()", "access(request")) {
+            if (normalizedBlock.contains(banned)) {
+                problems.add("unsupported construct in the authorization block: " + banned);
+            }
+        }
+        int anyRequest = count(normalizedBlock, "anyRequest()");
+        if (anyRequest != 1) {
+            problems.add("expected exactly one anyRequest() rule but found " + anyRequest);
+        } else {
+            String tail = normalizedBlock.substring(normalizedBlock.indexOf("anyRequest()"));
+            if (!tail.replaceAll("\\s+", "").matches("anyRequest\\(\\)\\.authenticated\\(\\)\\)")) {
+                problems.add("anyRequest() must be the last rule and be .authenticated(); found: " + tail);
+            }
+        }
+        int decisions = 0;
+        Matcher dm = Pattern.compile("\\.(permitAll|authenticated|denyAll|hasRole|hasAnyRole|access)\\(").matcher(normalizedBlock);
+        while (dm.find()) {
+            decisions++;
+        }
+        if (decisions != parsed.size() + 1) { // every parsed rule + the anyRequest().authenticated()
+            problems.add("authorization decisions (" + decisions + ") != parsed rules + anyRequest (" + (parsed.size() + 1) + ")");
+        }
+        assertThat(allowedLambdas).as("allowed lambda rules present").isBetween(0, ALLOWED_LAMBDA_RULES.size());
+        return problems;
+    }
+
+    private static int count(String text, String needle) {
+        int n = 0;
+        for (int i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + needle.length())) {
+            n++;
+        }
+        return n;
+    }
+
+    static List<Rule> securityConfigRules(String sourceText) {
+        String src = sourceText.replaceAll("//[^\n]*", "");
         List<Rule> rules = new ArrayList<>();
         Matcher m = RULE.matcher(src);
         while (m.find()) {
@@ -555,20 +638,137 @@ class AuthorizationMatrixStructureTest {
         assertThat(problems).isEmpty();
     }
 
+    // ---------------------------------------------------------------- self-tests: the guard itself cannot be bypassed
+
+    // Fixtures (never registered as beans: the profile is never active)
+    abstract static class AbstractBaseFixture {
+        @GetMapping("/inh")
+        public String inheritedHandler() { return ""; }
+    }
+
+    @RestController
+    @Profile("sec03b-fixture-never")
+    static class ConcreteFixture extends AbstractBaseFixture {
+    }
+
+    @RestController
+    @Profile("sec03b-fixture-never")
+    @RequestMapping("/nested")
+    static class NestedRestFixture {
+        @GetMapping("/n")
+        public String nestedHandler() { return ""; }
+    }
+
+    @Controller
+    @ResponseBody
+    @Profile("sec03b-fixture-never")
+    static class PlainControllerFixture {
+        @GetMapping("/c")
+        public String plainControllerHandler() { return ""; }
+    }
+
+    @Test
+    void s4_handlersInheritedFromAnAbstractBaseClassAreSeen() {
+        assertThat(handlers(List.of(ConcreteFixture.class))).extracting(Handler::id).containsExactly("ConcreteFixture#inheritedHandler");
+    }
+
+    @Test
+    void s5_s6_nestedClassesAndPlainControllersAreDiscovered_butTestFixturesAreNotProduction() throws Exception {
+        List<Class<?>> all = scan("com.example.perfume_budget.security", false);
+        assertThat(all).contains(NestedRestFixture.class, PlainControllerFixture.class, ConcreteFixture.class);
+        assertThat(controllers()).doesNotContain(NestedRestFixture.class, PlainControllerFixture.class, ConcreteFixture.class);
+        // a handler on each fixture is reachable by the table check (so it would demand an EXPECTED entry)
+        assertThat(handlers(List.of(NestedRestFixture.class, PlainControllerFixture.class)))
+                .extracting(Handler::id).containsExactlyInAnyOrder("NestedRestFixture#nestedHandler", "PlainControllerFixture#plainControllerHandler");
+    }
+
+    private static final String BASE_RULE_BLOCK =
+            ".authorizeHttpRequests(auth -> auth .requestMatchers(HttpMethod.GET, \"/a\").permitAll() "
+                    + ".requestMatchers(\"/b/**\").hasRole(\"ADMIN\") .anyRequest().authenticated() ) .oauth2Login(";
+
+    @Test
+    void s8_theSourceAuditAcceptsTheRealConfigAndRejectsEverythingTheParserCannotSee() throws Exception {
+        assertThat(auditAuthorizeBlock(securityConfigSource())).isEmpty();
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK)).isEmpty();
+        // lambda permitAll placed before the role rule: invisible to the regex, caught by the count
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(\"/b/**\")",
+                ".requestMatchers(r -> r.getRequestURI().startsWith(\"/b\")).permitAll() .requestMatchers(\"/b/**\")"))).isNotEmpty();
+        // custom RequestMatcher object
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(\"/b/**\")",
+                ".requestMatchers(new AntPathRequestMatcher(\"/b/**\")).permitAll() .requestMatchers(\"/b/**\")"))).isNotEmpty();
+        // anyRequest().permitAll() / anyRequest in the middle / a second anyRequest
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace("anyRequest().authenticated()", "anyRequest().permitAll()"))).isNotEmpty();
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(\"/b/**\")",
+                ".anyRequest().permitAll() .requestMatchers(\"/b/**\")"))).isNotEmpty();
+        // securityMatchers / access(request...) / hasAuthority
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".hasRole(\"ADMIN\")", ".hasAuthority(\"X\")"))).isNotEmpty();
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(\"/b/**\")",
+                ".securityMatchers(\"/z\") .requestMatchers(\"/b/**\")"))).isNotEmpty();
+        // a rule appended after anyRequest
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(" ) .oauth2Login(", " .requestMatchers(\"/late\").permitAll() ) .oauth2Login("))).isNotEmpty();
+    }
+
+    @Test
+    void actuatorRulesAreStrictlyPinned() throws Exception {
+        List<Rule> rules = securityConfigRules();
+        assertThat(ruleFor(rules, "GET", "/actuator/health").kind()).isEqualTo(Kind.PERMIT);
+        assertThat(ruleFor(rules, "HEAD", "/actuator/health").kind()).isEqualTo(Kind.PERMIT);
+        assertThat(ruleFor(rules, "GET", "/actuator/prometheus").kind()).isEqualTo(Kind.SPECIAL);
+        for (String p : List.of("metrics", "info", "env", "beans", "loggers", "heapdump", "health/liveness")) {
+            for (String verb : List.of("GET", "HEAD", "POST")) {
+                assertThat(ruleFor(rules, verb, "/actuator/" + p).kind()).as(verb + " /actuator/" + p).isEqualTo(Kind.DENY);
+            }
+        }
+    }
+
+    @Test
+    void scrapeTokenMatches_isStrict() {
+        String t16 = "0123456789abcdef";
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "Bearer " + t16)).isTrue();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16 + "0123456789abcdef", "Bearer " + t16 + "0123456789abcdef")).isTrue();
+        // minimum length 16: 15 and 14 are not usable tokens even when the header matches them
+        assertThat(SecurityConfig.scrapeTokenMatches(t16.substring(1), "Bearer " + t16.substring(1))).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16.substring(2), "Bearer " + t16.substring(2))).isFalse();
+        // blank / null / whitespace-only configuration never matches, even "Bearer " + the same blanks
+        for (String blank : new String[]{null, "", " ", "                ", "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t"}) {
+            assertThat(SecurityConfig.scrapeTokenMatches(blank, "Bearer " + (blank == null ? "" : blank))).as("configured=[" + blank + "]").isFalse();
+        }
+        // scheme is case-sensitive (pinned): Prometheus sends "Bearer"
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "bearer " + t16)).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "BEARER " + t16)).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "Basic " + t16)).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, t16)).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "Bearer  " + t16)).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "Bearer " + t16 + " ")).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, null)).isFalse();
+        assertThat(SecurityConfig.scrapeTokenMatches(t16, "Bearer ")).isFalse();
+    }
+
     // ---------------------------------------------------------------- discovery
 
+    /** Production controllers: every {@code @Controller} (which includes {@code @RestController}), top-level AND nested. */
     static List<Class<?>> controllers() throws Exception {
+        return scan("com.example.perfume_budget", true);
+    }
+
+    static List<Class<?>> scan(String basePackage, boolean productionOnly) throws Exception {
         ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
-        scanner.addIncludeFilter(new AnnotationTypeFilter(RestController.class));
+        scanner.addIncludeFilter(new AnnotationTypeFilter(Controller.class)); // meta-annotations (@RestController) included
         // DevTenantController is @ConditionalOnProperty: evaluate it as enabled so the guard sees it
         ((org.springframework.core.env.ConfigurableEnvironment) scanner.getEnvironment()).getPropertySources().addFirst(
                 new org.springframework.core.env.MapPropertySource("sec03", java.util.Map.of("tenant.dev-endpoints.enabled", "true")));
+        // the self-test fixtures are @Profile-guarded so the application context never registers them; this scanner opts in
+        ((org.springframework.core.env.ConfigurableEnvironment) scanner.getEnvironment()).addActiveProfile("sec03b-fixture-never");
         List<Class<?>> out = new ArrayList<>();
-        for (BeanDefinition bd : scanner.findCandidateComponents("com.example.perfume_budget")) {
+        for (BeanDefinition bd : scanner.findCandidateComponents(basePackage)) {
             Class<?> c = Class.forName(bd.getBeanClassName());
-            if (c.getEnclosingClass() == null) { // top-level only: ignore nested test fixtures
-                out.add(c);
+            if (productionOnly) {
+                String location = c.getProtectionDomain().getCodeSource().getLocation().getPath();
+                if (location.contains("test-classes")) {
+                    continue; // test fixtures are not production controllers
+                }
             }
+            out.add(c);
         }
         return out;
     }

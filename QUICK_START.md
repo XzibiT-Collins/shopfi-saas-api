@@ -349,3 +349,11 @@ returns the same 202 body; it only sends a new code to the signup's stored owner
 is not locked, not mid-provisioning, past the 60 s cooldown and under `onboarding.max-resends` (3). A resend never
 clears a lockout and never resets the failed-attempt counter (so it cannot be used to buy extra guesses or to unlock
 someone else's signup). Master migration `V4__tenant_signup_resend.sql` adds the resend bookkeeping columns.
+
+### Metrics scraping (docker-compose Prometheus)
+
+`/actuator/prometheus` is not public: it needs `Authorization: Bearer <PROMETHEUS_SCRAPE_TOKEN>`. Generate a token
+(`openssl rand -hex 32`), set `PROMETHEUS_SCRAPE_TOKEN` in `.env`, and write the same value to the untracked file
+`./prometheus-scrape-token` **before** `docker compose up` (a missing file makes Docker create a directory with that name,
+and the mount then fails). Prometheus trims the file's trailing newline. With no token configured the endpoint is closed.
+

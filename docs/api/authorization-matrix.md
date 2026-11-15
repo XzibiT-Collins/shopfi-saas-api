@@ -182,6 +182,8 @@ Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant use
 ## 4. SEC-03b hardening
 
 * Public catalog reads (`/product/{featured,listing,search}`) now return `PublicProductListing`: no `stockQuantity`, `isActive`, `isEnlisted` (availability is `isOutOfStock`). The ADMIN/FRONT_DESK listings keep the full `ProductListing`.
+* Public catalog sort is allow-listed (`id`, `name`, `createdAt`, `price.amount`; anything else is `400 INVALID_SORT`) and public search matches the product name only (not the SKU). ADMIN/FRONT_DESK search and sort are unchanged.
+* Cache deploy note: the public listing/featured caches were renamed to `publicCustomerProductListings` / `publicFeaturedProducts`. Entries written by older builds under `customerProductListings` / `featuredProducts` are never read and simply expire (rollback to the old build is safe; it reads its own old names). A cached value that is not a `PublicProductListing` is treated as a miss and evicted.
 * Swagger/api-docs off in prod; `/actuator/prometheus` token-protected; other actuator paths denied; HEAD follows GET (see section 2).
 
 ## 5. Fixed in SEC-03
@@ -198,4 +200,4 @@ Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant use
 * `GET /api/v1/tax` and `/tax/all` are readable by any signed-in tenant user (decision above).
 * STOMP: `SUBSCRIBE` is not authorised per destination; safe today because only `convertAndSendToUser` is used.
 * The prometheus scrape token is a shared secret in an env var; rotate it by changing the env var and the Prometheus credentials together. In `docker-compose.yml` Prometheus reads it from the untracked file `./prometheus-scrape-token`.
-* `GET /product/{slug}` records a view (async event) for non-admin callers, so a GET has a write side effect (a counter, no authorization impact).
+* `GET /product/{slug}` records a view (async event) for non-admin callers, so a GET has a write side effect (a counter, no authorization impact). `HEAD /product/{slug}` returns the same response but records neither a view nor a site visit (`SiteVisitFilter` skips HEAD). A scraper misconfigured with a wrong prometheus token produces a 401 per scrape (no ERROR log from the app).

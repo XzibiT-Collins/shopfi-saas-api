@@ -35,12 +35,12 @@ class CachePrefixIsolationTest extends AbstractTenantIsolationTest {
             mockMvc.perform(get("/api/v1/product/listing").header("X-Tenant-ID", "bravo")).andExpect(status().isOk());
         }
 
-        assertThat(cacheManager.getCacheNames()).contains("acme:customerProductListings", "bravo:customerProductListings");
+        assertThat(cacheManager.getCacheNames()).contains("acme:publicCustomerProductListings", "bravo:publicCustomerProductListings");
         assertThat(cacheManager.getCacheNames()).allMatch(n -> n.contains(":"), "every physical cache name carries a tenant prefix");
-        assertThat(cacheManager.getCacheNames()).doesNotContain("customerProductListings");
+        assertThat(cacheManager.getCacheNames()).doesNotContain("publicCustomerProductListings");
 
-        String acmeCached = String.valueOf(tenants.runAs(acme, () -> cacheValues(cacheManager.getCache("customerProductListings"))));
-        String bravoCached = String.valueOf(tenants.runAs(bravo, () -> cacheValues(cacheManager.getCache("customerProductListings"))));
+        String acmeCached = String.valueOf(tenants.runAs(acme, () -> cacheValues(cacheManager.getCache("publicCustomerProductListings"))));
+        String bravoCached = String.valueOf(tenants.runAs(bravo, () -> cacheValues(cacheManager.getCache("publicCustomerProductListings"))));
         assertThat(acmeCached).contains("CacheAcme").doesNotContain("CacheBravo");
         assertThat(bravoCached).contains("CacheBravo").doesNotContain("CacheAcme");
     }

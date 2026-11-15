@@ -26,6 +26,8 @@ class ActuatorAndDocsExposureTest extends AbstractPostgresIntegrationTest {
 
     @Autowired MockMvc mvc;
     @Autowired Environment env;
+    @Autowired com.example.perfume_budget.support.TestTenants tenants;
+    @Autowired com.example.perfume_budget.filter.JWTUtil jwtUtil;
 
     static final List<String> DENIED = List.of("metrics", "metrics/jvm.memory.used", "info", "env", "beans", "configprops",
             "loggers", "heapdump", "threaddump", "mappings", "caches", "conditions", "scheduledtasks", "health/liveness",
@@ -45,6 +47,16 @@ class ActuatorAndDocsExposureTest extends AbstractPostgresIntegrationTest {
         assertThat(status(get("/actuator"))).isEqualTo(401);
         assertThat(status(get("/actuator/prometheus").header("Authorization", "Bearer anything-at-all-123456"))).as("no token configured").isEqualTo(401);
         assertThat(status(get("/actuator/prometheus").header("Authorization", "Bearer "))).isEqualTo(401);
+    }
+
+    @Test
+    void aSignedInTenantAdminCannotReachMetricsInfoOrEnvEither() throws Exception {
+        var acme = tenants.acme();
+        String token = tenants.runAs(acme, () -> jwtUtil.generateAccessToken(acme.adminEmail(), "ADMIN", 1L, "Admin"));
+        for (String p : List.of("metrics", "info", "env", "beans", "prometheus")) {
+            int st = status(get("/actuator/" + p).header("X-Tenant-ID", "acme").cookie(new jakarta.servlet.http.Cookie("accessToken", token)));
+            assertThat(st).as("signed-in ADMIN on /actuator/" + p).isIn(401, 403);
+        }
     }
 
     @Test

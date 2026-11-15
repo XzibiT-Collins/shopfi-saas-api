@@ -77,7 +77,7 @@ class ScheduledTasksTenantTest extends AbstractTenantIsolationTest {
         new DiscountCacheEvictionTask(cacheManager, tenantRunner).evictProductCaches();
 
         for (String slug : List.of("acme", "bravo")) {
-            for (String name : List.of("customerProductListings", "featuredProducts", "productDetailsPage")) {
+            for (String name : List.of("publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage")) {
                 assertThat(physical(slug + ":" + name).get("k")).as("%s:%s", slug, name).isNull();
             }
             assertThat(physical(slug + ":unrelatedCache").get("k")).as("non-product cache untouched").isNotNull();
@@ -108,15 +108,15 @@ class ScheduledTasksTenantTest extends AbstractTenantIsolationTest {
             new DiscountCacheEvictionTask(flaky, tenantRunner).evictProductCaches();
 
             String other = failing.equals("acme") ? "bravo" : "acme";
-            assertThat(physical(other + ":customerProductListings").get("k")).as("%s evicted although %s failed", other, failing).isNull();
-            assertThat(physical(failing + ":customerProductListings").get("k")).as("failing tenant untouched").isNotNull();
+            assertThat(physical(other + ":publicCustomerProductListings").get("k")).as("%s evicted although %s failed", other, failing).isNull();
+            assertThat(physical(failing + ":publicCustomerProductListings").get("k")).as("failing tenant untouched").isNotNull();
             assertThat(TenantContext.get()).isNull();
         }
     }
 
     private void seedCaches(String... slugs) {
         for (String slug : slugs) {
-            for (String name : List.of("customerProductListings", "featuredProducts", "productDetailsPage", "unrelatedCache")) {
+            for (String name : List.of("publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage", "unrelatedCache")) {
                 physical(slug + ":" + name).put("k", "v-" + slug);
             }
         }
