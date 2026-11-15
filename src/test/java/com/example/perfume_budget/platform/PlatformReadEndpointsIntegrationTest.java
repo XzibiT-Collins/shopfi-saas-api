@@ -831,9 +831,11 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
     @Test
     void audit_identicalTimestamps_pageStablyByIdTieBreak() throws Exception {
         Tenant t = mk("p4-ties", TenantStatus.ACTIVE, false);
-        exec("INSERT INTO master.tenant_audit_log (occurred_at, actor_admin_id, actor_email, tenant_id, tenant_slug, action,"
-                + " previous_status, new_status, phase) SELECT TIMESTAMPTZ '2026-01-01 00:00:00+00', 1, 'tie@platform.test', "
-                + t.getId() + ", 'p4-ties', 'SUSPEND', 'ACTIVE', 'SUSPENDED', 'OUTCOME' FROM generate_series(1, 7)");
+        // ids are inserted in DECREASING order, so heap/index order for the equal timestamps is the opposite of the id order:
+        // without the id tie-break the database returns the ties in its physical order and the assertions below fail
+        exec("INSERT INTO master.tenant_audit_log (id, occurred_at, actor_admin_id, actor_email, tenant_id, tenant_slug, action,"
+                + " previous_status, new_status, phase) SELECT 900000000 + g, TIMESTAMPTZ '2026-01-01 00:00:00+00', 1, 'tie@platform.test', "
+                + t.getId() + ", 'p4-ties', 'SUSPEND', 'ACTIVE', 'SUSPENDED', 'OUTCOME' FROM generate_series(7, 1, -1) g");
         assertThat(scalar("SELECT count(DISTINCT occurred_at) FROM master.tenant_audit_log WHERE tenant_slug = 'p4-ties'")).isEqualTo(1);
         List<Long> dbDesc = jdbc(c -> {
             try (var ps = c.prepareStatement("SELECT id FROM master.tenant_audit_log WHERE tenant_slug = 'p4-ties' ORDER BY id DESC");
