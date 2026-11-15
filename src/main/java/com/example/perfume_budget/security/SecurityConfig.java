@@ -185,7 +185,7 @@ public class SecurityConfig {
 
     /** Constant-time compare of "Bearer <token>" against the configured scrape token; a blank or short (<16) token disables scraping. */
     static boolean scrapeTokenMatches(String configured, String authorizationHeader) {
-        if (configured == null || configured.length() < 16 || authorizationHeader == null
+        if (configured == null || configured.isBlank() || configured.length() < 16 || authorizationHeader == null
                 || !authorizationHeader.startsWith("Bearer ")) {
             return false;
         }

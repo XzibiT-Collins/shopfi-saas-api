@@ -216,8 +216,8 @@ public class ProductServiceImpl implements ProductService {
     @Override
     public PageResponse<PublicProductListing> getProductListings(Pageable pageable) {
         requirePublicSort(pageable);
-        String key = pageable.getPageNumber() + ":" + pageable.getPageSize() + ":" + pageable.getSort();
-        org.springframework.cache.Cache cache = cacheManager == null ? null : cacheManager.getCache(PUBLIC_LISTINGS_CACHE);
+        String key = pageable.isPaged() ? pageable.getPageNumber() + ":" + pageable.getPageSize() + ":" + pageable.getSort() : null;
+        org.springframework.cache.Cache cache = (cacheManager == null || key == null) ? null : cacheManager.getCache(PUBLIC_LISTINGS_CACHE);
         if (cache != null) {
             org.springframework.cache.Cache.ValueWrapper hit = cache.get(key);
             if (hit != null) {

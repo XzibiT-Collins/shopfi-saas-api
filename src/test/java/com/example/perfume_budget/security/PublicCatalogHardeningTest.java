@@ -27,6 +27,14 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
 
     @Autowired CacheManager cacheManager;
 
+    @org.junit.jupiter.api.BeforeEach
+    void clearCatalogCaches() {
+        // fixtures are written with SQL (no eviction), so drop whatever earlier tests cached for the tenant
+        for (String n : List.of("publicCustomerProductListings", "publicFeaturedProducts", "customerProductListings", "featuredProducts")) {
+            cache(n).clear();
+        }
+    }
+
     static final List<String> HIDDEN = List.of("stockQuantity", "isActive", "isEnlisted");
 
     private ProductListing oldShape(String name) {
@@ -164,6 +172,7 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
     void headDoesNotCountAViewButGetDoes() throws Exception {
         long p = product(acme, "View Scent", "10.00", 5);
         String slug = jdbc.queryForObject("SELECT slug FROM tenant_acme.products WHERE id = ?", String.class, p);
+        jdbc.update("UPDATE tenant_acme.products SET view_count = 0 WHERE id = ?", p);
         long before = views(p);
         for (int i = 0; i < 3; i++) {
             assertThat(mvc.perform(head("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")).andReturn().getResponse().getStatus()).isEqualTo(200);
@@ -180,10 +189,11 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
 
     @Test
     void headDoesNotRecordASiteVisit() throws Exception {
+        String path = "/api/v1/product/visit-probe-" + System.nanoTime(); // a page nobody visited today
         int before = count(acme, "site_visits");
-        mvc.perform(head("/api/v1/product/listing").header("X-Tenant-ID", "acme")).andReturn();
+        mvc.perform(head(path).header("X-Tenant-ID", "acme")).andReturn();
         assertThat(count(acme, "site_visits")).as("HEAD is not a visit").isEqualTo(before);
-        mvc.perform(get("/api/v1/product/listing").header("X-Tenant-ID", "acme")).andReturn();
+        mvc.perform(get(path).header("X-Tenant-ID", "acme")).andReturn();
         assertThat(count(acme, "site_visits")).as("GET is a visit").isEqualTo(before + 1);
     }
 }
