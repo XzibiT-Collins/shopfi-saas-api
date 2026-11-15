@@ -209,6 +209,32 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(usageCount("ONCE")).isEqualTo(2);
     }
 
+    @Test
+    void cancelledOrFailedOrdersDoNotConsumeThePerUserLimit() throws Exception {
+        long p = product(acme, "Jasmine", "100.00", 30);
+        Map<String, Object> b = body("AGAIN", "FLAT", "10");
+        b.put("perUserUsageLimit", 1);
+        createCoupon(acme, adminA, b);
+        Customer c = ready(acme, "pc1@acme.test", p);
+
+        JsonNode first = body(checkout(c, "key-pc-0001-aaaa", "couponCode=AGAIN")).get("data");
+        assertThat(cancel(c, first.get("orderNumber").asText()).getResponse().getStatus()).isEqualTo(200);
+        jdbc.update("DELETE FROM tenant_acme.cart_items");
+        cart(c, p, 1);
+        JsonNode second = body(checkout(c, "key-pc-0002-aaaa", "couponCode=AGAIN")).get("data");
+        assertThat(second.get("orderNumber").asText()).isNotEqualTo(first.get("orderNumber").asText());
+
+        // a FAILED payment frees the slot as well
+        jdbc.update("UPDATE tenant_acme.orders SET status = 'FAILED' WHERE order_number = ?", second.get("orderNumber").asText());
+        jdbc.update("DELETE FROM tenant_acme.cart_items");
+        cart(c, p, 1);
+        assertThat(checkout(c, "key-pc-0003-aaaa", "couponCode=AGAIN").getResponse().getStatus()).isEqualTo(200);
+        // ...but a live (pending) order holds it
+        jdbc.update("DELETE FROM tenant_acme.cart_items");
+        cart(c, p, 1);
+        assertThat(checkout(c, "key-pc-0004-aaaa", "couponCode=AGAIN").getResponse().getStatus()).isEqualTo(400);
+    }
+
     // ---- update / deactivate / delete
 
     @Test
