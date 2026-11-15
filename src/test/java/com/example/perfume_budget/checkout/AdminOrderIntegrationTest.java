@@ -22,6 +22,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -97,6 +98,27 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     private String code(MvcResult r) throws Exception {
         return body(r).at("/data/code").asText();
+    }
+
+    /** Webhooks are processed asynchronously: wait until the payment reached the status. */
+    private void awaitPayment(String orderNumber, String status) {
+        await().atMost(java.time.Duration.ofSeconds(15)).untilAsserted(() -> assertThat(paymentStatus(orderNumber)).isEqualTo(status));
+    }
+
+    private void settle() throws InterruptedException {
+        Thread.sleep(700);
+    }
+
+    private List<String> listQ(String q) throws Exception {
+        MvcResult r = mvc.perform(admin(get("/api/v1/order/all").param("q", q))).andReturn();
+        assertThat(status(r)).as("q=" + q + " -> " + r.getResponse().getContentAsString()).isEqualTo(200);
+        List<String> out = new ArrayList<>();
+        body(r).at("/data/content").forEach(n -> out.add(n.get("orderNumber").asText()));
+        return out;
+    }
+
+    private MvcResult listRaw(String q) throws Exception {
+        return mvc.perform(admin(get("/api/v1/order/all").param("q", q))).andReturn();
     }
 
     private int status(MvcResult r) {
@@ -239,7 +261,7 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
 
         assertThat(webhook(g, event("charge.success", o.reference(), minor))).isEqualTo(200);
-        assertThat(paymentStatus(o.orderNumber())).isEqualTo("COMPLETED");
+        awaitPayment(o.orderNumber(), "COMPLETED");
         assertThat(refundFlag(o.orderNumber())).isTrue();
         assertThat(orderStatus(acme, o.orderNumber())).isEqualTo("CANCELLED");
         assertThat(deliveryStatus(o.orderNumber())).isEqualTo("CANCELLED");
@@ -249,6 +271,7 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
 
         // duplicate webhook: unchanged
         assertThat(webhook(g, event("charge.success", o.reference(), minor))).isEqualTo(200);
+        settle();
         assertThat(layerRemaining(acme, o.productId())).isEqualTo(10);
     }
 
@@ -259,6 +282,7 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(cancel(o.c(), o.orderNumber()).getResponse().getStatus()).isEqualTo(200);
         long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
         assertThat(webhook(g, event("charge.success", o.reference(), minor))).isEqualTo(200);
+        awaitPayment(o.orderNumber(), "COMPLETED");
         assertThat(orderStatus(acme, o.orderNumber())).isEqualTo("COMPLETED");
         assertThat(refundFlag(o.orderNumber())).isFalse();
         assertThat(layerRemaining(acme, o.productId())).isEqualTo(8);
@@ -270,6 +294,7 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         Placed a = place("c8a@acme.test", 2);
         long minorA = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, a.orderNumber()).longValue();
         assertThat(webhook(g, event("charge.success", a.reference(), minorA))).isEqualTo(200);
+        awaitPayment(a.orderNumber(), "COMPLETED");
         assertThat(status(setStatus(a.orderNumber(), "CANCELLED"))).isEqualTo(200);
         assertThat(layerRemaining(acme, a.productId())).isEqualTo(10);
         assertThat(refundFlag(a.orderNumber())).isTrue();
@@ -295,6 +320,7 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
             concurrently(List.of(() -> status(setStatus(o.orderNumber(), "CANCELLED")),
                     () -> { try { return webhook(g, event("charge.success", o.reference(), minor)); } catch (Exception e) { throw new RuntimeException(e); } }));
+            awaitPayment(o.orderNumber(), "COMPLETED");
             assertThat(layerRemaining(acme, o.productId())).as("round " + i).isEqualTo(10);
             assertThat(reservedQty(acme, o.productId())).isZero();
             assertThat(soldCount(o.productId())).isZero();
@@ -468,6 +494,7 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         setStatus(o.orderNumber(), "CANCELLED");
         long minor = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?", BigDecimal.class, o.orderNumber()).longValue();
         webhook(g, event("charge.success", o.reference(), minor));
+        awaitPayment(o.orderNumber(), "COMPLETED");
         assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
         assertThat(refundFlag(o.orderNumber())).isFalse();
     }
@@ -585,27 +612,30 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
     void textSearchMatchesOrderNumberRecipientPhoneAndEmailAndEscapesWildcards() throws Exception {
         List<Placed> os = three();
         String n0 = os.get(0).orderNumber();
-        assertThat(listNumbers("q=" + n0.substring(5, 16).toLowerCase())).containsExactly(n0);
-        assertThat(listNumbers("q=l2@ACME")).containsExactly(os.get(1).orderNumber());
+        assertThat(listQ(n0.substring(5, 16).toLowerCase())).containsExactly(n0);
+        assertThat(listQ("l2@ACME")).containsExactly(os.get(1).orderNumber());
         jdbc.update("UPDATE tenant_acme.delivery_details SET recipient_name = 'Kwame Asante', phone_number = '0244123456' WHERE user_id = ?", os.get(2).c().id());
-        assertThat(listNumbers("q=asante")).containsExactly(os.get(2).orderNumber());
-        assertThat(listNumbers("q=0244123")).containsExactly(os.get(2).orderNumber());
-        assertThat(listNumbers("q=nobody-matches")).isEmpty();
+        assertThat(listQ("asante")).containsExactly(os.get(2).orderNumber());
+        assertThat(listQ("0244123")).containsExactly(os.get(2).orderNumber());
+        assertThat(listQ("nobody-matches")).isEmpty();
         // wildcards are literals: '%' or '_' alone must not match everything
-        assertThat(listNumbers("q=%25")).isEmpty();
-        assertThat(listNumbers("q=_")).isEmpty();
-        assertThat(listNumbers("q=l_@acme")).isEmpty();
-        assertThat(listNumbers("q=%25acme")).isEmpty();
-        assertThat(listNumbers("q=\\")).isEmpty();
+        assertThat(listQ("%")).isEmpty();
+        assertThat(listQ("_")).isEmpty();
+        assertThat(listQ("l_@acme")).isEmpty();
+        assertThat(listQ("%acme")).isEmpty();
+        assertThat(listQ("\\")).isEmpty();
         jdbc.update("UPDATE tenant_acme.delivery_details SET recipient_name = '100%_sure' WHERE user_id = ?", os.get(0).c().id());
-        assertThat(listNumbers("q=100%25_")).containsExactly(os.get(0).orderNumber());
-        assertThat(listNumbers("q=%20%20")).as("blank = no search").hasSize(3);
-        assertThat(listNumbers("q=l1' OR '1'='1")).isEmpty();
+        assertThat(listQ("100%_")).containsExactly(os.get(0).orderNumber());
+        assertThat(listQ("100_")).as("underscore is not 'any char'").isEmpty();
+        assertThat(listQ("1%sure")).as("percent is not 'anything'").isEmpty();
+        assertThat(listQ("  ")).as("blank = no search").hasSize(3);
+        assertThat(listQ("l1' OR '1'='1")).isEmpty();
 
-        assertThat(code(mvc.perform(admin(get("/api/v1/order/all?q=" + "a".repeat(101)))).andReturn())).isEqualTo("INVALID_SEARCH");
-        assertThat(listNumbers("q=" + "a".repeat(100))).isEmpty();
-        assertThat(code(mvc.perform(admin(get("/api/v1/order/all?q=ab%00cd"))).andReturn())).isEqualTo("INVALID_SEARCH");
-        assertThat(code(mvc.perform(admin(get("/api/v1/order/all?q=ab%0Acd"))).andReturn())).isEqualTo("INVALID_SEARCH");
+        assertThat(code(listRaw("a".repeat(101)))).isEqualTo("INVALID_SEARCH");
+        assertThat(listQ("a".repeat(100))).isEmpty();
+        assertThat(code(listRaw("ab\u0000cd"))).isEqualTo("INVALID_SEARCH");
+        assertThat(code(listRaw("ab\ncd"))).isEqualTo("INVALID_SEARCH");
+        assertThat(code(listRaw("ab\tcd"))).isEqualTo("INVALID_SEARCH");
     }
 
     @Test
@@ -618,9 +648,9 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         Customer bc = customer(bravo, "l1@bravo.test");
         cart(bc, bp, 1);
         String bravoOrder = body(checkout(bc, null, null)).at("/data/orderNumber").asText();
-        assertThat(listNumbers("q=l1@")).doesNotContain(bravoOrder).hasSize(1);
+        assertThat(listQ("l1@")).doesNotContain(bravoOrder).hasSize(1);
         assertThat(listNumbers(null)).doesNotContain(bravoOrder).hasSize(3);
-        assertThat(listNumbers("q=" + bravoOrder)).isEmpty();
+        assertThat(listQ(bravoOrder)).isEmpty();
     }
 
     @Test

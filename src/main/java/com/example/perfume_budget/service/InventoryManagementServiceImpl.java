@@ -277,12 +277,12 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
             units += allocation.getQuantity();
         }
 
-        quantityByProduct.forEach((productId, quantity) -> {
-            productRepository.incrementSoldCount(productId, -quantity);
-            locationLedgerSync.returnForEcommerceSale(productById.get(productId), quantity,
-                    order.getOrderNumber(), "Returned order " + order.getOrderNumber());
-        });
+        quantityByProduct.forEach((productId, quantity) ->
+                locationLedgerSync.returnForEcommerceSale(productById.get(productId), quantity,
+                        order.getOrderNumber(), "Returned order " + order.getOrderNumber()));
         refreshProducts(new ArrayList<>(quantityByProduct.keySet()));
+        // After the refresh: the loaded Product entities carry the old soldCount and would overwrite a bulk update.
+        quantityByProduct.forEach((productId, quantity) -> productRepository.incrementSoldCount(productId, -quantity));
         return units;
     }
 
