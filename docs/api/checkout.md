@@ -179,5 +179,13 @@ The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
+| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while reserving or giving back a redemption (checkout, cancel, webhooks); nothing changed, retry |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
+
+**Coupon redemptions (API-04 rework).** Checkout reserves one redemption of the coupon with an atomic conditional
+update in its own short transaction (the coupon row is never locked across the Paystack call); the reservation is
+given back when the checkout does not create an order with it (rejection, Paystack failure, idempotent replay). An
+order that becomes CANCELLED (customer, unpaid admin cancel, expiry) or FAILED (`charge.failed`) gives its redemption
+back exactly once; a late payment that revives it takes it again. The per-user limit counts the customer's orders that
+still hold a redemption. See `DISCOUNTS_FRONTEND_INTEGRATION.md` section 8.

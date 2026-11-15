@@ -186,6 +186,14 @@ class CouponRedemptionIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(usage("LOWLIM")).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders WHERE coupon_id IS NOT NULL", Integer.class)).isEqualTo(2);
         assertThat(active("LOWLIM")).isFalse();
+
+        // an admin switching it back on WITHOUT raising the limit does not re-open it: the counter is the guard
+        long id = jdbc.queryForObject("SELECT id FROM tenant_acme.coupons WHERE code = 'LOWLIM'", Long.class);
+        MvcResult put = send(put("/api/v1/coupon/" + id), b);
+        assertThat(put.getResponse().getStatus()).as(put.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(active("LOWLIM")).isTrue();
+        assertThat(checkout(ready("low-after@acme.test"), null, "couponCode=lowlim").getResponse().getStatus()).isEqualTo(400);
+        assertThat(usage("LOWLIM")).isEqualTo(2);
     }
 
     @Test
