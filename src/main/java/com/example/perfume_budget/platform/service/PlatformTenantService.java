@@ -145,6 +145,7 @@ public class PlatformTenantService {
         return new Paging(p, effectiveSize, key, property, dir);
     }
 
+    @Transactional(readOnly = true)
     public PlatformTenantPage list(String statusFilter, Integer page, Integer size, String sortKey, String direction) {
         return list(statusFilter, page, size, sortKey, direction, null);
     }
@@ -176,9 +177,16 @@ public class PlatformTenantService {
                 pg.key(), pg.dirName());
     }
 
-    /** Blank means no search. Longer than {@link #MAX_SEARCH_LENGTH} is a 400 (never silently truncated). */
+    /** Blank means no search. Control characters are a 400. Longer than {@link #MAX_SEARCH_LENGTH} is a 400 (never silently truncated). */
     private static String normalizeSearch(String search) {
-        if (search == null || search.isBlank()) {
+        if (search == null) {
+            return null;
+        }
+        if (search.chars().anyMatch(Character::isISOControl)) {
+            // checked on the raw input, before strip(): e.g. a NUL byte would otherwise surface as a database error
+            throw new BadRequestException("search contains invalid characters");
+        }
+        if (search.isBlank()) {
             return null;
         }
         String t = search.strip();

@@ -69,7 +69,7 @@ signup. It is personal data, so the console must not log it, cache it in shared 
 
 Optional. A trimmed, case-insensitive "contains" match on `slug`, `displayName` or `ownerEmail` (any of the three), combined
 with `status` by AND. Blank or whitespace-only means no search. Longer than **100 characters** (after trimming) is a `400`
-(`search must be at most 100 characters`), never silently truncated. `%`, `_` and `\` are matched literally (escaped; `100%`
+(`search must be at most 100 characters`), never silently truncated. Control characters (NUL, newline, ...) are a `400` (`search contains invalid characters`). `%`, `_` and `\` are matched literally (escaped; `100%`
 does not match everything and `a_c` does not match `abc`), quotes and any other character are plain data, and the term is a
 bound query parameter, never concatenated into SQL. The response envelope is unchanged (`totalElements` counts the matches).
 

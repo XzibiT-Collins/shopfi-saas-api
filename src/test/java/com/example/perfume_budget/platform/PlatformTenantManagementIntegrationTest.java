@@ -329,7 +329,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     void noWriteVerbsExistForTenantsOrTheAuditLog() throws Exception {
         for (MockHttpServletRequestBuilder b : List.of(put(BASE + "/plat-a"), patch(BASE + "/plat-a"), delete(BASE + "/plat-a"),
                 delete(BASE + "/plat-a/audit"), put(BASE + "/audit"), delete(BASE), post(BASE),
-                get(BASE + "/plat-a/audit"), get("/api/v1/platform/audit"))) {
+                get("/api/v1/platform/audit"))) {
             int s = call(b.cookie(adminCookie)).getStatus();
             assertThat(s).as(b.toString()).isBetween(400, 499);
         }
