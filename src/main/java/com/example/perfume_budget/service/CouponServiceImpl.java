@@ -23,16 +23,17 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Locale;
 
 /**
- * Coupon administration (API-04). Edit / deactivate / delete take the coupon's row lock, the same lock checkout takes
- * before it reads the coupon, so they serialise with redemption: once a deactivate has committed no checkout can
- * redeem the coupon (a checkout already holding the lock finishes first).
+ * Coupon administration (API-04). Edit / deactivate / delete take the coupon's row lock ({@code FOR NO KEY UPDATE},
+ * bounded by a lock_timeout), the same row checkout's atomic reservation UPDATE locks for one statement, so they
+ * serialise with redemption: once a deactivate has committed no checkout can reserve the coupon. A checkout that
+ * reserved before the deactivate committed completes. No coupon lock is ever held across the Paystack call, so an
+ * admin action never waits for a slow payment provider.
  *
- * <p>Already-redeemed coupons: they can be edited (the usage limit cannot drop below the redemptions made) and
- * deactivated; they can never be deleted ({@code 409 COUPON_REDEEMED}), because orders reference them. Orders keep the
- * discount they were charged.
+ * <p>Redeemed coupons: they can be edited (the usage limit cannot drop below the live redemptions) and deactivated;
+ * they cannot be deleted while they have a LIVE redemption ({@code 409 COUPON_REDEEMED}). Redemptions of cancelled,
+ * failed or expired orders are released and do not block the delete. Orders keep the discount they were charged.
  */
 @Service
 @RequiredArgsConstructor
@@ -45,10 +46,11 @@ public class CouponServiceImpl implements CouponService {
     private static final String COUPON_NOT_FOUND = "Coupon not found.";
     private final CouponCodeGenerator couponCodeGenerator;
     private final OrderRepository orderRepository;
+    private final DbLockTimeout lockTimeout;
 
     /** The one place a code is normalised (trim + upper-case), matching the checkout lookup. */
     public static String normaliseCode(String code) {
-        return code.strip().toUpperCase(Locale.ROOT);
+        return CouponRedemptionService.normaliseCode(code);
     }
 
     @Override
@@ -89,9 +91,9 @@ public class CouponServiceImpl implements CouponService {
     @Override
     @Transactional
     public CouponDetailResponse updateCoupon(Long couponId, CouponRequest request) {
-        Coupon coupon = couponRepository.lockById(couponId)
-                .orElseThrow(() -> new ResourceNotFoundException(COUPON_NOT_FOUND));
-        if (request.couponCode() != null && !normaliseCode(request.couponCode()).equals(coupon.getCode())) {
+        Coupon coupon = lock(couponId);
+        // case-insensitive: sending back a legacy coupon's own code (whatever its case) is not a change
+        if (request.couponCode() != null && !normaliseCode(request.couponCode()).equals(normaliseCode(coupon.getCode()))) {
             throw new BadRequestException("Coupon code cannot be changed. Create a new coupon instead.");
         }
         int used = coupon.getUsageCount() == null ? 0 : coupon.getUsageCount();
@@ -107,6 +109,7 @@ public class CouponServiceImpl implements CouponService {
         coupon.setUsageLimit(request.usageLimit());
         coupon.setPerUserUsageLimit(request.perUserUsageLimit());
         coupon.setIsActive(request.isActive());
+        coupon.setLimitDeactivated(false); // the admin decided isActive: a release never overrides that
         coupon.setStartDate(request.startDate());
         coupon.setExpirationDate(request.expirationDate());
         return CouponMapper.toCouponDetailResponse(couponRepository.saveAndFlush(coupon));
@@ -115,25 +118,38 @@ public class CouponServiceImpl implements CouponService {
     @Override
     @Transactional
     public CouponDetailResponse deactivateCoupon(Long couponId) {
-        Coupon coupon = couponRepository.lockById(couponId)
-                .orElseThrow(() -> new ResourceNotFoundException(COUPON_NOT_FOUND));
+        Coupon coupon = lock(couponId);
         coupon.setIsActive(false);
+        coupon.setLimitDeactivated(false); // an admin deactivate is never undone by a released redemption
         return CouponMapper.toCouponDetailResponse(couponRepository.saveAndFlush(coupon));
     }
 
     @Override
     @Transactional
     public void deleteCoupon(Long couponId) {
-        Coupon coupon = couponRepository.lockById(couponId)
-                .orElseThrow(() -> new ResourceNotFoundException(COUPON_NOT_FOUND));
+        // Lock order: the orders that reference the coupon first, then the coupon (the same order -> coupon order as
+        // cancel and the payment webhooks); every wait is bounded (503 COUPON_BUSY).
+        lockTimeout.run(CouponRedemptionService.BUSY, CouponRedemptionService.BUSY_MESSAGE,
+                () -> orderRepository.lockIdsByCouponId(couponId));
+        Coupon coupon = lock(couponId);
+        // COUPON_REDEEMED counts LIVE redemptions only: in-flight checkouts (usage_count) and orders that are not
+        // cancelled / failed / expired. Orders that gave their redemption back do not block the delete.
         boolean redeemed = (coupon.getUsageCount() != null && coupon.getUsageCount() > 0)
-                || orderRepository.existsByCouponId(couponId);
+                || orderRepository.countLiveCouponRedemptions(couponId) > 0;
         if (redeemed) {
             throw new ApiCodeException(HttpStatus.CONFLICT, REDEEMED,
                     "This coupon has been redeemed and cannot be deleted. Deactivate it instead.");
         }
+        // released (cancelled / failed) orders lose the link to the deleted coupon; they keep their amounts
+        orderRepository.detachReleasedOrdersFromCoupon(couponId);
         couponRepository.delete(coupon);
         couponRepository.flush();
+    }
+
+    private Coupon lock(Long couponId) {
+        return lockTimeout.run(CouponRedemptionService.BUSY, CouponRedemptionService.BUSY_MESSAGE,
+                () -> couponRepository.lockById(couponId))
+                .orElseThrow(() -> new ResourceNotFoundException(COUPON_NOT_FOUND));
     }
 
     private static ApiCodeException duplicate() {

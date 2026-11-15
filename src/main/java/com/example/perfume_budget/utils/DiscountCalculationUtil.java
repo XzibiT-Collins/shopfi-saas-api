@@ -35,15 +35,10 @@ public class DiscountCalculationUtil {
             throw new CouponRejectedException(Reason.EXPIRED, "Coupon has expired");
         }
 
-        if (coupon.getUsageLimit() != null && coupon.getUsageCount() >= coupon.getUsageLimit()) {
+        if (coupon.getUsageLimit() != null
+                && (coupon.getUsageCount() == null ? 0 : coupon.getUsageCount()) >= coupon.getUsageLimit()) {
             throw new CouponRejectedException(Reason.USAGE_LIMIT, "Coupon usage limit has been reached");
         }
-    }
-
-    public BigDecimal applyDiscount(Coupon coupon, BigDecimal orderSubtotal) {
-        BigDecimal discount = calculateDiscount(coupon, orderSubtotal);
-        updateCouponUsage(coupon);
-        return orderSubtotal.subtract(discount).max(BigDecimal.ZERO);
     }
 
     public BigDecimal calculateDiscount(Coupon coupon, BigDecimal orderSubtotal) {
@@ -80,18 +75,6 @@ public class DiscountCalculationUtil {
         };
     }
 
-    /** Counts one use of the coupon (called only when an order is actually created, never by a preview). */
-    public void recordCouponUsage(Coupon coupon) {
-        updateCouponUsage(coupon);
-    }
-
-    private void updateCouponUsage(Coupon coupon) {
-        coupon.setUsageCount(coupon.getUsageCount() + 1);
-
-        if (coupon.getUsageLimit() != null && coupon.getUsageCount() >= coupon.getUsageLimit()) {
-            coupon.setIsActive(false);
-        }
-
-        couponRepository.save(coupon);
-    }
+    // API-04 rework: the usage counter is no longer advanced here (a read-modify-write of the entity under a row lock
+    // held across the Paystack call). CouponRedemptionService owns it with atomic conditional UPDATEs.
 }

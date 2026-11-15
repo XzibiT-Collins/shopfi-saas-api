@@ -19,7 +19,7 @@ class PaymentSettingsBlankSecretTest {
     private final PaymentGatewayConfigRepository repo = mock(PaymentGatewayConfigRepository.class);
     private final AesGcmEncryptor encryptor = mock(AesGcmEncryptor.class);
     private final PaymentSettingsServiceImpl service =
-            new PaymentSettingsServiceImpl(repo, mock(TenantRepository.class), encryptor);
+            new PaymentSettingsServiceImpl(repo, mock(TenantRepository.class), encryptor, new PassThroughLockTimeout());
 
     @Test
     void firstTimeSaveWithBlankSecretIsRejected() {

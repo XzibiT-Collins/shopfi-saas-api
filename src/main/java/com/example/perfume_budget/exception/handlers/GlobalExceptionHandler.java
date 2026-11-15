@@ -267,6 +267,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<CustomApiResponse<String>> handleEmptyBody(HttpMessageNotReadableException ex) {
+        // API-04 rework: a strict integer field explains itself (fixed text + field name, never the submitted value)
+        for (Throwable t = ex.getCause(); t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof com.example.perfume_budget.dto.json.StrictIntegerDeserializer.InvalidWholeNumberException w) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(w.getOriginalMessage()));
+            }
+        }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Request body is missing or malformed."));
     }
 

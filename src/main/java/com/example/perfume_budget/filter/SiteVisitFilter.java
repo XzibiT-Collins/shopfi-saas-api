@@ -52,10 +52,25 @@ public class SiteVisitFilter extends OncePerRequestFilter {
         String path = request.getRequestURI();
         // HEAD is a probe/prefetch, not a visit (SEC-03b: HEAD became public on the storefront reads)
         return "HEAD".equalsIgnoreCase(request.getMethod()) ||
+                isWebhookPath(path) ||
                 path.startsWith("/actuator") ||
                 path.startsWith("/api/v1/auth/me")||
                 path.endsWith(".js") ||
                 path.endsWith(".css") ||
                 path.endsWith(".ico");
+    }
+
+    /**
+     * API-04 rework: {@code /api/v1/webhook/{token}} carries the tenant's secret webhook token in the path, so it is
+     * never stored as a "page" (nor is it a visit). Matched after collapsing repeated slashes and dropping path
+     * parameters ({@code ;...}) and case, so no spelling of the URL slips through.
+     */
+    static boolean isWebhookPath(String requestUri) {
+        if (requestUri == null) {
+            return false;
+        }
+        String p = requestUri.replaceAll("/{2,}", "/").toLowerCase(java.util.Locale.ROOT);
+        p = p.replaceAll(";[^/]*", "");
+        return p.equals("/api/v1/webhook") || p.startsWith("/api/v1/webhook/");
     }
 }

@@ -31,6 +31,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -66,7 +67,8 @@ public class OrderServiceImpl implements OrderService {
     private final DiscountCalculationUtil discountCalculationUtil;
     private final OrderLifecycleService lifecycleService;
     private final EffectivePriceService effectivePriceService;
-    private final com.example.perfume_budget.repository.CouponRepository couponRepository;
+    private final CouponRedemptionService couponRedemptionService;
+    private final org.springframework.transaction.PlatformTransactionManager transactionManager;
     /** Orders are sortable only by these (a free-form sort path would be a column/oracle probe: user.password...). */
     public static final java.util.Set<String> ORDER_SORT_PROPERTIES =
             java.util.Set.of("createdAt", "orderNumber", "status", "deliveryStatus", "id");
@@ -79,18 +81,46 @@ public class OrderServiceImpl implements OrderService {
     private static final String PRODUCT_UNAVAILABLE = "One or more products in your cart are no longer available for ecommerce purchase.";
 
 
-    @Transactional
+    /**
+     * Checkout. API-04 rework: NOT one transaction any more, so that no coupon row lock is held across the Paystack
+     * call.
+     * <ol>
+     *   <li>a coupon redemption is reserved by an atomic conditional UPDATE in its own short transaction that has
+     *       committed before anything else starts ({@link CouponRedemptionService#reserve});</li>
+     *   <li>the checkout itself runs in one transaction exactly as before (customer row lock, replay checks, pricing,
+     *       order, stock reservation, Paystack call): those locks are unchanged by API-04;</li>
+     *   <li>unless that transaction committed a new order holding the reservation, the reservation is given back
+     *       (replay, rejection, Paystack failure, any error).</li>
+     * </ol>
+     */
     @Override
     public CheckoutResponse checkout(String couponCode, Long deliveryDetailId, String idempotencyKey) {
         String key = normalizeIdempotencyKey(idempotencyKey);
-        if (couponCode != null && !couponCode.isBlank()) {
-            // API-04: row-lock the coupon FIRST (before the cart/products are read, so no stale product versions are
-            // held while waiting) and before it is read for pricing. An admin deactivate/edit/delete locks the same
-            // row, so it either lands first (this checkout then sees it and is rejected) or waits until this order is
-            // committed. It also makes the usage counter increment race-free. Released at commit. Lock order is always
-            // coupon -> customer row, and deactivate only ever takes the coupon, so there is no cycle.
-            couponRepository.lockByCode(couponCode.strip().toUpperCase());
+        CouponRedemptionService.Reservation reservation = couponCode == null || couponCode.isBlank()
+                ? null : couponRedemptionService.reserve(couponCode);
+        boolean consumed = false;
+        try {
+            CheckoutOutcome outcome = new TransactionTemplate(transactionManager)
+                    .execute(status -> checkoutInTransaction(couponCode, deliveryDetailId, key, reservation));
+            // only reached after the commit: a commit failure leaves consumed=false and the reservation is released
+            consumed = outcome.consumedReservation();
+            return outcome.response();
+        } finally {
+            if (reservation != null && !consumed) {
+                couponRedemptionService.releaseReservation(reservation);
+            }
         }
+    }
+
+    /** The checkout transaction's answer and whether it committed an order holding the coupon reservation. */
+    private record CheckoutOutcome(CheckoutResponse response, boolean consumedReservation) {
+        static CheckoutOutcome replayed(CheckoutResponse response) {
+            return new CheckoutOutcome(response, false);
+        }
+    }
+
+    private CheckoutOutcome checkoutInTransaction(String couponCode, Long deliveryDetailId, String key,
+                                                  CouponRedemptionService.Reservation reservation) {
         User principal = authUserUtil.getCurrentUser();
         // Serialise this customer's checkouts in this tenant (double submit, two tabs, a retry racing the original):
         // the second request waits here and then finds the first request's order instead of creating another.
@@ -104,7 +134,7 @@ public class OrderServiceImpl implements OrderService {
         if (key != null) {
             Optional<Order> existing = orderRepository.findByUserAndIdempotencyKey(currentUser, key);
             if (existing.isPresent()) {
-                return replayKeyed(existing.get(), cart, couponCode, delivery, openCutoff);
+                return CheckoutOutcome.replayed(replayKeyed(existing.get(), cart, couponCode, delivery, openCutoff));
             }
         }
 
@@ -120,16 +150,14 @@ public class OrderServiceImpl implements OrderService {
             for (Order open : orderRepository.findOpenByFingerprint(currentUser, fingerprint, openCutoff)) {
                 Optional<CheckoutResponse> replay = replay(open);
                 if (replay.isPresent()) {
-                    return replay.get();
+                    return CheckoutOutcome.replayed(replay.get());
                 }
             }
         }
 
-        CheckoutPricingService.Quote quote = pricingService.quote(cart, couponCode);
+        // The usage counter was already advanced by the reservation; nothing here writes the coupon row.
+        CheckoutPricingService.Quote quote = pricingService.quoteReserved(cart, reservation);
         Coupon coupon = quote.coupon();
-        if (coupon != null) {
-            discountCalculationUtil.recordCouponUsage(coupon);
-        }
 
         Order newOrder = Order.builder()
                 .orderNumber(orderNumberGenerator.generateOrderNumber())
@@ -180,7 +208,9 @@ public class OrderServiceImpl implements OrderService {
 
             newOrder.setStatus(PaymentStatus.INITIATED);
             eventPublisher.publishEvent(orderRepository.save(newOrder));
-            return toCheckoutResponse(newOrder, response.status(), response.message(), response.data(), false);
+            return new CheckoutOutcome(
+                    toCheckoutResponse(newOrder, response.status(), response.message(), response.data(), false),
+                    coupon != null);
 
         } catch (PaymentException exception) {
             releaseStock(newOrder.getOrderNumber());

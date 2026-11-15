@@ -32,6 +32,7 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
     private final PaymentGatewayConfigRepository configRepository;
     private final TenantRepository tenantRepository;
     private final AesGcmEncryptor encryptor;
+    private final DbLockTimeout lockTimeout;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Value("${platform.api-base-url}")
@@ -66,14 +67,14 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
     @Override
     @Transactional
     public PaymentSettingsResponse rotateWebhookToken() {
-        Tenant tenant = currentTenant();
+        Tenant tenant = lockCurrentTenant();
         tenant.setWebhookToken(generateToken());
         tenantRepository.save(tenant);
         return toResponse(configRepository.findTopByOrderByIdAsc().orElse(null), tenant.getWebhookToken());
     }
 
     private String ensureWebhookToken() {
-        Tenant tenant = currentTenant();
+        Tenant tenant = lockCurrentTenant();
         if (tenant.getWebhookToken() == null || tenant.getWebhookToken().isBlank()) {
             tenant.setWebhookToken(generateToken());
             tenantRepository.save(tenant);
@@ -84,6 +85,16 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
     private Tenant currentTenant() {
         String slug = TenantContext.getSlug();
         return tenantRepository.findBySlug(slug)
+                .orElseThrow(() -> new BadRequestException("No tenant resolved for this request"));
+    }
+
+    public static final String BUSY = "PAYMENT_SETTINGS_BUSY";
+
+    /** The tenant row, locked (bounded wait: 503 PAYMENT_SETTINGS_BUSY) so token writes never interleave. */
+    private Tenant lockCurrentTenant() {
+        String slug = TenantContext.getSlug();
+        return lockTimeout.run(BUSY, "Payment settings are being changed right now. Please try again.",
+                        () -> tenantRepository.lockBySlug(slug))
                 .orElseThrow(() -> new BadRequestException("No tenant resolved for this request"));
     }
 

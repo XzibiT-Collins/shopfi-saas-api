@@ -44,6 +44,13 @@ public class Coupon {
 
     private Integer perUserUsageLimit;
 
+    /**
+     * True only while the coupon is inactive because a redemption reached {@code usageLimit} (API-04 rework). A
+     * released redemption re-activates such a coupon; an admin write of {@code isActive} clears it.
+     */
+    @Column(name = "limit_deactivated", nullable = false)
+    private boolean limitDeactivated;
+
     @Column(nullable = false)
     private Boolean isActive = true;
 

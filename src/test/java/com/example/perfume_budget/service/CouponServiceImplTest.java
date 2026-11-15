@@ -43,6 +43,8 @@ class CouponServiceImplTest {
     private CouponCodeGenerator couponCodeGenerator;
     @Mock
     private OrderRepository orderRepository;
+    @org.mockito.Spy
+    private DbLockTimeout lockTimeout = new PassThroughLockTimeout();
 
     @InjectMocks
     private CouponServiceImpl couponService;
@@ -244,7 +246,7 @@ class CouponServiceImplTest {
     @Test
     void delete_neverRedeemed_deletes() {
         when(couponRepository.lockById(1L)).thenReturn(Optional.of(testCoupon));
-        when(orderRepository.existsByCouponId(1L)).thenReturn(false);
+        when(orderRepository.countLiveCouponRedemptions(1L)).thenReturn(0L);
 
         couponService.deleteCoupon(1L);
 
@@ -265,9 +267,9 @@ class CouponServiceImplTest {
     }
 
     @Test
-    void delete_referencedByAnOrderEvenWithZeroCounter_is409() {
+    void delete_liveOrderEvenWithZeroCounter_is409() {
         when(couponRepository.lockById(1L)).thenReturn(Optional.of(testCoupon));
-        when(orderRepository.existsByCouponId(1L)).thenReturn(true);
+        when(orderRepository.countLiveCouponRedemptions(1L)).thenReturn(1L);
         assertThrows(ApiCodeException.class, () -> couponService.deleteCoupon(1L));
         verify(couponRepository, never()).delete(any());
     }
@@ -276,7 +278,7 @@ class CouponServiceImplTest {
     void delete_nullUsageCountTreatedAsZero() {
         testCoupon.setUsageCount(null);
         when(couponRepository.lockById(1L)).thenReturn(Optional.of(testCoupon));
-        when(orderRepository.existsByCouponId(1L)).thenReturn(false);
+        when(orderRepository.countLiveCouponRedemptions(1L)).thenReturn(0L);
         couponService.deleteCoupon(1L);
         verify(couponRepository).delete(testCoupon);
     }

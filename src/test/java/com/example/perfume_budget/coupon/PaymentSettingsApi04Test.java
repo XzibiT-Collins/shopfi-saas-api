@@ -94,12 +94,13 @@ class PaymentSettingsApi04Test {
         PaymentGatewayConfigRepository repo = mock(PaymentGatewayConfigRepository.class);
         TenantRepository tenants = mock(TenantRepository.class);
         AesGcmEncryptor enc = mock(AesGcmEncryptor.class);
-        PaymentSettingsServiceImpl service = new PaymentSettingsServiceImpl(repo, tenants, enc);
+        PaymentSettingsServiceImpl service = new PaymentSettingsServiceImpl(repo, tenants, enc,
+                new com.example.perfume_budget.service.PassThroughLockTimeout());
         ReflectionTestUtils.setField(service, "apiBaseUrl", "https://api.test");
         Tenant t = new Tenant();
         t.setSlug("acme");
         t.setWebhookToken("OLD-TOKEN");
-        when(tenants.findBySlug("acme")).thenReturn(Optional.of(t));
+        when(tenants.lockBySlug("acme")).thenReturn(Optional.of(t));
         PaymentGatewayConfig cfg = new PaymentGatewayConfig();
         cfg.setSecretKeyEncrypted("ENCRYPTED");
         cfg.setPublicKey(PK);

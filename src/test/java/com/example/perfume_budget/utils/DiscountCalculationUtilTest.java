@@ -116,18 +116,4 @@ class DiscountCalculationUtilTest {
         assertThatThrownBy(() -> u.calculateDiscount(c, new BigDecimal("49.99")))
                 .isInstanceOf(CouponRejectedException.class);
     }
-
-    @Test
-    void recordUsageIncrementsAndDeactivatesAtTheLimit() {
-        DiscountCalculationUtil u = util(Clock.systemUTC());
-        Coupon c = coupon(DiscountType.FLAT, "5", null, null);
-        c.setUsageCount(8);
-        u.recordCouponUsage(c);
-        assertThat(c.getUsageCount()).isEqualTo(9);
-        assertThat(c.getIsActive()).isTrue();
-        u.recordCouponUsage(c);
-        assertThat(c.getUsageCount()).isEqualTo(10);
-        assertThat(c.getIsActive()).isFalse();
-        verify(repo, org.mockito.Mockito.times(2)).save(c);
-    }
 }

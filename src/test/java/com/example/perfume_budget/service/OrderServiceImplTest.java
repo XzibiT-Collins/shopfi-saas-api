@@ -81,6 +81,10 @@ class OrderServiceImplTest {
     private CheckoutCallbackUrlProvider callbackUrlProvider;
     @Mock
     private OrderLifecycleService lifecycleService;
+    @Mock
+    private CouponRedemptionService couponRedemptionService;
+    @Mock
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -167,7 +171,7 @@ class OrderServiceImplTest {
         lenient().when(userRepository.lockById(1L)).thenReturn(Optional.of(testUser));
         // the real pricing code path, over the mocked collaborators
         org.springframework.test.util.ReflectionTestUtils.setField(orderService, "pricingService",
-                new CheckoutPricingService(effectivePriceService, couponRepository, orderRepository, discountCalculationUtil, taxService));
+                new CheckoutPricingService(effectivePriceService, couponRepository, new CouponPerUserLimit(orderRepository), discountCalculationUtil, taxService));
         org.springframework.test.util.ReflectionTestUtils.setField(orderService, "expiryHours", 1L);
         // By default no product/shop discount: effective price echoes the product's base price.
         lenient().when(effectivePriceService.activeShopDiscount()).thenReturn(Optional.empty());
@@ -216,8 +220,9 @@ class OrderServiceImplTest {
         when(authUserUtil.getCurrentUser()).thenReturn(testUser);
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
-        when(couponRepository.findByCode("DISCOUNT10")).thenReturn(Optional.of(testCoupon));
-        doNothing().when(discountCalculationUtil).checkIfCouponIsValid(testCoupon);
+        CouponRedemptionService.Reservation reservation = new CouponRedemptionService.Reservation(testCoupon.getId(), null);
+        when(couponRedemptionService.reserve("DISCOUNT10")).thenReturn(reservation);
+        when(couponRepository.findById(testCoupon.getId())).thenReturn(Optional.of(testCoupon));
         when(discountCalculationUtil.calculateDiscount(eq(testCoupon), any(BigDecimal.class))).thenReturn(new BigDecimal("20.00"));
 
         TaxCalculationResult mockTaxResult = new TaxCalculationResult(
@@ -238,9 +243,11 @@ class OrderServiceImplTest {
         CheckoutResponse result = orderService.checkout("DISCOUNT10", null, null);
 
         assertNotNull(result);
-        verify(discountCalculationUtil).checkIfCouponIsValid(testCoupon);
+        // the atomic reservation is the active/window/limit check: not repeated (it may just have switched it off)
+        verify(discountCalculationUtil, never()).checkIfCouponIsValid(any());
         verify(discountCalculationUtil).calculateDiscount(eq(testCoupon), any(BigDecimal.class));
-        verify(discountCalculationUtil).recordCouponUsage(testCoupon);
+        // the order holds the reservation: it is not given back
+        verify(couponRedemptionService, never()).releaseReservation(any());
     }
 
     @Test
@@ -266,9 +273,13 @@ class OrderServiceImplTest {
         when(authUserUtil.getCurrentUser()).thenReturn(testUser);
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
-        when(couponRepository.findByCode("INVALID")).thenReturn(Optional.empty());
+        CouponRedemptionService.Reservation refused = new CouponRedemptionService.Reservation(null,
+                new com.example.perfume_budget.exception.CouponRejectedException(
+                        com.example.perfume_budget.exception.CouponRejectedException.Reason.NOT_FOUND, "Invalid coupon code."));
+        when(couponRedemptionService.reserve("INVALID")).thenReturn(refused);
 
         assertThrows(BadRequestException.class, () -> orderService.checkout("INVALID", null, null));
+        verify(couponRedemptionService).releaseReservation(refused);
     }
 
     @Test
@@ -290,6 +301,47 @@ class OrderServiceImplTest {
 
         assertThrows(PaymentException.class, () -> orderService.checkout(null, null, null));
         verify(inventoryManagementService).releaseOrderInventory("ORD-123");
+    }
+
+    @Test
+    void checkout_PaymentFailureWithCoupon_givesTheReservationBack() {
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
+        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        CouponRedemptionService.Reservation reservation = new CouponRedemptionService.Reservation(testCoupon.getId(), null);
+        when(couponRedemptionService.reserve("DISCOUNT10")).thenReturn(reservation);
+        when(couponRepository.findById(testCoupon.getId())).thenReturn(Optional.of(testCoupon));
+        when(discountCalculationUtil.calculateDiscount(eq(testCoupon), any(BigDecimal.class))).thenReturn(new BigDecimal("20.00"));
+        when(taxService.calculateTaxes(any())).thenReturn(new TaxCalculationResult(new ArrayList<>(),
+                new Money(BigDecimal.ZERO, CurrencyCode.GHS), new Money(new BigDecimal("180.00"), CurrencyCode.GHS)));
+        when(orderNumberGenerator.generateOrderNumber()).thenReturn("ORD-123");
+        when(orderRepository.save(any(Order.class))).thenReturn(testOrder);
+        when(gatewayAPIService.initiatePaystackTransaction(any())).thenThrow(new PaymentException("Payment failed"));
+
+        assertThrows(PaymentException.class, () -> orderService.checkout("DISCOUNT10", null, null));
+        verify(couponRedemptionService, times(1)).releaseReservation(reservation);
+    }
+
+    @Test
+    void checkout_IdempotentReplay_givesTheReservationBack() {
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
+        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        CouponRedemptionService.Reservation reservation = new CouponRedemptionService.Reservation(testCoupon.getId(), null);
+        when(couponRedemptionService.reserve("DISCOUNT10")).thenReturn(reservation);
+        testOrder.setStatus(com.example.perfume_budget.enums.PaymentStatus.INITIATED);
+        testOrder.setCreatedAt(java.time.LocalDateTime.now());
+        testOrder.setRequestFingerprint(com.example.perfume_budget.utils.CheckoutFingerprint.of(testCart,
+                "DISCOUNT10", testDeliveryDetail.getId()));
+        when(orderRepository.findByUserAndIdempotencyKey(testUser, "key-replay-0001")).thenReturn(Optional.of(testOrder));
+        Payment paid = Payment.builder().authorizationUrl("url").providerPaymentReference("ref").accessCode("c").build();
+        when(paymentRepository.findByOrder_OrderNumber(testOrder.getOrderNumber())).thenReturn(Optional.of(paid));
+
+        CheckoutResponse r = orderService.checkout("DISCOUNT10", null, "key-replay-0001");
+
+        assertTrue(r.idempotentReplay());
+        verify(couponRedemptionService, times(1)).releaseReservation(reservation);
+        verify(gatewayAPIService, never()).initiatePaystackTransaction(any());
     }
 
     @Test

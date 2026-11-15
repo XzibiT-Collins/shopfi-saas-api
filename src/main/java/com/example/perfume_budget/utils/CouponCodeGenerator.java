@@ -29,7 +29,7 @@ public class CouponCodeGenerator {
         String randomPart = UUID.randomUUID().toString()
                 .replace("-", "")
                 .substring(0, 6)
-                .toUpperCase();
+                .toUpperCase(java.util.Locale.ROOT);
         return randomPart + yearPart;
     }
 }

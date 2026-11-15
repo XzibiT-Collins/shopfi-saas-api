@@ -51,6 +51,7 @@ public class OrderLifecycleService {
     private final InventoryAllocationRepository inventoryAllocationRepository;
     private final OrderAuditEventRepository auditRepository;
     private final ApplicationEventPublisher eventPublisher;
+    private final CouponRedemptionService couponRedemptionService;
 
     /**
      * Owner cancel. Same 404 for "no such order", "someone else's order" and "other tenant's order".
@@ -100,6 +101,7 @@ public class OrderLifecycleService {
         }
         if (status == PaymentStatus.CANCELLED || status == PaymentStatus.FAILED) {
             releaseIfReserved(order.getOrderNumber());
+            releaseCouponIfHeld(order); // straggler: closed without giving its coupon redemption back
             return false;
         }
         cancelLocked(order, reason, CancelSource.EXPIRY, null);
@@ -112,6 +114,8 @@ public class OrderLifecycleService {
         order.setStatus(PaymentStatus.CANCELLED);
         order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
         markCancelled(order, source, actorEmail);
+        // API-04 rework: the order's coupon redemption goes back exactly once (we hold the order row lock)
+        couponRedemptionService.releaseForOrder(order);
         orderRepository.save(order);
 
         paymentRepository.findByOrder_OrderNumber(order.getOrderNumber()).ifPresent(payment -> {
@@ -228,6 +232,7 @@ public class OrderLifecycleService {
         markCancelled(order, CancelSource.ADMIN, actorEmail);
         if (status != PaymentStatus.COMPLETED) {
             releaseIfReserved(order.getOrderNumber());
+            releaseCouponIfHeld(order);
             return false;
         }
         if (from == OrderProcessingStatus.PENDING || from == OrderProcessingStatus.PACKING) {
@@ -277,6 +282,13 @@ public class OrderLifecycleService {
                 .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
         return orderRepository.lockById(id)
                 .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
+    }
+
+    private void releaseCouponIfHeld(Order order) {
+        if (order.getCoupon() != null && !order.isCouponRedemptionReleased()) {
+            couponRedemptionService.releaseForOrder(order);
+            orderRepository.save(order);
+        }
     }
 
     private void releaseIfReserved(String orderNumber) {

@@ -56,6 +56,7 @@ public class PaymentSettlementService {
     private final BookkeepingService bookkeepingService;
     private final ApplicationEventPublisher eventPublisher;
     private final InventoryManagementService inventoryManagementService;
+    private final CouponRedemptionService couponRedemptionService;
 
     /**
      * @param providerAmountMinor amount the provider says it collected in minor units (pesewas), or null when the
@@ -111,6 +112,7 @@ public class PaymentSettlementService {
             if (order.getStatus() != PaymentStatus.CANCELLED) {
                 order.setStatus(PaymentStatus.CANCELLED);
             }
+            couponRedemptionService.releaseForOrder(order); // stays cancelled: no coupon redemption (idempotent)
             // Always dirty the row so the version moves: an admin holding the old version sees refundRequired changed.
             order.setUpdatedAt(LocalDateTime.now());
             orderRepository.save(order);
@@ -141,6 +143,8 @@ public class PaymentSettlementService {
             if (order.getDeliveryStatus() == OrderProcessingStatus.CANCELLED) {
                 order.setDeliveryStatus(OrderProcessingStatus.PENDING);
             }
+            // API-04 rework: a revived order holds its coupon redemption again (released when it was closed)
+            couponRedemptionService.reacquireForOrder(order);
             // The order is live again: it must not keep reporting that it was cancelled.
             order.setCancelledAt(null);
             order.setCancelSource(null);
@@ -196,6 +200,7 @@ public class PaymentSettlementService {
                 ? saved.getSystemReference()
                 : saved.getProviderPaymentReference());
         order.setStatus(PaymentStatus.FAILED);
+        couponRedemptionService.releaseForOrder(order); // API-04 rework: exactly once, under the order lock
         orderRepository.save(order);
         orderService.releaseStock(order.getOrderNumber());
         log.info("Payment failed for order {}", order.getOrderNumber());

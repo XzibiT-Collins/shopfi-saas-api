@@ -89,16 +89,43 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         """)
     Optional<CustomerOrderSummary> getCustomerOrderSummaryByUserId(@Param("userId") Long userId);
 
-    boolean existsByCouponId(Long couponId);
-
-    /** Orders by this customer that still hold a redemption of the coupon (everything except FAILED / CANCELLED). */
+    /**
+     * Orders by this customer that still hold a LIVE redemption of the coupon: not released (API-04 rework) and not
+     * FAILED / CANCELLED (the status test also covers rows changed outside the application).
+     */
     @Query("""
         SELECT COUNT(o.id) FROM Order o
         WHERE o.user.id = :userId AND o.coupon.id = :couponId
+        AND o.couponRedemptionReleased = false
         AND o.status NOT IN (com.example.perfume_budget.enums.PaymentStatus.FAILED,
                              com.example.perfume_budget.enums.PaymentStatus.CANCELLED)
         """)
     long countCouponRedemptionsByUser(@Param("userId") Long userId, @Param("couponId") Long couponId);
+
+    /** Orders of any customer that still hold a live redemption of the coupon (delete check, COUPON_REDEEMED). */
+    @Query("""
+        SELECT COUNT(o.id) FROM Order o
+        WHERE o.coupon.id = :couponId
+        AND o.couponRedemptionReleased = false
+        AND o.status NOT IN (com.example.perfume_budget.enums.PaymentStatus.FAILED,
+                             com.example.perfume_budget.enums.PaymentStatus.CANCELLED)
+        """)
+    long countLiveCouponRedemptions(@Param("couponId") Long couponId);
+
+    /**
+     * Coupon delete: row-locks every order that references the coupon, in id order, BEFORE the coupon row is locked
+     * (the same order -> coupon lock order as cancel / payment webhooks), so a late payment cannot revive one of them
+     * while the coupon is being deleted.
+     */
+    @Query(value = "SELECT id FROM orders WHERE coupon_id = :couponId ORDER BY id FOR UPDATE", nativeQuery = true)
+    List<Long> lockIdsByCouponId(@Param("couponId") Long couponId);
+
+    /** Coupon delete: released (cancelled / failed) orders lose the link; their discount amounts are kept. */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @Query(value = "UPDATE orders SET coupon_id = NULL WHERE coupon_id = :couponId "
+            + "AND (coupon_redemption_released OR status IN ('CANCELLED', 'FAILED'))",
+            nativeQuery = true)
+    int detachReleasedOrdersFromCoupon(@Param("couponId") Long couponId);
 
     @Query("""
         SELECT COUNT(o.id) AS totalUsages,

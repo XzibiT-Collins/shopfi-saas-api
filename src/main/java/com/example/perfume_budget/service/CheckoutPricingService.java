@@ -31,7 +31,7 @@ public class CheckoutPricingService {
 
     private final EffectivePriceService effectivePriceService;
     private final CouponRepository couponRepository;
-    private final com.example.perfume_budget.repository.OrderRepository orderRepository;
+    private final CouponPerUserLimit perUserLimit;
     private final DiscountCalculationUtil discountCalculationUtil;
     private final TaxService taxService;
 
@@ -53,6 +53,32 @@ public class CheckoutPricingService {
      * @throws CouponRejectedException (a BadRequestException) when the coupon cannot be applied
      */
     public Quote quote(Cart cart, String couponCode) {
+        boolean hasCoupon = couponCode != null && !couponCode.isBlank();
+        return quote(cart, hasCoupon, () -> {
+            Coupon c = couponRepository.findByCode(CouponRedemptionService.normaliseCode(couponCode))
+                    .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
+            discountCalculationUtil.checkIfCouponIsValid(c);
+            return c;
+        });
+    }
+
+    /**
+     * Checkout pricing with a redemption already reserved by {@link CouponRedemptionService#reserve}: the reservation
+     * IS the active / window / usage-limit check (re-checking would reject the checkout that just took the last
+     * redemption and switched the coupon off). A refused reservation is reported here, after the sale-items check,
+     * exactly as {@link #quote(Cart, String)} would report it. The per-user limit and minimum amount still apply.
+     */
+    public Quote quoteReserved(Cart cart, CouponRedemptionService.Reservation reservation) {
+        return quote(cart, reservation != null, () -> {
+            if (!reservation.reserved()) {
+                throw reservation.rejection();
+            }
+            return couponRepository.findById(reservation.couponId())
+                    .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
+        });
+    }
+
+    private Quote quote(Cart cart, boolean hasCoupon, java.util.function.Supplier<Coupon> couponLookup) {
         ShopWideDiscount activeShop = effectivePriceService.activeShopDiscount().orElse(null);
         LocalDateTime pricingTime = effectivePriceService.now();
 
@@ -72,18 +98,12 @@ public class CheckoutPricingService {
 
         Coupon coupon = null;
         BigDecimal couponDiscount = BigDecimal.ZERO;
-        if (couponCode != null && !couponCode.isBlank()) {
+        if (hasCoupon) {
             if (anyItemOnSale) {
                 throw new CouponRejectedException(Reason.WITH_SALE_ITEMS, COUPON_WITH_DISCOUNT);
             }
-            coupon = couponRepository.findByCode(couponCode.strip().toUpperCase())
-                    .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
-            discountCalculationUtil.checkIfCouponIsValid(coupon);
-            Integer perUser = coupon.getPerUserUsageLimit();
-            if (perUser != null && cart.getUser() != null
-                    && orderRepository.countCouponRedemptionsByUser(cart.getUser().getId(), coupon.getId()) >= perUser) {
-                throw new CouponRejectedException(Reason.PER_USER_LIMIT, "You have already used this coupon the maximum number of times");
-            }
+            coupon = couponLookup.get();
+            perUserLimit.check(coupon, cart.getUser() == null ? null : cart.getUser().getId());
             couponDiscount = discountCalculationUtil.calculateDiscount(coupon, orderSubtotal);
         }
         BigDecimal discounted = orderSubtotal.subtract(couponDiscount).max(BigDecimal.ZERO);

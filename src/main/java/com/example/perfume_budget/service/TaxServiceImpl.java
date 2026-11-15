@@ -36,6 +36,8 @@ public class TaxServiceImpl implements TaxService {
     private final TaxRepository taxRepository;
     private final DiscountCalculationUtil discountCalculationUtil;
     private final CouponRepository couponRepository;
+    private final CouponPerUserLimit perUserLimit;
+    private final com.example.perfume_budget.utils.AuthUserUtil authUserUtil;
     private static final String INVALID_COUPON_CODE = "Invalid coupon code.";
 
 
@@ -130,9 +132,12 @@ public class TaxServiceImpl implements TaxService {
     public TaxAndDiscountCalculationResponse calculateTaxesAtCheckout(BigDecimal subtotal, String couponCode) {
         BigDecimal discount = BigDecimal.ZERO;
         if (couponCode != null && !couponCode.isBlank()) {
-            Coupon coupon = couponRepository.findByCode(couponCode.strip().toUpperCase())
+            Coupon coupon = couponRepository.findByCode(CouponRedemptionService.normaliseCode(couponCode))
                     .orElseThrow(() -> new BadRequestException(INVALID_COUPON_CODE));
             discountCalculationUtil.checkIfCouponIsValid(coupon);
+            // API-04 rework: the same per-customer limit as the cart preview and checkout
+            com.example.perfume_budget.model.User user = authUserUtil.getCurrentUser();
+            perUserLimit.check(coupon, user == null ? null : user.getId());
             discount = discountCalculationUtil.calculateDiscount(coupon, subtotal);
             subtotal = subtotal.subtract(discount);
         }

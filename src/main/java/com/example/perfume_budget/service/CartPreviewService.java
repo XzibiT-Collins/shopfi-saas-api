@@ -67,7 +67,7 @@ public class CartPreviewService {
         try {
             quote = pricingService.quote(cart, couponCode);
             if (hasCoupon) {
-                couponPreview = new CouponPreview(couponCode.strip().toUpperCase(), true, null, null);
+                couponPreview = new CouponPreview(CouponRedemptionService.normaliseCode(couponCode), true, null, null);
             }
         } catch (CouponRejectedException e) {
             quote = pricingService.quote(cart, null);
@@ -93,7 +93,7 @@ public class CartPreviewService {
     }
 
     private static CouponPreview rejected(String couponCode, CouponRejectedException e) {
-        String code = couponCode.strip().toUpperCase();
+        String code = CouponRedemptionService.normaliseCode(couponCode);
         return switch (e.getReason()) {
             case MIN_AMOUNT -> new CouponPreview(code, false, "COUPON_MIN_AMOUNT", e.getMessage());
             case WITH_SALE_ITEMS -> new CouponPreview(code, false, "COUPON_NOT_COMBINABLE", e.getMessage());

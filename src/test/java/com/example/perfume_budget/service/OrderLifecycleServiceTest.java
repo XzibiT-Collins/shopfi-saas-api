@@ -31,6 +31,7 @@ class OrderLifecycleServiceTest {
     @Mock InventoryAllocationRepository allocations;
     @Mock com.example.perfume_budget.repository.OrderAuditEventRepository audits;
     @Mock org.springframework.context.ApplicationEventPublisher events;
+    @Mock CouponRedemptionService couponRedemptionService;
     @InjectMocks OrderLifecycleService service;
 
     private final User owner = User.builder().id(1L).build();
@@ -65,6 +66,8 @@ class OrderLifecycleServiceTest {
         service.cancelByOwner("ORD-1", owner);
         service.cancelByOwner("ORD-1", owner);
         verify(inventory, times(1)).releaseOrderInventory("ORD-1");
+        // API-04 rework: the coupon redemption goes back with the cancel, once
+        verify(couponRedemptionService, times(1)).releaseForOrder(any());
     }
 
     @Test
