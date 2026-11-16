@@ -50,6 +50,29 @@ class AsyncConfigMailExecutorTest {
     }
 
     @Test
+    void mailWorkRunsOnAMailThreadWithTheSubmittersTenantAndLeavesNoTenantBehind() throws Exception {
+        executor = (ThreadPoolTaskExecutor) new AsyncConfig().mailTaskExecutor();
+        TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+        AtomicReference<String> seen = new AtomicReference<>();
+        CountDownLatch done = new CountDownLatch(1);
+        executor.execute(() -> {
+            seen.set(Thread.currentThread().getName() + "/" + TenantContext.getSlug());
+            done.countDown();
+        });
+        assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(seen.get()).startsWith("mail-").endsWith("/acme");
+        TenantContext.clear();
+        AtomicReference<Object> leaked = new AtomicReference<>("unset");
+        CountDownLatch done2 = new CountDownLatch(1);
+        executor.execute(() -> {
+            leaked.set(TenantContext.get());
+            done2.countDown();
+        });
+        assertThat(done2.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(leaked.get()).as("a pooled mail thread does not keep the previous tenant").isNull();
+    }
+
+    @Test
     void aFullMailExecutorRunsTheOverflowOnTheCallerAndKeepsTheCallersTenant() throws Exception {
         executor = AsyncConfig.mailExecutor(1, 1);
         CountDownLatch release = new CountDownLatch(1);
