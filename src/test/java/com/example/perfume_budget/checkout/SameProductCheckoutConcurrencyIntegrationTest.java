@@ -368,6 +368,39 @@ class SameProductCheckoutConcurrencyIntegrationTest extends AbstractCheckoutInte
     // ---- other stock writers on the same product at the same time
 
     @Test
+    void merchantReceiptsAndCheckoutsOfTheSameProductInterleave_stockExact() throws Exception {
+        long p = product(acme, "Restocked", "100.00", 10);
+        // a first sale turns the seeded legacy balance into a layer (a receipt on a product that has no layer yet
+        // replaces the legacy balance: pre-existing behaviour, not part of API-05)
+        Customer first = customer(acme, "rsfirst@acme.test");
+        cart(first, p, 1);
+        assertThat(checkout(first, null, null).getResponse().getStatus()).isEqualTo(200);
+        jakarta.servlet.http.Cookie admin = cookie("accessToken", setCookieValue(loginPassword("acme", acme.adminEmail(),
+                com.example.perfume_budget.support.TestTenants.ADMIN_PASSWORD), "accessToken"));
+        initiateDelayMillis = 50;
+        List<Callable<MvcResult>> calls = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            Customer c = customer(acme, "rs" + i + "@acme.test");
+            cart(c, p, 1);
+            calls.add(() -> checkout(c, null, null));
+            if (i % 2 == 0) {
+                String receipt = json.writeValueAsString(java.util.Map.of("productId", p, "quantity", 5, "unitCost", "40.00",
+                        "unitSellingPrice", "100.00", "reference", "RCPT-" + i));
+                calls.add(() -> mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/admin/inventory/receipts").header("X-Tenant-ID", acme.slug()).cookie(admin)
+                        .contentType("application/json").content(receipt)).andReturn());
+            }
+        }
+
+        List<Answer> as = concurrently(calls);
+
+        assertThat(count(as, 200) + count(as, 201)).as(as.toString()).isEqualTo(12);
+        assertThat(reservedQty(acme, p)).isEqualTo(9);
+        assertThat(layerRemaining(acme, p)).isEqualTo(10 - 1 + 20 - 8);
+        assertThat(productInt(p, "stock_quantity")).isEqualTo(21);
+    }
+
+    @Test
     void cancelsAndCheckoutsOfTheSameProductInterleave_stockExact() throws Exception {
         long p = product(acme, "Churn", "100.00", 20);
         List<Customer> first = new ArrayList<>();
