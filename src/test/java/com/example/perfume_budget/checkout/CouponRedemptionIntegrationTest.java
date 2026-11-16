@@ -475,6 +475,8 @@ class CouponRedemptionIntegrationTest extends AbstractCheckoutIntegrationTest {
                 MvcResult r = f.get(30, TimeUnit.SECONDS);
                 assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(503);
                 assertThat(body(r).at("/data/code").asText()).isEqualTo("PAYMENT_SETTINGS_BUSY");
+                // EVT-01 (d) / API-04 N11: like every busy 503, it tells the client when to retry
+                assertThat(r.getResponse().getHeader("Retry-After")).isEqualTo("1");
                 conn.rollback();
             }
         } finally {

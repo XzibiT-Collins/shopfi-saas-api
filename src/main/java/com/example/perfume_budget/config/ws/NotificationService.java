@@ -9,10 +9,12 @@ import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.NotificationRecipientRepository;
 import com.example.perfume_budget.repository.NotificationRepository;
 import com.example.perfume_budget.repository.UserRepository;
+import com.example.perfume_budget.utils.AfterCommit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -30,7 +32,11 @@ public class NotificationService {
     private final NotificationRepository notificationRepository;
     private final NotificationRecipientRepository notificationRecipientRepository;
 
-    @Transactional
+    /**
+     * Rework 1: always its own transaction (REQUIRES_NEW): called from after-commit work, a REQUIRED transaction would
+     * join a publishing transaction that has already committed (rows never written, push never sent).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyAdminsOfSuccessfulPayment(Payment payment) {
         List<User> adminUsers = userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK));
         if (adminUsers.isEmpty()) {
@@ -77,12 +83,8 @@ public class NotificationService {
             }
 
             recipient.setDeliveredAt(deliveredAt);
-            messagingTemplate.convertAndSendToUser(
-                    adminUsername,
-                    "/queue/notifications",
-                    NotificationMapper.toWebSocketBody(recipient)
-            );
-            log.info("Sent payment success notification to admin: {}", adminUsername);
+            pushAfterCommit(adminUsername, NotificationMapper.toWebSocketBody(recipient));
+            log.info("Sent payment success notification to admin user {}", recipient.getUser().getId());
             deliveredRecipients.add(recipient);
         }
 
@@ -91,7 +93,11 @@ public class NotificationService {
         }
     }
 
-    @Transactional
+    /**
+     * Rework 1: always its own transaction (REQUIRES_NEW): called from after-commit work, a REQUIRED transaction would
+     * join a publishing transaction that has already committed (rows never written, push never sent).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyStaffOfShopFloorShortage(Long productId, String productName, int floorQuantity, int storeRoomQuantity) {
         // Throttle: one open alert per product until someone reads it.
         if (notificationRecipientRepository.existsByNotificationTypeAndNotificationReferenceIdAndIsReadFalse(
@@ -143,16 +149,20 @@ public class NotificationService {
             }
 
             recipient.setDeliveredAt(deliveredAt);
-            messagingTemplate.convertAndSendToUser(
-                    staffUsername,
-                    "/queue/notifications",
-                    NotificationMapper.toWebSocketBody(recipient)
-            );
+            pushAfterCommit(staffUsername, NotificationMapper.toWebSocketBody(recipient));
             deliveredRecipients.add(recipient);
         }
 
         if (!deliveredRecipients.isEmpty()) {
             notificationRecipientRepository.saveAll(deliveredRecipients);
         }
+    }
+
+    /**
+     * EVT-01: the realtime push announces notification rows this transaction writes, so it goes out only after they
+     * commit (never for a rolled-back write); the body is built now, while the rows are at hand.
+     */
+    private void pushAfterCommit(String username, Object body) {
+        AfterCommit.run(() -> messagingTemplate.convertAndSendToUser(username, "/queue/notifications", body));
     }
 }

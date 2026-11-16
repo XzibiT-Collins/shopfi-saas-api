@@ -38,10 +38,10 @@ public class EmailServiceImpl implements EmailService{
 
     @Override
     public void sendCustomerReceipt(Payment payment) {
-        Order order = payment.getOrder();
-        User user = getUserFromOrder(order);
-        DeliveryDetail deliveryAddress = deliveryDetailRepository.findByUserAndIsDefaultTrue(user).orElse(null);
         try{
+            Order order = payment.getOrder();
+            User user = getUserFromOrder(order);
+            DeliveryDetail deliveryAddress = deliveryDetailRepository.findByUserAndIsDefaultTrue(user).orElse(null);
             Context context = new Context();
             context.setVariable("recipientName", user.getFullName());
             context.setVariable("order", order);
@@ -54,14 +54,14 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("order-receipt", context);
             sendEmail(htmlContent, user.getEmail(), subject);
         }catch (Exception e){
-            log.error("Failed to send email to {}",user != null ? user.getEmail() : "unknown recipient", e);
+            logLost("Customer receipt", payment, e);
         }
     }
 
     @Override
     public void sendAdminOrderNotification(Payment payment) {
-        Order order = payment.getOrder();
         try{
+            Order order = payment.getOrder();
             Context context = new Context();
             context.setVariable("order", order);
             context.setVariable("payment", payment);
@@ -70,7 +70,7 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("success-payment", context);
             sendEmail(htmlContent, adminEmail, subject);
         }catch (Exception e){
-            log.error("Failed to send email to admin about new order received.", e);
+            logLost("Admin payment e-mail", payment, e);
         }
     }
 
@@ -85,7 +85,7 @@ public class EmailServiceImpl implements EmailService{
             sendEmail(htmlContent, adminEmail, subject);
             log.info("Admin notified of new order: {}", order.getOrderNumber());
         }catch (Exception e){
-            log.error("Failed to send admin notification: {}", e.getMessage(), e);
+            logLost("Admin new-order e-mail", "order " + (order == null ? null : order.getOrderNumber()), e);
         }
     }
 
@@ -99,9 +99,9 @@ public class EmailServiceImpl implements EmailService{
 
             String htmlContent = templateEngine.process("forgot-password", context);
             sendEmail(htmlContent, recipientEmail, "Password Reset Request");
-            log.info("Forgot Password Email Sent to {}", recipientEmail);
+            log.info("Password reset e-mail sent (tenant {})", tenantSlug);
         }catch (Exception e){
-            log.error("Failed to send forgot password email to {}", recipientEmail, e);
+            logLost("Password reset e-mail", "tenant " + tenantSlug, e);
         }
     }
 
@@ -114,9 +114,9 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("verify-otp", context);
 
             sendEmail(htmlContent, recipientEmail, "Verify OTP");
-            log.info("OTP Email Sent to {}", recipientEmail);
+            log.info("OTP e-mail sent");
         }catch (Exception e){
-            log.error("Failed to send otp email to {}", recipientEmail, e);
+            logLost("OTP e-mail", "an OTP request", e);
         }
     }
 
@@ -130,13 +130,31 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("order-status-update", context);
 
             sendEmail(htmlContent, event.customerEmail(), "Order Status Update");
-            log.info("Order Status Update Email Sent to {}", event.customerEmail());
+            log.info("Order status e-mail sent for order {}", event.orderNumber());
         }catch (Exception e){
-            log.error("Failed to send order status update email", e);
+            logLost("Order status e-mail", "order " + event.orderNumber(), e);
         }
     }
 
     // HELPER METHODS
+
+    /**
+     * EVT-01: a receipt / order e-mail that was not sent is logged with the order / payment reference (so it can be
+     * re-sent), never with the recipient's address or the exception text (a transport error can quote it). Rework 1
+     * (F3): the stack trace is no longer logged at all (its messages can carry the address); OTP / reset e-mails log
+     * no address either, only the tenant.
+     */
+    private static void logLost(String what, Payment payment, Exception e) {
+        Order order = payment == null ? null : payment.getOrder();
+        logLost(what, "order " + (order == null ? null : order.getOrderNumber()) + ", payment "
+                + (payment == null ? null : payment.getId()) + " (ref "
+                + (payment == null ? null : payment.getProviderPaymentReference()) + ")", e);
+    }
+
+    private static void logLost(String what, String reference, Exception e) {
+        log.error("{} for {} was NOT sent: {}", what, reference, e.getClass().getName());
+    }
+
     private void sendEmail(String htmlContent, String recipientEmail, String subject) {
         mailTransport.send(new MailMessage(adminEmail, recipientEmail, subject, htmlContent));
     }
