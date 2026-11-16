@@ -179,4 +179,25 @@ class ShopFloorStockHandlerTest {
         assertDoesNotThrow(() -> handler.handleShopFloorStockChange(event));
         verifyNoInteractions(notificationService);
     }
+
+    /** EVT-01b L5: a failure is logged with the product reference and the exception CLASS, never its text / trace. */
+    @Test
+    void aFailureIsLoggedWithTheReferenceAndExceptionClassOnly() {
+        when(locationStockRepository.findByProductIdAndLocationType(anyLong(), org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("duplicate key (email)=(staff@shop.test)"));
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ShopFloorStockHandler.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender = new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            handler.handleShopFloorStockChange(event);
+        } finally {
+            logger.detachAppender(appender);
+        }
+        org.assertj.core.api.Assertions.assertThat(appender.list).singleElement().satisfies(e -> {
+            org.assertj.core.api.Assertions.assertThat(e.getFormattedMessage()).contains("product 7")
+                    .contains("IllegalStateException").doesNotContain("staff@shop.test");
+            org.assertj.core.api.Assertions.assertThat(e.getThrowableProxy()).as("no stack trace / message").isNull();
+        });
+    }
 }
