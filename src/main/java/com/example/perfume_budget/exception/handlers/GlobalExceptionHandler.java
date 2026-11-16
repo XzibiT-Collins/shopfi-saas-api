@@ -98,6 +98,13 @@ public class GlobalExceptionHandler {
     /** Errors with a stable machine code (checkout/payment, docs/api/checkout.md): {description, data:{code,...}}. */
     @ExceptionHandler(ApiCodeException.class)
     public ResponseEntity<CustomApiResponse<Object>> handleApiCodeException(ApiCodeException ex){
+        if (ex.getStatus() == HttpStatus.SERVICE_UNAVAILABLE) {
+            // API-04 rework 3: every busy / collided 503 (COUPON_BUSY, PAYMENT_SETTINGS_BUSY, TRY_AGAIN after the
+            // in-process retries) says when to retry, like the TRY_AGAIN mapped from a raw deadlock below
+            return ResponseEntity.status(ex.getStatus())
+                    .header(org.springframework.http.HttpHeaders.RETRY_AFTER, "1")
+                    .body(CustomApiResponse.error(ex.getMessage(), ex.body()));
+        }
         return ResponseEntity.status(ex.getStatus()).body(CustomApiResponse.error(ex.getMessage(), ex.body()));
     }
 

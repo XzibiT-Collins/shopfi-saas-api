@@ -169,6 +169,8 @@ public class PaymentSettlementService {
         // API-04: a revived order holds its coupon redemption again (released when it was closed). Coupon row LAST:
         // after the stock re-reservation, sold counts, stock finalisation and ledger (the UPDATE itself runs at commit)
         couponRedemptionService.reacquireForOrder(order);
+        // Last: receipt / admin e-mail / WebSocket notification. The listener runs AFTER COMMIT (rework 3): a retried
+        // attempt that rolls back (deadlock, COUPON_BUSY from the deferred coupon UPDATE at commit) sends nothing.
         eventPublisher.publishEvent(saved);
         log.info("Payment completed for order {}", order.getOrderNumber());
         return Outcome.COMPLETED;

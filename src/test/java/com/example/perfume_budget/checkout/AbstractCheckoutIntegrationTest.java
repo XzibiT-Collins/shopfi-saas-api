@@ -42,6 +42,10 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
     @MockitoBean
     protected PaymentGatewayAPIService gateway;
 
+    /** API-04 rework 3: no SMTP in tests; lets a test count the receipt / admin e-mails that really went out. */
+    @MockitoBean
+    protected com.example.perfume_budget.notification.MailTransport mailTransport;
+
     protected final List<PaystackInitiatePaymentRequest> initiated = new CopyOnWriteArrayList<>();
     protected final AtomicInteger initiateCalls = new AtomicInteger();
     protected volatile long initiateDelayMillis = 0;
