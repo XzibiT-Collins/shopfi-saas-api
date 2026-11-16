@@ -194,13 +194,37 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
 | 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). Webhooks never answer 503 (see above) |
-| 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. Checkout's own same-product optimistic-lock failure is API-05 and still a 500 |
+| 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. API-05: also any optimistic-lock failure (`ObjectOptimisticLockingFailureException`) on any endpoint; checkout itself no longer produces one (see "Concurrent checkouts" below) |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
+Out of stock is `400` with `description` `"Insufficient stock for: <product name>"`.
+
+**Concurrent checkouts of the same product (API-05).** Before API-05 two checkouts of one product both read the same
+inventory layers (no version, no lock), both decremented them and the second commit failed on `Product.version` with a
+`500`. Now every writer of stock (checkout reservation, cancel / expiry / `charge.failed` release, payment
+finalisation, merchant restock, late-payment re-reservation, walk-in sale, receipt, adjustment, conversion) first locks
+the products it touches with ONE `SELECT ... ORDER BY id FOR NO KEY UPDATE` (ids ascending, so multi-product carts in
+any order cannot deadlock; `NO KEY` so it does not wait for the FK key-share locks that other in-flight orders hold on
+the product) and re-reads them and their layers under that lock. Checkout takes it as its LAST step, after the Paystack
+call:
+
+1. customer row lock (ORD-01), replays, pricing, order + payment rows;
+2. a plain (unlocked) stock check: a cart that visibly cannot be served is refused `400` before Paystack is called;
+3. Paystack initialise (no product lock held, so checkouts of the same product run their Paystack calls in parallel);
+4. product row locks in id order, stock reservation from the layers, commit.
+
+Result: `N` customers buying the last `K < N` units at once get exactly `K` orders and `N-K` clean `400` "Insufficient
+stock", stock ends at `0`, `soldCount` counts only paid units (the product UPDATE writes only changed columns, so a
+stock change never overwrites `soldCount` / `viewCount` / `addToCartCount`), and no request gets a `500`. A
+customer who loses the race in step 4 has had a Paystack transaction initialised that is never shown to anyone (the
+order rolls back; nothing can be paid against it). Checkout is NOT retried in-process (a retry would initialise a
+second Paystack transaction); any remaining conflict is the `503 TRY_AGAIN` above, and the same `Idempotency-Key` can
+be re-sent. A coupon redemption reserved for a checkout that ends in "Insufficient stock" is given back exactly once.
 
 **Coupon redemptions (API-04 rework).** Checkout reserves one redemption of the coupon with an atomic conditional
 update in its own short transaction that commits before the checkout transaction starts, so checkout never holds a
-coupon row lock across the Paystack call (it does hold its stock rows and the customer row across it, ORD-01); the
+coupon row lock across the Paystack call (it holds the customer row across it, ORD-01; since API-05 it locks its
+product rows only after the call, for the short stock reservation before commit); the
 reservation is given back when the checkout does not create an order with it (rejection, Paystack failure). Refusals
 that do not need the usage counter (address, empty cart, unavailable items, idempotent replays, sale items, unknown
 code, per-user limit, minimum amount) are decided before reserving (rework 2), so they never hold a redemption. An
@@ -212,7 +236,9 @@ still hold a redemption. See `DISCOUNTS_FRONTEND_INTEGRATION.md` section 8.
 `charge.failed`, a late payment after a merchant cancel and a late-payment revival lock the order row first, then write
 the order, payment, stock and product rows, and change the coupon counter with ONE `UPDATE` as the very last statement
 before `COMMIT` (deferred to the transaction's before-commit phase, after a flush of everything else). So none of them
-holds the coupon row while it waits for stock rows a checkout keeps across its Paystack call, and two of them can no
-longer deadlock on coupon vs stock (they all lock in the same order). Admin edit / deactivate lock only the coupon
+holds the coupon row while it waits for product / stock rows, and two of them can no longer deadlock on coupon vs stock
+(they all lock in the same order). API-05: the "stock" step is always the product rows in ascending id order
+(`FOR NO KEY UPDATE`), taken before any inventory layer is read; checkout takes it after its Paystack call. Full order:
+customer row (checkout) | order row (cancel / webhook / expiry) -> product rows by id -> coupon row last. Admin edit / deactivate lock only the coupon
 (`FOR NO KEY UPDATE`, which does not conflict with the FK lock a checkout's new order holds); delete locks the coupon's
 orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`).

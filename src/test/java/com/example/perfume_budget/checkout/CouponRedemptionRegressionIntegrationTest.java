@@ -160,11 +160,12 @@ class CouponRedemptionRegressionIntegrationTest extends AbstractCheckoutIntegrat
         } finally {
             ex.shutdownNow();
         }
-        // a failed checkout (including API-05's same-product optimistic-lock failure) gives its reservation back
+        // API-05: same-product checkouts no longer fail on the product row, so the limit is reached exactly
+        assertThat(statuses).as("statuses " + statuses).containsOnly(200, 400);
         assertThat(usage("SAMEP")).as("statuses " + statuses).isEqualTo(liveOrders(cid));
-        assertThat(liveOrders(cid)).isLessThanOrEqualTo(3);
-        assertThat(statuses.stream().filter(s -> s == 200).count()).isEqualTo(liveOrders(cid));
-        assertThat(active("SAMEP")).isEqualTo(liveOrders(cid) < 3);
+        assertThat(liveOrders(cid)).isEqualTo(3);
+        assertThat(statuses.stream().filter(s -> s == 200).count()).isEqualTo(3);
+        assertThat(active("SAMEP")).isFalse();
     }
 
     // ---- LOW 4: refusals and replays that do not need the counter never reserve (no transient over-count)

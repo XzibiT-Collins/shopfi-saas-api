@@ -397,7 +397,7 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         Map<String, Object> b = body("LIMIT3", "FLAT", "5");
         b.put("usageLimit", 3);
         createCoupon(acme, adminA, b);
-        // one product per customer: the coupon is the only shared row (same-product contention is API-05, see below)
+        // one product per customer: the coupon is the only shared row (same-product variant below, API-05)
         List<Customer> cs = new ArrayList<>();
         for (int i = 0; i < 8; i++) cs.add(ready(acme, "lim" + i + "@acme.test", product(acme, "Orchid" + i, "100.00", 100)));
 
@@ -409,6 +409,81 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(usageCount("LIMIT3")).isEqualTo(3);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders WHERE coupon_id IS NOT NULL", Integer.class)).isEqualTo(3);
         assertThat(jdbc.queryForObject("SELECT is_active FROM tenant_acme.coupons WHERE code='LIMIT3'", Boolean.class)).isFalse();
+    }
+
+    /** API-05: the realistic case: every customer buys the SAME product, so stock rows are shared too. */
+    @Test
+    void usageLimitHoldsUnderConcurrentCheckoutsOfTheSameProduct_noFalseLimitRejections() throws Exception {
+        Map<String, Object> b = body("LIMSAME", "FLAT", "5");
+        b.put("usageLimit", 3);
+        long id = createCoupon(acme, adminA, b);
+        long p = product(acme, "Orchid", "100.00", 100);
+        initiateDelayMillis = 100;
+        List<Customer> cs = new ArrayList<>();
+        for (int i = 0; i < 8; i++) cs.add(ready(acme, "lsp" + i + "@acme.test", p));
+
+        List<Integer> statuses = runConcurrently(cs, "LIMSAME");
+
+        assertThat(statuses).as("no 500 / 503: the product rows no longer collide").containsOnly(200, 400);
+        // exactly the limit: no checkout failed for another reason while holding a redemption, so no false rejection
+        assertThat(statuses.stream().filter(s -> s == 200).count()).as(statuses.toString()).isEqualTo(3);
+        assertThat(statuses.stream().filter(s -> s == 400).count()).isEqualTo(5);
+        assertThat(usageCount("LIMSAME")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders WHERE coupon_id = ? AND status = 'INITIATED'",
+                Integer.class, id)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT is_active FROM tenant_acme.coupons WHERE code='LIMSAME'", Boolean.class)).isFalse();
+        assertThat(layerRemaining(acme, p)).isEqualTo(97);
+        assertThat(reservedQty(acme, p)).isEqualTo(3);
+    }
+
+    /** API-05: coupon limit above the stock: the stock losers give their redemption back, counter = live orders. */
+    @Test
+    void sameProductStockRunsOutBeforeTheCoupon_losersGiveTheirRedemptionBack() throws Exception {
+        Map<String, Object> b = body("STOCKOUT", "FLAT", "5");
+        b.put("usageLimit", 6);
+        long id = createCoupon(acme, adminA, b);
+        long p = product(acme, "Rare", "100.00", 3);
+        initiateDelayMillis = 100;
+        List<Customer> cs = new ArrayList<>();
+        for (int i = 0; i < 8; i++) cs.add(ready(acme, "so" + i + "@acme.test", p));
+
+        List<Integer> statuses = runConcurrently(cs, "STOCKOUT");
+
+        assertThat(statuses).containsOnly(200, 400);
+        assertThat(statuses.stream().filter(s -> s == 200).count()).as(statuses.toString()).isEqualTo(3);
+        assertThat(usageCount("STOCKOUT")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders WHERE coupon_id = ?", Integer.class, id)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT is_active FROM tenant_acme.coupons WHERE code='STOCKOUT'", Boolean.class)).isTrue();
+        assertThat(layerRemaining(acme, p)).isZero();
+    }
+
+    @Test
+    void afterDeactivateReturnsNoCheckoutRedeems_sameProduct_counterMatchesOrders() throws Exception {
+        long p = product(acme, "Lily", "100.00", 100);
+        long id = createCoupon(acme, adminA, body("RACESP", "FLAT", "5"));
+        List<Customer> cs = new ArrayList<>();
+        for (int i = 0; i < 8; i++) cs.add(ready(acme, "rsp" + i + "@acme.test", p));
+
+        ExecutorService ex = Executors.newFixedThreadPool(9);
+        try {
+            CountDownLatch go = new CountDownLatch(1);
+            List<Future<Integer>> fs = new ArrayList<>();
+            for (Customer c : cs) {
+                fs.add(ex.submit(() -> { go.await(); return checkout(c, null, "couponCode=racesp").getResponse().getStatus(); }));
+            }
+            Future<Integer> deact = ex.submit(() -> { go.await(); return send(post("/api/v1/coupon/" + id + "/deactivate"), acme, adminA, null).getResponse().getStatus(); });
+            go.countDown();
+            assertThat(deact.get(60, TimeUnit.SECONDS)).isEqualTo(200);
+            for (Future<Integer> f : fs) assertThat(f.get(60, TimeUnit.SECONDS)).isIn(200, 400);
+        } finally {
+            ex.shutdownNow();
+        }
+        int orders = jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders WHERE coupon_id = ?", Integer.class, id);
+        assertThat(usageCount("RACESP")).isEqualTo(orders);
+        assertThat(reservedQty(acme, p)).isEqualTo(orders);
+        Customer late = ready(acme, "latesp@acme.test", p);
+        assertThat(checkout(late, null, "couponCode=RACESP").getResponse().getStatus()).isEqualTo(400);
+        assertThat(usageCount("RACESP")).isEqualTo(orders);
     }
 
     @Test
