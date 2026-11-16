@@ -1,7 +1,5 @@
 package com.example.perfume_budget.checkout;
 
-import com.example.perfume_budget.dto.payment.request.PaystackInitiatePaymentRequest;
-import com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse;
 import com.example.perfume_budget.support.TestTenants;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,8 +13,6 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -103,19 +99,6 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         return body(r).at("/data/orderNumber").asText();
     }
 
-    /** Paystack stub that holds the call of {@code slowEmail} open until {@code release} (ORD-01: stock held). */
-    private void slowPaystackFor(String slowEmail, CountDownLatch inPaystack, CountDownLatch release) {
-        when(gateway.initiatePaystackTransaction(any())).thenAnswer(inv -> {
-            String email = ((PaystackInitiatePaymentRequest) inv.getArgument(0)).email();
-            if (email.equals(slowEmail)) {
-                inPaystack.countDown();
-                release.await(60, TimeUnit.SECONDS);
-            }
-            String code = UUID.randomUUID().toString().substring(0, 8);
-            return new PaystackInitiateTransactionResponse(true, "Authorization URL created",
-                    new PaystackInitiateTransactionResponse.Data("https://checkout.paystack.com/" + code, code, "T" + code));
-        });
-    }
 
     /** Another customer's coupon checkout (other product) and an admin edit: both must answer at once. */
     private void couponIsNotHeld(ExecutorService ex, String code, long couponId, String who) throws Exception {
@@ -136,10 +119,10 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(elapsed).as("an admin edit does not wait either").isLessThan(3_000);
     }
 
-    // ---- P1: charge.failed waiting for stock held by a slow checkout does not hold the coupon
+    // ---- P1: charge.failed waiting for stock (product row) does not hold the coupon
 
     @Test
-    void failedPaymentWebhookWaitingForStockOfASlowCheckoutDoesNotHoldTheCoupon() throws Exception {
+    void failedPaymentWebhookWaitingForStockDoesNotHoldTheCoupon() throws Exception {
         Gateway g = configureGateway(acme);
         long cid = createCoupon(body("HOLD", 10));
         long shared = product(acme, "Shared", "100.00", 50);
@@ -148,25 +131,21 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         String oa = place(a, "HOLD");
         String ref = reference(oa);
 
-        Customer x = customer(acme, "x@acme.test");
-        cart(x, shared, 1);
-        CountDownLatch inPaystack = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        slowPaystackFor(x.email(), inPaystack, release);
         ExecutorService ex = Executors.newFixedThreadPool(3);
-        try {
-            Future<MvcResult> stuck = ex.submit(() -> checkout(x, null, null));
-            assertThat(inPaystack.await(30, TimeUnit.SECONDS)).isTrue();
+        try (Connection holder = jdbc.getDataSource().getConnection()) {
+            // API-05: a checkout no longer holds its stock across the Paystack call (it locks the product rows only
+            // for its short reservation before commit). Stand in for any stock writer in the middle of its
+            // transaction (a checkout's reservation step, a merchant restock) by holding the product row here.
+            holder.setAutoCommit(false);
+            holder.createStatement().execute("SELECT id FROM tenant_acme.products WHERE id = " + shared + " FOR NO KEY UPDATE");
             assertThat(webhook(g, event("charge.failed", ref, totalMinor(oa)))).isEqualTo(200);
             awaitBlocked(1, 5_000);
-            assertThat(blockedLocks()).as("the failure webhook waits for the slow checkout's stock").isPositive();
+            assertThat(blockedLocks()).as("the failure webhook waits for the product row").isPositive();
 
             couponIsNotHeld(ex, "HOLD", cid, "y1");
 
-            release.countDown();
-            assertThat(stuck.get(30, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+            holder.commit();
         } finally {
-            release.countDown();
             ex.shutdownNow();
         }
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(orderStatus(acme, oa)).isEqualTo("FAILED"));
@@ -176,7 +155,7 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
     // ---- revival: a late payment waiting for stock does not hold the coupon either
 
     @Test
-    void latePaymentRevivalWaitingForStockOfASlowCheckoutDoesNotHoldTheCoupon() throws Exception {
+    void latePaymentRevivalWaitingForStockDoesNotHoldTheCoupon() throws Exception {
         Gateway g = configureGateway(acme);
         long cid = createCoupon(body("REVIVE", 10));
         long shared = product(acme, "SharedR", "100.00", 50);
@@ -187,25 +166,21 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(cancel(a, oa).getResponse().getStatus()).isEqualTo(200);
         assertThat(usage("REVIVE")).isZero();
 
-        Customer x = customer(acme, "rx@acme.test");
-        cart(x, shared, 1);
-        CountDownLatch inPaystack = new CountDownLatch(1);
-        CountDownLatch release = new CountDownLatch(1);
-        slowPaystackFor(x.email(), inPaystack, release);
         ExecutorService ex = Executors.newFixedThreadPool(3);
-        try {
-            Future<MvcResult> stuck = ex.submit(() -> checkout(x, null, null));
-            assertThat(inPaystack.await(30, TimeUnit.SECONDS)).isTrue();
+        try (Connection holder = jdbc.getDataSource().getConnection()) {
+            // API-05: a checkout no longer holds its stock across the Paystack call (it locks the product rows only
+            // for its short reservation before commit). Stand in for any stock writer in the middle of its
+            // transaction (a checkout's reservation step, a merchant restock) by holding the product row here.
+            holder.setAutoCommit(false);
+            holder.createStatement().execute("SELECT id FROM tenant_acme.products WHERE id = " + shared + " FOR NO KEY UPDATE");
             assertThat(webhook(g, event("charge.success", ref, totalMinor(oa)))).isEqualTo(200);
             awaitBlocked(1, 5_000);
-            assertThat(blockedLocks()).as("the revival waits for the slow checkout's stock").isPositive();
+            assertThat(blockedLocks()).as("the revival waits for the product row").isPositive();
 
             couponIsNotHeld(ex, "REVIVE", cid, "y2");
 
-            release.countDown();
-            assertThat(stuck.get(30, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+            holder.commit();
         } finally {
-            release.countDown();
             ex.shutdownNow();
         }
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(orderStatus(acme, oa)).isEqualTo("COMPLETED"));

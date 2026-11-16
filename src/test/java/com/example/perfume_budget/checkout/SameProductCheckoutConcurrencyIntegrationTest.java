@@ -251,6 +251,58 @@ class SameProductCheckoutConcurrencyIntegrationTest extends AbstractCheckoutInte
     }
 
     @Test
+    void aCheckoutInsidePaystackHoldsNoStock_cancelAndFailureWebhookOfTheSameProductDoNotWait() throws Exception {
+        Gateway g = configureGateway(acme);
+        long p = product(acme, "Shared", "100.00", 50);
+        Customer a = customer(acme, "wa@acme.test");
+        cart(a, p, 1);
+        String oa = body(checkout(a, null, null)).at("/data/orderNumber").asText();
+        Customer b = customer(acme, "wb@acme.test");
+        cart(b, p, 1);
+        JsonNode bb = body(checkout(b, null, null));
+        String ob = bb.at("/data/orderNumber").asText();
+        long minorB = jdbc.queryForObject("SELECT total_amount * 100 FROM tenant_acme.orders WHERE order_number = ?",
+                BigDecimal.class, ob).longValue();
+
+        Customer x = customer(acme, "wx@acme.test");
+        cart(x, p, 1);
+        CountDownLatch inPaystack = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        org.mockito.Mockito.when(gateway.initiatePaystackTransaction(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> {
+            if (x.email().equals(((com.example.perfume_budget.dto.payment.request.PaystackInitiatePaymentRequest) inv.getArgument(0)).email())) {
+                inPaystack.countDown();
+                release.await(60, TimeUnit.SECONDS);
+            }
+            String code = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+            return new com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse(true, "Authorization URL created",
+                    new com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse.Data("https://checkout.paystack.com/" + code, code, "T" + code));
+        });
+        ExecutorService ex = Executors.newFixedThreadPool(2);
+        try {
+            Future<MvcResult> stuck = ex.submit(() -> checkout(x, null, null));
+            assertThat(inPaystack.await(30, TimeUnit.SECONDS)).isTrue();
+
+            long t0 = System.nanoTime();
+            MvcResult c = ex.submit(() -> cancel(a, oa)).get(30, TimeUnit.SECONDS);
+            assertThat(c.getResponse().getStatus()).as(c.getResponse().getContentAsString()).isEqualTo(200);
+            assertThat((System.nanoTime() - t0) / 1_000_000).as("cancel did not wait for the Paystack call").isLessThan(3_000);
+
+            assertThat(webhook(g, event("charge.failed", bb.at("/data/data/reference").asText(), minorB))).isEqualTo(200);
+            awaitStatus(ob, "FAILED");
+            assertThat(stuck.isDone()).as("both settled while the checkout was still inside Paystack").isFalse();
+
+            release.countDown();
+            assertThat(stuck.get(30, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+        } finally {
+            release.countDown();
+            ex.shutdownNow();
+        }
+        assertThat(reservedQty(acme, p)).isEqualTo(1);
+        assertThat(layerRemaining(acme, p)).isEqualTo(49);
+        assertThat(productInt(p, "stock_quantity")).isEqualTo(49);
+    }
+
+    @Test
     void outOfStockFoundBeforePaystackNeverCallsIt() throws Exception {
         long p = product(acme, "Gone", "100.00", 1);
         Customer a = customer(acme, "g1@acme.test");
