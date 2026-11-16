@@ -114,8 +114,6 @@ public class OrderLifecycleService {
         order.setStatus(PaymentStatus.CANCELLED);
         order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
         markCancelled(order, source, actorEmail);
-        // API-04 rework: the order's coupon redemption goes back exactly once (we hold the order row lock)
-        couponRedemptionService.releaseForOrder(order);
         orderRepository.save(order);
 
         paymentRepository.findByOrder_OrderNumber(order.getOrderNumber()).ifPresent(payment -> {
@@ -125,6 +123,9 @@ public class OrderLifecycleService {
                 paymentRepository.save(payment);
             }
         });
+        // API-04: the order's coupon redemption goes back exactly once (we hold the order row lock). Lock order
+        // order -> stock -> coupon: the coupon UPDATE is deferred to commit, after the stock release above.
+        couponRedemptionService.releaseForOrder(order);
     }
 
     private static void markCancelled(Order order, CancelSource source, String actorEmail) {
@@ -284,6 +285,7 @@ public class OrderLifecycleService {
                 .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
     }
 
+    /** Straggler release; the coupon UPDATE itself runs at commit, after every stock write (coupon row LAST). */
     private void releaseCouponIfHeld(Order order) {
         if (order.getCoupon() != null && !order.isCouponRedemptionReleased()) {
             couponRedemptionService.releaseForOrder(order);

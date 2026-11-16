@@ -41,6 +41,18 @@ public class DiscountCalculationUtil {
         }
     }
 
+    /**
+     * API-04 rework 2 (checkout pre-check only): inside its date window today and active, or inactive only because a
+     * reservation reached the limit ({@code limit_deactivated}). Ignores the usage counter, which may be transiently
+     * high while other checkouts are in flight.
+     */
+    public boolean redeemableIgnoringUsage(Coupon coupon) {
+        LocalDate now = LocalDate.now(systemClock);
+        boolean on = Boolean.TRUE.equals(coupon.getIsActive()) || coupon.isLimitDeactivated();
+        return on && coupon.getStartDate() != null && coupon.getExpirationDate() != null
+                && !now.isBefore(coupon.getStartDate()) && !now.isAfter(coupon.getExpirationDate());
+    }
+
     public BigDecimal calculateDiscount(Coupon coupon, BigDecimal orderSubtotal) {
         if (coupon.getMinimumCartAmountForDiscount() != null &&
                 orderSubtotal.compareTo(coupon.getMinimumCartAmountForDiscount()) < 0) {

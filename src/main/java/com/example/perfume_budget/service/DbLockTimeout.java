@@ -58,6 +58,38 @@ public class DbLockTimeout {
                 .getSingleResult();
     }
 
+    public static final String DEADLOCK_DETECTED = "40P01";
+    public static final String SERIALIZATION_FAILURE = "40001";
+
+    /** Stable {@code data.code} of the 503 for a deadlock / serialization failure / lock timeout outside a coupon. */
+    public static final String TRY_AGAIN = "TRY_AGAIN";
+    public static final String TRY_AGAIN_MESSAGE = "The request collided with another update. Please try again.";
+
+    /**
+     * A failure that is safe and useful to retry: Postgres picked this transaction as a deadlock victim (40P01), a
+     * serialization failure (40001), a lock wait that hit lock_timeout (55P03) however Spring / Hibernate / JPA wrapped
+     * it, or a {@code 503 COUPON_BUSY}. The whole transaction was rolled back, so a retry starts from scratch.
+     * Optimistic-lock failures are NOT included (API-05 owns those).
+     */
+    public static boolean isTransient(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof ApiCodeException api && api.getStatus() == HttpStatus.SERVICE_UNAVAILABLE) {
+                return true;
+            }
+            if (t instanceof org.springframework.dao.PessimisticLockingFailureException
+                    || t instanceof jakarta.persistence.PessimisticLockException
+                    || t instanceof jakarta.persistence.LockTimeoutException
+                    || t instanceof org.hibernate.exception.LockAcquisitionException) {
+                return true;
+            }
+            if (t instanceof SQLException sql && (DEADLOCK_DETECTED.equals(sql.getSQLState())
+                    || SERIALIZATION_FAILURE.equals(sql.getSQLState()) || LOCK_NOT_AVAILABLE.equals(sql.getSQLState()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** A lock wait that ran into lock_timeout (SQLSTATE 55P03), however Spring / Hibernate / JPA wrapped it. */
     public static boolean isLockTimeout(Throwable e) {
         for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {

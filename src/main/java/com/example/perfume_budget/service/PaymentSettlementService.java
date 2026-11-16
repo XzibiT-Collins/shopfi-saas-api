@@ -112,7 +112,7 @@ public class PaymentSettlementService {
             if (order.getStatus() != PaymentStatus.CANCELLED) {
                 order.setStatus(PaymentStatus.CANCELLED);
             }
-            couponRedemptionService.releaseForOrder(order); // stays cancelled: no coupon redemption (idempotent)
+            couponRedemptionService.releaseForOrder(order); // stays cancelled (idempotent); UPDATE runs at commit, last
             // Always dirty the row so the version moves: an admin holding the old version sees refundRequired changed.
             order.setUpdatedAt(LocalDateTime.now());
             orderRepository.save(order);
@@ -143,8 +143,6 @@ public class PaymentSettlementService {
             if (order.getDeliveryStatus() == OrderProcessingStatus.CANCELLED) {
                 order.setDeliveryStatus(OrderProcessingStatus.PENDING);
             }
-            // API-04 rework: a revived order holds its coupon redemption again (released when it was closed)
-            couponRedemptionService.reacquireForOrder(order);
             // The order is live again: it must not keep reporting that it was cancelled.
             order.setCancelledAt(null);
             order.setCancelSource(null);
@@ -168,6 +166,9 @@ public class PaymentSettlementService {
         order.getItems().forEach(item -> productRepository.incrementSoldCount(item.getProductId(), item.getQuantity()));
         orderService.finalizeReservedStock(order);
         bookkeepingService.recordSale(order, saved);
+        // API-04: a revived order holds its coupon redemption again (released when it was closed). Coupon row LAST:
+        // after the stock re-reservation, sold counts, stock finalisation and ledger (the UPDATE itself runs at commit)
+        couponRedemptionService.reacquireForOrder(order);
         eventPublisher.publishEvent(saved);
         log.info("Payment completed for order {}", order.getOrderNumber());
         return Outcome.COMPLETED;
@@ -200,9 +201,11 @@ public class PaymentSettlementService {
                 ? saved.getSystemReference()
                 : saved.getProviderPaymentReference());
         order.setStatus(PaymentStatus.FAILED);
-        couponRedemptionService.releaseForOrder(order); // API-04 rework: exactly once, under the order lock
         orderRepository.save(order);
         orderService.releaseStock(order.getOrderNumber());
+        // API-04: exactly once, under the order lock. Lock order order -> stock -> coupon: the coupon UPDATE runs at
+        // commit, after the stock release above (a checkout may hold those stock rows across its Paystack call)
+        couponRedemptionService.releaseForOrder(order);
         log.info("Payment failed for order {}", order.getOrderNumber());
         return Outcome.FAILED;
     }

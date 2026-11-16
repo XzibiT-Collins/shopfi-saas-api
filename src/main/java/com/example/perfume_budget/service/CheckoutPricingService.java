@@ -78,6 +78,25 @@ public class CheckoutPricingService {
         });
     }
 
+    /**
+     * API-04 rework 2: the coupon refusals that do NOT depend on the usage counter, checked before checkout reserves a
+     * redemption (so a request that will be refused anyway never holds one): sale items, the per-user limit and the
+     * minimum amount, in the same order as {@link #quote}. Only for a coupon that would otherwise be redeemable now
+     * (inside its date window, active or switched off only by the limit); for an unknown, inactive, not-started or
+     * expired coupon nothing is thrown here and the reservation reports the reason exactly as before (it changes no
+     * counter). Active / date window / usage limit are decided ONLY by the reservation UPDATE.
+     */
+    public void precheckCoupon(Cart cart, String couponCode) {
+        if (couponCode == null || couponCode.isBlank()) {
+            return;
+        }
+        Coupon coupon = couponRepository.findByCode(CouponRedemptionService.normaliseCode(couponCode)).orElse(null);
+        if (coupon == null || !discountCalculationUtil.redeemableIgnoringUsage(coupon)) {
+            return;
+        }
+        quote(cart, true, () -> coupon);
+    }
+
     private Quote quote(Cart cart, boolean hasCoupon, java.util.function.Supplier<Coupon> couponLookup) {
         ShopWideDiscount activeShop = effectivePriceService.activeShopDiscount().orElse(null);
         LocalDateTime pricingTime = effectivePriceService.now();
