@@ -482,6 +482,10 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                                 InventoryReferenceType referenceType,
                                 String referenceId,
                                 String referenceLineKey) {
+        // INV-01: a product with only a legacy stock_quantity has no layer yet, and the refresh below sums layers;
+        // without this the new layer replaced the legacy balance (5 on hand + receipt of 3 = 3). Received no later
+        // than the new layer: the legacy units were on hand first and stay first in FIFO order.
+        ensureLegacyLayer(product, receivedAt);
         InventoryLayer layer = inventoryLayerRepository.save(InventoryLayer.builder()
                 .product(product)
                 .sourceType(sourceType)
@@ -546,9 +550,23 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     /** The caller holds {@link ProductStockLocks#lock} for this product (API-05). */
     private void ensureLegacyLayer(Product product) {
+        ensureLegacyLayer(product, null);
+    }
+
+    /**
+     * Turns a legacy balance into its LEGACY_BALANCE layer, once (the caller holds the product lock, so the check
+     * cannot race). A zero balance has nothing to preserve and gets no layer and no zero-quantity movement, the same
+     * {@code > 0} rule as the V5 location-ledger backfill (INV-01).
+     *
+     * @param notAfter when the caller is about to add a layer received at this time: the legacy layer must not sort
+     *                 after it, or FIFO would sell the newer units before the legacy ones
+     */
+    private void ensureLegacyLayer(Product product, LocalDateTime notAfter) {
         if (!needsLegacyLayer(product)) {
             return;
         }
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime receivedAt = notAfter != null && notAfter.isBefore(now) ? notAfter : now;
 
         BigDecimal unitCost = product.getCostPrice() != null ? product.getCostPrice().getAmount() : BigDecimal.ZERO;
         BigDecimal unitSellingPrice = product.getPrice() != null ? product.getPrice().getAmount() : BigDecimal.ZERO;
@@ -562,7 +580,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                 .unitCost(scale(unitCost))
                 .unitSellingPrice(scale(unitSellingPrice))
                 .currencyCode(resolveCurrency(product))
-                .receivedAt(LocalDateTime.now())
+                .receivedAt(receivedAt)
                 .createdBy("System")
                 .build());
 

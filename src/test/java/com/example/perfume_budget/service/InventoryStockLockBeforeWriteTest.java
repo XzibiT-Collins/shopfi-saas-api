@@ -236,4 +236,80 @@ class InventoryStockLockBeforeWriteTest {
         assertThat(calls).as(calls.toString()).noneMatch(c -> c.startsWith("lock"));
         assertThat(calls).as(calls.toString()).noneMatch(c -> c.startsWith("write layer") || c.startsWith("write movement"));
     }
+
+    // ------------------------------------------------------------------ INV-01: legacy balance under every layer writer
+
+    /** The source types of the layers saved, in save order. */
+    private List<InventoryLayerSourceType> savedLayerTypes() {
+        org.mockito.ArgumentCaptor<InventoryLayer> c = org.mockito.ArgumentCaptor.forClass(InventoryLayer.class);
+        org.mockito.Mockito.verify(inventoryLayerRepository, org.mockito.Mockito.atLeastOnce()).save(c.capture());
+        return c.getAllValues().stream().map(InventoryLayer::getSourceType).toList();
+    }
+
+    private InventoryLayer savedLegacyLayer() {
+        org.mockito.ArgumentCaptor<InventoryLayer> c = org.mockito.ArgumentCaptor.forClass(InventoryLayer.class);
+        org.mockito.Mockito.verify(inventoryLayerRepository, org.mockito.Mockito.atLeastOnce()).save(c.capture());
+        return c.getAllValues().stream().filter(l -> l.getSourceType() == InventoryLayerSourceType.LEGACY_BALANCE)
+                .findFirst().orElseThrow();
+    }
+
+    private void legacy(long productId) {
+        lenient().when(inventoryLayerRepository.existsByProductId(productId)).thenReturn(false); // stock 10, no layer
+    }
+
+    @Test
+    void receiptOnALegacyProductLocksThenBootstrapsTheLegacyLayerBeforeItsOwnLayer() {
+        legacy(1L);
+        service.receiveStock(new InventoryReceiptRequest(1L, 5, new BigDecimal("10.00"), new BigDecimal("20.00"),
+                null, "PO-1", "n"));
+        assertLockedFirst("[1]");
+        assertThat(savedLayerTypes()).containsExactly(InventoryLayerSourceType.LEGACY_BALANCE, InventoryLayerSourceType.PURCHASE);
+        assertThat(savedLegacyLayer().getReceivedQuantity()).isEqualTo(10);
+        assertThat(savedLegacyLayer().getRemainingQuantity()).isEqualTo(10);
+    }
+
+    @Test
+    void adjustmentIncreaseOnALegacyProductBootstrapsTheLegacyLayerFirst() {
+        legacy(1L);
+        service.adjustInventory(new InventoryAdjustmentRequest(1L, InventoryAdjustmentDirection.INCREASE, 3, "count",
+                new BigDecimal("10.00"), new BigDecimal("20.00"), "ADJ-1", "n"));
+        assertLockedFirst("[1]");
+        assertThat(savedLayerTypes()).containsExactly(InventoryLayerSourceType.LEGACY_BALANCE, InventoryLayerSourceType.ADJUSTMENT_IN);
+    }
+
+    @Test
+    void conversionLayerOnALegacyTargetBootstrapsTheLegacyLayerFirst() {
+        legacy(2L);
+        service.createConversionLayer(p2, 20, new BigDecimal("5.00"), new BigDecimal("12.00"),
+                InventoryLayerSourceType.CONVERSION_IN, "CNV-1", "n", LocalDateTime.now());
+        assertLockedFirst("[2]");
+        assertThat(savedLayerTypes()).containsExactly(InventoryLayerSourceType.LEGACY_BALANCE, InventoryLayerSourceType.CONVERSION_IN);
+    }
+
+    @Test
+    void aZeroLegacyBalanceGetsNoLegacyLayer() {
+        legacy(1L);
+        p1.setStockQuantity(0);
+        service.receiveStock(new InventoryReceiptRequest(1L, 5, new BigDecimal("10.00"), new BigDecimal("20.00"),
+                null, "PO-1", "n"));
+        assertThat(savedLayerTypes()).containsExactly(InventoryLayerSourceType.OPENING_STOCK);
+    }
+
+    @Test
+    void theLegacyLayerIsReceivedNoLaterThanABackdatedReceipt() {
+        legacy(1L);
+        LocalDateTime past = LocalDateTime.of(2020, 1, 1, 8, 0);
+        service.receiveStock(new InventoryReceiptRequest(1L, 5, new BigDecimal("10.00"), new BigDecimal("20.00"),
+                past, "PO-1", "n"));
+        assertThat(savedLegacyLayer().getReceivedAt()).isEqualTo(past);
+    }
+
+    @Test
+    void theLegacyLayerIsNeverDatedInTheFuture() {
+        legacy(1L);
+        LocalDateTime before = LocalDateTime.now();
+        service.receiveStock(new InventoryReceiptRequest(1L, 5, new BigDecimal("10.00"), new BigDecimal("20.00"),
+                before.plusDays(3), "PO-1", "n"));
+        assertThat(savedLegacyLayer().getReceivedAt()).isBetween(before, LocalDateTime.now());
+    }
 }
