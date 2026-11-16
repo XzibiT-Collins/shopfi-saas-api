@@ -9,6 +9,7 @@ import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.NotificationRecipientRepository;
 import com.example.perfume_budget.repository.NotificationRepository;
 import com.example.perfume_budget.repository.UserRepository;
+import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.utils.AfterCommit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +39,7 @@ public class NotificationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyAdminsOfSuccessfulPayment(Payment payment) {
+        String tenant = TenantContext.getSlug();
         List<User> adminUsers = userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK));
         if (adminUsers.isEmpty()) {
             log.info("No admin users found to persist notification for order {}", payment.getOrder().getOrderNumber());
@@ -66,7 +68,7 @@ public class NotificationService {
 
         log.info("Persisted payment success notification {} for {} admin recipients.", notification.getId(), savedRecipients.size());
 
-        Set<String> connectedAdmins = adminSessionManager.getConnectedAdmins();
+        Set<String> connectedAdmins = adminSessionManager.getConnectedAdmins(tenant);
         if (connectedAdmins.isEmpty()) {
             log.info("No admins connected to receive realtime notification.");
             return;
@@ -83,7 +85,7 @@ public class NotificationService {
             }
 
             recipient.setDeliveredAt(deliveredAt);
-            pushAfterCommit(adminUsername, NotificationMapper.toWebSocketBody(recipient));
+            pushAfterCommit(tenant, adminUsername, NotificationMapper.toWebSocketBody(recipient));
             log.info("Sent payment success notification to admin user {}", recipient.getUser().getId());
             deliveredRecipients.add(recipient);
         }
@@ -99,6 +101,7 @@ public class NotificationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyStaffOfShopFloorShortage(Long productId, String productName, int floorQuantity, int storeRoomQuantity) {
+        String tenant = TenantContext.getSlug();
         // Throttle: one open alert per product until someone reads it.
         if (notificationRecipientRepository.existsByNotificationTypeAndNotificationReferenceIdAndIsReadFalse(
                 "SHOP_FLOOR_RESTOCK", productId.toString())) {
@@ -135,7 +138,7 @@ public class NotificationService {
 
         log.info("Persisted shop floor restock notification {} for {} staff recipients.", notification.getId(), savedRecipients.size());
 
-        Set<String> connectedAdmins = adminSessionManager.getConnectedAdmins();
+        Set<String> connectedAdmins = adminSessionManager.getConnectedAdmins(tenant);
         if (connectedAdmins.isEmpty()) {
             return;
         }
@@ -149,7 +152,7 @@ public class NotificationService {
             }
 
             recipient.setDeliveredAt(deliveredAt);
-            pushAfterCommit(staffUsername, NotificationMapper.toWebSocketBody(recipient));
+            pushAfterCommit(tenant, staffUsername, NotificationMapper.toWebSocketBody(recipient));
             deliveredRecipients.add(recipient);
         }
 
@@ -161,8 +164,11 @@ public class NotificationService {
     /**
      * EVT-01: the realtime push announces notification rows this transaction writes, so it goes out only after they
      * commit (never for a rolled-back write); the body is built now, while the rows are at hand.
+     * SEC-03c: addressed to the tenant-qualified user name ({@link StompTenantAuthentication#userName}), so only
+     * sessions of this tenant can receive it. The tenant is captured before the commit, never read afterwards.
      */
-    private void pushAfterCommit(String username, Object body) {
-        AfterCommit.run(() -> messagingTemplate.convertAndSendToUser(username, "/queue/notifications", body));
+    private void pushAfterCommit(String tenant, String email, Object body) {
+        String user = StompTenantAuthentication.userName(tenant, email);
+        AfterCommit.run(() -> messagingTemplate.convertAndSendToUser(user, "/queue/notifications", body));
     }
 }

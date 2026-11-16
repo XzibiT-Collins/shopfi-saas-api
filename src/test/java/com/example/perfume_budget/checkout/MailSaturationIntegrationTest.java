@@ -82,7 +82,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
     void setUp() {
         mail = (TrackedTaskExecutor) mailBean;
         ((InterceptableChannel) brokerChannel).addInterceptor(capture);
-        sessions.addAdmin(acme.adminEmail());
+        sessions.addAdmin(acme.slug(), acme.adminEmail(), "mail-saturation-session");
         dispatcherLogger = (Logger) LoggerFactory.getLogger(MailDispatcher.class);
         dispatcherLog = new ListAppender<>();
         dispatcherLog.start();
@@ -93,7 +93,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
     void tearDown() {
         release.countDown(); // free the mail executor before the base class waits for it
         ((InterceptableChannel) brokerChannel).removeInterceptor(capture);
-        sessions.removeAdmin(acme.adminEmail());
+        sessions.removeAdmin(acme.slug(), acme.adminEmail(), "mail-saturation-session");
         dispatcherLogger.detachAppender(dispatcherLog);
     }
 

@@ -60,8 +60,14 @@ class NotificationServiceTest {
     private User adminOne;
     private User adminTwo;
 
+    @org.junit.jupiter.api.AfterEach
+    void clearTenant() {
+        com.example.perfume_budget.tenancy.TenantContext.clear();
+    }
+
     @BeforeEach
     void setUp() {
+        com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.tenant("acme", "tenant_acme"));
         adminOne = User.builder()
                 .id(1L)
                 .email("admin1@example.com")
@@ -101,7 +107,7 @@ class NotificationServiceTest {
         when(userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK))).thenReturn(List.of(adminOne, adminTwo));
         when(notificationRepository.save(any(Notification.class))).thenReturn(savedNotification);
         when(notificationRecipientRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(adminSessionManager.getConnectedAdmins()).thenReturn(Set.of());
+        when(adminSessionManager.getConnectedAdmins("acme")).thenReturn(Set.of());
 
         notificationService.notifyAdminsOfSuccessfulPayment(payment);
 
@@ -145,7 +151,7 @@ class NotificationServiceTest {
         when(notificationRecipientRepository.saveAll(any()))
                 .thenReturn(List.of(recipientOne, recipientTwo))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(adminSessionManager.getConnectedAdmins()).thenReturn(Set.of("admin1@example.com"));
+        when(adminSessionManager.getConnectedAdmins("acme")).thenReturn(Set.of("admin1@example.com"));
 
         ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(NotificationService.class);
         ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs = new ch.qos.logback.core.read.ListAppender<>();
@@ -161,7 +167,7 @@ class NotificationServiceTest {
 
         assertNotNull(recipientOne.getDeliveredAt());
         assertEquals(null, recipientTwo.getDeliveredAt());
-        verify(messagingTemplate, times(1)).convertAndSendToUser(eq("admin1@example.com"), eq("/queue/notifications"), any());
+        verify(messagingTemplate, times(1)).convertAndSendToUser(eq("acme:admin1@example.com"), eq("/queue/notifications"), any());
     }
 
     @Test
@@ -194,7 +200,7 @@ class NotificationServiceTest {
         when(userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK))).thenReturn(List.of(adminOne, adminTwo));
         when(notificationRepository.save(any(Notification.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(notificationRecipientRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        when(adminSessionManager.getConnectedAdmins()).thenReturn(Set.of());
+        when(adminSessionManager.getConnectedAdmins("acme")).thenReturn(Set.of());
 
         notificationService.notifyStaffOfShopFloorShortage(17L, "Oud Royale", 0, 20);
 
@@ -232,12 +238,12 @@ class NotificationServiceTest {
         when(notificationRecipientRepository.saveAll(any()))
                 .thenReturn(List.of(recipientOne, recipientTwo))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(adminSessionManager.getConnectedAdmins()).thenReturn(Set.of("admin2@example.com"));
+        when(adminSessionManager.getConnectedAdmins("acme")).thenReturn(Set.of("admin2@example.com"));
 
         notificationService.notifyStaffOfShopFloorShortage(17L, "Oud Royale", 0, 20);
 
         assertEquals(null, recipientOne.getDeliveredAt());
         assertNotNull(recipientTwo.getDeliveredAt());
-        verify(messagingTemplate, times(1)).convertAndSendToUser(eq("admin2@example.com"), eq("/queue/notifications"), any());
+        verify(messagingTemplate, times(1)).convertAndSendToUser(eq("acme:admin2@example.com"), eq("/queue/notifications"), any());
     }
 }
