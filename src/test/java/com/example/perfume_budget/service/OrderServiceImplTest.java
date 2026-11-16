@@ -323,12 +323,10 @@ class OrderServiceImplTest {
     }
 
     @Test
-    void checkout_IdempotentReplay_givesTheReservationBack() {
+    void checkout_IdempotentReplay_neverReservesTheCoupon() {
         when(authUserUtil.getCurrentUser()).thenReturn(testUser);
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
-        CouponRedemptionService.Reservation reservation = new CouponRedemptionService.Reservation(testCoupon.getId(), null);
-        when(couponRedemptionService.reserve("DISCOUNT10")).thenReturn(reservation);
         testOrder.setStatus(com.example.perfume_budget.enums.PaymentStatus.INITIATED);
         testOrder.setCreatedAt(java.time.LocalDateTime.now());
         testOrder.setRequestFingerprint(com.example.perfume_budget.utils.CheckoutFingerprint.of(testCart,
@@ -340,8 +338,92 @@ class OrderServiceImplTest {
         CheckoutResponse r = orderService.checkout("DISCOUNT10", null, "key-replay-0001");
 
         assertTrue(r.idempotentReplay());
-        verify(couponRedemptionService, times(1)).releaseReservation(reservation);
+        // API-04 rework 2: the pre-check sees the replay, so the counter is never touched (no transient reservation)
+        verify(couponRedemptionService, never()).reserve(any());
+        verify(couponRedemptionService, never()).releaseReservation(any());
         verify(gatewayAPIService, never()).initiatePaystackTransaction(any());
+    }
+
+    // ---- API-04 rework 2: refusals that do not depend on the usage counter are decided BEFORE reserving
+
+    private void stubCouponCheckoutBasics() {
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
+        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        lenient().when(taxService.calculateTaxes(any())).thenReturn(new TaxCalculationResult(new ArrayList<>(),
+                new Money(BigDecimal.ZERO, CurrencyCode.GHS), new Money(new BigDecimal("180.00"), CurrencyCode.GHS)));
+    }
+
+    @Test
+    void checkout_PerUserLimitRefusedBeforeReserving() {
+        stubCouponCheckoutBasics();
+        testCoupon.setPerUserUsageLimit(1);
+        when(couponRepository.findByCode("DISCOUNT10")).thenReturn(Optional.of(testCoupon));
+        when(discountCalculationUtil.redeemableIgnoringUsage(testCoupon)).thenReturn(true);
+        when(orderRepository.countCouponRedemptionsByUser(1L, 1L)).thenReturn(1L);
+
+        com.example.perfume_budget.exception.CouponRejectedException e = assertThrows(
+                com.example.perfume_budget.exception.CouponRejectedException.class,
+                () -> orderService.checkout(" discount10 ", null, null));
+        assertEquals(com.example.perfume_budget.exception.CouponRejectedException.Reason.PER_USER_LIMIT, e.getReason());
+        verify(couponRedemptionService, never()).reserve(any());
+        verify(userRepository, never()).lockById(any());
+    }
+
+    @Test
+    void checkout_MinimumAmountRefusedBeforeReserving() {
+        stubCouponCheckoutBasics();
+        when(couponRepository.findByCode("DISCOUNT10")).thenReturn(Optional.of(testCoupon));
+        when(discountCalculationUtil.redeemableIgnoringUsage(testCoupon)).thenReturn(true);
+        when(discountCalculationUtil.calculateDiscount(eq(testCoupon), any(BigDecimal.class))).thenThrow(
+                new com.example.perfume_budget.exception.CouponRejectedException(
+                        com.example.perfume_budget.exception.CouponRejectedException.Reason.MIN_AMOUNT, "min"));
+
+        assertThrows(BadRequestException.class, () -> orderService.checkout("DISCOUNT10", null, null));
+        verify(couponRedemptionService, never()).reserve(any());
+    }
+
+    @Test
+    void checkout_ACouponOutsideItsWindowIsLeftToTheReservation() {
+        stubCouponCheckoutBasics();
+        testCoupon.setPerUserUsageLimit(1);
+        when(couponRepository.findByCode("DISCOUNT10")).thenReturn(Optional.of(testCoupon));
+        when(discountCalculationUtil.redeemableIgnoringUsage(testCoupon)).thenReturn(false);
+        CouponRedemptionService.Reservation refused = new CouponRedemptionService.Reservation(1L,
+                new com.example.perfume_budget.exception.CouponRejectedException(
+                        com.example.perfume_budget.exception.CouponRejectedException.Reason.EXPIRED, "Coupon has expired"));
+        when(couponRedemptionService.reserve("DISCOUNT10")).thenReturn(refused);
+
+        BadRequestException e = assertThrows(BadRequestException.class, () -> orderService.checkout("DISCOUNT10", null, null));
+        assertEquals("Coupon has expired", e.getMessage());
+        verify(orderRepository, never()).countCouponRedemptionsByUser(any(), any());
+    }
+
+    @Test
+    void checkout_AReplayThePreCheckSawButThatIsGoneRunsAgainWithAReservation() {
+        stubCouponCheckoutBasics();
+        Order open = Order.builder().id(9L).orderNumber("ORD-OPEN").status(PaymentStatus.INITIATED)
+                .totalAmount(new Money(new BigDecimal("180.00"), CurrencyCode.GHS)).build();
+        when(orderRepository.findOpenByFingerprint(eq(testUser), any(), any()))
+                .thenReturn(List.of(open))   // pre-check: an open order to replay
+                .thenReturn(List.of());       // checkout transaction: it was cancelled in between
+        when(paymentRepository.findByOrder_OrderNumber("ORD-OPEN")).thenReturn(Optional.of(
+                Payment.builder().authorizationUrl("url").providerPaymentReference("ref").accessCode("c").build()));
+        CouponRedemptionService.Reservation reservation = new CouponRedemptionService.Reservation(testCoupon.getId(), null);
+        when(couponRedemptionService.reserve("DISCOUNT10")).thenReturn(reservation);
+        when(couponRepository.findById(testCoupon.getId())).thenReturn(Optional.of(testCoupon));
+        when(discountCalculationUtil.calculateDiscount(eq(testCoupon), any(BigDecimal.class))).thenReturn(new BigDecimal("20.00"));
+        when(orderNumberGenerator.generateOrderNumber()).thenReturn("ORD-123");
+        when(orderRepository.save(any(Order.class))).thenReturn(testOrder);
+        when(gatewayAPIService.initiatePaystackTransaction(any())).thenReturn(PaystackInitiateTransactionResponse.builder()
+                .status(true).data(new PaystackInitiateTransactionResponse.Data("url2", "code2", "ref2")).build());
+
+        CheckoutResponse r = orderService.checkout("DISCOUNT10", null, null);
+
+        assertFalse(r.idempotentReplay());
+        verify(couponRedemptionService, times(1)).reserve("DISCOUNT10");
+        verify(couponRedemptionService, never()).releaseReservation(any());
+        verify(userRepository, times(2)).lockById(1L); // the first run stopped before pricing and rolled back
     }
 
     @Test

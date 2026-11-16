@@ -40,6 +40,18 @@ class CouponRedemptionServiceTest {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             TransactionSynchronizationManager.setActualTransactionActive(false);
         }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+        TransactionSynchronizationManager.unbindResourceIfPossible(CouponRedemptionService.PENDING_RESOURCE);
+    }
+
+    /** Simulates the commit of the surrounding transaction: beforeCommit then afterCompletion of every sync. */
+    private static void commit() {
+        var syncs = TransactionSynchronizationManager.getSynchronizations();
+        syncs.forEach(s -> s.beforeCommit(false));
+        syncs.forEach(s -> s.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_COMMITTED));
+        TransactionSynchronizationManager.clearSynchronization();
     }
 
     private static Coupon coupon(boolean active, int used, int limit) {
@@ -130,6 +142,7 @@ class CouponRedemptionServiceTest {
 
     @Test
     void releaseForOrderIsExactlyOnce_andNoOpWithoutACoupon() {
+        TransactionSynchronizationManager.initSynchronization();
         Order noCoupon = Order.builder().orderNumber("O-1").build();
         service.releaseForOrder(noCoupon);
         assertThat(noCoupon.isCouponRedemptionReleased()).isFalse();
@@ -139,11 +152,53 @@ class CouponRedemptionServiceTest {
         service.releaseForOrder(order);
         service.releaseForOrder(order);
         assertThat(order.isCouponRedemptionReleased()).isTrue();
+        verify(repo, never()).releaseRedemption(anyLong()); // deferred to the commit: coupon row LAST
+        commit();
         verify(repo, times(1)).releaseRedemption(7L);
     }
 
     @Test
+    void counterUpdatesRunAtCommit_afterAFlushOfEverythingElse_inCouponIdOrder() {
+        TransactionSynchronizationManager.initSynchronization();
+        Coupon nine = coupon(true, 1, 5);
+        nine.setId(9L);
+        Order a = Order.builder().orderNumber("O-A").coupon(nine).build();
+        Order b = Order.builder().orderNumber("O-B").coupon(coupon(true, 1, 5)).couponRedemptionReleased(true).build();
+        service.releaseForOrder(a);       // coupon 9
+        service.reacquireForOrder(b);     // coupon 7
+        verifyNoInteractions(repo);
+
+        commit();
+
+        var inOrder = inOrder(repo);
+        inOrder.verify(repo).flush();
+        inOrder.verify(repo).reacquireRedemption(7L);
+        inOrder.verify(repo).releaseRedemption(9L);
+        inOrder.verifyNoMoreInteractions();
+        assertThat(TransactionSynchronizationManager.getResource(CouponRedemptionService.PENDING_RESOURCE))
+                .as("unbound after completion").isNull();
+    }
+
+    @Test
+    void aLockTimeoutOnTheDeferredUpdateFailsTheCommit() {
+        TransactionSynchronizationManager.initSynchronization();
+        when(repo.releaseRedemption(7L)).thenThrow(new com.example.perfume_budget.exception.ApiCodeException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, CouponRedemptionService.BUSY, "busy"));
+        service.releaseForOrder(Order.builder().orderNumber("O-5").coupon(coupon(true, 1, 5)).build());
+        var syncs = TransactionSynchronizationManager.getSynchronizations();
+        assertThatThrownBy(() -> syncs.forEach(s -> s.beforeCommit(false)))
+                .isInstanceOf(com.example.perfume_budget.exception.ApiCodeException.class);
+    }
+
+    @Test
+    void releaseOutsideATransactionIsRefused() {
+        Order order = Order.builder().orderNumber("O-6").coupon(coupon(true, 1, 5)).build();
+        assertThatThrownBy(() -> service.releaseForOrder(order)).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void reacquireOnlyForAReleasedOrder() {
+        TransactionSynchronizationManager.initSynchronization();
         Order live = Order.builder().orderNumber("O-3").coupon(coupon(true, 1, 5)).build();
         service.reacquireForOrder(live);
         verify(repo, never()).reacquireRedemption(anyLong());
@@ -152,10 +207,11 @@ class CouponRedemptionServiceTest {
         service.reacquireForOrder(live);
         service.reacquireForOrder(live);
         assertThat(live.isCouponRedemptionReleased()).isFalse();
-        verify(repo, times(1)).reacquireRedemption(7L);
 
         Order noCoupon = Order.builder().orderNumber("O-4").couponRedemptionReleased(true).build();
         service.reacquireForOrder(noCoupon);
+        commit();
+        verify(repo, times(1)).reacquireRedemption(7L);
         verify(repo, times(1)).reacquireRedemption(anyLong());
     }
 
@@ -167,5 +223,24 @@ class CouponRedemptionServiceTest {
                 new java.sql.SQLException("deadlock", "40P01")))).isFalse();
         assertThat(DbLockTimeout.isLockTimeout(new jakarta.persistence.LockTimeoutException("x"))).isTrue();
         assertThat(DbLockTimeout.isLockTimeout(new RuntimeException("x"))).isFalse();
+    }
+
+    @Test
+    void transientFailuresAreDeadlockSerializationLockTimeoutAndBusy_notOptimisticLocking() {
+        assertThat(DbLockTimeout.isTransient(new CannotAcquireLockException("x",
+                new java.sql.SQLException("deadlock", "40P01")))).isTrue();
+        assertThat(DbLockTimeout.isTransient(new RuntimeException("commit",
+                new java.sql.SQLException("deadlock", "40P01")))).as("wrapped anyhow").isTrue();
+        assertThat(DbLockTimeout.isTransient(new RuntimeException(new java.sql.SQLException("ser", "40001")))).isTrue();
+        assertThat(DbLockTimeout.isTransient(new RuntimeException(new java.sql.SQLException("lt", "55P03")))).isTrue();
+        assertThat(DbLockTimeout.isTransient(new org.springframework.dao.DeadlockLoserDataAccessException("x", null))).isTrue();
+        assertThat(DbLockTimeout.isTransient(new com.example.perfume_budget.exception.ApiCodeException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, CouponRedemptionService.BUSY, "b"))).isTrue();
+        assertThat(DbLockTimeout.isTransient(new com.example.perfume_budget.exception.ApiCodeException(
+                org.springframework.http.HttpStatus.CONFLICT, "X", "b"))).isFalse();
+        assertThat(DbLockTimeout.isTransient(new org.springframework.orm.ObjectOptimisticLockingFailureException("P", 1L)))
+                .as("API-05 owns optimistic locking").isFalse();
+        assertThat(DbLockTimeout.isTransient(new RuntimeException(new java.sql.SQLException("dup", "23505")))).isFalse();
+        assertThat(DbLockTimeout.isTransient(new IllegalStateException("x"))).isFalse();
     }
 }
