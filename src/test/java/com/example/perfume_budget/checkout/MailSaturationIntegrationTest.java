@@ -60,6 +60,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
     @Autowired @Qualifier("brokerChannel") private MessageChannel brokerChannel;
     @Autowired private AdminSessionManager sessions;
     @Autowired private DataSource dataSource;
+    @Autowired private org.springframework.mail.javamail.JavaMailSender javaMailSender;
 
     private TrackedTaskExecutor mail;
     private final CountDownLatch release = new CountDownLatch(1);
@@ -262,5 +263,15 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         }
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertThat(activeConnections()).as("no request thread kept a connection").isZero());
+    }
+
+    /** F1: every SMTP step is bounded (JavaMail's defaults are infinite), as configured in application.properties. */
+    @Test
+    void theSmtpClientHasConnectReadAndWriteTimeouts() {
+        java.util.Properties p = ((org.springframework.mail.javamail.JavaMailSenderImpl) javaMailSender).getJavaMailProperties();
+        for (String key : List.of("mail.smtp.connectiontimeout", "mail.smtp.timeout", "mail.smtp.writetimeout")) {
+            assertThat(p.getProperty(key)).as(key).isNotBlank();
+            assertThat(Long.parseLong(p.getProperty(key))).as(key).isBetween(1_000L, 30_000L);
+        }
     }
 }
