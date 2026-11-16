@@ -55,7 +55,12 @@ class SiteVisitFilterWebhookTest {
     @ParameterizedTest
     @ValueSource(strings = {"/api/v1/products", "/api/v1/hooks", "/api/v1/web/shop", "/api/v1/caf%C3%A9",
             "/api/v1/products/%E2%82%AC", "/api/v1/product/a%20b", "/api/v1/product/a+b", "/api/v1/product/%F0%9F%98%80",
-            "/api/v1/product/caf%C3%A9-noir", "/api/v1/product/chanel-no-5-eau-de-parfum-100ml-limited-edition-2026"})
+            "/api/v1/product/caf%C3%A9-noir", "/api/v1/product/chanel-no-5-eau-de-parfum-100ml-limited-edition-2026",
+            // EVT-01b L4: "webhook" spelled ACROSS segments or in the middle of a word is not the webhook route
+            "/api/v1/product/cobweb-hookah", "/api/v1/blog/cobweb/hookah", "/api/v1/web/hook", "/api/v1/products/my-webhook-guide",
+            "/api/v1/product/cob%77eb-hookah",
+            // EVT-01b L3 (N18): a 32+ character run WITHOUT lower case (an upper-case SKU / code) is not token-shaped
+            "/api/v1/product/ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "/api/v1/product/SKU-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123"})
     void otherPathsAreStillRecordedUnchanged(String uri) throws Exception {
         SiteVisitRepository repo = mock(SiteVisitRepository.class);
         new SiteVisitFilter(repo).doFilter(new MockHttpServletRequest("GET", uri), new MockHttpServletResponse(),
@@ -89,6 +94,36 @@ class SiteVisitFilterWebhookTest {
             assertThat(saved.getValue().getPage()).contains("[redacted]").doesNotContain(token)
                     .doesNotContain(token.substring(10, 30));
         }
+    }
+
+    /**
+     * EVT-01b L4, documented limitation: a 32+ character run mixing upper and lower case is token-shaped and stored as
+     * {@code [redacted]}, even when it is a mistyped slug (slugs are generated lower case by {@code SlugGenerator}, so
+     * no catalogue link has one). Telling such a slug from a 43-character base64url secret is not safe, so only the
+     * page name is lost, never a token stored.
+     */
+    @org.junit.jupiter.api.Test
+    void aMixedCaseSlugOf32PlusCharactersIsRedactedByDesign() throws Exception {
+        SiteVisitRepository repo = mock(SiteVisitRepository.class);
+        new SiteVisitFilter(repo).doFilter(new MockHttpServletRequest("GET", "/api/v1/product/Chanel-No-5-Eau-De-Parfum-Limited-Edition"),
+                new MockHttpServletResponse(), new MockFilterChain());
+        org.mockito.ArgumentCaptor<com.example.perfume_budget.model.SiteVisit> saved =
+                org.mockito.ArgumentCaptor.forClass(com.example.perfume_budget.model.SiteVisit.class);
+        verify(repo).save(saved.capture());
+        assertThat(saved.getValue().getPage()).isEqualTo("/api/v1/product/[redacted]");
+    }
+
+    /** EVT-01b L4: the look-alike check works per path segment: a segment must START with "webhook" once reduced. */
+    @org.junit.jupiter.api.Test
+    void theLookAlikeCheckIsPerSegment() {
+        assertThat(SiteVisitFilter.resemblesWebhook("/api/v1/cobweb-hookah")).isFalse();
+        assertThat(SiteVisitFilter.resemblesWebhook("/api/v1/cobweb/hookah")).isFalse();
+        assertThat(SiteVisitFilter.resemblesWebhook("/api/v1/cob%2Fwebhook")).as("decoded %2F starts a segment").isTrue();
+        assertThat(SiteVisitFilter.resemblesWebhook("/api/v1/web-hook/x")).isTrue();
+        assertThat(SiteVisitFilter.resemblesWebhook("/api/v1/w%E2%80%8Bebhook")).isTrue();
+        assertThat(SiteVisitFilter.resemblesWebhook("/api/v1/.webhook")).isTrue();
+        assertThat(SiteVisitFilter.resemblesWebhook("webhook")).isTrue();
+        assertThat(SiteVisitFilter.resemblesWebhook(null)).isFalse();
     }
 
     @org.junit.jupiter.api.Test
