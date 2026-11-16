@@ -100,16 +100,14 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Override
     @Transactional
     public InventorySummaryResponse getProductInventorySummary(Long productId) {
-        Product product = getProduct(productId);
-        ensureLegacyLayer(product);
+        Product product = bootstrapLegacyLayerUnderLock(productId);
         return buildSummary(product);
     }
 
     @Override
     @Transactional
     public List<InventoryMovementResponse> getProductInventoryHistory(Long productId) {
-        Product product = getProduct(productId);
-        ensureLegacyLayer(product);
+        bootstrapLegacyLayerUnderLock(productId);
         return inventoryMovementRepository.findByProductIdOrderByCreatedAtDescIdDesc(productId).stream()
                 .map(this::toMovementResponse)
                 .toList();
@@ -527,8 +525,28 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
         productIds.forEach(id -> refreshProductInventoryState(getProduct(id)));
     }
 
+    /**
+     * API-05 rework: the admin summary / history GETs still turn a legacy balance into its layer, but like every other
+     * stock writer only under the product lock, re-checked after it (two writers bootstrapping at once created two
+     * LEGACY_BALANCE layers: stock 5 became 10). A product that already has a layer is read without any lock.
+     */
+    private Product bootstrapLegacyLayerUnderLock(Long productId) {
+        Product product = getProduct(productId);
+        if (needsLegacyLayer(product)) {
+            stockLocks.lock(List.of(productId)); // also re-reads the product
+            ensureLegacyLayer(product);
+        }
+        return product;
+    }
+
+    private boolean needsLegacyLayer(Product product) {
+        return !inventoryLayerRepository.existsByProductId(product.getId())
+                && product.getStockQuantity() != null && product.getStockQuantity() > 0;
+    }
+
+    /** The caller holds {@link ProductStockLocks#lock} for this product (API-05). */
     private void ensureLegacyLayer(Product product) {
-        if (inventoryLayerRepository.existsByProductId(product.getId()) || product.getStockQuantity() == null || product.getStockQuantity() <= 0) {
+        if (!needsLegacyLayer(product)) {
             return;
         }
 
