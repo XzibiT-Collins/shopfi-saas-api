@@ -21,8 +21,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /**
  * API-04 rework 2: a deadlock victim (40P01), serialization failure (40001) or lock timeout (55P03), however it is
- * wrapped, is a {@code 503 {data.code:"TRY_AGAIN"}} with Retry-After, never a 500. Optimistic locking (API-05) is not
- * changed here.
+ * wrapped, is a {@code 503 {data.code:"TRY_AGAIN"}} with Retry-After, never a 500. API-05: so is Spring's optimistic-lock failure
+ * (ObjectOptimisticLockingFailureException), which used to be a 500.
  */
 class LockFailureMappingTest {
 
@@ -54,7 +54,7 @@ class LockFailureMappingTest {
 
     @Test
     void deadlockSerializationAndLockTimeoutAre503TryAgain_howeverWrapped() throws Exception {
-        for (String kind : new String[]{"deadlock", "loser", "pessimistic", "jpa-pessimistic", "commit", "jpa-system", "raw"}) {
+        for (String kind : new String[]{"deadlock", "loser", "pessimistic", "jpa-pessimistic", "commit", "jpa-system", "raw", "optimistic"}) {
             MvcResult r = call(kind);
             assertThat(r.getResponse().getStatus()).as(kind).isEqualTo(503);
             assertThat(r.getResponse().getHeader("Retry-After")).as(kind).isEqualTo("1");
@@ -66,6 +66,5 @@ class LockFailureMappingTest {
     @Test
     void otherFailuresKeepTheirStatus() throws Exception {
         assertThat(call("bug").getResponse().getStatus()).isEqualTo(500);
-        assertThat(call("optimistic").getResponse().getStatus()).as("API-05, unchanged here").isEqualTo(500);
     }
 }

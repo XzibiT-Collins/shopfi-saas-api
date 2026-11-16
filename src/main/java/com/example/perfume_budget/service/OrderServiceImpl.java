@@ -244,9 +244,12 @@ public class OrderServiceImpl implements OrderService {
         newPayment.setCustomerEmail(currentUser.getEmail());
         paymentRepository.save(newPayment);
 
-        try {
-            reserveStock(newOrder.getOrderNumber(), newOrder.getItems());
+        // API-05: a cart this shop cannot serve is refused before Paystack is asked (plain read, no lock). The binding
+        // decision is the locked reservation below; losing a race there gives the same 400.
+        requireStockLooksAvailable(cart);
 
+        PaystackInitiateTransactionResponse response;
+        try {
             PaystackInitiatePaymentRequest request = PaystackInitiatePaymentRequest.builder()
                     .email(currentUser.getEmail())
                     .amount(convertAmountToSend(newOrder.getTotalAmount().getAmount()))
@@ -254,24 +257,10 @@ public class OrderServiceImpl implements OrderService {
                     .callbackUrl(callbackUrlProvider.callbackUrl().orElse(null))
                     .build();
 
-            PaystackInitiateTransactionResponse response = gatewayAPIService.initiatePaystackTransaction(request);
+            response = gatewayAPIService.initiatePaystackTransaction(request);
             log.info("Payment initiated for order: {}", newOrder.getOrderNumber());
-
-            newPayment.setProviderPaymentReference(response.data().reference());
-            newPayment.setAuthorizationUrl(response.data().authorizationUrl());
-            newPayment.setAccessCode(response.data().accessCode());
-            newPayment.setStatus(PaymentStatus.INITIATED);
-            paymentRepository.save(newPayment);
-
-            newOrder.setStatus(PaymentStatus.INITIATED);
-            eventPublisher.publishEvent(orderRepository.save(newOrder));
-            return new CheckoutOutcome(
-                    toCheckoutResponse(newOrder, response.status(), response.message(), response.data(), false),
-                    coupon != null);
-
         } catch (PaymentException exception) {
-            releaseStock(newOrder.getOrderNumber());
-
+            // nothing is reserved yet; the order / payment below roll back with this transaction anyway
             newOrder.setStatus(PaymentStatus.FAILED);
             orderRepository.save(newOrder);
 
@@ -281,6 +270,36 @@ public class OrderServiceImpl implements OrderService {
 
             log.error("Payment initiation failed for order {}: {}", newOrder.getOrderNumber(), exception.getMessage());
             throw exception;
+        }
+
+        // API-05: the stock is reserved AFTER the Paystack call, as the last step before commit. Reserving takes the
+        // products' row locks (id order, ProductStockLocks) and they are held until this commit, so concurrent
+        // checkouts of the same product wait only for each other's short reservation, never for a Paystack round
+        // trip, and none of them fails on Product.@Version. Out of stock here -> 400, the whole transaction (order,
+        // payment) rolls back and the initialised Paystack transaction is never shown to anyone.
+        reserveStock(newOrder.getOrderNumber(), newOrder.getItems());
+
+        newPayment.setProviderPaymentReference(response.data().reference());
+        newPayment.setAuthorizationUrl(response.data().authorizationUrl());
+        newPayment.setAccessCode(response.data().accessCode());
+        newPayment.setStatus(PaymentStatus.INITIATED);
+        paymentRepository.save(newPayment);
+
+        newOrder.setStatus(PaymentStatus.INITIATED);
+        eventPublisher.publishEvent(orderRepository.save(newOrder));
+        return new CheckoutOutcome(
+                toCheckoutResponse(newOrder, response.status(), response.message(), response.data(), false),
+                coupon != null);
+    }
+
+    /** Pre-check only (no lock): the stock the product showed when this transaction read it. */
+    private void requireStockLooksAvailable(Cart cart) {
+        for (CartItem item : cart.getItems()) {
+            Product product = item.getProduct();
+            Integer stock = product.getStockQuantity();
+            if (stock != null && item.getQuantity() != null && stock < item.getQuantity()) {
+                throw new BadRequestException("Insufficient stock for: " + product.getName());
+            }
         }
     }
 

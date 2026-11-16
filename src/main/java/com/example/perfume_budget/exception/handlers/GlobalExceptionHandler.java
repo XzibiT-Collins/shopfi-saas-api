@@ -330,6 +330,17 @@ public class GlobalExceptionHandler {
         return tryAgain(ex);
     }
 
+    /**
+     * API-05: an optimistic-lock conflict that reaches the controller (Spring's translation of Hibernate's stale-state
+     * failure; JPA's own {@link OptimisticLockException} keeps its 409 above). Stock writers no longer produce it
+     * (ProductStockLocks), but a plain entity save racing another writer still can: the transaction was rolled back,
+     * nothing changed, so it is the same {@code 503 TRY_AGAIN} with {@code Retry-After: 1}, never a 500.
+     */
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<CustomApiResponse<Object>> handleOptimisticLockingFailure(Exception ex) {
+        return tryAgain(ex);
+    }
+
     private static ResponseEntity<CustomApiResponse<Object>> tryAgain(Throwable ex) {
         log.warn("Concurrent update, answered 503 TRY_AGAIN: {}", ex.getClass().getSimpleName());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

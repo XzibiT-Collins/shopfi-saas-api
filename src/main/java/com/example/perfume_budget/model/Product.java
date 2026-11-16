@@ -23,6 +23,9 @@ import java.time.LocalDateTime;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+// API-05: an UPDATE writes only the changed columns, so a stock refresh never writes back a stale soldCount /
+// viewCount / addToCartCount that a bulk "+ n" UPDATE changed meanwhile (those do not bump the version).
+@org.hibernate.annotations.DynamicUpdate
 @EntityListeners(AuditingEntityListener.class)
 public class Product {
 

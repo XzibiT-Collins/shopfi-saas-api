@@ -81,6 +81,8 @@ public class StockConversionServiceImpl implements StockConversionService {
         Product targetProduct = sourceProduct.getFamily().getBaseUnit();
         Integer conversionFactor = sourceProduct.getConversionFactor();
         Integer targetQuantityAdded = sourceQuantity * conversionFactor;
+        // API-05: both products, id order, before either one's stock changes
+        inventoryManagementService.lockProductsForStockUpdate(List.of(sourceProduct.getId(), targetProduct.getId()));
         String conversionReference = "CONV-FWD-" + sourceProductId + "-" + System.currentTimeMillis();
 
         InventoryManagementService.InventoryConsumption consumption = inventoryManagementService.consumeInventory(
@@ -165,6 +167,8 @@ public class StockConversionServiceImpl implements StockConversionService {
         }
 
         Integer targetQuantityAdded = sourceQuantity / conversionFactor;
+        // API-05: both products, id order, before either one's stock changes
+        inventoryManagementService.lockProductsForStockUpdate(List.of(sourceProduct.getId(), targetProduct.getId()));
         String conversionReference = "CONV-REV-" + sourceProductId + "-" + System.currentTimeMillis();
 
         InventoryManagementService.InventoryConsumption consumption = inventoryManagementService.consumeInventory(
