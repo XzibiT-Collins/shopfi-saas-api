@@ -444,7 +444,16 @@ This happens in:
 
 - inventory summary lookup
 - inventory history lookup
-- any inventory consumption path
+- any inventory consumption path (checkout reservation, walk-in sale, adjustment decrease, conversion source)
+- any path that adds a layer (stock receipt, adjustment increase, conversion target), before the new layer is written
+  (INV-01: before this, a receipt on a legacy product replaced the balance instead of adding to it)
+
+Every one of these runs under the product stock lock (`ProductStockLocks`), so the layer is created exactly once, with
+one `LEGACY_BOOTSTRAP` movement. A zero (or negative) legacy `stockQuantity` is not bootstrapped: there is nothing to
+preserve, so no layer and no zero-quantity movement; the first receipt is then the `OPENING_STOCK`. When the bootstrap
+happens just before a new layer is added, the legacy layer's `receivedAt` is no later than the new layer's, so a
+back-dated receipt never jumps ahead of the legacy units in FIFO order. The location ledger is not touched by the
+bootstrap (the V5 migration already put legacy balances on the shop floor).
 
 The bootstrap layer uses:
 
