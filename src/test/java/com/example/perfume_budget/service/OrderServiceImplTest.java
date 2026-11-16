@@ -215,7 +215,27 @@ class OrderServiceImplTest {
         assertNotNull(result);
         verify(orderRepository, atLeastOnce()).save(any(Order.class));
         verify(paymentRepository, atLeastOnce()).save(any(Payment.class));
-        verify(gatewayAPIService).initiatePaystackTransaction(any());
+        // API-05: Paystack first, then the (row-locking) stock reservation as the last step of the transaction
+        org.mockito.InOrder inOrder = inOrder(gatewayAPIService, inventoryManagementService);
+        inOrder.verify(gatewayAPIService).initiatePaystackTransaction(any());
+        inOrder.verify(inventoryManagementService).reserveOrderInventory(eq("ORD-123"), anyList());
+    }
+
+    @Test
+    void checkout_StockVisiblyShortIsRefusedBeforePaystack() {
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
+        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(taxService.calculateTaxes(any())).thenReturn(new TaxCalculationResult(new ArrayList<>(),
+                new Money(BigDecimal.ZERO, CurrencyCode.GHS), new Money(new BigDecimal("200.00"), CurrencyCode.GHS)));
+        when(orderNumberGenerator.generateOrderNumber()).thenReturn("ORD-123");
+        when(orderRepository.save(any(Order.class))).thenReturn(testOrder);
+        testProduct.setStockQuantity(1); // cart wants 2
+
+        BadRequestException e = assertThrows(BadRequestException.class, () -> orderService.checkout(null, null, null));
+        assertEquals("Insufficient stock for: Perfume A", e.getMessage());
+        verify(gatewayAPIService, never()).initiatePaystackTransaction(any());
+        verify(inventoryManagementService, never()).reserveOrderInventory(anyString(), anyList());
     }
 
     @Test
@@ -303,7 +323,9 @@ class OrderServiceImplTest {
         when(gatewayAPIService.initiatePaystackTransaction(any())).thenThrow(new PaymentException("Payment failed"));
 
         assertThrows(PaymentException.class, () -> orderService.checkout(null, null, null));
-        verify(inventoryManagementService).releaseOrderInventory("ORD-123");
+        // API-05: stock is reserved only after Paystack answered, so a failed initialisation reserved (and releases) none
+        verify(inventoryManagementService, never()).reserveOrderInventory(anyString(), anyList());
+        verify(inventoryManagementService, never()).releaseOrderInventory(anyString());
     }
 
     @Test

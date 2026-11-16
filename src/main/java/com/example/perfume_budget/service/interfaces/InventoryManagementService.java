@@ -34,6 +34,13 @@ public interface InventoryManagementService {
     int restockConsumedOrderInventory(Order order);
     void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items);
 
+    /**
+     * API-05: row-locks the products (id order) for the rest of the caller's transaction before their stock changes.
+     * Every stock-changing method here takes it itself; a caller that changes several products in one transaction
+     * (stock conversion) takes them all first so two such transactions lock in the same order.
+     */
+    void lockProductsForStockUpdate(java.util.Collection<Long> productIds);
+
     InventoryConsumption consumeInventory(Product product,
                                           int quantity,
                                           InventoryReferenceType referenceType,

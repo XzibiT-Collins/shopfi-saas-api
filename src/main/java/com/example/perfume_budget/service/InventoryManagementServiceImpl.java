@@ -46,11 +46,13 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     private final AuthUserUtil authUserUtil;
     private final BookkeepingService bookkeepingService;
     private final LocationLedgerSync locationLedgerSync;
+    private final ProductStockLocks stockLocks;
 
     @Override
     @Transactional
 //    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public InventorySummaryResponse receiveStock(InventoryReceiptRequest request) {
+        stockLocks.lock(List.of(request.productId()));
         Product product = getProduct(request.productId());
         validatePositiveAmounts(request.unitCost(), request.unitSellingPrice());
 
@@ -87,6 +89,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Transactional
 //    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public InventorySummaryResponse adjustInventory(InventoryAdjustmentRequest request) {
+        stockLocks.lock(List.of(request.productId()));
         Product product = getProduct(request.productId());
         return switch (request.direction()) {
             case INCREASE -> handleAdjustmentIncrease(product, request);
@@ -97,16 +100,14 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Override
     @Transactional
     public InventorySummaryResponse getProductInventorySummary(Long productId) {
-        Product product = getProduct(productId);
-        ensureLegacyLayer(product);
+        Product product = bootstrapLegacyLayerUnderLock(productId);
         return buildSummary(product);
     }
 
     @Override
     @Transactional
     public List<InventoryMovementResponse> getProductInventoryHistory(Long productId) {
-        Product product = getProduct(productId);
-        ensureLegacyLayer(product);
+        bootstrapLegacyLayerUnderLock(productId);
         return inventoryMovementRepository.findByProductIdOrderByCreatedAtDescIdDesc(productId).stream()
                 .map(this::toMovementResponse)
                 .toList();
@@ -146,8 +147,10 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Transactional
 //    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public void reserveOrderInventory(String orderNumber, List<OrderItem> orderItems) {
+        // API-05: all of the order's products, id order, before any layer is read
+        stockLocks.lock(orderItems.stream().map(OrderItem::getProductId).toList());
         for (OrderItem item : orderItems) {
-            consumeInventory(getProduct(item.getProductId()),
+            consumeLocked(getProduct(item.getProductId()),
                     item.getQuantity(),
                     InventoryReferenceType.ORDER,
                     orderNumber,
@@ -167,9 +170,10 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                         orderNumber,
                         InventoryAllocationStatus.RESERVED
                 );
+        stockLocks.lock(allocations.stream().map(a -> a.getProduct().getId()).toList());
 
         allocations.forEach(allocation -> {
-            InventoryLayer layer = allocation.getLayer();
+            InventoryLayer layer = stockLocks.fresh(allocation.getLayer());
             layer.setRemainingQuantity(layer.getRemainingQuantity() + allocation.getQuantity());
             inventoryLayerRepository.save(layer);
             allocation.setStatus(InventoryAllocationStatus.RELEASED);
@@ -192,6 +196,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public void finalizeReservedOrder(Order order) {
+        stockLocks.lock(order.getItems().stream().map(OrderItem::getProductId).toList());
         List<InventoryAllocation> allocations = inventoryAllocationRepository
                 .findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
                         InventoryReferenceType.ORDER,
@@ -253,11 +258,12 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                         InventoryAllocationStatus.CONSUMED
                 );
 
+        stockLocks.lock(allocations.stream().map(a -> a.getProduct().getId()).toList());
         Map<Long, Product> productById = new LinkedHashMap<>();
         Map<Long, Integer> quantityByProduct = new LinkedHashMap<>();
         int units = 0;
         for (InventoryAllocation allocation : allocations) {
-            InventoryLayer layer = allocation.getLayer();
+            InventoryLayer layer = stockLocks.fresh(allocation.getLayer());
             layer.setRemainingQuantity(layer.getRemainingQuantity() + allocation.getQuantity());
             inventoryLayerRepository.save(layer);
             allocation.setStatus(InventoryAllocationStatus.RETURNED);
@@ -290,8 +296,9 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items) {
+        stockLocks.lock(items.stream().map(WalkInOrderItem::getProductId).toList());
         for (WalkInOrderItem item : items) {
-            InventoryConsumption consumption = consumeInventory(getProduct(item.getProductId()),
+            InventoryConsumption consumption = consumeLocked(getProduct(item.getProductId()),
                     item.getQuantity(),
                     InventoryReferenceType.WALK_IN_ORDER,
                     orderNumber,
@@ -313,9 +320,22 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                                                  String referenceLineKey,
                                                  String note,
                                                  boolean createReservation) {
+        stockLocks.lock(List.of(product.getId()));
+        return consumeLocked(product, quantity, referenceType, referenceId, referenceLineKey, note, createReservation);
+    }
+
+    /** The caller holds {@link ProductStockLocks#lock} for this product (API-05). */
+    private InventoryConsumption consumeLocked(Product product,
+                                               int quantity,
+                                               InventoryReferenceType referenceType,
+                                               String referenceId,
+                                               String referenceLineKey,
+                                               String note,
+                                               boolean createReservation) {
         ensureLegacyLayer(product);
         List<InventoryLayer> layers = inventoryLayerRepository
                 .findByProductIdAndRemainingQuantityGreaterThanOrderByReceivedAtAscIdAsc(product.getId(), 0);
+        layers.forEach(stockLocks::fresh); // a layer loaded earlier in this transaction may predate the lock
 
         int required = quantity;
         List<InventoryConsumptionLine> lines = new ArrayList<>();
@@ -380,6 +400,12 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
+    public void lockProductsForStockUpdate(java.util.Collection<Long> productIds) {
+        stockLocks.lock(productIds);
+    }
+
+    @Override
+    @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public Product createConversionLayer(Product product,
                                          int quantity,
@@ -389,6 +415,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                                          String sourceReference,
                                          String note,
                                          LocalDateTime receivedAt) {
+        stockLocks.lock(List.of(product.getId()));
         return createLayer(product,
                 quantity,
                 unitCost,
@@ -431,7 +458,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     }
 
     private InventorySummaryResponse handleAdjustmentDecrease(Product product, InventoryAdjustmentRequest request) {
-        InventoryConsumption consumption = consumeInventory(product,
+        InventoryConsumption consumption = consumeLocked(product,
                 request.quantity(),
                 InventoryReferenceType.ADJUSTMENT,
                 request.reference() != null ? request.reference() : request.reason(),
@@ -498,8 +525,28 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
         productIds.forEach(id -> refreshProductInventoryState(getProduct(id)));
     }
 
+    /**
+     * API-05 rework: the admin summary / history GETs still turn a legacy balance into its layer, but like every other
+     * stock writer only under the product lock, re-checked after it (two writers bootstrapping at once created two
+     * LEGACY_BALANCE layers: stock 5 became 10). A product that already has a layer is read without any lock.
+     */
+    private Product bootstrapLegacyLayerUnderLock(Long productId) {
+        Product product = getProduct(productId);
+        if (needsLegacyLayer(product)) {
+            stockLocks.lock(List.of(productId)); // also re-reads the product
+            ensureLegacyLayer(product);
+        }
+        return product;
+    }
+
+    private boolean needsLegacyLayer(Product product) {
+        return !inventoryLayerRepository.existsByProductId(product.getId())
+                && product.getStockQuantity() != null && product.getStockQuantity() > 0;
+    }
+
+    /** The caller holds {@link ProductStockLocks#lock} for this product (API-05). */
     private void ensureLegacyLayer(Product product) {
-        if (inventoryLayerRepository.existsByProductId(product.getId()) || product.getStockQuantity() == null || product.getStockQuantity() <= 0) {
+        if (!needsLegacyLayer(product)) {
             return;
         }
 

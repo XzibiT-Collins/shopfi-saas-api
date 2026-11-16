@@ -32,6 +32,15 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     boolean existsBySku(String sku);
     List<Product> findByFamily(ProductFamily family);
 
+    /**
+     * API-05: row locks of the products whose stock is about to change, taken in id order (one statement, ORDER BY
+     * before the lock step) so two multi-product carts can never deadlock. {@code FOR NO KEY UPDATE}: does not wait
+     * for the FK key-share locks that an in-flight checkout's order / allocation rows hold on the product (FOR UPDATE
+     * would). Every writer of inventory layers / product stock takes these locks first (InventoryManagementServiceImpl).
+     */
+    @Query(value = "SELECT id FROM products WHERE id IN (:ids) ORDER BY id FOR NO KEY UPDATE", nativeQuery = true)
+    List<Long> lockForStockUpdate(@Param("ids") java.util.Collection<Long> ids);
+
     @Modifying
     @Transactional
     @Query("UPDATE Product p SET p.soldCount = p.soldCount + :quantity WHERE p.id = :productId")

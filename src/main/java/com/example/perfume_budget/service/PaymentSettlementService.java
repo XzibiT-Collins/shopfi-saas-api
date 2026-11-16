@@ -163,8 +163,13 @@ public class PaymentSettlementService {
         orderRepository.save(order);
 
         cartRepository.deleteAllByUserEmail(payment.getCustomerEmail());
-        order.getItems().forEach(item -> productRepository.incrementSoldCount(item.getProductId(), item.getQuantity()));
+        // API-05 rework: the stock finalisation takes the order's product rows first (ProductStockLocks, ascending id)
+        // and only THEN the sold counts are bumped. The other way round the per-item UPDATEs locked the products in
+        // order-item order, so a webhook for [high id, low id] and a checkout of the same products (low -> high)
+        // deadlocked. Not locked up front here: the late-payment re-reservation above runs in its own transaction
+        // (REQUIRES_NEW) and would wait for this one.
         orderService.finalizeReservedStock(order);
+        order.getItems().forEach(item -> productRepository.incrementSoldCount(item.getProductId(), item.getQuantity()));
         bookkeepingService.recordSale(order, saved);
         // API-04: a revived order holds its coupon redemption again (released when it was closed). Coupon row LAST:
         // after the stock re-reservation, sold counts, stock finalisation and ledger (the UPDATE itself runs at commit)

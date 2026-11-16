@@ -74,6 +74,8 @@ class InventoryManagementServiceImplLedgerHookTest {
     private BookkeepingService bookkeepingService;
     @Mock
     private LocationLedgerSync locationLedgerSync;
+    @Mock
+    private ProductStockLocks stockLocks;
 
     @InjectMocks
     private InventoryManagementServiceImpl inventoryManagementService;
@@ -83,6 +85,9 @@ class InventoryManagementServiceImplLedgerHookTest {
 
     @BeforeEach
     void setUp() {
+        // API-05: the product row lock is a database concern; here it only hands the entity back
+        org.mockito.Mockito.lenient().when(stockLocks.fresh(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(inv -> inv.getArgument(0));
         product = Product.builder()
                 .id(1L)
                 .name("Oud Royale")
