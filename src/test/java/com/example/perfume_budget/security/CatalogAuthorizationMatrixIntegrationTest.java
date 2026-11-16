@@ -319,7 +319,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         // admin-only routes outside the catalog (derived from the annotations: hasRole('ADMIN') only)
         for (String p : List.of("/api/v1/admin/accounting/metadata", "/api/v1/admin/front-desk/users", "/api/v1/coupon/all",
                 "/api/v1/payment-settings", "/api/v1/admin/feature-flags", "/api/v1/admin/product-families",
-                "/api/v1/admin/shop-discount/current", "/api/v1/order/all")) {
+                "/api/v1/admin/shop-discount/current", "/api/v1/admin/shop-discount", "/api/v1/order/all")) {
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("FRONT_DESK GET " + p).isEqualTo(403);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(admin))).as("ADMIN GET " + p).isNotIn(401, 403);
         }

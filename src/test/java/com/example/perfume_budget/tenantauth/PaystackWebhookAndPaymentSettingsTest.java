@@ -145,8 +145,14 @@ class PaystackWebhookAndPaymentSettingsTest extends AbstractTenantWebTest {
         JsonNode data = json.readTree(raw).get("data");
         assertThat(data.get("secretConfigured").asBoolean()).isTrue();
         assertThat(data.get("publicKey").asText()).isEqualTo("pk_test_FAKE_acme");
-        assertThat(data.get("webhookUrl").asText()).endsWith("/api/v1/webhook/" + tokenA);
-        assertThat(fieldNames(data)).containsExactlyInAnyOrder("secretConfigured", "publicKey", "enabled", "webhookUrl");
+        // API-06: GET never returns the full webhook URL (token), only that one exists and a masked form
+        assertThat(data.get("webhookUrl").isNull()).isTrue();
+        assertThat(data.get("hasWebhookToken").asBoolean()).isTrue();
+        assertThat(data.get("webhookUrlMasked").asText())
+                .endsWith("/api/v1/webhook/****" + tokenA.substring(tokenA.length() - 4));
+        assertThat(raw).doesNotContain(tokenA).doesNotContain(tokenB);
+        assertThat(fieldNames(data)).containsExactlyInAnyOrder("secretConfigured", "publicKey", "enabled", "webhookUrl",
+                "hasWebhookToken", "webhookUrlMasked");
 
         String encrypted = jdbc.queryForObject("SELECT secret_key_encrypted FROM tenant_acme.payment_gateway_config", String.class);
         assertThat(encrypted).as("secret encrypted at rest").isNotBlank().doesNotContain(SECRET_A);
@@ -157,7 +163,7 @@ class PaystackWebhookAndPaymentSettingsTest extends AbstractTenantWebTest {
     void ac4_tenantsOnlySeeTheirOwnSettings() throws Exception {
         String rawB = mvc.perform(get("/api/v1/payment-settings").header("X-Tenant-ID", "bravo")
                 .cookie(cookie("accessToken", adminCookieB))).andReturn().getResponse().getContentAsString();
-        assertThat(rawB).contains("pk_test_FAKE_bravo").contains(tokenB)
+        assertThat(rawB).contains("pk_test_FAKE_bravo").contains("****" + tokenB.substring(tokenB.length() - 4))
                 .doesNotContain("pk_test_FAKE_acme").doesNotContain(tokenA).doesNotContain(SECRET_A).doesNotContain(SECRET_B);
     }
 
@@ -228,8 +234,8 @@ class PaystackWebhookAndPaymentSettingsTest extends AbstractTenantWebTest {
                 .content(json.writeValueAsString(Map.of("secretKey", secret, "publicKey", publicKey, "enabled", true)));
         MvcResult r = mvc.perform(req).andReturn();
         assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
-        String url = json.readTree(r.getResponse().getContentAsString()).at("/data/webhookUrl").asText();
-        return url.substring(url.lastIndexOf('/') + 1);
+        // API-06: the full URL is shown only by the call that minted the token; read the live token from the tenant row
+        return jdbc.queryForObject("SELECT webhook_token FROM master.tenants WHERE slug = ?", String.class, slug);
     }
 
     private MockHttpServletRequestBuilder webhook(String token, String body, String signature) {

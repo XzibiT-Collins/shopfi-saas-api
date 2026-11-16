@@ -24,8 +24,9 @@ import java.time.LocalDate;
  *       looks codes up that way. Blank is rejected. On update it cannot change.</li>
  *   <li>{@code discountValue} &gt; 0, at most 2 decimals; a PERCENTAGE value is at most 100.</li>
  *   <li>{@code maximumDiscountAmount}: cap for PERCENTAGE coupons (optional, &gt; 0 when sent). Ignored for FLAT.</li>
- *   <li>{@code usageLimit} 1..1,000,000; {@code perUserUsageLimit} optional 1..usageLimit (enforced at checkout). Both
- *       must be JSON integers: {@code 1.5}, {@code "7"} or an out-of-range number are a 400 (no coercion).</li>
+ *   <li>{@code usageLimit} 1..1,000,000; {@code perUserUsageLimit} optional, 1..1,000,000 ({@code @Max}) AND at most
+ *       {@code usageLimit} (enforced at checkout). Both must be JSON integers: {@code 1.5}, {@code "7"} or an
+ *       out-of-range number are a 400 (no coercion). Documented in docs/api/checkout.md "Coupon limits" (API-06).</li>
  *   <li>{@code expirationDate} must not be before {@code startDate} (the coupon is valid on both days).</li>
  * </ul>
  */

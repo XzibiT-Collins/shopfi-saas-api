@@ -10,6 +10,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/v1/admin/shop-discount")
 @RequiredArgsConstructor
@@ -21,6 +23,16 @@ public class ShopWideDiscountController {
     public ResponseEntity<CustomApiResponse<ShopWideDiscountResponse>> setShopWideDiscount(
             @Valid @RequestBody ShopWideDiscountRequest request){
         return ResponseEntity.ok().body(CustomApiResponse.success(shopWideDiscountService.setShopWideDiscount(request)));
+    }
+
+    /**
+     * API-06: the discounts that are switched on and not over yet, in force now OR scheduled to start later, soonest
+     * start first ({@code []} when none). Unlike {@code /current} (unchanged: only a discount in force, else 404) this
+     * lets the admin read a scheduled discount back and end it with {@code DELETE /{id}} before it starts.
+     */
+    @GetMapping
+    public ResponseEntity<CustomApiResponse<List<ShopWideDiscountResponse>>> listNotEnded(){
+        return ResponseEntity.ok().body(CustomApiResponse.success(shopWideDiscountService.listNotEnded()));
     }
 
     @GetMapping("/current")

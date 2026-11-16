@@ -101,7 +101,10 @@ Both fields are optional (the body may be omitted). No delivery fee exists: `del
 
 A coupon that cannot be applied does not fail the call: totals are returned without it and `coupon.valid=false` with
 `reason` one of `COUPON_INVALID` (unknown, inactive, not started, expired or used up: deliberately not distinguished),
-`COUPON_MIN_AMOUNT`, `COUPON_NOT_COMBINABLE` (cart has discounted items). Empty cart: 400.
+`COUPON_MIN_AMOUNT`, `COUPON_NOT_COMBINABLE` (cart has discounted items), `COUPON_PER_USER_LIMIT` (API-06: this
+customer has already used the coupon `perUserUsageLimit` times; `message` is the same text checkout returns, "You have
+already used this coupon the maximum number of times"). The per-user limit is only checked for a coupon that is
+otherwise valid, so it reveals nothing to a customer who has not redeemed the coupon before. Empty cart: 400.
 `GET /api/v1/cart` items now carry `lineTotal` (unit price x quantity, server computed); never multiply on the client.
 
 ## GET /api/v1/payment/verify?reference=
@@ -186,6 +189,9 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 400 | `INVALID_REFERENCE` | malformed `reference` |
 | 400 | `IDEMPOTENCY_KEY_INVALID` | bad `Idempotency-Key` |
 | 400 | `INVALID_SORT` | unsupported sort property |
+| 400 | `COUPON_PER_USER_LIMIT` | (API-06) checkout or `GET /tax?couponCode=`: the customer already holds `perUserUsageLimit` live redemptions of this coupon (orders that are not cancelled / failed / expired). `description` "You have already used this coupon the maximum number of times". The cart preview reports the same code as `coupon.reason`. Nothing is reserved |
+| 400 | none | (coupon create `POST /api/v1/coupon/add-coupon` and update `PUT /api/v1/coupon/{id}`) `usageLimit` or `perUserUsageLimit` is not a JSON whole number. `description` is `"<field> must be a whole number"` for a decimal (`1.5`, `1E999999999`), `"<field> must be a whole number (a JSON number, not text)"` for a string (`"7"`), `"<field> is out of range"` for an integer outside 32-bit range (`99999999999`); `data` is null and the submitted value is never echoed. Nothing is stored |
+| 400 | none | (coupon create / update) a field rule is broken: `description` `"Validation failed"`, `data` maps field to message, e.g. `{"usageLimit": "Usage limit cannot exceed 1000000"}`, `{"perUserUsageLimit": "Per-user usage limit cannot exceed 1000000"}`, `{"perUserLimitWithinTotal": "Per-user usage limit cannot exceed the total usage limit"}`. Limits in "Coupon limits" below |
 | 404 | `PAYMENT_NOT_FOUND` | unknown, other customer's or other tenant's reference |
 | 404 | `ORDER_NOT_FOUND` | same for orders |
 | 404 | `DELIVERY_DETAIL_NOT_FOUND` | address not the caller's |
@@ -197,6 +203,8 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. API-05: also any optimistic-lock failure (`ObjectOptimisticLockingFailureException`) on any endpoint, including a version conflict while a stock writer takes the product locks (rework: that one used to surface as JPA's own exception, `409`); checkout itself no longer produces one (see "Concurrent checkouts" below) |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
+"Invalid coupon" stays uncoded on purpose (unknown, inactive, not started, expired and used up are not
+told apart by a code); only the per-user limit has one.
 Out of stock is `400` with `description` `"Insufficient stock for: <product name>"`.
 
 **Concurrent checkouts of the same product (API-05).** Before API-05 two checkouts of one product both read the same
@@ -249,3 +257,41 @@ webhook / expiry) -> product rows by id -> coupon row last. A late payment's re-
 transaction under the order lock and takes the product locks there. Admin edit / deactivate lock only the coupon
 (`FOR NO KEY UPDATE`, which does not conflict with the FK lock a checkout's new order holds); delete locks the coupon's
 orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`).
+
+## Coupon limits (`POST /api/v1/coupon/add-coupon`, `PUT /api/v1/coupon/{id}`)
+
+| Field | Rule | 400 message (`data.<field>`) |
+|---|---|---|
+| `usageLimit` | required JSON integer, 1 to 1,000,000 | "Usage limit must be at least 1" / "Usage limit cannot exceed 1000000" |
+| `perUserUsageLimit` | optional JSON integer (omit or `null` = no per-customer limit), 1 to 1,000,000 (`@Max(1000000)`) AND at most `usageLimit` | "Per-user usage limit must be at least 1" / "Per-user usage limit cannot exceed 1000000"; above `usageLimit`: key `perUserLimitWithinTotal`, "Per-user usage limit cannot exceed the total usage limit" |
+
+Both integers are strict (no `1.5`, no `"7"`, no coercion): see the whole-number row in "Error codes". Since
+`perUserUsageLimit` may not exceed `usageLimit`, which is itself capped at 1,000,000, a value above 1,000,000 fails both
+rules at once (two keys in `data`). A form should cap the input at 1,000,000 and at the total limit.
+
+## Shop-wide discount, admin reads (API-06)
+
+All `hasRole('ADMIN')`. Every response row is `{id, label, discountPercentage, startAt, endAt, isActive,
+currentlyActive, status}`; `status` (new, API-06) is `SCHEDULED` (switched on, starts later), `ACTIVE` (switched on and
+inside its window; prices use it), `EXPIRED` (switched on, window over) or `INACTIVE` (switched off: ended by the admin
+or replaced by a newer discount).
+
+* `GET /api/v1/admin/shop-discount` (new): the discounts that are switched on and have not ended, in force now OR
+  scheduled for later, soonest `startAt` first; `[]` when none (never 404). At most 50 rows; setting a discount retires
+  the others, so normally there is 0 or 1. Use it to read a scheduled discount back (e.g. after a page reload) and end it
+  with `DELETE /api/v1/admin/shop-discount/{id}` before it starts.
+* `GET /api/v1/admin/shop-discount/current` (unchanged): only the discount in force right now, else 404.
+
+## Payment settings webhook URL, shown once (API-06)
+
+`GET /api/v1/payment-settings`, `PUT /api/v1/payment-settings` and `POST /api/v1/payment-settings/rotate-webhook-token`
+(all `hasRole('ADMIN')`) return `{secretConfigured, publicKey, enabled, webhookUrl, hasWebhookToken, webhookUrlMasked}`.
+
+* `webhookUrl`, the full URL to paste into Paystack (it contains the tenant's routing token), is returned ONLY by the call
+  that minted the token: `POST /rotate-webhook-token` (always), or the `PUT` that saved the settings for the first time.
+  It is `null` in every `GET` and in every later `PUT`.
+* `hasWebhookToken`: whether a webhook URL exists.
+* `webhookUrlMasked`: the URL with the token replaced by `****` plus its last 4 characters
+  (`https://api.example.com/api/v1/webhook/****x9Qz`), so the admin can tell which URL is live; `null` when there is none.
+* A lost URL cannot be read back: rotate to get a new one (the old URL stops working at once; paste the new one into
+  Paystack). The token is never logged.

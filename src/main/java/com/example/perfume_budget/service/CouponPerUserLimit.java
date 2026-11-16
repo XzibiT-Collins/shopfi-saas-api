@@ -16,6 +16,12 @@ import org.springframework.stereotype.Component;
 public class CouponPerUserLimit {
 
     public static final String MESSAGE = "You have already used this coupon the maximum number of times";
+    /**
+     * API-06: the one machine-readable code for this refusal, on the checkout 400 ({@code data.code}), on
+     * {@code GET /tax?couponCode=} and as the cart preview's {@code coupon.reason}. Only reached for a coupon that is
+     * otherwise valid, so it reveals nothing to a customer who has not already redeemed the coupon.
+     */
+    public static final String CODE = "COUPON_PER_USER_LIMIT";
 
     private final OrderRepository orderRepository;
 
