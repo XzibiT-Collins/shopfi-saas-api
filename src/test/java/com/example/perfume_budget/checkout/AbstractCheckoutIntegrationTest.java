@@ -75,11 +75,44 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
         });
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("taskExecutor")
+    private org.springframework.core.task.TaskExecutor asyncExecutor;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("webhookTaskExecutor")
+    private org.springframework.core.task.TaskExecutor webhookExecutor;
+
     @org.junit.jupiter.api.AfterEach
-    void cleanCheckoutData() {
+    void cleanCheckoutData() throws InterruptedException {
+        // API-04 rework 3: payment-success handlers now run after commit, often after the test's last request; let
+        // queued webhooks / after-commit handlers finish so the TRUNCATE below does not deadlock with their reads
+        awaitIdle(webhookExecutor);
+        awaitIdle(asyncExecutor);
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
-            jdbc.execute("TRUNCATE " + schema + ".orders, " + schema + ".carts, " + schema + ".delivery_details, "
-                    + schema + ".products, " + schema + ".journal_entries, " + schema + ".coupons CASCADE");
+            String sql = "TRUNCATE " + schema + ".orders, " + schema + ".carts, " + schema + ".delivery_details, "
+                    + schema + ".products, " + schema + ".journal_entries, " + schema + ".coupons CASCADE";
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    jdbc.execute(sql);
+                    break;
+                } catch (org.springframework.dao.PessimisticLockingFailureException e) {
+                    if (attempt >= 3) throw e; // a straggling background task held a lock: wait for it, then retry
+                    awaitIdle(webhookExecutor);
+                    awaitIdle(asyncExecutor);
+                }
+            }
+        }
+    }
+
+    private static void awaitIdle(org.springframework.core.task.TaskExecutor executor) throws InterruptedException {
+        if (!(executor instanceof org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor pool)) {
+            return;
+        }
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (System.currentTimeMillis() < deadline
+                && (pool.getActiveCount() > 0 || !pool.getThreadPoolExecutor().getQueue().isEmpty())) {
+            Thread.sleep(25);
         }
     }
 
