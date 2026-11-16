@@ -74,6 +74,18 @@ class PaymentSettlementServiceTest {
     }
 
     @Test
+    void soldCountsAreBumpedOnlyAfterTheStockFinalisationLockedTheProducts() {
+        // API-05 rework: incrementSoldCount is an UPDATE of the product row. Before the finalisation took the product
+        // locks (ascending id) it locked the rows in order-item order -> deadlock with a checkout of the same products.
+        order.getItems().add(0, OrderItem.builder().productId(9L).quantity(1).build()); // items: [9, 5]
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        org.mockito.InOrder inOrder = inOrder(orderService, productRepository);
+        inOrder.verify(orderService).finalizeReservedStock(order);
+        inOrder.verify(productRepository).incrementSoldCount(9L, 1);
+        inOrder.verify(productRepository).incrementSoldCount(5L, 2);
+    }
+
+    @Test
     void amountOrCurrencyMismatchIsNotApplied() {
         assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("100"), "GHS", "{}"));
         assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "USD", "{}"));
