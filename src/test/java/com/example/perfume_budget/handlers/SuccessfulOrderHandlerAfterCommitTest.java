@@ -45,6 +45,7 @@ class SuccessfulOrderHandlerAfterCommitTest {
     private PaymentRepository payments;
     private OrderRepository orders;
     private TransactionTemplate tx;
+    private InMemoryOutboxStore outbox;
 
     @BeforeEach
     void setUp() {
@@ -53,7 +54,9 @@ class SuccessfulOrderHandlerAfterCommitTest {
         payments = mock(PaymentRepository.class);
         orders = mock(OrderRepository.class);
         PlatformTransactionManager tm = new NoopTxManager();
+        outbox = new InMemoryOutboxStore();
         ctx = new AnnotationConfigApplicationContext();
+        ctx.registerBean(com.example.perfume_budget.outbox.OutboxStore.class, () -> outbox);
         ctx.registerBean(EmailService.class, () -> email);
         ctx.registerBean(NotificationService.class, () -> notifications);
         ctx.registerBean(PaymentRepository.class, () -> payments);
@@ -61,7 +64,14 @@ class SuccessfulOrderHandlerAfterCommitTest {
         // the mail executor runs the work inline here, so "sent" is observable right after the commit
         ctx.registerBean(MailDispatcher.class, () -> new MailDispatcher(Runnable::run));
         ctx.registerBean(PlatformTransactionManager.class, () -> tm);
+        ctx.registerBean(com.example.perfume_budget.outbox.OutboxProcessor.class);
         ctx.registerBean(SuccessfulOrderHandler.class);
+        ctx.registerBean(com.example.perfume_budget.tenancy.TenantRunner.class, () -> {
+            com.example.perfume_budget.tenancy.TenantRunner r = mock(com.example.perfume_budget.tenancy.TenantRunner.class);
+            doAnswer(inv -> { ((Runnable) inv.getArgument(0)).run(); return null; }).when(r).forEachActiveTenant(any());
+            return r;
+        });
+        ctx.registerBean(com.example.perfume_budget.outbox.OutboxDrainer.class);
         ctx.registerBean("txListenerFactory", TransactionalEventListenerFactory.class);
         ctx.refresh();
         tx = new TransactionTemplate(tm);
@@ -240,8 +250,8 @@ class SuccessfulOrderHandlerAfterCommitTest {
 
     @Test
     void theReReadAlwaysRunsInItsOwnTransaction() {
-        SuccessfulOrderHandler h = ctx.getBean(SuccessfulOrderHandler.class);
-        TransactionTemplate readTx = (TransactionTemplate) org.springframework.test.util.ReflectionTestUtils.getField(h, "readTx");
+        com.example.perfume_budget.outbox.OutboxProcessor proc = ctx.getBean(com.example.perfume_budget.outbox.OutboxProcessor.class);
+        TransactionTemplate readTx = (TransactionTemplate) org.springframework.test.util.ReflectionTestUtils.getField(proc, "readTx");
         assertThat(readTx.getPropagationBehavior()).isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         assertThat(readTx.isReadOnly()).isTrue();
     }
@@ -251,10 +261,103 @@ class SuccessfulOrderHandlerAfterCommitTest {
         Payment p = payment(7L, PaymentStatus.COMPLETED);
         when(payments.findById(7L)).thenReturn(java.util.Optional.of(p));
         java.util.concurrent.Executor fullMail = r -> { throw new java.util.concurrent.RejectedExecutionException("full"); };
-        SuccessfulOrderHandler h = new SuccessfulOrderHandler(email, notifications, payments, orders,
-                ctx.getBean(PlatformTransactionManager.class), new MailDispatcher(fullMail, Runnable::run));
+        SuccessfulOrderHandler h = new SuccessfulOrderHandler(outbox,
+                ctx.getBean(com.example.perfume_budget.outbox.OutboxProcessor.class), new MailDispatcher(fullMail, Runnable::run));
+        h.recordPaymentSideEffects(p);
         h.handlePaymentSuccess(p);
         verifyNoInteractions(email);
         verify(notifications).notifyAdminsOfSuccessfulPayment(p);
+    }
+
+    // ---- EVT-01b (L2): side-effect outbox
+
+    private void drain() {
+        ctx.getBean(com.example.perfume_budget.outbox.OutboxDrainer.class).drainAllTenants();
+    }
+
+    @Test
+    void eachSideEffectIsOneOutboxRowWrittenInTheCommittingTransactionAndDoneAfterwards() {
+        Payment p = payment(7L, PaymentStatus.COMPLETED);
+        when(payments.findById(7L)).thenReturn(Optional.of(p));
+        tx.executeWithoutResult(st -> {
+            ctx.publishEvent(p);
+            ctx.publishEvent(p); // a duplicated event in the same transaction
+        });
+        assertThat(outbox.rows).hasSize(3);
+        assertThat(outbox.rows.values()).allSatisfy(e -> {
+            assertThat(e.status).isEqualTo("DONE");
+            assertThat(e.attempts).isEqualTo(1);
+        });
+        verifyAllSent(1, p);
+    }
+
+    @Test
+    void aRolledBackAttemptLeavesNoOutboxRow() {
+        Payment p = payment(7L, PaymentStatus.COMPLETED);
+        tx.executeWithoutResult(st -> {
+            ctx.publishEvent(p);
+            st.setRollbackOnly();
+        });
+        assertThat(outbox.rows).isEmpty();
+        drain();
+        verifyNoInteractions(email, notifications);
+    }
+
+    @Test
+    void aRefusedHandOffIsSentByTheDrainExactlyOnce() {
+        Payment p = payment(7L, PaymentStatus.COMPLETED);
+        when(payments.findById(7L)).thenReturn(Optional.of(p));
+        java.util.concurrent.atomic.AtomicBoolean full = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.Executor mail = r -> {
+            if (full.get()) throw new java.util.concurrent.RejectedExecutionException("queue full");
+            r.run();
+        };
+        SuccessfulOrderHandler h = new SuccessfulOrderHandler(outbox,
+                ctx.getBean(com.example.perfume_budget.outbox.OutboxProcessor.class), new MailDispatcher(mail, mail));
+        com.example.perfume_budget.outbox.OutboxDrainer drainer = new com.example.perfume_budget.outbox.OutboxDrainer(outbox,
+                ctx.getBean(com.example.perfume_budget.outbox.OutboxProcessor.class), new MailDispatcher(mail, mail),
+                ctx.getBean(com.example.perfume_budget.tenancy.TenantRunner.class));
+        tx.executeWithoutResult(st -> {
+            h.recordPaymentSideEffects(p);
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override public void afterCommit() { h.handlePaymentSuccess(p); }
+                    });
+        });
+        verifyNoInteractions(email, notifications);
+        outbox.makeDue();
+        assertThat(drainer.drainCurrentTenant()).as("still full: nothing handed off").isZero();
+        assertThat(outbox.rows.values()).allSatisfy(e -> assertThat(e.status).isEqualTo("PENDING"));
+        full.set(false);
+        assertThat(drainer.drainCurrentTenant()).isEqualTo(3);
+        verifyAllSent(1, p);
+        outbox.makeDue();
+        drainer.drainCurrentTenant();
+        h.handlePaymentSuccess(p); // a late duplicate hand-off
+        verifyAllSent(1, p);
+    }
+
+    @Test
+    void aFailedSendIsRetriedOnlyForThatSideEffectThenGivenUpAfterTheBound() {
+        Payment p = payment(7L, PaymentStatus.COMPLETED);
+        when(payments.findById(7L)).thenReturn(Optional.of(p));
+        doThrow(new com.example.perfume_budget.notification.MailNotSentException("Customer receipt", "payment 7",
+                new IllegalStateException())).when(email).sendCustomerReceipt(any());
+        tx.executeWithoutResult(st -> ctx.publishEvent(p));
+        assertThat(outbox.get(com.example.perfume_budget.outbox.OutboxKind.PAYMENT_RECEIPT, 7L).status).isEqualTo("PENDING");
+        for (int i = 1; i < com.example.perfume_budget.outbox.OutboxStore.MAX_ATTEMPTS; i++) {
+            outbox.makeDue();
+            drain();
+        }
+        InMemoryOutboxStore.Entry receipt = outbox.get(com.example.perfume_budget.outbox.OutboxKind.PAYMENT_RECEIPT, 7L);
+        assertThat(receipt.status).isEqualTo("FAILED");
+        assertThat(receipt.attempts).isEqualTo(com.example.perfume_budget.outbox.OutboxStore.MAX_ATTEMPTS);
+        assertThat(receipt.lastError).isEqualTo(com.example.perfume_budget.notification.MailNotSentException.class.getName());
+        verify(email, times(com.example.perfume_budget.outbox.OutboxStore.MAX_ATTEMPTS)).sendCustomerReceipt(p);
+        verify(email, times(1)).sendAdminOrderNotification(p);
+        verify(notifications, times(1)).notifyAdminsOfSuccessfulPayment(p);
+        outbox.makeDue();
+        drain();
+        verify(email, times(com.example.perfume_budget.outbox.OutboxStore.MAX_ATTEMPTS)).sendCustomerReceipt(p);
     }
 }

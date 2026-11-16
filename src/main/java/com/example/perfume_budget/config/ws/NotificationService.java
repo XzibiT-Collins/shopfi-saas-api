@@ -38,6 +38,11 @@ public class NotificationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyAdminsOfSuccessfulPayment(Payment payment) {
+        // EVT-01b (L2): idempotent, the outbox may run it again (a retry, or a worker that died before marking it DONE)
+        if (notificationRepository.existsByTypeAndReferenceId("PAYMENT_SUCCESS", payment.getOrder().getOrderNumber())) {
+            log.info("Payment notification for order {} already written; not repeated", payment.getOrder().getOrderNumber());
+            return;
+        }
         List<User> adminUsers = userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK));
         if (adminUsers.isEmpty()) {
             log.info("No admin users found to persist notification for order {}", payment.getOrder().getOrderNumber());
