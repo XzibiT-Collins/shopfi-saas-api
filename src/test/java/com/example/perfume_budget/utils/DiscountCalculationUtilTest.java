@@ -116,4 +116,28 @@ class DiscountCalculationUtilTest {
         assertThatThrownBy(() -> u.calculateDiscount(c, new BigDecimal("49.99")))
                 .isInstanceOf(CouponRejectedException.class);
     }
+
+    // ---- API-04 rework 2: checkout pre-check (ignores the usage counter, keeps the window and admin deactivation)
+
+    @Test
+    void redeemableIgnoringUsage_windowAndAdminStateOnly() {
+        DiscountCalculationUtil u = util(clockAt("2026-06-15T10:00:00Z", "UTC"));
+        Coupon c = coupon(DiscountType.FLAT, "5", null, null);
+        c.setUsageCount(10); // at the limit: ignored here
+        assertThat(u.redeemableIgnoringUsage(c)).isTrue();
+
+        c.setIsActive(false);
+        assertThat(u.redeemableIgnoringUsage(c)).as("switched off by an admin").isFalse();
+        c.setLimitDeactivated(true);
+        assertThat(u.redeemableIgnoringUsage(c)).as("switched off only by the limit").isTrue();
+
+        c.setIsActive(true);
+        c.setLimitDeactivated(false);
+        assertThat(util(clockAt("2026-06-09T23:59:00Z", "UTC")).redeemableIgnoringUsage(c)).as("before start").isFalse();
+        assertThat(util(clockAt("2026-06-10T00:00:00Z", "UTC")).redeemableIgnoringUsage(c)).as("start day").isTrue();
+        assertThat(util(clockAt("2026-06-20T23:59:00Z", "UTC")).redeemableIgnoringUsage(c)).as("expiry day").isTrue();
+        assertThat(util(clockAt("2026-06-21T00:00:00Z", "UTC")).redeemableIgnoringUsage(c)).as("after expiry").isFalse();
+        c.setStartDate(null);
+        assertThat(u.redeemableIgnoringUsage(c)).isFalse();
+    }
 }
