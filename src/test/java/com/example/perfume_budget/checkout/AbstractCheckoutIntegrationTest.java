@@ -101,7 +101,7 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
         awaitIdle(notificationExecutor);
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
             String sql = "TRUNCATE " + schema + ".orders, " + schema + ".carts, " + schema + ".delivery_details, "
-                    + schema + ".products, " + schema + ".journal_entries, " + schema + ".coupons CASCADE";
+                    + schema + ".products, " + schema + ".journal_entries, " + schema + ".coupons, " + schema + ".side_effect_outbox CASCADE";
             for (int attempt = 1; ; attempt++) {
                 try {
                     jdbc.execute(sql);
