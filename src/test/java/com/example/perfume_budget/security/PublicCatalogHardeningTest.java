@@ -188,6 +188,31 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
     }
 
     @Test
+    void repeatedGetsFromOneClientCountOneView_anotherClientCountsAgain() throws Exception {
+        long p = product(acme, "Dedupe Scent", "10.00", 5);
+        String slug = jdbc.queryForObject("SELECT slug FROM tenant_acme.products WHERE id = ?", String.class, p);
+        jdbc.update("UPDATE tenant_acme.products SET view_count = 0 WHERE id = ?", p);
+        for (int i = 0; i < 4; i++) {
+            assertThat(mvc.perform(get("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")
+                    .with(r -> { r.setRemoteAddr("203.0.113.7"); return r; })).andReturn().getResponse().getStatus()).isEqualTo(200);
+        }
+        long deadline = System.currentTimeMillis() + 8000;
+        while (views(p) < 1 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+        }
+        Thread.sleep(1000);
+        assertThat(views(p)).as("4 GETs from one client within the window count once (SEC-03c)").isEqualTo(1);
+
+        mvc.perform(get("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")
+                .with(r -> { r.setRemoteAddr("198.51.100.8"); return r; })).andReturn();
+        deadline = System.currentTimeMillis() + 8000;
+        while (views(p) < 2 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+        }
+        assertThat(views(p)).as("another client counts").isEqualTo(2);
+    }
+
+    @Test
     void headDoesNotRecordASiteVisit() throws Exception {
         String path = "/api/v1/product/visit-probe-" + System.nanoTime(); // a page nobody visited today
         int before = count(acme, "site_visits");

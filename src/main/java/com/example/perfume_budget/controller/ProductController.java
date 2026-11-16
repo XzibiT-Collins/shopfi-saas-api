@@ -8,6 +8,7 @@ import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
 import com.example.perfume_budget.dto.product.response.ProductListing;
 import com.example.perfume_budget.dto.product.response.PublicProductListing;
+import com.example.perfume_budget.security.ClientIps;
 import com.example.perfume_budget.service.interfaces.ProductService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class ProductController {
     private final ProductService productService;
+    private final com.example.perfume_budget.service.ProductViewDeduplicator productViewDeduplicator;
 
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping(value = "/add-product", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -76,9 +78,14 @@ public class ProductController {
     @GetMapping("/{slug}")
     public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(
             @PathVariable String slug, jakarta.servlet.http.HttpServletRequest request){
-        // HEAD runs this same handler; it must not bump the view counter (SEC-03b F11)
-        boolean countView = !"HEAD".equalsIgnoreCase(request.getMethod());
-        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug, countView)));
+        ProductDetailsPageResponse page = productService.getProductDetailsPage(slug, false);
+        // HEAD runs this same handler; it must not bump the view counter (SEC-03b F11). SEC-03c: a GET counts at most
+        // once per client and product per window, so reloads and GET loops do not inflate view_count.
+        if (!"HEAD".equalsIgnoreCase(request.getMethod())
+                && productViewDeduplicator.firstView(page.productId(), ClientIps.rateLimitKey(request))) {
+            productService.recordProductView(page.productId());
+        }
+        return ResponseEntity.ok().body(CustomApiResponse.success(page));
     }
 
     @PreAuthorize("hasRole('ADMIN')")

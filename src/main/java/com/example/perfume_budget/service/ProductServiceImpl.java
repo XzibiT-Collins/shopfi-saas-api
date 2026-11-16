@@ -380,6 +380,11 @@ public class ProductServiceImpl implements ProductService {
         }
     }
 
+    @Override
+    public void recordProductView(Long productId) {
+        updateProductViewCount(productId);
+    }
+
     private void updateProductViewCount(Long id) {
         log.info("Updating product view count for product: {}", id);
         User currentUser = authUserUtil.getCurrentUser();
