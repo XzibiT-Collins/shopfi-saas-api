@@ -194,7 +194,7 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
 | 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). Webhooks never answer 503 (see above) |
-| 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. API-05: also any optimistic-lock failure (`ObjectOptimisticLockingFailureException`) on any endpoint; checkout itself no longer produces one (see "Concurrent checkouts" below) |
+| 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. API-05: also any optimistic-lock failure (`ObjectOptimisticLockingFailureException`) on any endpoint, including a version conflict while a stock writer takes the product locks (rework: that one used to surface as JPA's own exception, `409`); checkout itself no longer produces one (see "Concurrent checkouts" below) |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
 Out of stock is `400` with `description` `"Insufficient stock for: <product name>"`.
@@ -237,8 +237,15 @@ still hold a redemption. See `DISCOUNTS_FRONTEND_INTEGRATION.md` section 8.
 the order, payment, stock and product rows, and change the coupon counter with ONE `UPDATE` as the very last statement
 before `COMMIT` (deferred to the transaction's before-commit phase, after a flush of everything else). So none of them
 holds the coupon row while it waits for product / stock rows, and two of them can no longer deadlock on coupon vs stock
-(they all lock in the same order). API-05: the "stock" step is always the product rows in ascending id order
-(`FOR NO KEY UPDATE`), taken before any inventory layer is read; checkout takes it after its Paystack call. Full order:
-customer row (checkout) | order row (cancel / webhook / expiry) -> product rows by id -> coupon row last. Admin edit / deactivate lock only the coupon
+(they all lock in the same order). API-05: the "stock" step is always the product rows in ascending id order, in one
+`FOR NO KEY UPDATE` statement, taken before any inventory layer is read and before ANY product row is written
+(stock refresh or sold-count `UPDATE`); checkout takes it after its Paystack call. Rework: payment success
+(webhook / verify) bumps the sold counts only after the stock finalisation has taken the order's product locks (before,
+its per-item sold-count `UPDATE`s locked the products in order-item order and deadlocked with a checkout of the same
+products, which then answered `503 TRY_AGAIN` after Paystack had been called); merchant restock and walk-in sale do the
+same. The admin inventory summary / history GETs bootstrap a legacy balance into its layer only under that lock too (a
+product that already has a layer is read without any lock). Full order: customer row (checkout) | order row (cancel /
+webhook / expiry) -> product rows by id -> coupon row last. A late payment's re-reservation runs in its own short
+transaction under the order lock and takes the product locks there. Admin edit / deactivate lock only the coupon
 (`FOR NO KEY UPDATE`, which does not conflict with the FK lock a checkout's new order holds); delete locks the coupon's
 orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`).
