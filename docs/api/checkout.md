@@ -165,6 +165,14 @@ The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 
 * `charge.failed`: the only event that marks the payment/order FAILED and releases the stock. Never overrides COMPLETED.
 * any other event type: ignored.
 
+The endpoint answers `200` as soon as the signature is verified; the event is applied asynchronously, so a webhook
+never returns `503` (or any other status) because of a database conflict. API-04 rework 2: a transient database
+failure while applying it (deadlock victim, serialization failure, optimistic-lock conflict on a shared product row,
+lock timeout / `COUPON_BUSY`) is retried in-process up to 3 times, each attempt a fresh transaction (the settlement is
+idempotent). If it still fails the event is logged and dropped (Paystack already has its 200 and does not resend);
+the order is then settled by the customer's verify poll (`GET /payment/verify`, which asks Paystack and applies the
+same settlement) or, if it stays unpaid, cancelled by the expiry job, which gives its stock and coupon redemption back.
+
 ## Error codes
 
 | HTTP | `data.code` | Meaning |
@@ -179,13 +187,26 @@ The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
-| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while reserving or giving back a redemption (checkout, cancel, webhooks); nothing changed, retry |
+| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. Webhooks never answer 503 (see above) |
+| 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. Checkout's own same-product optimistic-lock failure is API-05 and still a 500 |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
 
 **Coupon redemptions (API-04 rework).** Checkout reserves one redemption of the coupon with an atomic conditional
-update in its own short transaction (the coupon row is never locked across the Paystack call); the reservation is
-given back when the checkout does not create an order with it (rejection, Paystack failure, idempotent replay). An
+update in its own short transaction that commits before the checkout transaction starts, so checkout never holds a
+coupon row lock across the Paystack call (it does hold its stock rows and the customer row across it, ORD-01); the
+reservation is given back when the checkout does not create an order with it (rejection, Paystack failure). Refusals
+that do not need the usage counter (address, empty cart, unavailable items, idempotent replays, sale items, unknown
+code, per-user limit, minimum amount) are decided before reserving (rework 2), so they never hold a redemption. An
 order that becomes CANCELLED (customer, unpaid admin cancel, expiry) or FAILED (`charge.failed`) gives its redemption
 back exactly once; a late payment that revives it takes it again. The per-user limit counts the customer's orders that
 still hold a redemption. See `DISCOUNTS_FRONTEND_INTEGRATION.md` section 8.
+
+**Lock order (API-04 rework 2): order -> stock -> coupon, coupon row LAST.** Cancel (owner, admin, expiry, straggler),
+`charge.failed`, a late payment after a merchant cancel and a late-payment revival lock the order row first, then write
+the order, payment, stock and product rows, and change the coupon counter with ONE `UPDATE` as the very last statement
+before `COMMIT` (deferred to the transaction's before-commit phase, after a flush of everything else). So none of them
+holds the coupon row while it waits for stock rows a checkout keeps across its Paystack call, and two of them can no
+longer deadlock on coupon vs stock (they all lock in the same order). Admin edit / deactivate lock only the coupon
+(`FOR NO KEY UPDATE`, which does not conflict with the FK lock a checkout's new order holds); delete locks the coupon's
+orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`).
