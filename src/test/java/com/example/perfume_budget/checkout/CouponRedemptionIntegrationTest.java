@@ -393,7 +393,7 @@ class CouponRedemptionIntegrationTest extends AbstractCheckoutIntegrationTest {
                     + "expiration_date, usage_count, usage_limit, created_at) VALUES (?, 'FLAT', 5, true, current_date, current_date + 1, ?, 10, now())";
             jdbc.update(ins, "save10", 0);      // id 1: lower case, no twin
             jdbc.update(ins, "dup5", 0);        // id 2: collides with 3 and 4
-            jdbc.update(ins, "DUP5", 2);        // id 3: already upper case -> wins
+            jdbc.update(ins, "DUP5", 3);        // id 3: already upper case -> wins
             jdbc.update(ins, " Dup5 ", 0);      // id 4
             jdbc.update(ins, "mix", 0);         // id 5: collides with 6, no upper-case row -> lowest id wins
             jdbc.update(ins, "Mix", 0);         // id 6
@@ -404,6 +404,11 @@ class CouponRedemptionIntegrationTest extends AbstractCheckoutIntegrationTest {
                     + "VALUES ('U', 'u@x.test', 'x', 'CUSTOMER', now()) RETURNING id", Long.class);
             jdbc.update("INSERT INTO " + schema + ".orders (order_number, user_id, status, delivery_status, coupon_id, created_at, "
                     + "discount_amount) VALUES ('O-1', ?, 'CANCELLED', 'CANCELLED', 3, now(), 5)", user);
+            // ... and so did a FAILED one (X07: the backfill covers FAILED, not only CANCELLED); a live one stays
+            jdbc.update("INSERT INTO " + schema + ".orders (order_number, user_id, status, delivery_status, coupon_id, created_at, "
+                    + "discount_amount) VALUES ('O-2', ?, 'FAILED', 'PENDING', 3, now(), 5)", user);
+            jdbc.update("INSERT INTO " + schema + ".orders (order_number, user_id, status, delivery_status, coupon_id, created_at, "
+                    + "discount_amount) VALUES ('O-3', ?, 'COMPLETED', 'PENDING', 3, now(), 5)", user);
 
             Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
                     .locations("classpath:db/migrations/tenant").load().migrate();
@@ -423,6 +428,10 @@ class CouponRedemptionIntegrationTest extends AbstractCheckoutIntegrationTest {
             assertThat(rows.get(8L)).containsEntry("code", "LEGACY-NULL").containsEntry("usage_count", 0);
             assertThat(jdbc.queryForObject("SELECT coupon_redemption_released FROM " + schema + ".orders WHERE order_number = 'O-1'",
                     Boolean.class)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT coupon_redemption_released FROM " + schema + ".orders WHERE order_number = 'O-2'",
+                    Boolean.class)).isTrue();
+            assertThat(jdbc.queryForObject("SELECT coupon_redemption_released FROM " + schema + ".orders WHERE order_number = 'O-3'",
+                    Boolean.class)).isFalse();
             // case-insensitive uniqueness from now on
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(ins, "save10", 0))
                     .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);

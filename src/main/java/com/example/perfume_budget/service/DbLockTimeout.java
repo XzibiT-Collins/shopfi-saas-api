@@ -90,6 +90,27 @@ public class DbLockTimeout {
         return false;
     }
 
+    /**
+     * Two transactions touched the same rows at once and this one lost: deadlock victim (40P01), serialization
+     * failure (40001) or an optimistic-lock conflict. Rolled back, nothing changed, an immediate retry is expected to
+     * succeed. A lock wait that hit lock_timeout is NOT one (it already waited the full limit).
+     */
+    public static boolean isConcurrencyConflict(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof org.springframework.dao.OptimisticLockingFailureException
+                    || t instanceof jakarta.persistence.OptimisticLockException
+                    || t instanceof org.hibernate.StaleStateException
+                    || t instanceof org.springframework.dao.DeadlockLoserDataAccessException) {
+                return true;
+            }
+            if (t instanceof SQLException sql && (DEADLOCK_DETECTED.equals(sql.getSQLState())
+                    || SERIALIZATION_FAILURE.equals(sql.getSQLState()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** A lock wait that ran into lock_timeout (SQLSTATE 55P03), however Spring / Hibernate / JPA wrapped it. */
     public static boolean isLockTimeout(Throwable e) {
         for (Throwable t = e; t != null; t = t.getCause() == t ? null : t.getCause()) {

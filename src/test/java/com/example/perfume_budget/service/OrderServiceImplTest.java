@@ -86,6 +86,9 @@ class OrderServiceImplTest {
     @Mock
     private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
+    @org.mockito.Spy
+    private TransientRetry transientRetry = new TransientRetry(0);
+
     @InjectMocks
     private OrderServiceImpl orderService;
 

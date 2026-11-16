@@ -42,17 +42,20 @@ public class PaymentVerificationService {
     private final PaymentSettlementService settlementService;
     private final TransactionTemplate tx;
     private final long minIntervalSeconds;
+    private final TransientRetry retry;
 
     public PaymentVerificationService(PaymentRepository paymentRepository,
                                       PaymentGatewayAPIService gatewayService,
                                       PaymentSettlementService settlementService,
                                       PlatformTransactionManager txManager,
-                                      @Value("${payment.verify.min-interval-seconds:5}") long minIntervalSeconds) {
+                                      @Value("${payment.verify.min-interval-seconds:5}") long minIntervalSeconds,
+                                      TransientRetry retry) {
         this.paymentRepository = paymentRepository;
         this.gatewayService = gatewayService;
         this.settlementService = settlementService;
         this.tx = new TransactionTemplate(txManager);
         this.minIntervalSeconds = Math.max(0, minIntervalSeconds);
+        this.retry = retry;
     }
 
     public PaymentVerificationResponse verify(String reference, User owner) {
@@ -93,8 +96,11 @@ public class PaymentVerificationService {
         String json = toJson(data);
         String providerStatus = data.status() == null ? "" : data.status().toLowerCase();
         switch (providerStatus) {
-            case "success" -> settlementService.applySuccess(reference, data.channel(), data.amount(), data.currency(), json);
-            case "failed" -> settlementService.applyFailure(reference, data.channel(), data.gatewayResponse(), json);
+            // API-04 rework 2: a concurrency conflict with a webhook / cancel of the same rows is retried (then 503)
+            case "success" -> retry.call("verify " + reference,
+                    () -> settlementService.applySuccess(reference, data.channel(), data.amount(), data.currency(), json));
+            case "failed" -> retry.call("verify " + reference,
+                    () -> settlementService.applyFailure(reference, data.channel(), data.gatewayResponse(), json));
             default -> { /* pending / abandoned / ongoing: nothing is final yet */ }
         }
     }

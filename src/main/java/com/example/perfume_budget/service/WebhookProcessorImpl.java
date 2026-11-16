@@ -22,7 +22,8 @@ import org.springframework.stereotype.Service;
  *
  * <p><b>Transient failures (API-04 rework 2).</b> Paystack has already been answered 200 when this runs, so it will not
  * redeliver. A transient database failure while applying the event (deadlock victim, serialization failure, lock
- * timeout, {@code 503 COUPON_BUSY}) is retried here up to {@link #ATTEMPTS} times with a short back-off; every attempt
+ * timeout, {@code 503 COUPON_BUSY}, optimistic-lock conflict on a shared product row) is retried here up to
+ * {@link TransientRetry#ATTEMPTS} times with a short back-off ({@link TransientRetry}); every attempt
  * is a fresh transaction (the failed one was rolled back) and the settlement is idempotent. If the last attempt still
  * fails the event is logged and dropped; recovery then comes from the customer's verify poll
  * ({@code GET /payments/verify}, which asks Paystack and applies the same settlement) or, for an unpaid order, from
@@ -38,13 +39,8 @@ public class WebhookProcessorImpl implements WebhookProcessor {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    static final int ATTEMPTS = 3;
-
     private final PaymentSettlementService settlementService;
-
-    /** Back-off between attempts (attempt n waits n x this); 0 in unit tests. */
-    @org.springframework.beans.factory.annotation.Value("${shopfi.webhook.retry-backoff-ms:250}")
-    long retryBackoffMillis = 250;
+    private final TransientRetry retry;
 
     @Async("webhookTaskExecutor")
     @Override
@@ -70,12 +66,12 @@ public class WebhookProcessorImpl implements WebhookProcessor {
                         log.warn("Ignoring charge.success without amount/currency for reference {}", reference);
                         return;
                     }
-                    var outcome = withRetry(reference, () -> settlementService.applySuccess(reference,
+                    var outcome = retry.callIncludingLockTimeouts("charge.success " + reference, () -> settlementService.applySuccess(reference,
                             data.channel(), data.amount(), data.currency(), body));
                     log.info("charge.success for reference {}: {}", reference, outcome);
                 }
                 case EVENT_CHARGE_FAILED -> {
-                    var outcome = withRetry(reference, () -> settlementService.applyFailure(reference,
+                    var outcome = retry.callIncludingLockTimeouts("charge.failed " + reference, () -> settlementService.applyFailure(reference,
                             data.channel(), data.message(), body));
                     log.info("charge.failed for reference {}: {}", reference, outcome);
                 }
@@ -84,30 +80,6 @@ public class WebhookProcessorImpl implements WebhookProcessor {
         } catch (Exception e) {
             // Never log the body or the parsed payload: it carries the customer's email and card details.
             log.error("Error processing webhook: {}", e.getClass().getSimpleName());
-        }
-    }
-
-    /** Runs one settlement, retrying transient database failures (see the class comment). */
-    PaymentSettlementService.Outcome withRetry(String reference,
-                                               java.util.function.Supplier<PaymentSettlementService.Outcome> settle)
-            throws InterruptedException {
-        for (int attempt = 1; ; attempt++) {
-            try {
-                return settle.get();
-            } catch (RuntimeException e) {
-                if (attempt >= ATTEMPTS || !DbLockTimeout.isTransient(e)) {
-                    if (DbLockTimeout.isTransient(e)) {
-                        log.error("Webhook for reference {} not applied after {} attempts ({}); the verify poll or the "
-                                + "expiry job will settle the order", reference, attempt, e.getClass().getSimpleName());
-                    }
-                    throw e;
-                }
-                log.warn("Webhook for reference {}: transient failure {} on attempt {}, retrying", reference,
-                        e.getClass().getSimpleName(), attempt);
-                if (retryBackoffMillis > 0) {
-                    Thread.sleep(retryBackoffMillis * attempt);
-                }
-            }
         }
     }
 }

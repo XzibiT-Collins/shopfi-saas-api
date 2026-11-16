@@ -69,6 +69,7 @@ public class OrderServiceImpl implements OrderService {
     private final EffectivePriceService effectivePriceService;
     private final CouponRedemptionService couponRedemptionService;
     private final org.springframework.transaction.PlatformTransactionManager transactionManager;
+    private final TransientRetry transientRetry;
     /** Orders are sortable only by these (a free-form sort path would be a column/oracle probe: user.password...). */
     public static final java.util.Set<String> ORDER_SORT_PROPERTIES =
             java.util.Set.of("createdAt", "orderNumber", "status", "deliveryStatus", "id");
@@ -504,11 +505,17 @@ public class OrderServiceImpl implements OrderService {
         };
     }
 
+    /**
+     * API-04 rework 2: one transaction per attempt, retried on a concurrency conflict with a failure webhook / expiry
+     * / another cancel touching the same rows (deadlock, serialization, optimistic lock on a shared product): a
+     * remaining conflict is {@code 503 TRY_AGAIN}, never a 500. The cancel is idempotent.
+     */
     @Override
-    @Transactional
     public OrderResponse cancelMyOrder(String orderNumber) {
-        Order order = lifecycleService.cancelByOwner(orderNumber, authUserUtil.getCurrentUser());
-        return OrderMapper.toOrderResponse(order, referencesFor(List.of(order)).get(order.getId()));
+        return transientRetry.call("owner cancel", () -> new TransactionTemplate(transactionManager).execute(status -> {
+            Order order = lifecycleService.cancelByOwner(orderNumber, authUserUtil.getCurrentUser());
+            return OrderMapper.toOrderResponse(order, referencesFor(List.of(order)).get(order.getId()));
+        }));
     }
 
     private Pageable requireSortable(Pageable pageable) {
@@ -529,8 +536,8 @@ public class OrderServiceImpl implements OrderService {
                 .collect(Collectors.toMap(p -> p.getOrder().getId(), p -> p, (a, b) -> a));
     }
 
+    /** Admin status change; like {@link #cancelMyOrder}, one transaction per attempt (rework 2). */
     @Override
-    @Transactional
     public OrderResponse updateOrderStatus(String orderNumber, OrderStatusUpdateRequest request, Long ifMatchVersion) {
         Long bodyVersion = request.version();
         if (bodyVersion != null && ifMatchVersion != null && !bodyVersion.equals(ifMatchVersion)) {
@@ -538,9 +545,11 @@ public class OrderServiceImpl implements OrderService {
                     "The version in the body and the If-Match header differ.");
         }
         Long expected = bodyVersion != null ? bodyVersion : ifMatchVersion;
-        OrderLifecycleService.AdminUpdate result = lifecycleService.adminUpdateStatus(
-                orderNumber, request.orderStatus(), expected, authUserUtil.getCurrentUser().getEmail());
-        return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+        return transientRetry.call("admin order status", () -> new TransactionTemplate(transactionManager).execute(status -> {
+            OrderLifecycleService.AdminUpdate result = lifecycleService.adminUpdateStatus(
+                    orderNumber, request.orderStatus(), expected, authUserUtil.getCurrentUser().getEmail());
+            return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+        }));
     }
 
     @Override

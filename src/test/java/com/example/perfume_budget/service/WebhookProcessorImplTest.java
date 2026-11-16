@@ -18,6 +18,7 @@ import static org.mockito.Mockito.*;
 class WebhookProcessorImplTest {
 
     @Mock PaymentSettlementService settlement;
+    @org.mockito.Spy TransientRetry retry = new TransientRetry(0);
     @InjectMocks WebhookProcessorImpl processor;
 
     private static String body(String event, String extra) {
@@ -82,7 +83,6 @@ class WebhookProcessorImplTest {
 
     @Test
     void aFailureWebhookHittingADeadlockThenCouponBusyIsRetriedUntilItApplies() {
-        processor.retryBackoffMillis = 0;
         when(settlement.applyFailure(any(), any(), any(), any()))
                 .thenThrow(deadlock()).thenThrow(couponBusy()).thenReturn(PaymentSettlementService.Outcome.FAILED);
         processor.processWebhook(body("charge.failed", ",\"message\":\"Declined\""));
@@ -91,7 +91,6 @@ class WebhookProcessorImplTest {
 
     @Test
     void aRevivalHittingASerializationFailureIsRetried() {
-        processor.retryBackoffMillis = 0;
         when(settlement.applySuccess(any(), any(), any(), any(), any()))
                 .thenThrow(new RuntimeException(new java.sql.SQLException("could not serialize", "40001")))
                 .thenReturn(PaymentSettlementService.Outcome.COMPLETED);
@@ -101,32 +100,24 @@ class WebhookProcessorImplTest {
 
     @Test
     void retriesAreBounded_andTheFailureIsSwallowedAfterTheLastAttempt() {
-        processor.retryBackoffMillis = 0;
         when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(deadlock());
         processor.processWebhook(body("charge.failed", ""));
-        verify(settlement, times(WebhookProcessorImpl.ATTEMPTS)).applyFailure(any(), any(), any(), any());
+        verify(settlement, times(TransientRetry.ATTEMPTS)).applyFailure(any(), any(), any(), any());
     }
 
     @Test
     void nonTransientFailuresAreNotRetried() {
-        processor.retryBackoffMillis = 0;
         when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(new IllegalStateException("bug"));
         processor.processWebhook(body("charge.failed", ""));
-        when(settlement.applySuccess(any(), any(), any(), any(), any()))
-                .thenThrow(new org.springframework.orm.ObjectOptimisticLockingFailureException("Product", 1L));
-        processor.processWebhook(body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\""));
         verify(settlement, times(1)).applyFailure(any(), any(), any(), any());
-        verify(settlement, times(1)).applySuccess(any(), any(), any(), any(), any());
     }
 
     @Test
-    void theBackOffGrowsWithTheAttempt() throws Exception {
-        processor.retryBackoffMillis = 40;
-        when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(couponBusy());
-        long t0 = System.nanoTime();
-        processor.processWebhook(body("charge.failed", ""));
-        long ms = (System.nanoTime() - t0) / 1_000_000;
-        // 40 ms after attempt 1, 80 ms after attempt 2, nothing after the last
-        org.assertj.core.api.Assertions.assertThat(ms).isGreaterThanOrEqualTo(120);
+    void anOptimisticConflictOnASharedProductIsRetried() {
+        when(settlement.applySuccess(any(), any(), any(), any(), any()))
+                .thenThrow(new org.springframework.orm.ObjectOptimisticLockingFailureException("Product", 1L))
+                .thenReturn(PaymentSettlementService.Outcome.COMPLETED);
+        processor.processWebhook(body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\""));
+        verify(settlement, times(2)).applySuccess(any(), any(), any(), any(), any());
     }
 }
