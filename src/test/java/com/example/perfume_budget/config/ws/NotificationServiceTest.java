@@ -25,6 +25,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
@@ -146,7 +147,17 @@ class NotificationServiceTest {
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(adminSessionManager.getConnectedAdmins()).thenReturn(Set.of("admin1@example.com"));
 
-        notificationService.notifyAdminsOfSuccessfulPayment(payment);
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(NotificationService.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> logs = new ch.qos.logback.core.read.ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            notificationService.notifyAdminsOfSuccessfulPayment(payment);
+        } finally {
+            logger.detachAppender(logs);
+        }
+        // EVT-01 rework 1 (F3): the admin is logged by user id, never by e-mail address
+        assertThat(logs.list).isNotEmpty().allSatisfy(e -> assertThat(e.getFormattedMessage()).doesNotContain("@example.com"));
 
         assertNotNull(recipientOne.getDeliveredAt());
         assertEquals(null, recipientTwo.getDeliveredAt());
