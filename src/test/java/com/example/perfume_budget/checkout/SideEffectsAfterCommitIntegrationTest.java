@@ -146,7 +146,12 @@ class SideEffectsAfterCommitIntegrationTest extends AbstractCheckoutIntegrationT
                 "/api/%76%31/webhook/", "/api/v1/webhook/./", "/api/v1/x/../webhook/", "/api/v1//webhook/",
                 "/API/V1/WEBHOOK/", "/api/v1/webhook;a=b/", "/api/v1/webhook/%2E/", "/api/v1/%25252577ebhook/",
                 "/api/v1/%2525252577ebhook/", "/api/v1/webhoo%6B/", "/api/v1/webhook\\", "/api/v1/we%C1%A2hook/",
-                "/api/v1/%C1%B7ebhook/", "/api/v1/we%25C1%25A2hook/", "/api/v1/we%E0%81%A2hook/", "/api/v1/we%FFhook/"};
+                "/api/v1/%C1%B7ebhook/", "/api/v1/we%25C1%25A2hook/", "/api/v1/we%E0%81%A2hook/", "/api/v1/we%FFhook/",
+                "/api/v1/we%ED%A0%80hook/",
+                // rework 1 (F2): valid UTF-8 look-alikes (review probe: zero-width space, full-width w) and more
+                "/api/v1/w%E2%80%8Bebhook/", "/api/v1/%EF%BD%97ebhook/", "/api/v1/web%C2%ADhook/",
+                "/api/v1/w%D0%B5bhook/", "/api/v1/w%C3%A9bhook/", "/api/v1/web-hook/", "/api/v1/webhok/",
+                "/api/v1/hook/", "/"};
         for (String pth : paths) {
             try {
                 mvc.perform(post(URI.create(pth + g.token())).contentType("application/json")
@@ -161,5 +166,23 @@ class SideEffectsAfterCommitIntegrationTest extends AbstractCheckoutIntegrationT
             rows += jdbc.queryForObject("SELECT count(*) FROM " + s + ".site_visits WHERE page LIKE ?", Integer.class, "%" + g.token() + "%");
         }
         assertThat(rows).isZero();
+    }
+
+    /** Rework 1 (F2): the webhook guard and the token redaction do not cost legitimate visits. */
+    @Test
+    void legitimateVisitsWithEncodedCharactersAreStillRecordedAsIs() throws Exception {
+        String[] pages = {"/api/v1/product/caf%C3%A9-noir", "/api/v1/product/a%20b", "/api/v1/product/a+b",
+                "/api/v1/product/%E2%82%AC-deal", "/api/v1/product/%F0%9F%98%80"};
+        for (String page : pages) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(URI.create(page))
+                    .header("X-Tenant-ID", acme.slug())).andReturn();
+        }
+        for (String page : pages) {
+            int rows = 0;
+            for (String s : jdbc.queryForList("SELECT table_schema FROM information_schema.tables WHERE table_name = 'site_visits'", String.class)) {
+                rows += jdbc.queryForObject("SELECT count(*) FROM " + s + ".site_visits WHERE page = ?", Integer.class, page);
+            }
+            assertThat(rows).as(page).isEqualTo(1);
+        }
     }
 }

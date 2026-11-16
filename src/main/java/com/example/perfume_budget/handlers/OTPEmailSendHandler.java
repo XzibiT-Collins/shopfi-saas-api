@@ -24,7 +24,7 @@ public class OTPEmailSendHandler {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleUserRegistrationOtpEvent(UserRegistrationEvent event){
         mailDispatcher.submit("registration OTP e-mail", MailDispatcher.reference(event), () -> {
-            log.info("Received UserLoginEvent for email: {}", event.email());
+            log.info("Registration OTP e-mail requested"); // never the address (F3)
             emailService.sendOtpEmail(event.email(), event.otp());
         });
     }
@@ -32,7 +32,7 @@ public class OTPEmailSendHandler {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleLoginOtpEvent(LoginOtpEvent event) {
         mailDispatcher.submit("login OTP e-mail", MailDispatcher.reference(event), () -> {
-            log.info("Received LoginOtpEvent for email: {}", event.email());
+            log.info("Login OTP e-mail requested"); // never the address (F3)
             emailService.sendOtpEmail(event.email(), event.otp());
         });
     }

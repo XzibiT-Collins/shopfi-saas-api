@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.hibernate.Hibernate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -35,6 +36,10 @@ public class SuccessfulOrderHandler {
         this.mailDispatcher = mailDispatcher;
         this.readTx = new TransactionTemplate(txManager);
         this.readTx.setReadOnly(true);
+        // Rework 1: always its OWN transaction. Called on a worker thread, where nothing is bound, this is the same as
+        // REQUIRED; but if it ever ran on a thread still holding the publishing (already committed) transaction, a
+        // REQUIRED read would join that dead transaction instead of reading in a fresh one.
+        this.readTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -49,13 +54,15 @@ public class SuccessfulOrderHandler {
      * the order's customer and items are re-read here, in the committed state, before anything is rendered.
      *
      * <p>EVT-01: the re-read and the sends run on the dedicated mail executor ({@link MailDispatcher}); a receipt
-     * lost there (executor rejected it, re-read / render / send threw) is logged with the payment reference.
+     * lost there (executor saturated or shut down, re-read / render / send threw) is logged with the payment reference.
+     * Rework 1: the admin in-app notification (rows + STOMP push) is a separate task on the notification executor, so
+     * a hung mail server neither delays nor drops it; nothing runs on the publishing thread.
      */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handlePaymentSuccess(Payment payment) {
         String reference = MailDispatcher.reference(payment);
-        mailDispatcher.submit("payment receipt / admin e-mail / admin notification", reference, () -> {
-            log.info("Payment Successful Event received for {}", reference);
+        mailDispatcher.submit("payment receipt / admin payment e-mail", reference, () -> {
+            log.info("Payment receipt / admin e-mail for {}", reference);
             Payment committed = reload(payment);
             if (committed == null) {
                 log.warn("Settled {} not found after commit; no receipt sent", reference);
@@ -63,6 +70,13 @@ public class SuccessfulOrderHandler {
             }
             emailService.sendAdminOrderNotification(committed);
             emailService.sendCustomerReceipt(committed);
+        });
+        mailDispatcher.submitNotification("admin payment notification", reference, () -> {
+            Payment committed = reload(payment);
+            if (committed == null) {
+                log.warn("Settled {} not found after commit; no admin notification", reference);
+                return;
+            }
             notificationService.notifyAdminsOfSuccessfulPayment(committed);
         });
     }

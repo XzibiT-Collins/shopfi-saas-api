@@ -122,4 +122,63 @@ class ReceiptFailureLoggingTest {
                 .customerEmail(CUSTOMER).build());
         assertOneErrorNaming("PB-9", "MailDeliveryException");
     }
+
+    // ---- EVT-01 rework 1 (F3): OTP / password reset / status e-mails never log the address, sent or not
+
+    private void assertNoAddressAtAnyLevel(Runnable send) {
+        Level old = logger.getLevel();
+        logger.setLevel(Level.TRACE);
+        try {
+            send.run();
+        } finally {
+            logger.setLevel(old);
+        }
+        assertThat(appender.list).isNotEmpty().allSatisfy(e -> {
+            assertThat(e.getFormattedMessage()).doesNotContain(CUSTOMER).doesNotContain("buyer@");
+            assertThat(e.getThrowableProxy()).as("no exception (its message can quote the recipient)").isNull();
+            assertThat(e.getArgumentArray() == null ? List.of() : List.of(e.getArgumentArray()))
+                    .noneMatch(a -> String.valueOf(a).contains(CUSTOMER));
+        });
+    }
+
+    @Test
+    void otpMailFailureLogsNoAddress() {
+        assertNoAddressAtAnyLevel(() -> service.sendOtpEmail(CUSTOMER, "123456"));
+        assertThat(appender.list).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("OTP e-mail").contains("NOT sent"));
+    }
+
+    @Test
+    void otpMailSuccessLogsNoAddress() {
+        doNothing().when(transport).send(any());
+        assertNoAddressAtAnyLevel(() -> service.sendOtpEmail(CUSTOMER, "123456"));
+    }
+
+    @Test
+    void passwordResetMailFailureLogsTheTenantNotTheAddress() {
+        assertNoAddressAtAnyLevel(() -> service.sendForgotPasswordEmail(CUSTOMER, "Buyer", "tok-1", "acme"));
+        assertThat(appender.list).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("acme").contains("NOT sent"));
+    }
+
+    @Test
+    void passwordResetMailSuccessLogsNoAddress() {
+        doNothing().when(transport).send(any());
+        assertNoAddressAtAnyLevel(() -> service.sendForgotPasswordEmail(CUSTOMER, "Buyer", "tok-1", "acme"));
+    }
+
+    @Test
+    void orderStatusMailSuccessLogsTheOrderNumberNotTheAddress() {
+        doNothing().when(transport).send(any());
+        assertNoAddressAtAnyLevel(() -> service.notifyCustomerOnOrderStatusChange(OrderStatusChangeEvent.builder()
+                .orderNumber("PB-9").customerEmail(CUSTOMER).build()));
+        assertThat(appender.list).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("PB-9"));
+    }
+
+    @Test
+    void receiptAndAdminMailFailuresLogNoAddressAtAnyLevel() {
+        when(addresses.findByUserAndIsDefaultTrue(any())).thenReturn(Optional.of(new DeliveryDetail()));
+        assertNoAddressAtAnyLevel(() -> {
+            service.sendCustomerReceipt(payment());
+            service.sendAdminOrderNotification(payment());
+        });
+    }
 }

@@ -19,7 +19,7 @@ public class ForgotPasswordHandler {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handlePasswordResetEvent(ResetPasswordEvent event){
         mailDispatcher.submit("password reset e-mail", MailDispatcher.reference(event), () -> {
-            log.info("Received ForgotPasswordEvent for email: {}", event.email());
+            log.info("Password reset e-mail requested on tenant {}", event.tenantSlug()); // never the address (F3)
             emailService.sendForgotPasswordEmail(event.email(), event.fullName(), event.token(), event.tenantSlug());
         });
     }

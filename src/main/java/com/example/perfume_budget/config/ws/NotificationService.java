@@ -14,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -31,7 +32,11 @@ public class NotificationService {
     private final NotificationRepository notificationRepository;
     private final NotificationRecipientRepository notificationRecipientRepository;
 
-    @Transactional
+    /**
+     * Rework 1: always its own transaction (REQUIRES_NEW): called from after-commit work, a REQUIRED transaction would
+     * join a publishing transaction that has already committed (rows never written, push never sent).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyAdminsOfSuccessfulPayment(Payment payment) {
         List<User> adminUsers = userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK));
         if (adminUsers.isEmpty()) {
@@ -79,7 +84,7 @@ public class NotificationService {
 
             recipient.setDeliveredAt(deliveredAt);
             pushAfterCommit(adminUsername, NotificationMapper.toWebSocketBody(recipient));
-            log.info("Sent payment success notification to admin: {}", adminUsername);
+            log.info("Sent payment success notification to admin user {}", recipient.getUser().getId());
             deliveredRecipients.add(recipient);
         }
 
@@ -88,7 +93,11 @@ public class NotificationService {
         }
     }
 
-    @Transactional
+    /**
+     * Rework 1: always its own transaction (REQUIRES_NEW): called from after-commit work, a REQUIRED transaction would
+     * join a publishing transaction that has already committed (rows never written, push never sent).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyStaffOfShopFloorShortage(Long productId, String productName, int floorQuantity, int storeRoomQuantity) {
         // Throttle: one open alert per product until someone reads it.
         if (notificationRecipientRepository.existsByNotificationTypeAndNotificationReferenceIdAndIsReadFalse(

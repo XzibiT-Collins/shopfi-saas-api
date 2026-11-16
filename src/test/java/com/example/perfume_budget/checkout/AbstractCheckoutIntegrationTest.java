@@ -87,6 +87,10 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
     @org.springframework.beans.factory.annotation.Qualifier("mailTaskExecutor")
     private org.springframework.core.task.TaskExecutor mailExecutor;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("notificationTaskExecutor")
+    private org.springframework.core.task.TaskExecutor notificationExecutor;
+
     @org.junit.jupiter.api.AfterEach
     void cleanCheckoutData() throws InterruptedException {
         // API-04 rework 3: payment-success handlers now run after commit, often after the test's last request; let
@@ -94,6 +98,7 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
         awaitIdle(webhookExecutor);
         awaitIdle(asyncExecutor);
         awaitIdle(mailExecutor); // EVT-01: receipts / order e-mails re-read the order on the mail executor
+        awaitIdle(notificationExecutor);
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
             String sql = "TRUNCATE " + schema + ".orders, " + schema + ".carts, " + schema + ".delivery_details, "
                     + schema + ".products, " + schema + ".journal_entries, " + schema + ".coupons CASCADE";
@@ -106,6 +111,7 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
                     awaitIdle(webhookExecutor);
                     awaitIdle(asyncExecutor);
                     awaitIdle(mailExecutor);
+                    awaitIdle(notificationExecutor);
                 }
             }
         }
@@ -120,16 +126,21 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
         awaitIdle(webhookExecutor);
         awaitIdle(asyncExecutor);
         awaitIdle(mailExecutor);
+        awaitIdle(notificationExecutor);
     }
 
+    /**
+     * EVT-01 rework 1 (F5): waits until no task submitted to {@code executor} is still in flight (counted from
+     * submission to completion, so a task a worker has dequeued but not yet started counts too), and FAILS if that
+     * takes longer than 15 s instead of returning silently.
+     */
     private static void awaitIdle(org.springframework.core.task.TaskExecutor executor) throws InterruptedException {
-        if (!(executor instanceof org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor pool)) {
-            return;
+        if (!(executor instanceof com.example.perfume_budget.config.TrackedTaskExecutor tracked)) {
+            throw new AssertionError("expected a TrackedTaskExecutor, got " + executor.getClass());
         }
-        long deadline = System.currentTimeMillis() + 15_000;
-        while (System.currentTimeMillis() < deadline
-                && (pool.getActiveCount() > 0 || !pool.getThreadPoolExecutor().getQueue().isEmpty())) {
-            Thread.sleep(25);
+        if (!tracked.awaitIdle(java.time.Duration.ofSeconds(15))) {
+            throw new AssertionError(tracked.getThreadNamePrefix() + " executor still has " + tracked.inFlight()
+                    + " task(s) in flight after 15 s");
         }
     }
 

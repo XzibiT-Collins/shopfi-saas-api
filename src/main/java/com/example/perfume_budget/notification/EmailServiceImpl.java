@@ -99,9 +99,9 @@ public class EmailServiceImpl implements EmailService{
 
             String htmlContent = templateEngine.process("forgot-password", context);
             sendEmail(htmlContent, recipientEmail, "Password Reset Request");
-            log.info("Forgot Password Email Sent to {}", recipientEmail);
+            log.info("Password reset e-mail sent (tenant {})", tenantSlug);
         }catch (Exception e){
-            log.error("Failed to send forgot password email to {}", recipientEmail, e);
+            logLost("Password reset e-mail", "tenant " + tenantSlug, e);
         }
     }
 
@@ -114,9 +114,9 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("verify-otp", context);
 
             sendEmail(htmlContent, recipientEmail, "Verify OTP");
-            log.info("OTP Email Sent to {}", recipientEmail);
+            log.info("OTP e-mail sent");
         }catch (Exception e){
-            log.error("Failed to send otp email to {}", recipientEmail, e);
+            logLost("OTP e-mail", "an OTP request", e);
         }
     }
 
@@ -130,7 +130,7 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("order-status-update", context);
 
             sendEmail(htmlContent, event.customerEmail(), "Order Status Update");
-            log.info("Order Status Update Email Sent to {}", event.customerEmail());
+            log.info("Order status e-mail sent for order {}", event.orderNumber());
         }catch (Exception e){
             logLost("Order status e-mail", "order " + event.orderNumber(), e);
         }
@@ -140,8 +140,9 @@ public class EmailServiceImpl implements EmailService{
 
     /**
      * EVT-01: a receipt / order e-mail that was not sent is logged with the order / payment reference (so it can be
-     * re-sent), never with the recipient's address or the exception text (a transport error can quote it); the stack
-     * trace is available at DEBUG.
+     * re-sent), never with the recipient's address or the exception text (a transport error can quote it). Rework 1
+     * (F3): the stack trace is no longer logged at all (its messages can carry the address); OTP / reset e-mails log
+     * no address either, only the tenant.
      */
     private static void logLost(String what, Payment payment, Exception e) {
         Order order = payment == null ? null : payment.getOrder();
@@ -152,7 +153,6 @@ public class EmailServiceImpl implements EmailService{
 
     private static void logLost(String what, String reference, Exception e) {
         log.error("{} for {} was NOT sent: {}", what, reference, e.getClass().getName());
-        log.debug("{} for {} failure detail", what, reference, e);
     }
 
     private void sendEmail(String htmlContent, String recipientEmail, String subject) {

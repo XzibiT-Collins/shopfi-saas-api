@@ -22,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 /**
@@ -233,5 +234,27 @@ class SuccessfulOrderHandlerAfterCommitTest {
         when(orders.findById(11L)).thenReturn(Optional.of(o));
         ctx.publishEvent(o);
         verify(email, times(1)).notifyAdminOnSuccessfulOrderCreation(o);
+    }
+
+    // ---- EVT-01 rework 1 (F1)
+
+    @Test
+    void theReReadAlwaysRunsInItsOwnTransaction() {
+        SuccessfulOrderHandler h = ctx.getBean(SuccessfulOrderHandler.class);
+        TransactionTemplate readTx = (TransactionTemplate) org.springframework.test.util.ReflectionTestUtils.getField(h, "readTx");
+        assertThat(readTx.getPropagationBehavior()).isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        assertThat(readTx.isReadOnly()).isTrue();
+    }
+
+    @Test
+    void theAdminNotificationDoesNotDependOnTheMailExecutor() {
+        Payment p = payment(7L, PaymentStatus.COMPLETED);
+        when(payments.findById(7L)).thenReturn(java.util.Optional.of(p));
+        java.util.concurrent.Executor fullMail = r -> { throw new java.util.concurrent.RejectedExecutionException("full"); };
+        SuccessfulOrderHandler h = new SuccessfulOrderHandler(email, notifications, payments, orders,
+                ctx.getBean(PlatformTransactionManager.class), new MailDispatcher(fullMail, Runnable::run));
+        h.handlePaymentSuccess(p);
+        verifyNoInteractions(email);
+        verify(notifications).notifyAdminsOfSuccessfulPayment(p);
     }
 }

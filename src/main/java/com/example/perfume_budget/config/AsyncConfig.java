@@ -1,9 +1,7 @@
 package com.example.perfume_budget.config;
 
 import com.example.perfume_budget.handlers.MailDispatcher;
-import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.tenancy.TenantContextTaskDecorator;
-import com.example.perfume_budget.tenancy.TenantIdentity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.aop.interceptor.AsyncUncaughtExceptionHandler;
 import org.springframework.scheduling.annotation.AsyncConfigurer;
@@ -17,6 +15,7 @@ import java.util.Arrays;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @EnableAsync
@@ -25,34 +24,60 @@ import java.util.stream.Collectors;
 public class AsyncConfig implements AsyncConfigurer {
 
     public static final String MAIL_EXECUTOR = "mailTaskExecutor";
+    public static final String NOTIFICATION_EXECUTOR = "notificationTaskExecutor";
 
     /**
-     * EVT-01 capacity of the dedicated e-mail / receipt executor. A paid order costs three short tasks at most
-     * (customer receipt, admin e-mail, admin notification, sent from one task) plus one admin "new order" e-mail at
-     * checkout; a send through SMTP / Resend takes roughly 0.2-2 s. 4 threads drain ~2-20 mails/s, and 500 queued
-     * tasks absorb a burst of a few hundred orders (minutes of drain at worst) without holding much memory (each task
-     * holds ids, not rendered mails). Beyond that nothing is dropped: the thread that published the event sends the
-     * overflow itself ({@link RunInCallerUnlessShutDown}), which slows that request / webhook worker instead of losing a
-     * receipt. Only a shut-down executor rejects, and {@code MailDispatcher} logs the order / payment reference.
+     * EVT-01 capacity of the dedicated e-mail / receipt executor. A paid order costs two mail tasks at most (customer
+     * receipt + admin payment e-mail, sent from one task, and the admin "new order" e-mail at checkout); a send through
+     * SMTP / Resend takes roughly 0.2-2 s, and is bounded by the SMTP / HTTP timeouts (see application.properties).
+     * 4 threads drain ~2-20 mails/s, and 500 queued tasks absorb a burst of a few hundred orders without holding much
+     * memory (each task holds ids, not rendered mails).
+     *
+     * <p>Rework 1: the overflow is NEVER run on the submitting thread. The submitter is a request or webhook worker
+     * inside the after-commit callback of its transaction: running mail there joined the already committed transaction
+     * (notification rows never committed, the STOMP push registered on a synchronization that never fires) and held
+     * the caller's JDBC connection through the SMTP conversation, so a mail outage could exhaust the connection pool
+     * for every tenant. Instead the submitter waits at most {@link #MAIL_SUBMIT_WAIT_MILLIS} for a queue slot
+     * ({@link WaitBrieflyThenReject}); if none frees up the mail is DROPPED and {@code MailDispatcher} logs what was
+     * not sent with its order / payment reference (re-send by hand). Trade-off: under a sustained mail outage (504
+     * sends stuck) some e-mails are lost, logged, instead of the store going down with the mail server.
      */
     public static final int MAIL_THREADS = 4;
     public static final int MAIL_QUEUE_CAPACITY = 500;
+    /** Longest a request / webhook thread waits for a free mail (or notification) queue slot. */
+    public static final long MAIL_SUBMIT_WAIT_MILLIS = 1_000;
+
+    /**
+     * Rework 1: the admin in-app notification (rows + STOMP push) of a settled payment does not depend on the mail
+     * server, so it has its own small executor: a hung SMTP server can neither delay nor drop it.
+     */
+    public static final int NOTIFICATION_THREADS = 2;
+    public static final int NOTIFICATION_QUEUE_CAPACITY = 500;
 
     @Bean(name = MAIL_EXECUTOR)
     public TaskExecutor mailTaskExecutor() {
-        return mailExecutor(MAIL_THREADS, MAIL_QUEUE_CAPACITY);
+        return mailExecutor(MAIL_THREADS, MAIL_QUEUE_CAPACITY, MAIL_SUBMIT_WAIT_MILLIS);
     }
 
-    static ThreadPoolTaskExecutor mailExecutor(int threads, int queueCapacity) {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    @Bean(name = NOTIFICATION_EXECUTOR)
+    public TaskExecutor notificationTaskExecutor() {
+        return boundedExecutor("notify-", NOTIFICATION_THREADS, NOTIFICATION_QUEUE_CAPACITY, MAIL_SUBMIT_WAIT_MILLIS);
+    }
+
+    static TrackedTaskExecutor mailExecutor(int threads, int queueCapacity, long submitWaitMillis) {
+        return boundedExecutor("mail-", threads, queueCapacity, submitWaitMillis);
+    }
+
+    private static TrackedTaskExecutor boundedExecutor(String prefix, int threads, int queueCapacity, long submitWaitMillis) {
+        TrackedTaskExecutor executor = new TrackedTaskExecutor();
         executor.setCorePoolSize(threads);
         executor.setMaxPoolSize(threads);
         executor.setQueueCapacity(queueCapacity);
         executor.setAllowCoreThreadTimeOut(true);
         executor.setKeepAliveSeconds(60);
-        executor.setThreadNamePrefix("mail-");
+        executor.setThreadNamePrefix(prefix);
         executor.setTaskDecorator(new TenantContextTaskDecorator());
-        executor.setRejectedExecutionHandler(new RunInCallerUnlessShutDown());
+        executor.setRejectedExecutionHandler(new WaitBrieflyThenReject(submitWaitMillis));
         // on shutdown, queued receipts are still sent (bounded wait) rather than discarded
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
@@ -61,28 +86,34 @@ public class AsyncConfig implements AsyncConfigurer {
     }
 
     /**
-     * Saturation policy of the mail executor: run the task on the submitting thread (like
-     * {@link ThreadPoolExecutor.CallerRunsPolicy}) so a burst never drops a receipt, but REJECT once the executor is
-     * shut down (CallerRunsPolicy would silently discard it) so the caller logs the reference. The task is wrapped by
-     * {@link TenantContextTaskDecorator}, which clears the tenant when it ends; the caller's own tenant context is
-     * restored afterwards.
+     * Saturation policy of the mail / notification executors: wait up to {@code waitMillis} for a queue slot, then
+     * REJECT (the caller, {@code MailDispatcher}, logs the reference of what was not sent). Never runs the task on the
+     * submitting thread (see {@link #MAIL_SUBMIT_WAIT_MILLIS} for why). A shut-down executor rejects at once.
      */
-    public static class RunInCallerUnlessShutDown implements RejectedExecutionHandler {
+    public static class WaitBrieflyThenReject implements RejectedExecutionHandler {
+        private final long waitMillis;
+
+        public WaitBrieflyThenReject(long waitMillis) {
+            this.waitMillis = waitMillis;
+        }
+
         @Override
         public void rejectedExecution(Runnable task, ThreadPoolExecutor pool) {
             if (pool.isShutdown()) {
-                throw new RejectedExecutionException("mail executor is shut down");
+                throw new RejectedExecutionException("executor is shut down");
             }
-            log.warn("Mail executor saturated ({} queued): sending on the calling thread", pool.getQueue().size());
-            TenantIdentity callers = TenantContext.get();
+            boolean queued;
             try {
-                task.run();
-            } finally {
-                if (callers != null) {
-                    TenantContext.set(callers);
-                } else {
-                    TenantContext.clear();
-                }
+                queued = pool.getQueue().offer(task, waitMillis, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                queued = false;
+            }
+            if (!queued) {
+                throw new RejectedExecutionException("queue full after waiting " + waitMillis + " ms");
+            }
+            if (pool.isShutdown() && pool.getQueue().remove(task)) {
+                throw new RejectedExecutionException("executor is shut down");
             }
         }
     }
@@ -101,7 +132,7 @@ public class AsyncConfig implements AsyncConfigurer {
 
     @Bean(name = "webhookTaskExecutor")
     public TaskExecutor webhookTaskExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        TrackedTaskExecutor executor = new TrackedTaskExecutor(); // EVT-01 rework: countable in-flight tasks
         executor.setCorePoolSize(2);
         executor.setMaxPoolSize(5);
         executor.setQueueCapacity(100);
@@ -113,7 +144,7 @@ public class AsyncConfig implements AsyncConfigurer {
 
     @Bean(name = "taskExecutor")
     public TaskExecutor taskExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        TrackedTaskExecutor executor = new TrackedTaskExecutor(); // EVT-01 rework: countable in-flight tasks
         executor.setCorePoolSize(5);
         executor.setMaxPoolSize(10);
         executor.setQueueCapacity(50);
