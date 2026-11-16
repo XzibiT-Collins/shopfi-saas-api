@@ -94,6 +94,9 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | CouponController | POST | `/api/v1/coupon/add-coupon` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | CouponController | GET | `/api/v1/coupon/{couponId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | CouponController | GET | `/api/v1/coupon/all` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
+| CouponController | PUT | `/api/v1/coupon/{couponId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (API-04: full replace, code immutable) |
+| CouponController | POST | `/api/v1/coupon/{couponId}/deactivate` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (API-04: revoke, immediate) |
+| CouponController | DELETE | `/api/v1/coupon/{couponId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (API-04: never-redeemed coupons only) |
 | DeliveryDetailController | POST | `/api/v1/delivery-detail/add-address` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | mutates |
 | DeliveryDetailController | PUT | `/api/v1/delivery-detail/update/{addressId}` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | mutates |
 | DeliveryDetailController | DELETE | `/api/v1/delivery-detail/delete/{addressId}` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | mutates |
@@ -121,6 +124,7 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | PaymentController | GET | `/api/v1/payment/verify` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | reads tenant data |
 | PaymentSettingsController | GET | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | PaymentSettingsController | PUT | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
+| PaymentSettingsController | POST | `/api/v1/payment-settings/rotate-webhook-token` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (API-04: old webhook URL dies at once) |
 | ProductController | POST | `/api/v1/product/add-product` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | PUT | `/api/v1/product/update/{productId}` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | GET | `/api/v1/product/featured` | permitAll (GET) | - | reads tenant data (public storefront data) |

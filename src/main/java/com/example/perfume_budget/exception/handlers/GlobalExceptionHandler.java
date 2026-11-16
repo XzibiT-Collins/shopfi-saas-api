@@ -98,6 +98,13 @@ public class GlobalExceptionHandler {
     /** Errors with a stable machine code (checkout/payment, docs/api/checkout.md): {description, data:{code,...}}. */
     @ExceptionHandler(ApiCodeException.class)
     public ResponseEntity<CustomApiResponse<Object>> handleApiCodeException(ApiCodeException ex){
+        if (ex.getStatus() == HttpStatus.SERVICE_UNAVAILABLE) {
+            // API-04 rework 3: every busy / collided 503 (COUPON_BUSY, PAYMENT_SETTINGS_BUSY, TRY_AGAIN after the
+            // in-process retries) says when to retry, like the TRY_AGAIN mapped from a raw deadlock below
+            return ResponseEntity.status(ex.getStatus())
+                    .header(org.springframework.http.HttpHeaders.RETRY_AFTER, "1")
+                    .body(CustomApiResponse.error(ex.getMessage(), ex.body()));
+        }
         return ResponseEntity.status(ex.getStatus()).body(CustomApiResponse.error(ex.getMessage(), ex.body()));
     }
 
@@ -267,6 +274,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<CustomApiResponse<String>> handleEmptyBody(HttpMessageNotReadableException ex) {
+        // API-04 rework: a strict integer field explains itself (fixed text + field name, never the submitted value)
+        for (Throwable t = ex.getCause(); t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof com.example.perfume_budget.dto.json.StrictIntegerDeserializer.InvalidWholeNumberException w) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(w.getOriginalMessage()));
+            }
+        }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Request body is missing or malformed."));
     }
 
@@ -305,8 +318,31 @@ public class GlobalExceptionHandler {
                 .body(CustomApiResponse.error("Product was updated by another transaction, please try again"));
     }
 
+    /**
+     * API-04 rework 2: a deadlock victim (40P01), serialization failure (40001) or lock timeout (55P03) is a clean
+     * {@code 503 {data.code:"TRY_AGAIN"}} with {@code Retry-After: 1}, never a 500. The transaction was rolled back,
+     * nothing was changed, and the same request can simply be sent again.
+     */
+    @ExceptionHandler({org.springframework.dao.PessimisticLockingFailureException.class,
+            jakarta.persistence.PessimisticLockException.class, jakarta.persistence.LockTimeoutException.class,
+            org.hibernate.exception.LockAcquisitionException.class})
+    public ResponseEntity<CustomApiResponse<Object>> handleLockFailure(Exception ex) {
+        return tryAgain(ex);
+    }
+
+    private static ResponseEntity<CustomApiResponse<Object>> tryAgain(Throwable ex) {
+        log.warn("Concurrent update, answered 503 TRY_AGAIN: {}", ex.getClass().getSimpleName());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(org.springframework.http.HttpHeaders.RETRY_AFTER, "1")
+                .body(CustomApiResponse.error(com.example.perfume_budget.service.DbLockTimeout.TRY_AGAIN_MESSAGE,
+                        Map.of("code", com.example.perfume_budget.service.DbLockTimeout.TRY_AGAIN)));
+    }
+
     @ExceptionHandler(TransactionSystemException.class)
-    public ResponseEntity<CustomApiResponse<Void>> handleTransactionException(TransactionSystemException ex) {
+    public ResponseEntity<? extends CustomApiResponse<?>> handleTransactionException(TransactionSystemException ex) {
+        if (com.example.perfume_budget.service.DbLockTimeout.isTransient(ex)) {
+            return tryAgain(ex);
+        }
         Throwable cause = ex.getRootCause();
         log.error("Transaction failed: {}", cause != null ? cause.getMessage() : ex.getMessage());
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -315,7 +351,10 @@ public class GlobalExceptionHandler {
 
     // General Exceptions
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<CustomApiResponse<String>> handleGenericException(Exception ex){
+    public ResponseEntity<? extends CustomApiResponse<?>> handleGenericException(Exception ex){
+        if (com.example.perfume_budget.service.DbLockTimeout.isTransient(ex)) {
+            return tryAgain(ex); // however it was wrapped (commit-time failure, JpaSystemException, ...)
+        }
         log.error("Unexpected error occurred: {}", ex.getMessage());
         log.error(String.valueOf(ex));
         return ResponseEntity.internalServerError().body(CustomApiResponse.error("Unexpected error occurred"));

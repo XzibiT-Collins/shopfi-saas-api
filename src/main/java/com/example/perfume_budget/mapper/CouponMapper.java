@@ -3,6 +3,7 @@ package com.example.perfume_budget.mapper;
 import com.example.perfume_budget.dto.coupon.request.CouponRequest;
 import com.example.perfume_budget.dto.coupon.response.CouponDetailResponse;
 import com.example.perfume_budget.dto.coupon.response.CouponListResponse;
+import com.example.perfume_budget.enums.DiscountType;
 import com.example.perfume_budget.model.Coupon;
 
 public class CouponMapper {
@@ -15,7 +16,9 @@ public class CouponMapper {
                 .discountType(request.discountType())
                 .discountValue(request.discountValue())
                 .minimumCartAmountForDiscount(request.minimumCartAmountForDiscount())
-                .maximumDiscountAmount(request.maximumDiscountAmount())
+                // maximumDiscountAmount only caps PERCENTAGE coupons; stored null for FLAT (see DiscountCalculationUtil)
+                .maximumDiscountAmount(request.discountType() == DiscountType.PERCENTAGE ? request.maximumDiscountAmount() : null)
+                .perUserUsageLimit(request.perUserUsageLimit())
                 .usageLimit(request.usageLimit())
                 .isActive(request.isActive())
                 .startDate(request.startDate())
@@ -35,6 +38,7 @@ public class CouponMapper {
                 .discountValue(coupon.getDiscountValue())
                 .maximumDiscountAmount(coupon.getMaximumDiscountAmount())
                 .minimumCartAmountForDiscount(coupon.getMinimumCartAmountForDiscount())
+                .perUserUsageLimit(coupon.getPerUserUsageLimit())
                 .startDate(coupon.getStartDate())
                 .expirationDate(coupon.getExpirationDate())
                 .build();
@@ -48,6 +52,11 @@ public class CouponMapper {
                 .discountType(coupon.getDiscountType())
                 .usageLimit(coupon.getUsageLimit())
                 .usageCount(coupon.getUsageCount())
+                .discountValue(coupon.getDiscountValue())
+                .maximumDiscountAmount(coupon.getMaximumDiscountAmount())
+                .minimumCartAmountForDiscount(coupon.getMinimumCartAmountForDiscount())
+                .perUserUsageLimit(coupon.getPerUserUsageLimit())
+                .startDate(coupon.getStartDate())
                 .expirationDate(coupon.getExpirationDate())
                 .build();
     }

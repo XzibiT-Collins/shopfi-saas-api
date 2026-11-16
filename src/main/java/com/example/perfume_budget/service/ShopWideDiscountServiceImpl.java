@@ -52,9 +52,9 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
     @Override
     @Transactional(readOnly = true)
     public ShopWideDiscountResponse getCurrent() {
-        ShopWideDiscount discount = shopWideDiscountRepository.findByIsActiveTrueOrderByCreatedAtDesc()
-                .stream()
-                .findFirst()
+        // API-04: only a discount that is in force right now (active flag AND inside its window); an expired or
+        // not-yet-started row is "none" (404), exactly what EffectivePriceService prices with.
+        ShopWideDiscount discount = shopWideDiscountRepository.findActiveNow(LocalDateTime.now(systemClock))
                 .orElseThrow(() -> new ResourceNotFoundException("No active shop-wide discount."));
         return toResponse(discount);
     }

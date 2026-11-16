@@ -42,4 +42,28 @@ public class CouponController {
                 CustomApiResponse.success(couponService.getAllCoupons(pageable))
         );
     }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PutMapping("/{couponId}")
+    public ResponseEntity<CustomApiResponse<CouponDetailResponse>> updateCoupon(
+            @PathVariable Long couponId, @Valid @RequestBody CouponRequest request){
+        return ResponseEntity.ok().body(
+                CustomApiResponse.success(couponService.updateCoupon(couponId, request))
+        );
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/{couponId}/deactivate")
+    public ResponseEntity<CustomApiResponse<CouponDetailResponse>> deactivateCoupon(@PathVariable Long couponId){
+        return ResponseEntity.ok().body(
+                CustomApiResponse.success(couponService.deactivateCoupon(couponId))
+        );
+    }
+
+    @PreAuthorize("hasRole('ADMIN')")
+    @DeleteMapping("/{couponId}")
+    public ResponseEntity<Void> deleteCoupon(@PathVariable Long couponId){
+        couponService.deleteCoupon(couponId);
+        return ResponseEntity.noContent().build();
+    }
 }

@@ -249,7 +249,7 @@ GET /api/v1/admin/shop-discount/current
 ```
 
 - `200 OK` with `data` = `ShopWideDiscountResponse` when one is configured.
-- `404` (ResourceNotFound) when none is configured. Treat 404 as "no shop-wide discount" — show empty state, not an error toast.
+- `404` (ResourceNotFound) when none is in force right now (none configured, expired, or not started yet — API-04). Treat 404 as "no shop-wide discount" — show empty state, not an error toast.
 
 ### 4.5 Deactivate a shop-wide discount
 
@@ -347,7 +347,7 @@ Effective prices are date-windowed and the catalog is cached (up to ~60 min, plu
 | `/api/v1/product/admin/{productId}/discount` | PUT | ADMIN | `ProductDiscountRequest` | `ProductDetails` |
 | `/api/v1/product/admin/{productId}/discount` | DELETE | ADMIN | — | `ProductDetails` |
 | `/api/v1/admin/shop-discount` | PUT | ADMIN | `ShopWideDiscountRequest` | `ShopWideDiscountResponse` |
-| `/api/v1/admin/shop-discount/current` | GET | ADMIN | — | `ShopWideDiscountResponse` (404 if none) |
+| `/api/v1/admin/shop-discount/current` | GET | ADMIN | — | `ShopWideDiscountResponse` (404 if none **in force now**) |
 | `/api/v1/admin/shop-discount/{id}` | DELETE | ADMIN | — | `204` |
 
 Enum values: `discountType` ∈ `{ "PERCENTAGE", "FLAT" }`.
@@ -355,3 +355,81 @@ Enum values: `discountType` ∈ `{ "PERCENTAGE", "FLAT" }`.
 Money strings: `"<CURRENCY> <AMOUNT>"`, e.g. `"GHS 49.99"`.
 
 Timestamps (`startAt`, `endAt`, `discountEndsAt`): same serialization as existing API date fields (e.g. order `createdAt`) — send/parse in that same format.
+
+---
+
+## 8. Coupons (API-04)
+
+All routes are `ADMIN` only (anonymous `401`, customer `403`). Envelope as in section 2.
+
+| Route | Method | Body | Response |
+|---|---|---|---|
+| `/api/v1/coupon/add-coupon` | POST | `CouponRequest` | `CouponDetailResponse` (200) |
+| `/api/v1/coupon/{couponId}` | GET | — | `CouponDetailResponse` |
+| `/api/v1/coupon/all` | GET | `?page&size&sort` | `PageResponse<CouponListResponse>` |
+| `/api/v1/coupon/{couponId}` | PUT | `CouponRequest` (full replace) | `CouponDetailResponse` |
+| `/api/v1/coupon/{couponId}/deactivate` | POST | — | `CouponDetailResponse` (`isActive=false`) |
+| `/api/v1/coupon/{couponId}` | DELETE | — | `204` |
+
+### `CouponRequest`
+
+| Field | Rule |
+|---|---|
+| `couponCode` | Optional (omit or `null` to have one generated). When sent: 3-32 chars of `A-Z a-z 0-9 _ -` (first char alphanumeric). It is **trimmed and upper-cased** before it is stored, so the response `couponCode` is the canonical form and checkout/preview match it in any case. Blank (`""`, spaces) is `400`. Cannot change on update (send the same code or omit it). **On `PUT`, prefer omitting it:** a code renamed by migration V12 (`<CODE>-DUP-<id>`, `LEGACY-BLANK-<id>`) or any legacy code can be longer than 32 characters or contain other characters, and sending it back then fails this format check (`400`) even though it is the coupon's own code. |
+| `discountType` | `PERCENTAGE` or `FLAT`, required. |
+| `discountValue` | Required, `> 0`, at most 2 decimals. `PERCENTAGE` must be `<= 100`. |
+| `maximumDiscountAmount` | **Now optional.** Cap for `PERCENTAGE` coupons only (`> 0` when sent, `null` = no cap). For `FLAT` it is **ignored and stored as `null`** (a flat coupon is already a fixed amount, bounded by the cart subtotal). Clients that still send a value for FLAT keep working. |
+| `minimumCartAmountForDiscount` | **Now optional**, `>= 0`, 2 decimals. |
+| `usageLimit` | Required integer `1..1000000`. Must be a JSON integer: `1.5`, `"7"` (string), `true` or an out-of-range number such as `99999999999` / `1E999999999` are a `400` with `description` `"usageLimit must be a whole number"` / `"usageLimit must be a whole number (a JSON number, not text)"` / `"usageLimit is out of range"` (before API-04 rework `1.5` was silently stored as `1` and `"7"` as `7`). |
+| `perUserUsageLimit` | **New**, optional integer `1..usageLimit`, same strict-integer rule as `usageLimit`. One customer can hold at most this many **live** redemptions (orders that are not cancelled, failed or expired); enforced by checkout, by `GET /api/v1/tax?couponCode=` and shown as invalid by the cart preview. |
+| `isActive` | Required boolean. |
+| `startDate`, `expirationDate` | Required `yyyy-MM-dd`; `expirationDate` must not be before `startDate` (both days are valid; a one-day coupon has start = expiry). |
+
+Responses `CouponDetailResponse` now also carries `perUserUsageLimit`. `CouponListResponse` now also carries `discountValue`, `maximumDiscountAmount`, `minimumCartAmountForDiscount`, `perUserUsageLimit` and `startDate` (no more one GET per row). All changes are additive. Coupon decimals stay JSON numbers (currency GHS implied); the "GHS 45.00" string format used by product/order money is a documented follow-up, not changed here.
+
+### Errors
+
+| Status | Body | When |
+|---|---|---|
+| `400` | `{description:"Validation failed", data:{<field>:<message>}}` | any rule above (field-name keys; the cross-field rules use the keys `percentageWithinRange`, `percentageCapPositive`, `expirationNotBeforeStart`, `perUserLimitWithinTotal`) |
+| `400` | `{description:<message>}` | update: code changed, or `usageLimit` below the live redemptions; a non-integer `usageLimit`/`perUserUsageLimit` (see above) |
+| `404` | `{description:"Coupon not found."}` | unknown id (also another tenant's id) |
+| `409` | `{description:"A coupon with this code already exists.", data:{code:"COUPON_CODE_EXISTS"}}` | create with a code that exists (case-insensitive, also under a race). **Replaces** the old generic `"A constraint violation occurred"` 409 for this case. |
+| `409` | `{description:"This coupon has been redeemed and cannot be deleted. Deactivate it instead.", data:{code:"COUPON_REDEEMED"}}` | delete of a coupon with a **live** redemption: a checkout in flight, or an order that is not cancelled / failed / expired. Redemptions of cancelled, failed or expired orders do not count. |
+| `503` | `{description:"This coupon is being updated right now. Please try again.", data:{code:"COUPON_BUSY"}}`, header `Retry-After: 1` (rework 3) | the coupon row stayed locked longer than the lock wait limit (5 s by default): update, deactivate, delete, **checkout** (`POST /cart/checkout?couponCode=`), order cancel (owner / admin) and the verify poll when they give a redemption back or take it again. Nothing was changed; retry. In practice the coupon row is only ever held for one short statement (see "Lock order"), so this needs a stuck or very slow database. Payment webhooks never answer `503`: they answer `200` and apply the event asynchronously (retried in-process, see docs/api/checkout.md). |
+| `503` | `{description:"The request collided with another update. Please try again.", data:{code:"TRY_AGAIN"}}`, header `Retry-After: 1` | (rework 2) order cancel (owner / admin), admin order status, verify poll: a deadlock / serialization / optimistic-lock conflict with a webhook or another cancel on the same rows that was still there after 3 in-process attempts. Rolled back, nothing changed; retry. Any deadlock or serialization failure anywhere in the API is this `503`, never a `500`. |
+
+### Behaviour
+
+- **Codes are case-insensitive.** Stored trimmed and upper-cased; checkout, preview and `/tax` accept any case. `LEGACY10` cannot be created next to `legacy10` (`409 COUPON_CODE_EXISTS`, enforced by a case-insensitive unique index). `PUT` that sends back a coupon's own code in any case is not a code change.
+- **Legacy codes (migration V12, API-04 rework).** Coupons created before API-04 could be stored lower/mixed case or blank, and could not be redeemed. V12 upper-cases every code. Collisions are resolved without failing the deploy and without deleting rows: among codes equal after trim + upper-case, the row that was already upper-case keeps the code (it is the one checkout always found), otherwise the lowest id keeps it; every other row of the group is renamed `<CODE>-DUP-<id>` and **deactivated**; a blank code becomes `LEGACY-BLANK-<id>` and is deactivated. Those rows could never be redeemed before either. Orders keep pointing at the same coupon rows. Admin UI: show such codes like any other; the admin can delete or keep them.
+- **Usage counter = live redemptions.** `usageCount` counts checkouts in flight plus orders that are not cancelled, failed or expired. When an order is cancelled (by the customer, by the admin while unpaid, or by the expiry job) or its payment fails, its redemption is **given back exactly once**: `usageCount` goes down by one and the customer's per-user slot is free again. A checkout that fails (Paystack error, rejection) or that is an idempotent replay does not count either. If a late payment revives a cancelled / failed order, the order takes its redemption back (the counter can then exceed `usageLimit` by that order; the customer paid with the discount). A **paid** order cancelled by the admin keeps its redemption (the refund is manual). Orders cancelled or failed before V12 were released by the migration (counters lowered accordingly).
+- **Auto-deactivation and re-activation.** The checkout that takes the last redemption switches the coupon off (`isActive=false`). If a redemption is later given back, the coupon is switched on again **only if the limit was the reason it was off**; a coupon an admin deactivated (`/deactivate` or `PUT isActive:false`) stays off. Rule: any admin write of `isActive` overrides the automatic state. Coupons auto-deactivated before V12 are not re-activated automatically (the reason was not recorded); switch them on with `PUT`.
+- **Revoke a leaked coupon: `POST /{id}/deactivate`.** Effective immediately for every checkout that has not reserved the coupon yet; a checkout that reserved it just before (it is then creating the order / talking to Paystack) completes and its order stands. Idempotent. Deactivate and edits never wait for a checkout's Paystack call: no transaction holds the coupon row across that call. A checkout locks it only inside its one-statement reservation (and its give-back), committed before / after the checkout transaction; a cancel, payment failure, expiry or late-payment revival locks it only with its very last statement before commit (see "Lock order"). So an edit / deactivate waits at most for one such statement. The cart preview then reports `coupon.valid=false`, `reason=COUPON_INVALID`. `PUT` with `isActive:false` does the same.
+- **Lock order (rework 2): order -> stock -> coupon, coupon row last.** Every path that changes the usage counter for an order (owner / admin cancel, expiry and straggler release, `charge.failed`, a late payment after a merchant cancel, a late-payment revival) locks the order row, writes the order / payment / stock / product rows, and only then runs the one coupon `UPDATE`, immediately before commit. A checkout holds its stock rows across the Paystack call (unchanged, ORD-01), so a payment failure or cancel touching the same product may wait for that checkout, but it no longer holds the coupon row while it waits: other checkouts of the coupon and admin edits are not blocked (before rework 2 they got `503 COUPON_BUSY` after 5 s). Cancel and payment failure use the same order, so they no longer deadlock; a conflict that still happens (two of them re-stocking the same product at once) is retried in-process and, if it persists, is `503 TRY_AGAIN`, never a `500`. Admin delete locks the coupon's orders first, then the coupon.
+- **Checks before reserving (rework 2).** Checkout first decides everything that does not depend on the usage counter, without reserving: address, empty cart, unavailable items, idempotent replays (keyed and same-cart), sale items, unknown code, **per-user limit** and **minimum amount**. A request refused or replayed there never touches the counter. Active / date window / usage limit are decided only by the atomic reservation. Small visible change: when several reasons apply at once, a per-user-limit or minimum-amount message can now come before "usage limit has been reached" (all are `400`).
+- **Remaining transient window.** A checkout that passed those checks holds its reservation until it either creates an order or gives it back. While it is in flight it counts, so with the coupon at `usageLimit - 1` a second customer checking out at the same moment can be refused "usage limit has been reached" although the first one then fails (Paystack error, a concurrent per-user race, or a same-product stock conflict). The window is the duration of one checkout and the counter is exact afterwards. Its biggest source today is API-05 (concurrent checkouts of the same product failing with an optimistic-lock `500`); it shrinks when API-05 is fixed. The UI can treat "usage limit has been reached" as final; a retry a moment later may succeed.
+- **Redeemed coupons** can be edited (the usage limit cannot go below the live redemptions) and deactivated. **Delete** works when there is no live redemption (`409 COUPON_REDEEMED` otherwise); cancelled / failed / expired orders that used the coupon lose their coupon reference on delete but keep their discount amounts. The code is free to be created again afterwards.
+- Editing `discountType`/`discountValue` on a redeemed coupon changes future redemptions only.
+- **`GET /api/v1/tax?subtotal=&couponCode=`** applies the same per-user limit as checkout and the preview (`400` "You have already used this coupon the maximum number of times").
+
+## 9. Payment settings (API-04)
+
+`ADMIN` only. Write-only secret semantics are unchanged: the secret key is never returned or logged; `secretConfigured` says whether one is stored.
+
+| Route | Method | Body | Response |
+|---|---|---|---|
+| `/api/v1/payment-settings` | GET | — | `PaymentSettingsResponse` |
+| `/api/v1/payment-settings` | PUT | `PaymentSettingsRequest` | `PaymentSettingsResponse` |
+| `/api/v1/payment-settings/rotate-webhook-token` | POST | — | `PaymentSettingsResponse` (new `webhookUrl`) |
+
+`PaymentSettingsRequest`: `secretKey` (optional on update, blank keeps the stored one), `publicKey` (required), `enabled`.
+`PaymentSettingsResponse`: `secretConfigured`, `publicKey`, `enabled`, `webhookUrl` (unchanged shape).
+
+**New format checks (400, field-keyed, the message never echoes the value):** `secretKey` must look like `sk_test_...` / `sk_live_...`, `publicKey` like `pk_test_...` / `pk_live_...` (letters, digits, `_`, 4-200 chars after the prefix); when both are sent they must be the same mode (key `keyModesConsistent`). The check is shape only; the keys are not verified against Paystack.
+
+**Webhook-token rotation.** `POST /rotate-webhook-token` mints a new token; the old webhook URL answers `404` from that moment. The admin must paste the returned `webhookUrl` into the Paystack dashboard; events Paystack sends to the old URL in between are not processed. Show a confirm dialog before calling it. Rotation works even before any key is saved. Rotations (and the first-time token minting on `PUT`) are serialised on the tenant row, so two rotations at the same time each return the URL they committed and the last one is the live one; if the row stays locked longer than the wait limit the call is a `503` with `data.code = "PAYMENT_SETTINGS_BUSY"` and `Retry-After: 1` (nothing changed, retry).
+
+**Logs.** The webhook URL contains the tenant's secret token in its path (`/api/v1/webhook/{token}`). The application never records that path as a site visit (API-04 rework); operators must make sure reverse-proxy / load-balancer access logs mask or drop the path segment after `/api/v1/webhook/` too.
+
+**Shop-wide discount (4.4):** `GET /api/v1/admin/shop-discount/current` now returns `404` unless a discount is active **and** inside its `startAt`..`endAt` window now (before it returned the newest active row even if expired or scheduled). `label` is limited to 100 characters (`400` otherwise).

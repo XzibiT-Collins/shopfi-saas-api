@@ -99,6 +99,13 @@ public class Order {
     @ManyToOne
     private Coupon coupon;
 
+    /**
+     * API-04 rework: true once this order's coupon redemption was given back (order CANCELLED / FAILED / expired).
+     * Flipped under the order row lock, so the coupon counter is released exactly once.
+     */
+    @Column(name = "coupon_redemption_released", nullable = false)
+    private boolean couponRedemptionReleased;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> items = new ArrayList<>();
 

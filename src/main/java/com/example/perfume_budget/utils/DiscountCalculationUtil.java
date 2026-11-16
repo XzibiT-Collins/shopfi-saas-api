@@ -11,16 +11,17 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 @Component
 @RequiredArgsConstructor
 public class DiscountCalculationUtil {
     private final CouponRepository couponRepository;
+    private final Clock systemClock;
 
     public void checkIfCouponIsValid(Coupon coupon) {
-        LocalDate now = LocalDateTime.now().toLocalDate();
+        LocalDate now = LocalDate.now(systemClock);
 
         if (!Boolean.TRUE.equals(coupon.getIsActive())) {
             throw new CouponRejectedException(Reason.INACTIVE, "Coupon is inactive");
@@ -34,15 +35,22 @@ public class DiscountCalculationUtil {
             throw new CouponRejectedException(Reason.EXPIRED, "Coupon has expired");
         }
 
-        if (coupon.getUsageLimit() != null && coupon.getUsageCount() >= coupon.getUsageLimit()) {
+        if (coupon.getUsageLimit() != null
+                && (coupon.getUsageCount() == null ? 0 : coupon.getUsageCount()) >= coupon.getUsageLimit()) {
             throw new CouponRejectedException(Reason.USAGE_LIMIT, "Coupon usage limit has been reached");
         }
     }
 
-    public BigDecimal applyDiscount(Coupon coupon, BigDecimal orderSubtotal) {
-        BigDecimal discount = calculateDiscount(coupon, orderSubtotal);
-        updateCouponUsage(coupon);
-        return orderSubtotal.subtract(discount).max(BigDecimal.ZERO);
+    /**
+     * API-04 rework 2 (checkout pre-check only): inside its date window today and active, or inactive only because a
+     * reservation reached the limit ({@code limit_deactivated}). Ignores the usage counter, which may be transiently
+     * high while other checkouts are in flight.
+     */
+    public boolean redeemableIgnoringUsage(Coupon coupon) {
+        LocalDate now = LocalDate.now(systemClock);
+        boolean on = Boolean.TRUE.equals(coupon.getIsActive()) || coupon.isLimitDeactivated();
+        return on && coupon.getStartDate() != null && coupon.getExpirationDate() != null
+                && !now.isBefore(coupon.getStartDate()) && !now.isAfter(coupon.getExpirationDate());
     }
 
     public BigDecimal calculateDiscount(Coupon coupon, BigDecimal orderSubtotal) {
@@ -59,6 +67,8 @@ public class DiscountCalculationUtil {
                         ? calculated.min(coupon.getMaximumDiscountAmount())
                         : calculated;
             }
+            // API-04 decision: maximumDiscountAmount is a cap for PERCENTAGE coupons only. A FLAT coupon already is a
+            // fixed amount (bounded by the subtotal), so the field is ignored for it (and stored null on write).
             case FLAT -> computeDiscountAmount(DiscountType.FLAT, coupon.getDiscountValue(), orderSubtotal);
         };
     }
@@ -77,18 +87,6 @@ public class DiscountCalculationUtil {
         };
     }
 
-    /** Counts one use of the coupon (called only when an order is actually created, never by a preview). */
-    public void recordCouponUsage(Coupon coupon) {
-        updateCouponUsage(coupon);
-    }
-
-    private void updateCouponUsage(Coupon coupon) {
-        coupon.setUsageCount(coupon.getUsageCount() + 1);
-
-        if (coupon.getUsageLimit() != null && coupon.getUsageCount() >= coupon.getUsageLimit()) {
-            coupon.setIsActive(false);
-        }
-
-        couponRepository.save(coupon);
-    }
+    // API-04 rework: the usage counter is no longer advanced here (a read-modify-write of the entity under a row lock
+    // held across the Paystack call). CouponRedemptionService owns it with atomic conditional UPDATEs.
 }

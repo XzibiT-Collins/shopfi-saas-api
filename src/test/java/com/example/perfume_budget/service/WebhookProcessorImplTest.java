@@ -18,6 +18,7 @@ import static org.mockito.Mockito.*;
 class WebhookProcessorImplTest {
 
     @Mock PaymentSettlementService settlement;
+    @org.mockito.Spy TransientRetry retry = new TransientRetry(0);
     @InjectMocks WebhookProcessorImpl processor;
 
     private static String body(String event, String extra) {
@@ -66,5 +67,57 @@ class WebhookProcessorImplTest {
         processor.processWebhook("{\"event\":\"charge.success\"}");
         processor.processWebhook("{\"event\":\"charge.success\",\"data\":{\"reference\":\" \"}}");
         verify(settlement, never()).applySuccess(any(), any(), any(), any(), any());
+    }
+
+    // ---- API-04 rework 2: transient database failures are retried in-process (Paystack already got its 200)
+
+    private static RuntimeException deadlock() {
+        return new org.springframework.dao.CannotAcquireLockException("deadlock",
+                new java.sql.SQLException("deadlock detected", "40P01"));
+    }
+
+    private static RuntimeException couponBusy() {
+        return new com.example.perfume_budget.exception.ApiCodeException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, CouponRedemptionService.BUSY, "busy");
+    }
+
+    @Test
+    void aFailureWebhookHittingADeadlockThenCouponBusyIsRetriedUntilItApplies() {
+        when(settlement.applyFailure(any(), any(), any(), any()))
+                .thenThrow(deadlock()).thenThrow(couponBusy()).thenReturn(PaymentSettlementService.Outcome.FAILED);
+        processor.processWebhook(body("charge.failed", ",\"message\":\"Declined\""));
+        verify(settlement, times(3)).applyFailure(eq("REF123"), eq("card"), eq("Declined"), anyString());
+    }
+
+    @Test
+    void aRevivalHittingASerializationFailureIsRetried() {
+        when(settlement.applySuccess(any(), any(), any(), any(), any()))
+                .thenThrow(new RuntimeException(new java.sql.SQLException("could not serialize", "40001")))
+                .thenReturn(PaymentSettlementService.Outcome.COMPLETED);
+        processor.processWebhook(body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\",\"status\":\"success\""));
+        verify(settlement, times(2)).applySuccess(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void retriesAreBounded_andTheFailureIsSwallowedAfterTheLastAttempt() {
+        when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(deadlock());
+        processor.processWebhook(body("charge.failed", ""));
+        verify(settlement, times(TransientRetry.ATTEMPTS)).applyFailure(any(), any(), any(), any());
+    }
+
+    @Test
+    void nonTransientFailuresAreNotRetried() {
+        when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(new IllegalStateException("bug"));
+        processor.processWebhook(body("charge.failed", ""));
+        verify(settlement, times(1)).applyFailure(any(), any(), any(), any());
+    }
+
+    @Test
+    void anOptimisticConflictOnASharedProductIsRetried() {
+        when(settlement.applySuccess(any(), any(), any(), any(), any()))
+                .thenThrow(new org.springframework.orm.ObjectOptimisticLockingFailureException("Product", 1L))
+                .thenReturn(PaymentSettlementService.Outcome.COMPLETED);
+        processor.processWebhook(body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\""));
+        verify(settlement, times(2)).applySuccess(any(), any(), any(), any(), any());
     }
 }

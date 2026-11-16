@@ -31,6 +31,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -66,6 +67,9 @@ public class OrderServiceImpl implements OrderService {
     private final DiscountCalculationUtil discountCalculationUtil;
     private final OrderLifecycleService lifecycleService;
     private final EffectivePriceService effectivePriceService;
+    private final CouponRedemptionService couponRedemptionService;
+    private final org.springframework.transaction.PlatformTransactionManager transactionManager;
+    private final TransientRetry transientRetry;
     /** Orders are sortable only by these (a free-form sort path would be a column/oracle probe: user.password...). */
     public static final java.util.Set<String> ORDER_SORT_PROPERTIES =
             java.util.Set.of("createdAt", "orderNumber", "status", "deliveryStatus", "id");
@@ -78,10 +82,99 @@ public class OrderServiceImpl implements OrderService {
     private static final String PRODUCT_UNAVAILABLE = "One or more products in your cart are no longer available for ecommerce purchase.";
 
 
-    @Transactional
+    /**
+     * Checkout. API-04 rework: NOT one transaction any more, so that no coupon row lock is held across the Paystack
+     * call.
+     * <ol>
+     *   <li>(rework 2, coupon checkouts only) a short pre-check answers everything that can be decided without the
+     *       usage counter BEFORE a redemption is reserved: delivery address, empty cart, unavailable items, idempotent
+     *       replays (keyed and fingerprint), sale items, unknown code, the per-user limit and the minimum amount. A
+     *       request refused or replayed there never touches the counter, so it cannot make another customer's
+     *       checkout see a transiently full coupon;</li>
+     *   <li>a coupon redemption is reserved by an atomic conditional UPDATE in its own short transaction that has
+     *       committed before anything else starts ({@link CouponRedemptionService#reserve}). Active / date window /
+     *       usage limit are decided ONLY there;</li>
+     *   <li>the checkout itself runs in one transaction exactly as before (customer row lock, replay checks, pricing,
+     *       order, stock reservation, Paystack call): those locks are unchanged by API-04. If the pre-check skipped
+     *       the reservation because it saw a replay that is gone by now, this transaction stops before pricing and
+     *       the checkout runs once more with a reservation;</li>
+     *   <li>unless that transaction committed a new order holding the reservation, the reservation is given back
+     *       (replay, rejection, Paystack failure, any error).</li>
+     * </ol>
+     */
     @Override
     public CheckoutResponse checkout(String couponCode, Long deliveryDetailId, String idempotencyKey) {
         String key = normalizeIdempotencyKey(idempotencyKey);
+        boolean hasCoupon = couponCode != null && !couponCode.isBlank();
+        boolean reserve = hasCoupon && Boolean.TRUE.equals(new TransactionTemplate(transactionManager)
+                .execute(status -> needsReservation(couponCode, deliveryDetailId, key)));
+        while (true) {
+            CouponRedemptionService.Reservation reservation = reserve ? couponRedemptionService.reserve(couponCode) : null;
+            boolean consumed = false;
+            try {
+                CheckoutOutcome outcome = new TransactionTemplate(transactionManager)
+                        .execute(status -> checkoutInTransaction(couponCode, deliveryDetailId, key, hasCoupon, reservation));
+                // only reached after the commit: a commit failure leaves consumed=false and the reservation is released
+                consumed = outcome.consumedReservation();
+                return outcome.response();
+            } catch (ReservationNeeded e) {
+                if (reserve) {
+                    throw new IllegalStateException("Checkout asked for a reservation it already had");
+                }
+                reserve = true; // the replay the pre-check saw is gone: run once more, with a reservation
+            } finally {
+                if (reservation != null && !consumed) {
+                    couponRedemptionService.releaseReservation(reservation);
+                }
+            }
+        }
+    }
+
+    /** The checkout transaction's answer and whether it committed an order holding the coupon reservation. */
+    private record CheckoutOutcome(CheckoutResponse response, boolean consumedReservation) {
+        static CheckoutOutcome replayed(CheckoutResponse response) {
+            return new CheckoutOutcome(response, false);
+        }
+    }
+
+    /** The checkout transaction reached pricing with a coupon but without a reservation (rolled back, retried). */
+    private static final class ReservationNeeded extends RuntimeException {
+        ReservationNeeded() {
+            super(null, null, false, false);
+        }
+    }
+
+    /**
+     * Pre-check of a coupon checkout (no locks, nothing written that survives a refusal). Throws the same refusal
+     * the checkout transaction would throw for everything that does not depend on the usage counter; returns false
+     * when the checkout will be answered by an idempotent replay (no reservation needed), true otherwise.
+     */
+    private boolean needsReservation(String couponCode, Long deliveryDetailId, String key) {
+        User user = authUserUtil.getCurrentUser();
+        DeliveryDetail delivery = resolveDeliveryDetail(user, deliveryDetailId);
+        Cart cart = cartUtil.getCurrentUserCart();
+        if (key != null && orderRepository.findByUserAndIdempotencyKey(user, key).isPresent()) {
+            return false; // answered by the keyed replay (or its 409 / 422) in the checkout transaction
+        }
+        if (cart.getItems().isEmpty()) {
+            throw new BadRequestException(EMPTY_CART);
+        }
+        validateCartItemsForEcommerce(cart);
+        if (key == null) {
+            String fingerprint = CheckoutFingerprint.of(cart, CheckoutFingerprint.normalizeCoupon(couponCode), delivery.getId());
+            LocalDateTime openCutoff = LocalDateTime.now().minusHours(expiryHours);
+            for (Order open : orderRepository.findOpenByFingerprint(user, fingerprint, openCutoff)) {
+                if (replay(open).isPresent()) {
+                    return false;
+                }
+            }
+        }
+        pricingService.precheckCoupon(cart, couponCode);
+        return true;
+    }
+
+    private CheckoutOutcome checkoutInTransaction(String couponCode, Long deliveryDetailId, String key, boolean hasCoupon,
+                                                  CouponRedemptionService.Reservation reservation) {
         User principal = authUserUtil.getCurrentUser();
         // Serialise this customer's checkouts in this tenant (double submit, two tabs, a retry racing the original):
         // the second request waits here and then finds the first request's order instead of creating another.
@@ -95,7 +188,7 @@ public class OrderServiceImpl implements OrderService {
         if (key != null) {
             Optional<Order> existing = orderRepository.findByUserAndIdempotencyKey(currentUser, key);
             if (existing.isPresent()) {
-                return replayKeyed(existing.get(), cart, couponCode, delivery, openCutoff);
+                return CheckoutOutcome.replayed(replayKeyed(existing.get(), cart, couponCode, delivery, openCutoff));
             }
         }
 
@@ -111,16 +204,17 @@ public class OrderServiceImpl implements OrderService {
             for (Order open : orderRepository.findOpenByFingerprint(currentUser, fingerprint, openCutoff)) {
                 Optional<CheckoutResponse> replay = replay(open);
                 if (replay.isPresent()) {
-                    return replay.get();
+                    return CheckoutOutcome.replayed(replay.get());
                 }
             }
         }
 
-        CheckoutPricingService.Quote quote = pricingService.quote(cart, couponCode);
-        Coupon coupon = quote.coupon();
-        if (coupon != null) {
-            discountCalculationUtil.recordCouponUsage(coupon);
+        if (hasCoupon && reservation == null) {
+            throw new ReservationNeeded();
         }
+        // The usage counter was already advanced by the reservation; nothing here writes the coupon row.
+        CheckoutPricingService.Quote quote = pricingService.quoteReserved(cart, reservation);
+        Coupon coupon = quote.coupon();
 
         Order newOrder = Order.builder()
                 .orderNumber(orderNumberGenerator.generateOrderNumber())
@@ -171,7 +265,9 @@ public class OrderServiceImpl implements OrderService {
 
             newOrder.setStatus(PaymentStatus.INITIATED);
             eventPublisher.publishEvent(orderRepository.save(newOrder));
-            return toCheckoutResponse(newOrder, response.status(), response.message(), response.data(), false);
+            return new CheckoutOutcome(
+                    toCheckoutResponse(newOrder, response.status(), response.message(), response.data(), false),
+                    coupon != null);
 
         } catch (PaymentException exception) {
             releaseStock(newOrder.getOrderNumber());
@@ -409,11 +505,17 @@ public class OrderServiceImpl implements OrderService {
         };
     }
 
+    /**
+     * API-04 rework 2: one transaction per attempt, retried on a concurrency conflict with a failure webhook / expiry
+     * / another cancel touching the same rows (deadlock, serialization, optimistic lock on a shared product): a
+     * remaining conflict is {@code 503 TRY_AGAIN}, never a 500. The cancel is idempotent.
+     */
     @Override
-    @Transactional
     public OrderResponse cancelMyOrder(String orderNumber) {
-        Order order = lifecycleService.cancelByOwner(orderNumber, authUserUtil.getCurrentUser());
-        return OrderMapper.toOrderResponse(order, referencesFor(List.of(order)).get(order.getId()));
+        return transientRetry.call("owner cancel", () -> new TransactionTemplate(transactionManager).execute(status -> {
+            Order order = lifecycleService.cancelByOwner(orderNumber, authUserUtil.getCurrentUser());
+            return OrderMapper.toOrderResponse(order, referencesFor(List.of(order)).get(order.getId()));
+        }));
     }
 
     private Pageable requireSortable(Pageable pageable) {
@@ -434,8 +536,8 @@ public class OrderServiceImpl implements OrderService {
                 .collect(Collectors.toMap(p -> p.getOrder().getId(), p -> p, (a, b) -> a));
     }
 
+    /** Admin status change; like {@link #cancelMyOrder}, one transaction per attempt (rework 2). */
     @Override
-    @Transactional
     public OrderResponse updateOrderStatus(String orderNumber, OrderStatusUpdateRequest request, Long ifMatchVersion) {
         Long bodyVersion = request.version();
         if (bodyVersion != null && ifMatchVersion != null && !bodyVersion.equals(ifMatchVersion)) {
@@ -443,9 +545,11 @@ public class OrderServiceImpl implements OrderService {
                     "The version in the body and the If-Match header differ.");
         }
         Long expected = bodyVersion != null ? bodyVersion : ifMatchVersion;
-        OrderLifecycleService.AdminUpdate result = lifecycleService.adminUpdateStatus(
-                orderNumber, request.orderStatus(), expected, authUserUtil.getCurrentUser().getEmail());
-        return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+        return transientRetry.call("admin order status", () -> new TransactionTemplate(transactionManager).execute(status -> {
+            OrderLifecycleService.AdminUpdate result = lifecycleService.adminUpdateStatus(
+                    orderNumber, request.orderStatus(), expected, authUserUtil.getCurrentUser().getEmail());
+            return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+        }));
     }
 
     @Override

@@ -25,6 +25,7 @@ public class ReservedProductCleanupService {
 
     private final InventoryAllocationRepository inventoryAllocationRepository;
     private final OrderLifecycleService orderLifecycleService;
+    private final TransientRetry transientRetry;
 
     @Value("${inventory.reservation.expiry-hours:1}")
     private long expiryHours;
@@ -48,7 +49,8 @@ public class ReservedProductCleanupService {
                 .distinct()
                 .toList()) {
             try {
-                if (orderLifecycleService.expire(orderNumber, reason)) {
+                // API-04 rework 2: retried on a concurrency conflict with a cancel / webhook of another order
+                if (transientRetry.call("expiry " + orderNumber, () -> orderLifecycleService.expire(orderNumber, reason))) {
                     cleanedOrders++;
                 }
             } catch (RuntimeException e) {

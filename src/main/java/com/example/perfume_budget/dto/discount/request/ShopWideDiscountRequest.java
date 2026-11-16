@@ -4,6 +4,7 @@ import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -14,6 +15,7 @@ import java.time.LocalDateTime;
  */
 public record ShopWideDiscountRequest(
         @NotBlank(message = "Label is required")
+        @Size(max = 100, message = "Label cannot exceed 100 characters")
         String label,
         @NotNull
         @DecimalMin(value = "0.0", inclusive = false, message = "Percentage must be greater than zero")

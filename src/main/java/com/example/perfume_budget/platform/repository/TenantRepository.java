@@ -17,6 +17,14 @@ public interface TenantRepository extends JpaRepository<Tenant, Long>,
 
     Optional<Tenant> findBySlug(String slug);
 
+    /**
+     * Row lock on the tenant (SELECT ... FOR UPDATE), API-04 rework: webhook-token rotation and first-time minting
+     * serialise on it, so two concurrent rotations cannot both answer with a URL (the loser's would already be dead).
+     */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Tenant t where t.slug = :slug")
+    Optional<Tenant> lockBySlug(@Param("slug") String slug);
+
     Optional<Tenant> findByCustomDomain(String customDomain);
 
     Optional<Tenant> findBySchemaName(String schemaName);

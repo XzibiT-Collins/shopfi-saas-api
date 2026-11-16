@@ -40,6 +40,7 @@ class PaymentSettlementServiceTest {
     @Mock BookkeepingService bookkeepingService;
     @Mock ApplicationEventPublisher eventPublisher;
     @Mock com.example.perfume_budget.service.interfaces.InventoryManagementService inventoryManagementService;
+    @Mock CouponRedemptionService couponRedemptionService;
     @InjectMocks PaymentSettlementService service;
 
     private Order order;
@@ -96,6 +97,7 @@ class PaymentSettlementServiceTest {
         assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
         assertEquals(PaymentStatus.COMPLETED, order.getStatus());
         verify(orderService).finalizeReservedStock(order);
+        verify(couponRedemptionService).reacquireForOrder(order); // revived: holds its coupon redemption again
     }
 
     @Test
@@ -200,6 +202,7 @@ class PaymentSettlementServiceTest {
         assertEquals("Declined", payment.getFailureReason());
         assertEquals(Outcome.UNCHANGED, service.applyFailure("REF123456", "card", "Declined", "{}"));
         verify(orderService, times(1)).releaseStock("ORD-1");
+        verify(couponRedemptionService, times(1)).releaseForOrder(order);
     }
 
     @Test

@@ -28,6 +28,9 @@ class ReservedProductCleanupServiceTest {
     @Mock
     private OrderLifecycleService orderLifecycleService;
 
+    @org.mockito.Spy
+    private TransientRetry transientRetry = new TransientRetry(0);
+
     @InjectMocks
     private ReservedProductCleanupService service;
 

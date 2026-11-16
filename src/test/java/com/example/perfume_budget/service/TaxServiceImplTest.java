@@ -41,6 +41,11 @@ class TaxServiceImplTest {
     @Mock
     private CouponRepository couponRepository;
 
+    @Mock
+    private CouponPerUserLimit perUserLimit;
+    @Mock
+    private com.example.perfume_budget.utils.AuthUserUtil authUserUtil;
+
     @InjectMocks
     private TaxServiceImpl taxService;
 

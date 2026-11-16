@@ -35,6 +35,6 @@ public final class CheckoutFingerprint {
     }
 
     public static String normalizeCoupon(String couponCode) {
-        return couponCode == null || couponCode.isBlank() ? "" : couponCode.strip().toUpperCase();
+        return couponCode == null || couponCode.isBlank() ? "" : couponCode.strip().toUpperCase(java.util.Locale.ROOT);
     }
 }

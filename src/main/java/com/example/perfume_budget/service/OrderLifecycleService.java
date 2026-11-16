@@ -51,6 +51,7 @@ public class OrderLifecycleService {
     private final InventoryAllocationRepository inventoryAllocationRepository;
     private final OrderAuditEventRepository auditRepository;
     private final ApplicationEventPublisher eventPublisher;
+    private final CouponRedemptionService couponRedemptionService;
 
     /**
      * Owner cancel. Same 404 for "no such order", "someone else's order" and "other tenant's order".
@@ -100,6 +101,7 @@ public class OrderLifecycleService {
         }
         if (status == PaymentStatus.CANCELLED || status == PaymentStatus.FAILED) {
             releaseIfReserved(order.getOrderNumber());
+            releaseCouponIfHeld(order); // straggler: closed without giving its coupon redemption back
             return false;
         }
         cancelLocked(order, reason, CancelSource.EXPIRY, null);
@@ -121,6 +123,9 @@ public class OrderLifecycleService {
                 paymentRepository.save(payment);
             }
         });
+        // API-04: the order's coupon redemption goes back exactly once (we hold the order row lock). Lock order
+        // order -> stock -> coupon: the coupon UPDATE is deferred to commit, after the stock release above.
+        couponRedemptionService.releaseForOrder(order);
     }
 
     private static void markCancelled(Order order, CancelSource source, String actorEmail) {
@@ -228,6 +233,7 @@ public class OrderLifecycleService {
         markCancelled(order, CancelSource.ADMIN, actorEmail);
         if (status != PaymentStatus.COMPLETED) {
             releaseIfReserved(order.getOrderNumber());
+            releaseCouponIfHeld(order);
             return false;
         }
         if (from == OrderProcessingStatus.PENDING || from == OrderProcessingStatus.PACKING) {
@@ -277,6 +283,14 @@ public class OrderLifecycleService {
                 .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
         return orderRepository.lockById(id)
                 .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", ORDER_NOT_FOUND));
+    }
+
+    /** Straggler release; the coupon UPDATE itself runs at commit, after every stock write (coupon row LAST). */
+    private void releaseCouponIfHeld(Order order) {
+        if (order.getCoupon() != null && !order.isCouponRedemptionReleased()) {
+            couponRedemptionService.releaseForOrder(order);
+            orderRepository.save(order);
+        }
     }
 
     private void releaseIfReserved(String orderNumber) {

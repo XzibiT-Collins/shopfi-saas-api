@@ -31,6 +31,7 @@ public class CheckoutPricingService {
 
     private final EffectivePriceService effectivePriceService;
     private final CouponRepository couponRepository;
+    private final CouponPerUserLimit perUserLimit;
     private final DiscountCalculationUtil discountCalculationUtil;
     private final TaxService taxService;
 
@@ -52,6 +53,51 @@ public class CheckoutPricingService {
      * @throws CouponRejectedException (a BadRequestException) when the coupon cannot be applied
      */
     public Quote quote(Cart cart, String couponCode) {
+        boolean hasCoupon = couponCode != null && !couponCode.isBlank();
+        return quote(cart, hasCoupon, () -> {
+            Coupon c = couponRepository.findByCode(CouponRedemptionService.normaliseCode(couponCode))
+                    .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
+            discountCalculationUtil.checkIfCouponIsValid(c);
+            return c;
+        });
+    }
+
+    /**
+     * Checkout pricing with a redemption already reserved by {@link CouponRedemptionService#reserve}: the reservation
+     * IS the active / window / usage-limit check (re-checking would reject the checkout that just took the last
+     * redemption and switched the coupon off). A refused reservation is reported here, after the sale-items check,
+     * exactly as {@link #quote(Cart, String)} would report it. The per-user limit and minimum amount still apply.
+     */
+    public Quote quoteReserved(Cart cart, CouponRedemptionService.Reservation reservation) {
+        return quote(cart, reservation != null, () -> {
+            if (!reservation.reserved()) {
+                throw reservation.rejection();
+            }
+            return couponRepository.findById(reservation.couponId())
+                    .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
+        });
+    }
+
+    /**
+     * API-04 rework 2: the coupon refusals that do NOT depend on the usage counter, checked before checkout reserves a
+     * redemption (so a request that will be refused anyway never holds one): sale items, the per-user limit and the
+     * minimum amount, in the same order as {@link #quote}. Only for a coupon that would otherwise be redeemable now
+     * (inside its date window, active or switched off only by the limit); for an unknown, inactive, not-started or
+     * expired coupon nothing is thrown here and the reservation reports the reason exactly as before (it changes no
+     * counter). Active / date window / usage limit are decided ONLY by the reservation UPDATE.
+     */
+    public void precheckCoupon(Cart cart, String couponCode) {
+        if (couponCode == null || couponCode.isBlank()) {
+            return;
+        }
+        Coupon coupon = couponRepository.findByCode(CouponRedemptionService.normaliseCode(couponCode)).orElse(null);
+        if (coupon == null || !discountCalculationUtil.redeemableIgnoringUsage(coupon)) {
+            return;
+        }
+        quote(cart, true, () -> coupon);
+    }
+
+    private Quote quote(Cart cart, boolean hasCoupon, java.util.function.Supplier<Coupon> couponLookup) {
         ShopWideDiscount activeShop = effectivePriceService.activeShopDiscount().orElse(null);
         LocalDateTime pricingTime = effectivePriceService.now();
 
@@ -71,13 +117,12 @@ public class CheckoutPricingService {
 
         Coupon coupon = null;
         BigDecimal couponDiscount = BigDecimal.ZERO;
-        if (couponCode != null && !couponCode.isBlank()) {
+        if (hasCoupon) {
             if (anyItemOnSale) {
                 throw new CouponRejectedException(Reason.WITH_SALE_ITEMS, COUPON_WITH_DISCOUNT);
             }
-            coupon = couponRepository.findByCode(couponCode.strip().toUpperCase())
-                    .orElseThrow(() -> new CouponRejectedException(Reason.NOT_FOUND, INVALID_COUPON_CODE));
-            discountCalculationUtil.checkIfCouponIsValid(coupon);
+            coupon = couponLookup.get();
+            perUserLimit.check(coupon, cart.getUser() == null ? null : cart.getUser().getId());
             couponDiscount = discountCalculationUtil.calculateDiscount(coupon, orderSubtotal);
         }
         BigDecimal discounted = orderSubtotal.subtract(couponDiscount).max(BigDecimal.ZERO);

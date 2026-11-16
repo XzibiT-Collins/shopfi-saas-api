@@ -17,7 +17,7 @@ class CouponMapperTest {
     @Test
     void toCoupon_Success() {
         CouponRequest request = new CouponRequest(
-                "PROMO10", DiscountType.FLAT, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.ONE, 5, true, LocalDate.now(), LocalDate.now().plusDays(1)
+                "PROMO10", DiscountType.FLAT, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.ONE, 5, true, LocalDate.now(), LocalDate.now().plusDays(1), null
         );
 
         Coupon result = CouponMapper.toCoupon(request);

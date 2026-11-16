@@ -84,12 +84,13 @@ class AuthorizationMatrixStructureTest {
                 "getTopProducts", "getSiteMetric", "getDashboardMetric", "getLowStockProducts", "getTopCustomers", "getSalesAnalytics");
         expect(ADMIN, "BookkeepingController", "recordManualEntry");
         expect(ADMIN, "CategoryController", "addCategory", "updateCategory", "getCategoryById", "deleteCategory");
-        expect(ADMIN, "CouponController", "createCoupon", "getCouponById", "getAll");
+        expect(ADMIN, "CouponController", "createCoupon", "getCouponById", "getAll",
+                "updateCoupon", "deactivateCoupon", "deleteCoupon");
         expect(ADMIN, "FeatureFlagController", "getAllFlags", "getFlag", "updateFlag");
         expect(ADMIN, "InventoryManagementController", "receiveStock", "adjustInventory", "getProductInventorySummary",
                 "getProductInventoryHistory");
         expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus", "acknowledgeRefund");
-        expect(ADMIN, "PaymentSettingsController", "get", "update");
+        expect(ADMIN, "PaymentSettingsController", "get", "update", "rotateWebhookToken");
         expect(ADMIN, "ProductController", "createProduct", "updateProduct", "getAdminProductListings", "getProductDetails",
                 "setProductDiscount", "clearProductDiscount", "deleteProduct");
         expect(ADMIN, "ProductFamilyController", "getAllFamilies", "getAvailableUoms");

@@ -17,6 +17,7 @@ public record CouponDetailResponse(
         BigDecimal discountValue,
         BigDecimal maximumDiscountAmount,
         BigDecimal minimumCartAmountForDiscount,
+        Integer perUserUsageLimit,
         LocalDate startDate,
         LocalDate expirationDate
 ) {}
