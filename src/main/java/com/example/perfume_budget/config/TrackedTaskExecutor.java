@@ -53,6 +53,21 @@ public class TrackedTaskExecutor extends ThreadPoolTaskExecutor {
         return super.initializeExecutor(threadFactory, counting);
     }
 
+    /**
+     * EVT-01b L6: an executor that does not wait for its tasks on shutdown hands every queued task it discards
+     * ({@code shutdownNow}) to this method. Such a task will never run, so it stops counting as in flight.
+     */
+    @Override
+    protected void cancelRemainingTask(Runnable task) {
+        try {
+            super.cancelRemainingTask(task);
+        } finally {
+            if (task instanceof Counted c) {
+                c.release();
+            }
+        }
+    }
+
     /** The saturation policy configured for this executor (the pool itself holds a counting wrapper around it). */
     public RejectedExecutionHandler getRejectionPolicy() {
         return policy;

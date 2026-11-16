@@ -257,7 +257,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
             String order = place(c);
             long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
             assertThat(ms).as("checkout " + i + " waited at most the bounded wait (+ its own work)")
-                    .isLessThan(AsyncConfig.MAIL_SUBMIT_WAIT_MILLIS + 4_000);
+                    .isLessThan(1_000 + 4_000);
             assertThat(notSent("order " + order)).as("its admin new-order mail was dropped with the order number")
                     .singleElement().satisfies(e -> assertThat(e.getFormattedMessage()).contains("queue full"));
         }

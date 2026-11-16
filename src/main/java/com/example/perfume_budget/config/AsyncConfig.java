@@ -15,7 +15,6 @@ import java.util.Arrays;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @EnableAsync
@@ -28,24 +27,20 @@ public class AsyncConfig implements AsyncConfigurer {
 
     /**
      * EVT-01 capacity of the dedicated e-mail / receipt executor. A paid order costs two mail tasks at most (customer
-     * receipt + admin payment e-mail, sent from one task, and the admin "new order" e-mail at checkout); a send through
-     * SMTP / Resend takes roughly 0.2-2 s, and is bounded by the SMTP / HTTP timeouts (see application.properties).
-     * 4 threads drain ~2-20 mails/s, and 500 queued tasks absorb a burst of a few hundred orders without holding much
-     * memory (each task holds ids, not rendered mails).
+     * receipt + admin payment e-mail, and the admin "new order" e-mail at checkout); a send through SMTP / Resend takes
+     * roughly 0.2-2 s, and is bounded by the SMTP / HTTP timeouts (see application.properties). 4 threads drain ~2-20
+     * mails/s, and 500 queued tasks absorb a burst of a few hundred orders without holding much memory (each task
+     * holds ids, not rendered mails).
      *
-     * <p>Rework 1: the overflow is NEVER run on the submitting thread. The submitter is a request or webhook worker
-     * inside the after-commit callback of its transaction: running mail there joined the already committed transaction
-     * (notification rows never committed, the STOMP push registered on a synchronization that never fires) and held
-     * the caller's JDBC connection through the SMTP conversation, so a mail outage could exhaust the connection pool
-     * for every tenant. Instead the submitter waits at most {@link #MAIL_SUBMIT_WAIT_MILLIS} for a queue slot
-     * ({@link WaitBrieflyThenReject}); if none frees up the mail is DROPPED and {@code MailDispatcher} logs what was
-     * not sent with its order / payment reference (re-send by hand). Trade-off: under a sustained mail outage (504
-     * sends stuck) some e-mails are lost, logged, instead of the store going down with the mail server.
+     * <p>The overflow is NEVER run on the submitting thread, and (EVT-01b L1) the submitter NEVER waits for a slot:
+     * it is a request or webhook worker inside the after-commit callback of its transaction, and Spring releases that
+     * transaction's JDBC connection only after the callbacks. A 1 s wait there (EVT-01 rework 1) meant every
+     * mail-producing commit held its connection for a second during a mail outage, which starved the shared Hikari
+     * pool for every tenant. A full executor now rejects at once ({@link RejectWhenFull}); the work is not lost, its
+     * row in the tenant's side-effect outbox ({@code OutboxDrainer}) is picked up again once the executor has room.
      */
     public static final int MAIL_THREADS = 4;
     public static final int MAIL_QUEUE_CAPACITY = 500;
-    /** Longest a request / webhook thread waits for a free mail (or notification) queue slot. */
-    public static final long MAIL_SUBMIT_WAIT_MILLIS = 1_000;
 
     /**
      * Rework 1: the admin in-app notification (rows + STOMP push) of a settled payment does not depend on the mail
@@ -56,19 +51,19 @@ public class AsyncConfig implements AsyncConfigurer {
 
     @Bean(name = MAIL_EXECUTOR)
     public TaskExecutor mailTaskExecutor() {
-        return mailExecutor(MAIL_THREADS, MAIL_QUEUE_CAPACITY, MAIL_SUBMIT_WAIT_MILLIS);
+        return mailExecutor(MAIL_THREADS, MAIL_QUEUE_CAPACITY);
     }
 
     @Bean(name = NOTIFICATION_EXECUTOR)
     public TaskExecutor notificationTaskExecutor() {
-        return boundedExecutor("notify-", NOTIFICATION_THREADS, NOTIFICATION_QUEUE_CAPACITY, MAIL_SUBMIT_WAIT_MILLIS);
+        return boundedExecutor("notify-", NOTIFICATION_THREADS, NOTIFICATION_QUEUE_CAPACITY);
     }
 
-    static TrackedTaskExecutor mailExecutor(int threads, int queueCapacity, long submitWaitMillis) {
-        return boundedExecutor("mail-", threads, queueCapacity, submitWaitMillis);
+    static TrackedTaskExecutor mailExecutor(int threads, int queueCapacity) {
+        return boundedExecutor("mail-", threads, queueCapacity);
     }
 
-    private static TrackedTaskExecutor boundedExecutor(String prefix, int threads, int queueCapacity, long submitWaitMillis) {
+    private static TrackedTaskExecutor boundedExecutor(String prefix, int threads, int queueCapacity) {
         TrackedTaskExecutor executor = new TrackedTaskExecutor();
         executor.setCorePoolSize(threads);
         executor.setMaxPoolSize(threads);
@@ -77,7 +72,7 @@ public class AsyncConfig implements AsyncConfigurer {
         executor.setKeepAliveSeconds(60);
         executor.setThreadNamePrefix(prefix);
         executor.setTaskDecorator(new TenantContextTaskDecorator());
-        executor.setRejectedExecutionHandler(new WaitBrieflyThenReject(submitWaitMillis));
+        executor.setRejectedExecutionHandler(new RejectWhenFull());
         // on shutdown, queued receipts are still sent (bounded wait) rather than discarded
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
@@ -86,35 +81,14 @@ public class AsyncConfig implements AsyncConfigurer {
     }
 
     /**
-     * Saturation policy of the mail / notification executors: wait up to {@code waitMillis} for a queue slot, then
-     * REJECT (the caller, {@code MailDispatcher}, logs the reference of what was not sent). Never runs the task on the
-     * submitting thread (see {@link #MAIL_SUBMIT_WAIT_MILLIS} for why). A shut-down executor rejects at once.
+     * Saturation policy of the mail / notification executors (EVT-01b L1): reject AT ONCE, never wait for a queue
+     * slot and never run the task on the submitting thread (see {@link #MAIL_THREADS} for why). The message says
+     * whether the queue was full or the executor shut down; {@code MailDispatcher} logs it with the reference.
      */
-    public static class WaitBrieflyThenReject implements RejectedExecutionHandler {
-        private final long waitMillis;
-
-        public WaitBrieflyThenReject(long waitMillis) {
-            this.waitMillis = waitMillis;
-        }
-
+    public static class RejectWhenFull implements RejectedExecutionHandler {
         @Override
         public void rejectedExecution(Runnable task, ThreadPoolExecutor pool) {
-            if (pool.isShutdown()) {
-                throw new RejectedExecutionException("executor is shut down");
-            }
-            boolean queued;
-            try {
-                queued = pool.getQueue().offer(task, waitMillis, TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                queued = false;
-            }
-            if (!queued) {
-                throw new RejectedExecutionException("queue full after waiting " + waitMillis + " ms");
-            }
-            if (pool.isShutdown() && pool.getQueue().remove(task)) {
-                throw new RejectedExecutionException("executor is shut down");
-            }
+            throw new RejectedExecutionException(pool.isShutdown() ? "executor is shut down" : "queue full");
         }
     }
 
