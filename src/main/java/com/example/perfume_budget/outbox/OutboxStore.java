@@ -110,18 +110,19 @@ public class OutboxStore {
 
     /**
      * Records a failed attempt: due again after {@code FIRST_BACKOFF * 2^(attempts-1)} (capped), or FAILED (poison,
-     * kept for an operator) once {@link #MAX_ATTEMPTS} attempts failed.
+     * kept for an operator) once {@link #MAX_ATTEMPTS} attempts failed. Only a PENDING row: a row already DONE
+     * (or FAILED) is never put back.
      *
      * @return true if the row is now FAILED
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean fail(Row claimed, String error) {
-        Object status = native_("UPDATE " + TABLE + " SET status = CASE WHEN attempts >= :max THEN 'FAILED' ELSE 'PENDING' END,"
+        List<?> status = native_("UPDATE " + TABLE + " SET status = CASE WHEN attempts >= :max THEN 'FAILED' ELSE 'PENDING' END,"
                 + " next_attempt_at = now() + " + seconds(backoff(claimed.attempts())) + ", last_error = :error"
-                + " WHERE id = :id RETURNING status")
+                + " WHERE id = :id AND status = 'PENDING' RETURNING status")
                 .setParameter("max", MAX_ATTEMPTS).setParameter("error", truncate(error)).setParameter("id", claimed.id())
-                .getSingleResult();
-        return "FAILED".equals(status);
+                .getResultList();
+        return status.size() == 1 && "FAILED".equals(status.getFirst());
     }
 
     /** Deletes DONE rows completed more than {@code retention} ago (FAILED rows stay for an operator). */

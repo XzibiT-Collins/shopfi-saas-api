@@ -264,4 +264,43 @@ class SideEffectOutboxIntegrationTest extends AbstractCheckoutIntegrationTest {
         makeDue();
         assertThat(drainer.drainCurrentTenant()).as("poison rows are never retried").isZero();
     }
+
+    /**
+     * A drain reservation that outlived its lease (its task sat in the executor) is stale once anybody attempted the
+     * row: it must not claim it again, which would skip the back-off and repeat the send.
+     */
+    @Test
+    void aStaleReservationNeverClaimsARowSomebodyAttemptedSince() throws Exception {
+        saturateMail();
+        String order = placeOrder("ob-5@acme.test", "P-OB-5");
+        long id = orderId(order);
+        release.countDown();
+        awaitBackgroundIdle();
+        asAcme();
+        makeDue();
+        List<OutboxStore.Row> stale = store.reserveDue(10);
+        assertThat(stale).singleElement().satisfies(r -> assertThat(r.attempts()).isZero());
+        doThrow(new IllegalStateException("smtp down")).when(mailTransport)
+                .send(argThat(m -> m != null && m.subject() != null && m.subject().startsWith("New Order Received")));
+        processor.runFresh(OutboxKind.NEW_ORDER_ADMIN_MAIL, String.valueOf(id)); // attempt 1 fails, backs off
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("PENDING/1");
+        processor.runReserved(stale.getFirst());
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).as("the stale reservation claimed nothing").isEqualTo("PENDING/1");
+        assertThat(Mockito.mockingDetails(mailTransport).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().equals("send"))
+                .filter(i -> ((MailMessage) i.getArgument(0)).subject().contains("New Order Received - " + order))
+                .count()).as("one attempt only").isEqualTo(1);
+    }
+
+    @Test
+    void theDrainPurgesDoneRowsAfterTheRetentionAndKeepsFailedOnes() {
+        jdbc.update("INSERT INTO tenant_acme.side_effect_outbox (kind, reference, status, attempts, next_attempt_at, completed_at) VALUES "
+                + "('NEW_ORDER_ADMIN_MAIL', '910001', 'DONE', 1, now(), now() - interval '15 days'),"
+                + "('NEW_ORDER_ADMIN_MAIL', '910002', 'DONE', 1, now(), now() - interval '13 days'),"
+                + "('NEW_ORDER_ADMIN_MAIL', '910003', 'FAILED', 8, now() - interval '30 days', NULL)");
+        asAcme();
+        drainer.drainCurrentTenant();
+        assertThat(jdbc.queryForList("SELECT reference FROM tenant_acme.side_effect_outbox WHERE reference LIKE '9100%' ORDER BY reference",
+                String.class)).containsExactly("910002", "910003");
+    }
 }
