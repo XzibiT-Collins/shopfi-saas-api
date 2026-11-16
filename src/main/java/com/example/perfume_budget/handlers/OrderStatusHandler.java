@@ -4,22 +4,28 @@ import com.example.perfume_budget.events.OrderStatusChangeEvent;
 import com.example.perfume_budget.notification.EmailService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Component;
 
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OrderStatusHandler {
     private final EmailService emailService;
+    private final MailDispatcher mailDispatcher;
 
-    @Async
-    // After commit (ORD-01): a rolled-back status change must never e-mail the customer. Outside a transaction it runs at once.
+    /**
+     * After commit (ORD-01): a rolled-back status change must never e-mail the customer, and the retried admin /
+     * expiry transaction e-mails once (only the attempt that commits gets here). Outside a transaction it runs at
+     * once. EVT-01: the send runs on the dedicated mail executor; a lost e-mail is logged with the order number.
+     */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleOrderStatusChangeEvent(OrderStatusChangeEvent event){
-        log.info("Order status change event received for user: {} with order number: {}", event.customerEmail(), event.orderNumber());
-        emailService.notifyCustomerOnOrderStatusChange(event);
+        String reference = MailDispatcher.reference(event);
+        mailDispatcher.submit("order status e-mail", reference, () -> {
+            log.info("Order status change e-mail for {}", reference);
+            emailService.notifyCustomerOnOrderStatusChange(event);
+        });
     }
 }

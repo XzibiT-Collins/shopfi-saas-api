@@ -9,6 +9,7 @@ import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.NotificationRecipientRepository;
 import com.example.perfume_budget.repository.NotificationRepository;
 import com.example.perfume_budget.repository.UserRepository;
+import com.example.perfume_budget.utils.AfterCommit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessageSendingOperations;
@@ -77,11 +78,7 @@ public class NotificationService {
             }
 
             recipient.setDeliveredAt(deliveredAt);
-            messagingTemplate.convertAndSendToUser(
-                    adminUsername,
-                    "/queue/notifications",
-                    NotificationMapper.toWebSocketBody(recipient)
-            );
+            pushAfterCommit(adminUsername, NotificationMapper.toWebSocketBody(recipient));
             log.info("Sent payment success notification to admin: {}", adminUsername);
             deliveredRecipients.add(recipient);
         }
@@ -143,16 +140,20 @@ public class NotificationService {
             }
 
             recipient.setDeliveredAt(deliveredAt);
-            messagingTemplate.convertAndSendToUser(
-                    staffUsername,
-                    "/queue/notifications",
-                    NotificationMapper.toWebSocketBody(recipient)
-            );
+            pushAfterCommit(staffUsername, NotificationMapper.toWebSocketBody(recipient));
             deliveredRecipients.add(recipient);
         }
 
         if (!deliveredRecipients.isEmpty()) {
             notificationRecipientRepository.saveAll(deliveredRecipients);
         }
+    }
+
+    /**
+     * EVT-01: the realtime push announces notification rows this transaction writes, so it goes out only after they
+     * commit (never for a rolled-back write); the body is built now, while the rows are at hand.
+     */
+    private void pushAfterCommit(String username, Object body) {
+        AfterCommit.run(() -> messagingTemplate.convertAndSendToUser(username, "/queue/notifications", body));
     }
 }

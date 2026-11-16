@@ -6,6 +6,7 @@ import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.notification.EmailService;
+import com.example.perfume_budget.repository.OrderRepository;
 import com.example.perfume_budget.repository.PaymentRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +42,7 @@ class SuccessfulOrderHandlerAfterCommitTest {
     private EmailService email;
     private NotificationService notifications;
     private PaymentRepository payments;
+    private OrderRepository orders;
     private TransactionTemplate tx;
 
     @BeforeEach
@@ -48,11 +50,15 @@ class SuccessfulOrderHandlerAfterCommitTest {
         email = mock(EmailService.class);
         notifications = mock(NotificationService.class);
         payments = mock(PaymentRepository.class);
+        orders = mock(OrderRepository.class);
         PlatformTransactionManager tm = new NoopTxManager();
         ctx = new AnnotationConfigApplicationContext();
         ctx.registerBean(EmailService.class, () -> email);
         ctx.registerBean(NotificationService.class, () -> notifications);
         ctx.registerBean(PaymentRepository.class, () -> payments);
+        ctx.registerBean(OrderRepository.class, () -> orders);
+        // the mail executor runs the work inline here, so "sent" is observable right after the commit
+        ctx.registerBean(MailDispatcher.class, () -> new MailDispatcher(Runnable::run));
         ctx.registerBean(PlatformTransactionManager.class, () -> tm);
         ctx.registerBean(SuccessfulOrderHandler.class);
         ctx.registerBean("txListenerFactory", TransactionalEventListenerFactory.class);
@@ -152,5 +158,80 @@ class SuccessfulOrderHandlerAfterCommitTest {
         ctx.publishEvent(p);
         verifyAllSent(1, p);
         verify(email, never()).notifyAdminOnSuccessfulOrderCreation(any());
+    }
+
+    // ---- EVT-01 (a): the admin "new order" e-mail of a checkout
+
+    private Order order(Long id, String number) {
+        Order o = new Order();
+        o.setId(id);
+        o.setOrderNumber(number);
+        o.setUser(new User());
+        return o;
+    }
+
+    @Test
+    void newOrderMailOfARolledBackCheckoutIsNeverSent() {
+        Order o = order(11L, "PB-11");
+        when(orders.findById(11L)).thenReturn(Optional.of(o));
+        tx.executeWithoutResult(st -> {
+            ctx.publishEvent(o);
+            st.setRollbackOnly();
+        });
+        verifyNoInteractions(email, notifications);
+    }
+
+    @Test
+    void newOrderMailOfACheckoutFailingAtCommitIsNeverSent() {
+        Order o = order(11L, "PB-11");
+        when(orders.findById(11L)).thenReturn(Optional.of(o));
+        try {
+            tx.executeWithoutResult(st -> {
+                ctx.publishEvent(o);
+                throw new IllegalStateException("COUPON_BUSY at commit");
+            });
+        } catch (IllegalStateException expected) {
+            // rolled back
+        }
+        verifyNoInteractions(email, notifications);
+    }
+
+    @Test
+    void newOrderMailIsSentOnceAfterTheCommitThatFollowsTwoFailedAttempts() {
+        Order published = order(11L, "PB-11");
+        Order committed = order(11L, "PB-11");
+        when(orders.findById(11L)).thenReturn(Optional.of(committed));
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                tx.executeWithoutResult(st -> {
+                    ctx.publishEvent(published);
+                    throw new IllegalStateException("deadlock");
+                });
+            } catch (IllegalStateException expected) {
+                // retried
+            }
+        }
+        tx.executeWithoutResult(st -> {
+            ctx.publishEvent(published);
+            verifyNoInteractions(email); // not before the commit
+        });
+        verify(email, times(1)).notifyAdminOnSuccessfulOrderCreation(committed);
+        verify(email, never()).notifyAdminOnSuccessfulOrderCreation(published);
+        verifyNoInteractions(notifications);
+    }
+
+    @Test
+    void newOrderMissingAfterCommitSendsNothing() {
+        when(orders.findById(11L)).thenReturn(Optional.empty());
+        tx.executeWithoutResult(st -> ctx.publishEvent(order(11L, "PB-11")));
+        verify(email, never()).notifyAdminOnSuccessfulOrderCreation(any());
+    }
+
+    @Test
+    void newOrderOutsideATransactionIsSentAtOnce() {
+        Order o = order(11L, "PB-11");
+        when(orders.findById(11L)).thenReturn(Optional.of(o));
+        ctx.publishEvent(o);
+        verify(email, times(1)).notifyAdminOnSuccessfulOrderCreation(o);
     }
 }

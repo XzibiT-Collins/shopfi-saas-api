@@ -55,6 +55,7 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
         jdbc.execute("DROP TRIGGER IF EXISTS it_retry_fault ON tenant_acme.orders");
         jdbc.execute("DROP FUNCTION IF EXISTS tenant_acme.it_retry_fault()");
         jdbc.execute("DROP SEQUENCE IF EXISTS tenant_acme.it_retry_fault_seq");
+        jdbc.execute("DROP SEQUENCE IF EXISTS tenant_acme.it_retry_raised_seq");
     }
 
     // ---- helpers
@@ -63,8 +64,10 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
     private void injectDeadlocks(long orderId, int failures) {
         dropFault();
         jdbc.execute("CREATE SEQUENCE tenant_acme.it_retry_fault_seq");
+        jdbc.execute("CREATE SEQUENCE tenant_acme.it_retry_raised_seq");
         jdbc.execute("CREATE FUNCTION tenant_acme.it_retry_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
                 + "IF NEW.id = " + orderId + " AND nextval('tenant_acme.it_retry_fault_seq') <= " + failures + " THEN "
+                + "PERFORM nextval('tenant_acme.it_retry_raised_seq'); "
                 + "RAISE EXCEPTION 'injected deadlock' USING ERRCODE = '40P01'; END IF; RETURN NEW; END $$");
         jdbc.execute("CREATE TRIGGER it_retry_fault BEFORE UPDATE ON tenant_acme.orders FOR EACH ROW "
                 + "EXECUTE FUNCTION tenant_acme.it_retry_fault()");
@@ -73,6 +76,20 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
     /** How many times the fault trigger ran for the order: failed attempts + the UPDATEs of the attempt that got through. */
     private long faultCalls() {
         return jdbc.queryForObject("SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM tenant_acme.it_retry_fault_seq", Long.class);
+    }
+
+    /**
+     * EVT-01 (d): how many injected deadlocks the trigger actually RAISED (sequences survive the rollback). Unlike
+     * {@link #faultCalls()} (> 1 also when the operation simply updates the row twice) this is 0 without injection.
+     */
+    private long raised() {
+        return jdbc.queryForObject("SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM tenant_acme.it_retry_raised_seq", Long.class);
+    }
+
+    /** One deadlock really hit attempt 1, and another attempt ran after it (the retry). */
+    private void assertOneDeadlockThenARetry() {
+        assertThat(raised()).as("the injected deadlock was raised exactly once").isEqualTo(1);
+        assertThat(faultCalls()).as("a further attempt ran after the failed one").isGreaterThanOrEqualTo(1 + 1);
     }
 
     private static Map<String, Object> couponBody(String code, int usageLimit, String minimum, Integer perUser) {
@@ -148,7 +165,7 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
         injectDeadlocks(orderId(o), 1);
         MvcResult r = send(put("/api/v1/order/update-order-status/" + o), Map.of("orderStatus", "CANCELLED"));
         assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
-        assertThat(faultCalls()).as("attempt 1 hit the deadlock, attempt 2 went through (it may update the row twice)").isGreaterThan(1);
+        assertOneDeadlockThenARetry();
         assertThat(orderStatus(acme, o)).isEqualTo("CANCELLED");
         assertThat(usage("RW24")).isZero();
         assertThat(released(o)).isTrue();
@@ -165,6 +182,7 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(body(r).at("/data/code").asText()).isEqualTo("TRY_AGAIN");
         assertThat(r.getResponse().getHeader("Retry-After")).isEqualTo("1");
         assertThat(faultCalls()).isEqualTo(3);
+        assertThat(raised()).as("every one of the 3 attempts was a deadlock victim").isEqualTo(3);
         assertThat(orderStatus(acme, o)).isNotEqualTo("CANCELLED");
         assertThat(usage("RW24B")).isEqualTo(1);
     }
@@ -184,7 +202,7 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
         MvcResult r = verify(c, ref);
         assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
         assertThat(body(r).at("/data/paymentStatus").asText()).isEqualTo("FAILED");
-        assertThat(faultCalls()).as("a retry ran").isGreaterThan(1);
+        assertOneDeadlockThenARetry();
         assertThat(orderStatus(acme, o)).isEqualTo("FAILED");
         assertThat(usage("RW25")).isZero();
     }
@@ -197,7 +215,7 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
         jdbc.update("UPDATE tenant_acme.inventory_allocations SET created_at = now() - interval '5 hours' WHERE reference_id = ?", o);
         injectDeadlocks(orderId(o), 1);
         cleanupTask.cleanupExpiredReservations();
-        assertThat(faultCalls()).as("a retry ran").isGreaterThan(1);
+        assertOneDeadlockThenARetry();
         assertThat(orderStatus(acme, o)).isEqualTo("CANCELLED");
         assertThat(usage("RW26")).isZero();
         assertThat(released(o)).isTrue();

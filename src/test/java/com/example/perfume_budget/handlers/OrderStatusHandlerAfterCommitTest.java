@@ -37,6 +37,7 @@ class OrderStatusHandlerAfterCommitTest {
         email = mock(EmailService.class);
         ctx = new AnnotationConfigApplicationContext();
         ctx.registerBean(EmailService.class, () -> email);
+        ctx.registerBean(MailDispatcher.class, () -> new MailDispatcher(Runnable::run));
         ctx.registerBean(OrderStatusHandler.class);
         ctx.registerBean("txListenerFactory", TransactionalEventListenerFactory.class);
         ctx.refresh();

@@ -83,12 +83,17 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
     @org.springframework.beans.factory.annotation.Qualifier("webhookTaskExecutor")
     private org.springframework.core.task.TaskExecutor webhookExecutor;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("mailTaskExecutor")
+    private org.springframework.core.task.TaskExecutor mailExecutor;
+
     @org.junit.jupiter.api.AfterEach
     void cleanCheckoutData() throws InterruptedException {
         // API-04 rework 3: payment-success handlers now run after commit, often after the test's last request; let
         // queued webhooks / after-commit handlers finish so the TRUNCATE below does not deadlock with their reads
         awaitIdle(webhookExecutor);
         awaitIdle(asyncExecutor);
+        awaitIdle(mailExecutor); // EVT-01: receipts / order e-mails re-read the order on the mail executor
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
             String sql = "TRUNCATE " + schema + ".orders, " + schema + ".carts, " + schema + ".delivery_details, "
                     + schema + ".products, " + schema + ".journal_entries, " + schema + ".coupons CASCADE";
@@ -100,6 +105,7 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
                     if (attempt >= 3) throw e; // a straggling background task held a lock: wait for it, then retry
                     awaitIdle(webhookExecutor);
                     awaitIdle(asyncExecutor);
+                    awaitIdle(mailExecutor);
                 }
             }
         }
