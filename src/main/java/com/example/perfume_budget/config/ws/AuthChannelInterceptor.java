@@ -45,10 +45,10 @@ public class AuthChannelInterceptor implements ChannelInterceptor {
                         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                                 userDetails, null, userDetails.getAuthorities());
                         accessor.setUser(authentication);
-                        log.info("User authenticated via WebSocket (Session/Header): {}", username);
+                        log.info("User authenticated via WebSocket (Session/Header)");
                     }
                 } catch (Exception e) {
-                    log.error("WebSocket authentication failed: {}", e.getMessage());
+                    log.error("WebSocket authentication failed: {}", e.getClass().getName()); // the message can quote the username
                 }
             }
         }

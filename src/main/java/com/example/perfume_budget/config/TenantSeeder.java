@@ -27,7 +27,7 @@ public class TenantSeeder {
         featureFlagSeeder.seed();
         uomSeeder.seed();
         dataSeeder.seedAdmin(adminEmail, adminPassword, adminFullName);
-        log.info("Seeded tenant defaults for admin {}", adminEmail);
+        log.info("Seeded tenant defaults (chart of accounts, feature flags, units, admin user)");
     }
 
     /** Provisioning variant: the admin password arrives pre-hashed (BCrypt); never logged. */
@@ -37,6 +37,6 @@ public class TenantSeeder {
         featureFlagSeeder.seed();
         uomSeeder.seed();
         dataSeeder.seedAdminWithHash(adminEmail, adminPasswordHash, adminFullName);
-        log.info("Seeded tenant defaults for admin {}", adminEmail);
+        log.info("Seeded tenant defaults (chart of accounts, feature flags, units, admin user)");
     }
 }

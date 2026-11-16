@@ -240,4 +240,16 @@ class NotificationServiceTest {
         assertNotNull(recipientTwo.getDeliveredAt());
         verify(messagingTemplate, times(1)).convertAndSendToUser(eq("admin2@example.com"), eq("/queue/notifications"), any());
     }
+
+    /** EVT-01b (L2): the outbox may run the payment notification again; an order that already has it gets no second. */
+    @Test
+    void notifyAdminsOfSuccessfulPayment_IsIdempotentPerOrder() {
+        when(notificationRepository.existsByTypeAndReferenceId("PAYMENT_SUCCESS", "ORD-123")).thenReturn(true);
+
+        notificationService.notifyAdminsOfSuccessfulPayment(payment);
+
+        verify(notificationRepository, never()).save(any(Notification.class));
+        verify(notificationRecipientRepository, never()).saveAll(any());
+        verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
+    }
 }

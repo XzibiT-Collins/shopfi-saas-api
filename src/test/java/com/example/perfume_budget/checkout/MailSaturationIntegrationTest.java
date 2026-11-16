@@ -40,18 +40,16 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 
 /**
- * EVT-01 rework 1 (F1), on the real stack: what happens when the mail executor is FULL (every mail thread busy, every
- * queue slot taken), deterministically, by filling the real {@code mailTaskExecutor} bean.
+ * EVT-01 rework 1 (F1) / EVT-01b, on the real stack: what happens when the mail executor is FULL (every mail thread
+ * busy, every queue slot taken), deterministically, by filling the real {@code mailTaskExecutor} bean.
  *
  * <ul>
  *   <li>The admin in-app notification of a settled payment is still committed (rows) and pushed (STOMP), from its
- *       own executor in its own transaction; the receipt mail is dropped after the bounded wait and logged with the
- *       payment reference. Nothing runs on the webhook thread.</li>
- *   <li>A slot that frees up within the bounded wait takes the receipt; it is sent on a mail thread with no
- *       transaction and no connection bound (the old caller-runs path sent it on the webhook thread, inside the
- *       settlement's after-commit callback, holding its connection).</li>
- *   <li>A hung SMTP server delays a checkout by at most the bounded wait, and the request thread does not keep a
- *       database connection afterwards.</li>
+ *       own executor in its own transaction. The receipt is NOT handed off (refused at once, no wait, EVT-01b L1):
+ *       its outbox row stays PENDING and the outbox drain sends it, once, when the executor has room (L2).</li>
+ *   <li>The receipt is sent on a mail thread with no transaction and no connection bound.</li>
+ *   <li>A hung SMTP server does not delay a checkout, and the request thread does not keep a database connection
+ *       afterwards.</li>
  * </ul>
  */
 class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
@@ -61,6 +59,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
     @Autowired private AdminSessionManager sessions;
     @Autowired private DataSource dataSource;
     @Autowired private org.springframework.mail.javamail.JavaMailSender javaMailSender;
+    @Autowired private com.example.perfume_budget.outbox.OutboxDrainer drainer;
 
     private TrackedTaskExecutor mail;
     private final CountDownLatch release = new CountDownLatch(1);
@@ -162,12 +161,38 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
                 .toList();
     }
 
+    private List<ILoggingEvent> deferred(String referencePart) {
+        return dispatcherLog.list.stream().filter(e -> e.getLevel() == Level.WARN)
+                .filter(e -> e.getFormattedMessage().contains("not handed off") && e.getFormattedMessage().contains(referencePart))
+                .toList();
+    }
+
+    private long paymentId(String orderNumber) {
+        return jdbc.queryForObject("SELECT p.id FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id "
+                + "WHERE o.order_number = ?", Long.class, orderNumber);
+    }
+
+    private long orderId(String orderNumber) {
+        return jdbc.queryForObject("SELECT id FROM tenant_acme.orders WHERE order_number = ?", Long.class, orderNumber);
+    }
+
+    private String outboxStatus(String kind, long reference) {
+        return jdbc.queryForObject("SELECT status || '/' || attempts FROM tenant_acme.side_effect_outbox WHERE kind = ? AND reference = ?",
+                String.class, kind, String.valueOf(reference));
+    }
+
+    /** Lets the outbox drain see every pending row now (instead of after the first hand-off grace). */
+    private void drainNow() {
+        jdbc.update("UPDATE tenant_acme.side_effect_outbox SET next_attempt_at = now() WHERE status = 'PENDING'");
+        drainer.drainAllTenants();
+    }
+
     private int activeConnections() throws Exception {
         return dataSource.unwrap(HikariDataSource.class).getHikariPoolMXBean().getActiveConnections();
     }
 
     @Test
-    void mailExecutorFull_notificationIsCommittedAndPushed_receiptDroppedWithItsReference() throws Exception {
+    void mailExecutorFull_notificationIsCommittedAndPushed_receiptDeferredToTheOutboxAndSentOnceLater() throws Exception {
         Customer c = customer(acme, "sat-1@acme.test");
         cart(c, product(acme, "P-SAT-1", "100.00", 20), 1);
         String order = place(c);
@@ -177,6 +202,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         saturateMail(this::blockUntilReleased);
 
         assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
+        long payment = paymentId(order);
 
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
             assertThat(notifications(order)).as("notification rows committed").isEqualTo(1);
@@ -184,22 +210,34 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
                     .anySatisfy(d -> assertThat(d).contains(acme.adminEmail()));
         });
         assertThat(deliveredRecipients(order)).as("the delivered mark committed too").isEqualTo(1);
-        await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(notSent("(ref " + ref + ")")).singleElement()
-                .satisfies(e -> {
-                    assertThat(e.getFormattedMessage()).contains("receipt").contains("queue full");
-                    assertThat(e.getThreadName()).as("dropped by the webhook worker after the bounded wait").startsWith("webhook-");
+        await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(deferred("payment " + payment)).hasSize(2)
+                .allSatisfy(e -> {
+                    assertThat(e.getFormattedMessage()).contains("queue full").contains("outbox retries");
+                    assertThat(e.getThreadName()).as("refused at once on the webhook worker").startsWith("webhook-");
                 }));
+        assertThat(notSent("payment " + payment)).as("not a loss any more").isEmpty();
+        assertThat(outboxStatus("PAYMENT_RECEIPT", payment)).isEqualTo("PENDING/0");
+        assertThat(outboxStatus("PAYMENT_ADMIN_MAIL", payment)).isEqualTo("PENDING/0");
+        assertThat(outboxStatus("PAYMENT_ADMIN_NOTIFICATION", payment)).isEqualTo("DONE/1");
 
         release.countDown();
         awaitBackgroundIdle();
-        assertThat(mails("Your Order Receipt - " + order)).as("dropped, not sent later on the caller").isZero();
+        assertThat(mails("Your Order Receipt - " + order)).as("nothing sent on the caller or by itself").isZero();
+        drainNow();
+        awaitBackgroundIdle();
+        assertThat(mails("Your Order Receipt - " + order)).as("the drain sent the receipt").isEqualTo(1);
+        assertThat(mails("Payment successful for order #" + order)).isEqualTo(1);
+        assertThat(outboxStatus("PAYMENT_RECEIPT", payment)).isEqualTo("DONE/1");
+        drainNow();
+        awaitBackgroundIdle();
+        assertThat(mails("Your Order Receipt - " + order)).as("exactly once").isEqualTo(1);
         assertThat(notifications(order)).isEqualTo(1);
     }
 
     private record Seen(String thread, boolean nothingBound, boolean txActive, boolean syncActive) {}
 
     @Test
-    void aSlotFreeingUpWithinTheWaitSendsTheReceiptOnAMailThreadWithNoTransactionOrConnectionBound() throws Exception {
+    void theReceiptIsSentOnAMailThreadWithNoTransactionOrConnectionBound() throws Exception {
         List<Seen> seen = new CopyOnWriteArrayList<>();
         doAnswer(inv -> {
             MailMessage m = inv.getArgument(0);
@@ -216,19 +254,6 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         String ref = reference(order);
         Gateway g = configureGateway(acme);
         awaitBackgroundIdle();
-        java.util.concurrent.atomic.AtomicBoolean first = new java.util.concurrent.atomic.AtomicBoolean();
-        saturateMail(() -> {
-            if (first.compareAndSet(false, true)) {
-                // one mail thread frees up shortly (well within the bounded wait), the others stay busy
-                try {
-                    Thread.sleep(300);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                return;
-            }
-            blockUntilReleased();
-        });
 
         assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
 
@@ -238,11 +263,13 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(seen.getFirst().txActive()).isFalse();
         assertThat(seen.getFirst().syncActive()).isFalse();
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(notifications(order)).isEqualTo(1));
+        awaitBackgroundIdle();
+        assertThat(outboxStatus("PAYMENT_RECEIPT", paymentId(order))).isEqualTo("DONE/1");
         assertThat(notSent(ref)).isEmpty();
     }
 
     @Test
-    void aHungSmtpServerDelaysACheckoutByAtMostTheBoundedWaitAndHoldsNoConnection() throws Exception {
+    void aHungSmtpServerDoesNotDelayACheckoutAndHoldsNoConnection() throws Exception {
         doAnswer(inv -> {
             blockUntilReleased(); // SMTP accepted the connection and never answers
             return null;
@@ -253,13 +280,14 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         for (int i = 0; i < 3; i++) {
             Customer c = customer(acme, "sat-h" + i + "@acme.test");
             cart(c, product(acme, "P-SAT-H" + i, "100.00", 20), 1);
-            long t0 = System.nanoTime();
             String order = place(c);
-            long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
-            assertThat(ms).as("checkout " + i + " waited at most the bounded wait (+ its own work)")
-                    .isLessThan(AsyncConfig.MAIL_SUBMIT_WAIT_MILLIS + 4_000);
-            assertThat(notSent("order " + order)).as("its admin new-order mail was dropped with the order number")
-                    .singleElement().satisfies(e -> assertThat(e.getFormattedMessage()).contains("queue full"));
+            long id = orderId(order);
+            assertThat(deferred("order " + id)).as("its admin new-order mail was deferred to the outbox, not waited for")
+                    .singleElement().satisfies(e -> {
+                        assertThat(e.getFormattedMessage()).contains("queue full");
+                        assertThat(e.getThreadName()).doesNotStartWith("mail-");
+                    });
+            assertThat(outboxStatus("NEW_ORDER_ADMIN_MAIL", id)).isEqualTo("PENDING/0");
         }
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertThat(activeConnections()).as("no request thread kept a connection").isZero());

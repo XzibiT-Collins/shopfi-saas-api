@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * EVT-01 (d): e-mail / receipt work has its own bounded executor (not the shared default one). Rework 1: a burst
  * that fills it is NEVER run on the submitting thread (which is inside its transaction's after-commit callback): the
- * submitter waits a bounded time for a slot, then the task is rejected (the caller logs the reference). Uncaught exceptions of the remaining
+ * submitter is rejected at once (EVT-01b: no wait while its connection is held; the outbox re-drives the work). Uncaught exceptions of the remaining
  * {@code @Async} methods are logged with the reference of their arguments.
  */
 class AsyncConfigMailExecutorTest {
@@ -46,7 +46,7 @@ class AsyncConfigMailExecutorTest {
         assertThat(executor.getMaxPoolSize()).isEqualTo(AsyncConfig.MAIL_THREADS);
         assertThat(executor.getQueueCapacity()).isEqualTo(AsyncConfig.MAIL_QUEUE_CAPACITY).isBetween(100, 5_000);
         assertThat(((TrackedTaskExecutor) executor).getRejectionPolicy())
-                .isInstanceOf(AsyncConfig.WaitBrieflyThenReject.class);
+                .isInstanceOf(AsyncConfig.RejectWhenFull.class);
     }
 
     @Test
@@ -72,61 +72,103 @@ class AsyncConfigMailExecutorTest {
         assertThat(leaked.get()).as("a pooled mail thread does not keep the previous tenant").isNull();
     }
 
+    /**
+     * EVT-01b L1: the submitter is a request / webhook thread inside its transaction's after-commit callback, which
+     * still holds its JDBC connection (Spring releases it only after the callbacks). So a full executor rejects AT
+     * ONCE: the policy never calls a blocking queue method (no wait for a slot while holding a connection), and never
+     * runs the task on the caller. The outbox (L2) re-drives the rejected work later.
+     */
     @Test
-    void aFullMailExecutorNeverRunsTheOverflowOnTheCallerItWaitsBrieflyThenRejects() throws Exception {
-        executor = AsyncConfig.mailExecutor(1, 1, 300);
+    void theSaturationPolicyRejectsAtOnceItNeverWaitsForASlotNorRunsTheTaskOnTheCaller() {
+        java.util.List<String> blockingCalls = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.concurrent.ArrayBlockingQueue<Runnable> queue = new java.util.concurrent.ArrayBlockingQueue<>(1) {
+            @Override
+            public boolean offer(Runnable r, long timeout, TimeUnit unit) throws InterruptedException {
+                blockingCalls.add("offer(" + timeout + " " + unit + ")");
+                return super.offer(r, timeout, unit);
+            }
+
+            @Override
+            public void put(Runnable r) throws InterruptedException {
+                blockingCalls.add("put");
+                super.put(r);
+            }
+        };
+        queue.add(() -> { });
+        java.util.concurrent.ThreadPoolExecutor pool = new java.util.concurrent.ThreadPoolExecutor(1, 1, 1,
+                TimeUnit.SECONDS, queue);
+        try {
+            AtomicInteger ran = new AtomicInteger();
+            assertThatThrownBy(() -> new AsyncConfig.RejectWhenFull().rejectedExecution(ran::incrementAndGet, pool))
+                    .isInstanceOf(RejectedExecutionException.class).hasMessageContaining("queue full");
+            assertThat(blockingCalls).as("never waits for a queue slot").isEmpty();
+            assertThat(ran).as("never runs on the caller").hasValue(0);
+            pool.shutdown();
+            assertThatThrownBy(() -> new AsyncConfig.RejectWhenFull().rejectedExecution(ran::incrementAndGet, pool))
+                    .isInstanceOf(RejectedExecutionException.class).hasMessageContaining("shut down");
+            assertThat(blockingCalls).isEmpty();
+            assertThat(ran).hasValue(0);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void aFullMailExecutorRejectsTheOverflowWhichNeverRunsLater() throws Exception {
+        executor = AsyncConfig.mailExecutor(1, 1);
         CountDownLatch release = new CountDownLatch(1);
         CountDownLatch started = new CountDownLatch(1);
         executor.execute(() -> { started.countDown(); await(release); }); // occupies the only thread
         assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
         executor.execute(() -> { });                                         // fills the queue
         AtomicInteger ran = new AtomicInteger();
-        long t0 = System.nanoTime();
-        assertThatThrownBy(() -> executor.execute(ran::incrementAndGet)).isInstanceOf(RejectedExecutionException.class);
-        long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
-        assertThat(waitedMs).as("bounded wait").isBetween(250L, 3_000L);
+        assertThatThrownBy(() -> executor.execute(ran::incrementAndGet))
+                .isInstanceOf(RejectedExecutionException.class)
+                .satisfies(e -> assertThat(e.getCause()).hasMessageContaining("queue full"));
         assertThat(ran).as("never run on the submitting thread").hasValue(0);
         release.countDown();
         assertThat(((TrackedTaskExecutor) executor).awaitIdle(java.time.Duration.ofSeconds(5))).isTrue();
-        assertThat(ran).as("and never later either: it was dropped").hasValue(0);
+        assertThat(ran).as("and never later either: it was rejected").hasValue(0);
     }
 
     @Test
-    void aSlotThatFreesUpWithinTheWaitTakesTheTaskOnAMailThread() throws Exception {
-        executor = AsyncConfig.mailExecutor(1, 1, 5_000);
-        CountDownLatch release = new CountDownLatch(1);
-        CountDownLatch started = new CountDownLatch(1);
-        executor.execute(() -> { started.countDown(); await(release); });
-        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
-        executor.execute(() -> { });
-        new Thread(() -> { sleep(300); release.countDown(); }).start();
-        AtomicReference<String> ranOn = new AtomicReference<>();
-        CountDownLatch done = new CountDownLatch(1);
-        executor.execute(() -> { ranOn.set(Thread.currentThread().getName()); done.countDown(); });
-        assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(ranOn.get()).startsWith("mail-").isNotEqualTo(Thread.currentThread().getName());
-    }
-
-    @Test
-    void productionPolicyWaitsAtMostTheDocumentedBound() {
+    void productionPolicyRejectsWithoutWaiting() {
         executor = (ThreadPoolTaskExecutor) new AsyncConfig().mailTaskExecutor();
-        assertThat(((TrackedTaskExecutor) executor).getRejectionPolicy())
-                .isInstanceOf(AsyncConfig.WaitBrieflyThenReject.class);
-        assertThat(AsyncConfig.MAIL_SUBMIT_WAIT_MILLIS).isBetween(100L, 2_000L);
+        assertThat(((TrackedTaskExecutor) executor).getRejectionPolicy()).isInstanceOf(AsyncConfig.RejectWhenFull.class);
         ThreadPoolTaskExecutor notify = (ThreadPoolTaskExecutor) new AsyncConfig().notificationTaskExecutor();
         try {
             assertThat(notify.getThreadNamePrefix()).isEqualTo("notify-");
-            assertThat(((TrackedTaskExecutor) notify).getRejectionPolicy())
-                    .isInstanceOf(AsyncConfig.WaitBrieflyThenReject.class);
+            assertThat(((TrackedTaskExecutor) notify).getRejectionPolicy()).isInstanceOf(AsyncConfig.RejectWhenFull.class);
         } finally {
             notify.shutdown();
+        }
+    }
+
+    /**
+     * EVT-01b L3 (N27): the notification executor runs two notifications at once, so one stuck on a row lock (e.g.
+     * a recipient row another transaction holds) does not hold up the next tenant's / order's notification.
+     */
+    @Test
+    void theNotificationExecutorRunsTwoNotificationsAtOnce() throws Exception {
+        executor = (ThreadPoolTaskExecutor) new AsyncConfig().notificationTaskExecutor();
+        assertThat(AsyncConfig.NOTIFICATION_THREADS).isEqualTo(2);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch stuck = new CountDownLatch(1);
+        executor.execute(() -> { stuck.countDown(); await(release); });
+        assertThat(stuck.await(5, TimeUnit.SECONDS)).isTrue();
+        CountDownLatch second = new CountDownLatch(1);
+        executor.execute(second::countDown);
+        try {
+            assertThat(second.await(5, TimeUnit.SECONDS)).as("ran while the first is still stuck").isTrue();
+        } finally {
+            release.countDown();
         }
     }
 
     /** F4 R19: shutting down still sends what is queued (bounded by awaitTermination), it does not discard it. */
     @Test
     void shutdownSendsTheQueuedMailInsteadOfDiscardingIt() throws Exception {
-        executor = AsyncConfig.mailExecutor(1, 10, 100);
+        executor = AsyncConfig.mailExecutor(1, 10);
         CountDownLatch started = new CountDownLatch(1);
         AtomicInteger sent = new AtomicInteger();
         executor.execute(() -> { started.countDown(); sleep(300); sent.incrementAndGet(); });
@@ -139,7 +181,7 @@ class AsyncConfigMailExecutorTest {
     /** F5: in-flight counts a task from submission to its end, including the dequeued-not-yet-running window. */
     @Test
     void trackedExecutorCountsSubmittedUntilFinishedAndRejectedTasksStopCounting() throws Exception {
-        executor = AsyncConfig.mailExecutor(1, 1, 50);
+        executor = AsyncConfig.mailExecutor(1, 1);
         TrackedTaskExecutor tracked = (TrackedTaskExecutor) executor;
         CountDownLatch release = new CountDownLatch(1);
         executor.execute(() -> await(release));
@@ -157,9 +199,48 @@ class AsyncConfigMailExecutorTest {
         assertThat(failing).hasValue(1);
     }
 
+    /**
+     * EVT-01b L6: an executor that does NOT wait on shutdown (webhook / default) discards its queued tasks
+     * ({@code shutdownNow}); they will never run, so they stop counting as in flight (awaitIdle no longer hangs on
+     * them). The running task still counts until it ends.
+     */
+    @Test
+    void tasksDiscardedAtShutdownByANonWaitingExecutorStopCounting() throws Exception {
+        TrackedTaskExecutor tracked = new TrackedTaskExecutor();
+        tracked.setCorePoolSize(1);
+        tracked.setMaxPoolSize(1);
+        tracked.setQueueCapacity(10);
+        tracked.setWaitForTasksToCompleteOnShutdown(false);
+        tracked.initialize();
+        executor = tracked;
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger discardedRan = new AtomicInteger();
+        tracked.execute(() -> {
+            started.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS); // ignores the shutdown interrupt once, like a busy send
+            } catch (InterruptedException e) {
+                await(release);
+            }
+        });
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        for (int i = 0; i < 3; i++) {
+            tracked.execute(discardedRan::incrementAndGet);
+        }
+        java.util.concurrent.Future<?> future = tracked.submit(discardedRan::incrementAndGet);
+        assertThat(tracked.inFlight()).isEqualTo(5);
+        tracked.shutdown();
+        assertThat(tracked.inFlight()).as("only the running task is still in flight").isEqualTo(1);
+        assertThat(future.isCancelled()).as("a discarded future is cancelled").isTrue();
+        release.countDown();
+        assertThat(tracked.awaitIdle(java.time.Duration.ofSeconds(5))).isTrue();
+        assertThat(discardedRan).as("the discarded tasks never ran").hasValue(0);
+    }
+
     @Test
     void aShutDownMailExecutorRejects() {
-        executor = AsyncConfig.mailExecutor(1, 1, 100);
+        executor = AsyncConfig.mailExecutor(1, 1);
         executor.shutdown();
         AtomicInteger ran = new AtomicInteger();
         assertThatThrownBy(() -> executor.execute(ran::incrementAndGet)).isInstanceOf(RejectedExecutionException.class);

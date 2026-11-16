@@ -89,31 +89,44 @@ class ReceiptFailureLoggingTest {
         assertThat(appender.list).allSatisfy(e -> assertThat(e.getFormattedMessage()).doesNotContain(CUSTOMER));
     }
 
+    /**
+     * EVT-01b (L2): the receipt / admin e-mails run from the side-effect outbox, so a failure is THROWN (the outbox
+     * logs it and retries): a {@link MailNotSentException} naming the reference and the cause's class, with no
+     * cause attached (its message could quote the recipient) and nothing logged here.
+     */
+    private void assertNotSentNaming(Runnable send, String... parts) {
+        org.assertj.core.api.Assertions.assertThatThrownBy(send::run).isInstanceOf(MailNotSentException.class)
+                .satisfies(e -> {
+                    for (String part : parts) assertThat(e.getMessage()).contains(part);
+                    assertThat(e.getMessage()).doesNotContain(CUSTOMER);
+                    assertThat(e.getCause()).as("no cause (its message can quote the recipient)").isNull();
+                    assertThat(e.getStackTrace()).isEmpty();
+                });
+        assertThat(appender.list).allSatisfy(e -> assertThat(e.getFormattedMessage()).doesNotContain(CUSTOMER));
+        assertThat(appender.list.stream().filter(e -> e.getLevel() == Level.ERROR)).as("the outbox logs, not the sender").isEmpty();
+    }
+
     @Test
-    void customerReceiptSendFailureLogsThePaymentAndOrderReference() {
+    void customerReceiptSendFailureThrowsThePaymentAndOrderReference() {
         DeliveryDetail d = new DeliveryDetail();
         when(addresses.findByUserAndIsDefaultTrue(any())).thenReturn(Optional.of(d));
-        service.sendCustomerReceipt(payment());
-        assertOneErrorNaming("receipt", "PB-9", "payment 42", "T-REF-42", "MailDeliveryException");
+        assertNotSentNaming(() -> service.sendCustomerReceipt(payment()), "receipt", "PB-9", "payment 42", "T-REF-42", "MailDeliveryException");
     }
 
     @Test
-    void customerReceiptWithoutADeliveryAddressLogsTheReference() {
+    void customerReceiptWithoutADeliveryAddressThrowsTheReference() {
         when(addresses.findByUserAndIsDefaultTrue(any())).thenReturn(Optional.empty());
-        service.sendCustomerReceipt(payment());
-        assertOneErrorNaming("receipt", "PB-9", "payment 42");
+        assertNotSentNaming(() -> service.sendCustomerReceipt(payment()), "receipt", "PB-9", "payment 42");
     }
 
     @Test
-    void adminPaymentMailFailureLogsTheReference() {
-        service.sendAdminOrderNotification(payment());
-        assertOneErrorNaming("PB-9", "payment 42", "MailDeliveryException");
+    void adminPaymentMailFailureThrowsTheReference() {
+        assertNotSentNaming(() -> service.sendAdminOrderNotification(payment()), "PB-9", "payment 42", "MailDeliveryException");
     }
 
     @Test
-    void adminNewOrderMailFailureLogsTheOrderNumber() {
-        service.notifyAdminOnSuccessfulOrderCreation(payment().getOrder());
-        assertOneErrorNaming("PB-9", "MailDeliveryException");
+    void adminNewOrderMailFailureThrowsTheOrderNumber() {
+        assertNotSentNaming(() -> service.notifyAdminOnSuccessfulOrderCreation(payment().getOrder()), "PB-9", "MailDeliveryException");
     }
 
     @Test
@@ -171,14 +184,5 @@ class ReceiptFailureLoggingTest {
         assertNoAddressAtAnyLevel(() -> service.notifyCustomerOnOrderStatusChange(OrderStatusChangeEvent.builder()
                 .orderNumber("PB-9").customerEmail(CUSTOMER).build()));
         assertThat(appender.list).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("PB-9"));
-    }
-
-    @Test
-    void receiptAndAdminMailFailuresLogNoAddressAtAnyLevel() {
-        when(addresses.findByUserAndIsDefaultTrue(any())).thenReturn(Optional.of(new DeliveryDetail()));
-        assertNoAddressAtAnyLevel(() -> {
-            service.sendCustomerReceipt(payment());
-            service.sendAdminOrderNotification(payment());
-        });
     }
 }

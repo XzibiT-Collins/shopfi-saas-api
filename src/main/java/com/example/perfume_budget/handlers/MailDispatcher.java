@@ -4,6 +4,7 @@ import com.example.perfume_budget.config.AsyncConfig;
 import com.example.perfume_budget.events.OrderStatusChangeEvent;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
+import com.example.perfume_budget.outbox.OutboxKind;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -61,9 +62,39 @@ public class MailDispatcher {
     }
 
     /**
+     * EVT-01b (L2): hands the work of an outbox row ({@code OutboxProcessor}) to the mail or notification executor
+     * of its {@code kind}, without waiting. A refusal is not a loss (the row stays in the tenant's outbox and
+     * {@code OutboxDrainer} re-drives it), so it is logged at WARN, with the reference.
+     *
+     * @return false if the executor refused the work (full or shut down)
+     */
+    public boolean handOff(OutboxKind kind, String reference, Runnable work) {
+        Executor target = kind.mail() ? executor : notificationExecutor;
+        try {
+            target.execute(() -> {
+                try {
+                    work.run();
+                } catch (RuntimeException | Error e) {
+                    log.error("{} for {} failed outside the outbox bookkeeping: {}", kind.what(), reference, e.getClass().getName());
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException e) {
+            log.warn("{} for {} not handed off now ({}); the outbox retries it", kind.what(), reference, reason(e));
+            return false;
+        }
+    }
+
+    private static String reason(RejectedExecutionException e) {
+        // Spring wraps the policy's own rejection ("queue full", "executor is shut down"): log that one
+        Throwable reason = e.getCause() instanceof RejectedExecutionException cause ? cause : e;
+        return reason.getMessage();
+    }
+
+    /**
      * Never runs {@code work} on the calling thread: the caller is inside the after-commit callback of its own
-     * transaction, whose (committed) transaction and JDBC connection are still bound to the thread. A saturated
-     * executor makes the caller wait briefly, then the work is dropped and logged ({@link AsyncConfig#MAIL_SUBMIT_WAIT_MILLIS}).
+     * transaction, whose (committed) transaction and JDBC connection are still bound to the thread. EVT-01b: nor does
+     * it wait for a slot; a saturated executor rejects at once and the work is dropped and logged with its reference.
      */
     private static void submitTo(Executor target, String what, String reference, Runnable work) {
         try {
@@ -75,9 +106,7 @@ public class MailDispatcher {
                 }
             });
         } catch (RejectedExecutionException e) {
-            // Spring wraps the policy's own rejection (e.g. "queue full after waiting 1000 ms"): log that one
-            Throwable reason = e.getCause() instanceof RejectedExecutionException cause ? cause : e;
-            log.error("{} for {} was NOT sent: the executor rejected it ({})", what, reference, reason.getMessage());
+            log.error("{} for {} was NOT sent: the executor rejected it ({})", what, reference, reason(e));
         }
     }
 

@@ -110,7 +110,7 @@ public class AuthServiceImpl implements AuthService {
         user.setActive(true);
 
         User savedUser = userRepository.save(user);
-        log.info("User {} verified successfully", savedUser.getEmail());
+        log.info("User {} verified successfully", savedUser.getId());
 
         authCookieUtil.setAuthCookies(request,response, savedUser);
         return buildAuthResponse(savedUser);
@@ -189,7 +189,7 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(passwordEncoder.encode(newPassword));
         userRepository.save(user);
 
-        log.info("Password reset successful for user {}", email);
+        log.info("Password reset successful for user {}", user.getId());
         otpService.invalidateResetPasswordToken(resetPasswordToken);
     }
 

@@ -129,7 +129,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
         WalkInOrder savedOrder = walkInOrderRepository.save(order);
         bookkeepingService.recordWalkInSale(savedOrder);
 
-        log.info("Walk-in order {} placed by {}", savedOrder.getOrderNumber(), currentUser.getEmail());
+        log.info("Walk-in order {} placed by user {}", savedOrder.getOrderNumber(), currentUser.getId());
         return WalkInOrderMapper.toResponse(savedOrder);
     }
 
