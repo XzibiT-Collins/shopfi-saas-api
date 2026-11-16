@@ -239,10 +239,10 @@ class SameProductCheckoutConcurrencyIntegrationTest extends AbstractCheckoutInte
             // inventory movement) holds until it commits: FOR KEY SHARE. FOR UPDATE would wait for it, NO KEY does not.
             conn.setAutoCommit(false);
             st.execute("SELECT id FROM tenant_acme.products WHERE id = " + p + " FOR KEY SHARE");
-            long t0 = System.nanoTime();
+            // no timing: the checkout must FINISH while the key-share holder is still open (it commits only after the
+            // get below), so a lock that waited for it would time out here instead
             MvcResult r = ex.submit(() -> checkout(c, null, null)).get(30, TimeUnit.SECONDS);
             assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
-            assertThat((System.nanoTime() - t0) / 1_000_000).as("checkout did not wait for the key-share lock").isLessThan(3_000);
             conn.commit();
         } finally {
             ex.shutdownNow();
@@ -255,20 +255,29 @@ class SameProductCheckoutConcurrencyIntegrationTest extends AbstractCheckoutInte
     @Test
     void sameProductCheckoutsAreNotSerialisedBehindThePaystackCall() throws Exception {
         long p = product(acme, "Slow", "100.00", 100);
-        initiateDelayMillis = 1_500;
+        // No wall clock (API-05 rework): each Paystack call waits until all four checkouts are inside Paystack at the
+        // same time. If a checkout held the product lock across its Paystack call, the others would queue behind it
+        // and could never get in: the barrier times out and allInside is false.
+        CountDownLatch inside = new CountDownLatch(4);
+        java.util.concurrent.atomic.AtomicInteger sawAllInside = new java.util.concurrent.atomic.AtomicInteger();
+        org.mockito.Mockito.when(gateway.initiatePaystackTransaction(org.mockito.ArgumentMatchers.any())).thenAnswer(inv -> {
+            initiateCalls.incrementAndGet();
+            inside.countDown();
+            if (inside.await(10, TimeUnit.SECONDS)) sawAllInside.incrementAndGet();
+            String code = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+            return new com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse(true, "Authorization URL created",
+                    new com.example.perfume_budget.dto.payment.response.PaystackInitiateTransactionResponse.Data("https://checkout.paystack.com/" + code, code, "T" + code));
+        });
         List<Callable<MvcResult>> calls = new ArrayList<>();
         for (int i = 0; i < 4; i++) {
             Customer c = customer(acme, "sl" + i + "@acme.test");
             cart(c, p, 1);
             calls.add(() -> checkout(c, null, null));
         }
-        long t0 = System.nanoTime();
         List<Answer> as = concurrently(calls);
-        long millis = (System.nanoTime() - t0) / 1_000_000;
 
         assertThat(count(as, 200)).as(as.toString()).isEqualTo(4);
-        // serialised behind Paystack this would take >= 4 x 1.5 s
-        assertThat(millis).isLessThan(4_500);
+        assertThat(sawAllInside.get()).as("all four checkouts were inside Paystack at the same time").isEqualTo(4);
         assertThat(layerRemaining(acme, p)).isEqualTo(96);
     }
 
@@ -304,10 +313,11 @@ class SameProductCheckoutConcurrencyIntegrationTest extends AbstractCheckoutInte
             Future<MvcResult> stuck = ex.submit(() -> checkout(x, null, null));
             assertThat(inPaystack.await(30, TimeUnit.SECONDS)).isTrue();
 
-            long t0 = System.nanoTime();
+            // no timing: the checkout stays inside Paystack until release (below), so a cancel that waited for it
+            // would time out here
             MvcResult c = ex.submit(() -> cancel(a, oa)).get(30, TimeUnit.SECONDS);
             assertThat(c.getResponse().getStatus()).as(c.getResponse().getContentAsString()).isEqualTo(200);
-            assertThat((System.nanoTime() - t0) / 1_000_000).as("cancel did not wait for the Paystack call").isLessThan(3_000);
+            assertThat(stuck.isDone()).as("cancel finished while the checkout was still inside Paystack").isFalse();
 
             assertThat(webhook(g, event("charge.failed", bb.at("/data/data/reference").asText(), minorB))).isEqualTo(200);
             awaitStatus(ob, "FAILED");
