@@ -111,6 +111,17 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
         }
     }
 
+    /**
+     * Waits until the webhook, default async and mail executors are idle. EVT-01: the admin new-order e-mail re-reads
+     * the order on the mail executor after each checkout, so a test that measures global Hibernate statistics must
+     * let that background work finish first.
+     */
+    protected void awaitBackgroundIdle() throws InterruptedException {
+        awaitIdle(webhookExecutor);
+        awaitIdle(asyncExecutor);
+        awaitIdle(mailExecutor);
+    }
+
     private static void awaitIdle(org.springframework.core.task.TaskExecutor executor) throws InterruptedException {
         if (!(executor instanceof org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor pool)) {
             return;

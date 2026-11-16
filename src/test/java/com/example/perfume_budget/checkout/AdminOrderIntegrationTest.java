@@ -769,12 +769,14 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
     void listQueryCountDoesNotGrowWithTheNumberOfOrders() throws Exception {
         List<Placed> os = three();
         mvc.perform(admin(get("/api/v1/order/all?size=50"))).andReturn(); // warm up
+        awaitBackgroundIdle(); // EVT-01: after-commit e-mails re-read orders off-thread; keep them out of the count
         SessionFactory sf = emf.unwrap(SessionFactory.class);
         sf.getStatistics().setStatisticsEnabled(true);
         sf.getStatistics().clear();
         listNumbers("size=50&q=acme");
         long small = sf.getStatistics().getPrepareStatementCount();
         for (int i = 0; i < 6; i++) place("more" + i + "@acme.test", 1);
+        awaitBackgroundIdle();
         sf.getStatistics().clear();
         List<String> all = listNumbers("size=50&q=acme");
         long large = sf.getStatistics().getPrepareStatementCount();
