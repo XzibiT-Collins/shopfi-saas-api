@@ -3,8 +3,11 @@ package com.example.perfume_budget.service;
 import com.example.perfume_budget.model.Product;
 import com.example.perfume_budget.repository.ProductRepository;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.OptimisticLockException;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.StaleStateException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,13 +49,27 @@ public class ProductStockLocks {
             return;
         }
         // write pending changes first: the refresh below must not throw away anything this transaction changed
-        entityManager.flush();
+        flush();
         productRepository.lockForStockUpdate(ids);
         for (Long id : ids) {
             Product product = entityManager.find(Product.class, id);
             if (product != null) {
                 entityManager.refresh(product); // a copy loaded before the lock may carry an old stock / version
             }
+        }
+    }
+
+    /**
+     * API-05 rework: this is a plain {@code @Component}, so Spring's exception translation does not wrap what the
+     * shared EntityManager throws. A version conflict while flushing the caller's pending changes would surface as JPA's
+     * own {@link OptimisticLockException} (409) instead of the {@code 503 TRY_AGAIN} every other optimistic conflict
+     * gives. Translate it: the transaction is rolled back, nothing changed, the client retries.
+     */
+    private void flush() {
+        try {
+            entityManager.flush();
+        } catch (OptimisticLockException | StaleStateException e) {
+            throw new ObjectOptimisticLockingFailureException("Concurrent update while taking the product stock locks", e);
         }
     }
 
