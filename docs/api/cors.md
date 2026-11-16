@@ -71,8 +71,11 @@ credentialed access on a path the router reads as a platform path.
 ## WebSocket
 
 `/ws` handshakes go through the same CORS filter and `TenantOriginHandshakeInterceptor` (same `TenantOriginPolicy`):
-a disallowed Origin gets 403; a missing Origin (non-browser) or the API's own origin passes and STOMP frames are
-still authenticated. Spring's static origin check is set to "any" on purpose, because it cannot be dynamic.
+a disallowed Origin gets 403. Spring's static origin check is set to "any" on purpose, because it cannot be dynamic.
+SEC-03c: `TenantHandshakeInterceptor` then resolves the tenant exactly like HTTP (`RequestTenantResolver`) and refuses
+the handshake when there is none (no Origin/Referer and no dev header: 400; unknown 404; suspended 423), so a
+non-browser client must send the tenant's `Origin` (or, outside prod, `X-Tenant-ID`). STOMP frames are authorised per
+tenant afterwards (see `authorization-matrix.md` section 2a).
 
 ## Deployment environment variables
 

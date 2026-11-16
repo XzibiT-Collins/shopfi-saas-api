@@ -29,12 +29,26 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | `POST /api/v1/webhook/{token}` | Paystack; per-tenant token + HMAC signature (TENANT-05). Other methods: 401 |
 | `POST /api/v1/platform/auth/{login,refresh,logout}`, `POST /api/v1/platform/onboarding/{signup,verify,resend}`, `GET /api/v1/platform/onboarding/status` | platform sign-in and public onboarding; every other `/platform/**` is `SUPER_ADMIN` |
 | `/oauth2/**`, `/login/oauth2/**` | OAuth2 login redirects |
-| `/ws/**` | SockJS/STOMP handshake: Origin checked by `TenantOriginHandshakeInterceptor`; CONNECT authenticated by `AuthChannelInterceptor`; only user-destination messages are sent (no broadcast topics) |
+| `/ws/**` | SockJS/STOMP handshake (HTTP level only; every STOMP frame is authorised, see section 2a): Origin checked by `TenantOriginHandshakeInterceptor`, tenant bound by `TenantHandshakeInterceptor` |
 | `GET /swagger-ui/**`, `/swagger-ui.html`, `/v3/api-docs/**` | dev/test only: permitted only while `springdoc.*.enabled` is true; the prod profile disables springdoc and the matchers then require authentication (anonymous 401) |
 | `GET /actuator/health` | liveness probe (Render health check); status only, details are `never` |
 | `GET /actuator/prometheus` | NOT public: needs `Authorization: Bearer <shopfi.metrics.scrape-token>` (env `PROMETHEUS_SCRAPE_TOKEN`, at least 16 characters); with no token configured it is closed (401). Every other `/actuator/**` path (metrics, info, env, ...) is `denyAll` (401 anonymous) |
 | `HEAD` on every public `GET` above | permitted with the same matcher (HEAD is answered from the GET handler); `HEAD` on an admin route follows the admin rule |
 | `/api/v1/dev/**` | **denyAll** unless `tenant.dev-endpoints.enabled=true` (true only in the dev profile; prod sets it false; the controller bean is also conditional on it) |
+
+## 2a. STOMP (`/ws`) authorization (SEC-03c / WS-01)
+
+The handshake resolves the tenant with the HTTP rules (`RequestTenantResolver`: Origin, then Referer, then the non-prod `X-Tenant-ID` header) and stores it in the session attributes. Every frame is then checked by `AuthChannelInterceptor`; a refused frame gets a STOMP `ERROR` frame (header `message` = the reason below) and the session is closed.
+
+| Step | Allowed | Refused with |
+|---|---|---|
+| Handshake | Origin allowed by `TenantOriginPolicy` AND resolving to an ACTIVE tenant | disallowed Origin `403`; unknown tenant / not active `404`; suspended `423`; no tenant signal at all `400` |
+| `CONNECT` / `STOMP` | a token (`Authorization: Bearer` native header, else the `accessToken` cookie of the handshake) that verifies, is unexpired, has `tenant` = the handshake tenant, and names an enabled user of that tenant (looked up with that tenant bound) | `Authentication required` (no token), `Token does not belong to this tenant` (other tenant, platform or missing claim), `Invalid or expired token` |
+| `SUBSCRIBE` | exactly `/user/queue/notifications`, for `ADMIN` / `FRONT_DESK` | `Destination not allowed` (any other destination, any wildcard, any customer); `Authentication required`; `Session expired` once the CONNECT token's expiry has passed |
+| `SEND` | nothing (there are no `@MessageMapping` handlers) | `Destination not allowed` |
+| other frames (`UNSUBSCRIBE`, `ACK`, `NACK`, `DISCONNECT`, transactions) | passed through | |
+
+Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...)`: the session principal's name is tenant-qualified, and `AdminSessionManager` keys connected staff by tenant, so a notification of tenant A never reaches a session of tenant B, even for the same e-mail.
 
 ## 3. Every controller endpoint
 
@@ -205,6 +219,6 @@ Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant use
 ## 6. Residual risks / follow-ups
 
 * `GET /api/v1/tax` and `/tax/all` are readable by any signed-in tenant user (decision above).
-* STOMP: `SUBSCRIBE` is not authorised per destination; safe today because only `convertAndSendToUser` is used.
+* STOMP (fixed in SEC-03c, see 2a): sessions are tenant-bound, anonymous and foreign-tenant CONNECTs are refused, SUBSCRIBE/SEND are default-deny. Remaining: a tenant suspended or a user disabled AFTER a session connected keeps that session until it closes or its token expires (SUBSCRIBE is refused after expiry; already-open subscriptions keep receiving until the socket closes). The frontend does not use STOMP yet.
 * The prometheus scrape token is a shared secret in an env var; rotate it by changing the env var and the Prometheus credentials together. In `docker-compose.yml` Prometheus reads it from the untracked file `./prometheus-scrape-token`.
-* `GET /product/{slug}` records a view (async event) for non-admin callers, so a GET has a write side effect (a counter, no authorization impact). `HEAD /product/{slug}` returns the same response but records neither a view nor a site visit (`SiteVisitFilter` skips HEAD). A scraper misconfigured with a wrong prometheus token produces a 401 per scrape (no ERROR log from the app).
+* `GET /product/{slug}` records a view (async event) for non-admin callers, so a GET has a write side effect (a counter, no authorization impact). SEC-03c: deduplicated, a view counts at most once per (tenant, product, client IP or IPv6 /64) per 30 minutes (`catalog.product-view.dedupe-window-seconds`, in-memory per instance, bounded LRU `catalog.product-view.max-entries`), so reloads and GET loops cannot inflate `view_count`. Chosen over a separate `POST /product/{id}/view` because it needs no frontend change; a beacon endpoint remains an option if exact multi-instance analytics are ever needed. `HEAD /product/{slug}` returns the same response but records neither a view nor a site visit (`SiteVisitFilter` skips HEAD). A scraper misconfigured with a wrong prometheus token produces a 401 per scrape (no ERROR log from the app).

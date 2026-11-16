@@ -14,7 +14,8 @@ import java.util.Map;
 /**
  * Rejects a WebSocket/SockJS handshake whose {@code Origin} is not allowed by {@link TenantOriginPolicy}
  * (active tenant subdomain/custom domain or the static list) with 403. A request with no Origin (a non-browser
- * client) or the same origin as the API host passes; STOMP frames are still authenticated by AuthChannelInterceptor.
+ * client) or the same origin as the API host passes here; {@link TenantHandshakeInterceptor} (next) still requires a
+ * tenant signal, and every STOMP frame is authorised by {@link AuthChannelInterceptor}.
  */
 public class TenantOriginHandshakeInterceptor implements HandshakeInterceptor {
 
