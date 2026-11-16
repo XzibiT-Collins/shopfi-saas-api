@@ -173,6 +173,12 @@ idempotent). If it still fails the event is logged and dropped (Paystack already
 the order is then settled by the customer's verify poll (`GET /payment/verify`, which asks Paystack and applies the
 same settlement) or, if it stays unpaid, cancelled by the expiry job, which gives its stock and coupon redemption back.
 
+**Payment-success side effects (API-04 rework 3).** The customer receipt e-mail, the admin "payment successful" e-mail
+and the admin in-app / WebSocket notification are sent only after the settling transaction COMMITS, once per settled
+payment. An attempt that is rolled back and retried (deadlock, `COUPON_BUSY` at commit) sends nothing, and if every
+attempt fails no receipt goes out for the unrecorded payment; the later settlement (verify poll, a redelivered event)
+sends it once. Duplicate success events for an already settled payment send nothing.
+
 ## Error codes
 
 | HTTP | `data.code` | Meaning |
@@ -187,7 +193,7 @@ same settlement) or, if it stays unpaid, cancelled by the expiry job, which give
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
-| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. Webhooks never answer 503 (see above) |
+| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). Webhooks never answer 503 (see above) |
 | 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. Checkout's own same-product optimistic-lock failure is API-05 and still a 500 |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
