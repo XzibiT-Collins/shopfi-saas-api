@@ -94,8 +94,10 @@ public class OrderServiceImpl implements OrderService {
      *   <li>a coupon redemption is reserved by an atomic conditional UPDATE in its own short transaction that has
      *       committed before anything else starts ({@link CouponRedemptionService#reserve}). Active / date window /
      *       usage limit are decided ONLY there;</li>
-     *   <li>the checkout itself runs in one transaction exactly as before (customer row lock, replay checks, pricing,
-     *       order, stock reservation, Paystack call): those locks are unchanged by API-04. If the pre-check skipped
+     *   <li>the checkout itself runs in one transaction (customer row lock, replay checks, pricing, order, an
+     *       unlocked stock pre-check, Paystack call, then (API-05) the stock reservation as the last step: it takes the
+     *       product row locks in id order only for that short step, see {@link ProductStockLocks}). Not retried
+     *       in-process: a retry would initialise a second Paystack transaction. If the pre-check skipped
      *       the reservation because it saw a replay that is gone by now, this transaction stops before pricing and
      *       the checkout runs once more with a reservation;</li>
      *   <li>unless that transaction committed a new order holding the reservation, the reservation is given back

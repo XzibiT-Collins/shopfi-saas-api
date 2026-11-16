@@ -228,6 +228,28 @@ class SameProductCheckoutConcurrencyIntegrationTest extends AbstractCheckoutInte
         assertThat(layerRemaining(acme, high)).isEqualTo(9);
     }
 
+    @Test
+    void theLockDoesNotWaitForForeignKeyLocksOtherTransactionsHoldOnTheProduct() throws Exception {
+        long p = product(acme, "Keyshared", "100.00", 10);
+        Customer c = customer(acme, "ks@acme.test");
+        cart(c, p, 1);
+        ExecutorService ex = Executors.newSingleThreadExecutor();
+        try (Connection conn = jdbc.getDataSource().getConnection(); Statement st = conn.createStatement()) {
+            // what an open transaction that inserted a row referencing the product (cart item, order allocation,
+            // inventory movement) holds until it commits: FOR KEY SHARE. FOR UPDATE would wait for it, NO KEY does not.
+            conn.setAutoCommit(false);
+            st.execute("SELECT id FROM tenant_acme.products WHERE id = " + p + " FOR KEY SHARE");
+            long t0 = System.nanoTime();
+            MvcResult r = ex.submit(() -> checkout(c, null, null)).get(30, TimeUnit.SECONDS);
+            assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+            assertThat((System.nanoTime() - t0) / 1_000_000).as("checkout did not wait for the key-share lock").isLessThan(3_000);
+            conn.commit();
+        } finally {
+            ex.shutdownNow();
+        }
+        assertThat(layerRemaining(acme, p)).isEqualTo(9);
+    }
+
     // ---- the Paystack call is outside the product lock
 
     @Test
