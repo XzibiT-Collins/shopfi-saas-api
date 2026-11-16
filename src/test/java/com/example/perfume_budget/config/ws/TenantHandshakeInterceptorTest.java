@@ -48,6 +48,7 @@ class TenantHandshakeInterceptorTest {
         when(registry.findByCustomDomain("shop.acme.example")).thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE)));
         props = new TenantResolutionProperties();
         props.setBaseDomain("shopfi.test");
+        props.getHeaderResolution().setEnabled(true);
         props.setPlatformDomains(java.util.List.of("api.shopfi.test"));
         env = new MockEnvironment();
         interceptor = new TenantHandshakeInterceptor(new RequestTenantResolver(registry, props, env));
@@ -60,7 +61,6 @@ class TenantHandshakeInterceptorTest {
         ServletServerHttpResponse response = new ServletServerHttpResponse(res);
         Map<String, Object> attrs = new HashMap<>();
         boolean ok = interceptor.beforeHandshake(new ServletServerHttpRequest(req), response, mock(WebSocketHandler.class), attrs);
-        response.flush();
         return new Result(ok, res.getStatus(), attrs);
     }
 
@@ -137,7 +137,6 @@ class TenantHandshakeInterceptorTest {
         MockHttpServletResponse res = new MockHttpServletResponse();
         ServletServerHttpResponse response = new ServletServerHttpResponse(res);
         boolean ok = interceptor.beforeHandshake(mock(ServerHttpRequest.class), response, mock(WebSocketHandler.class), new HashMap<>());
-        response.flush();
         assertThat(ok).isFalse();
         assertThat(res.getStatus()).isEqualTo(400);
     }
