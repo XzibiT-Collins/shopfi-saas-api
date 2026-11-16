@@ -56,7 +56,7 @@ public class ShopFloorStockHandler {
                         event.productId(), product.getName(), floorQuantity, storeRoomQuantity);
             }
         } catch (Exception e) {
-            log.error("Failed to process shop floor stock event for product {}", event.productId(), e);
+            log.error("Failed to process shop floor stock event for product {}: {}", event.productId(), e.getClass().getName());
         }
     }
 }

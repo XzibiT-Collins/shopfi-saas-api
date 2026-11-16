@@ -139,13 +139,13 @@ public class JWTUtil {
             parser.parseSignedClaims(token);
             log.info("Valid token");
         } catch (ExpiredJwtException e) {
-            log.error("JWT token expired: {}", e.getMessage());
+            log.info("JWT expired");
             throw new InvalidJWTTokenException("Expired JWT token");
         } catch (JwtException exception ) {
-            log.error("Invalid JWT token: {}", exception.getMessage());
+            log.error("Invalid JWT: {}", exception.getClass().getName()); // the message can quote header / claims
             throw new InvalidJWTTokenException("Invalid JWT token");
         } catch (Exception e){
-            log.error("Error validating JWT token: {}", e.getMessage());
+            log.error("Error validating JWT: {}", e.getClass().getName());
             throw new InvalidJWTTokenException("Error validating JWT token");
         }
     }

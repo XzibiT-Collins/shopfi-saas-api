@@ -15,12 +15,12 @@ public class AdminSessionManager {
 
     public void addAdmin(String username) {
         connectedAdmins.add(username);
-        log.info("Admin connected: {}. Total connected admins: {}", username, connectedAdmins.size());
+        log.info("Admin connected. Total connected admins: {}", connectedAdmins.size());
     }
 
     public void removeAdmin(String username) {
         connectedAdmins.remove(username);
-        log.info("Admin disconnected: {}. Total connected admins: {}", username, connectedAdmins.size());
+        log.info("Admin disconnected. Total connected admins: {}", connectedAdmins.size());
     }
 
     public Set<String> getConnectedAdmins() {

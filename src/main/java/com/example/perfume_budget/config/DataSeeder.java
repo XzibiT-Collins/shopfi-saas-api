@@ -37,7 +37,7 @@ public class DataSeeder {
                     if (!passwordEncoder.matches(strippedPassword, admin.getPassword())) {
                         admin.setPassword(passwordEncoder.encode(strippedPassword));
                         userRepository.save(admin);
-                        log.info("Updated existing admin password for {}", normalizedEmail);
+                        log.info("Updated existing admin password for user {}", admin.getId());
                     }
                 },
                 () -> {
@@ -50,8 +50,7 @@ public class DataSeeder {
                             .isActive(true)
                             .emailVerified(true)
                             .build();
-                    userRepository.save(admin);
-                    log.info("Seeded admin user {}", normalizedEmail);
+                    log.info("Seeded admin user {}", userRepository.save(admin).getId());
                 }
         );
     }
@@ -68,10 +67,10 @@ public class DataSeeder {
         String normalizedEmail = email.strip().toLowerCase();
         String name = (fullName == null || fullName.isBlank()) ? "Admin" : fullName.strip();
         if (userRepository.findByEmail(normalizedEmail).isPresent()) {
-            log.info("Admin {} already present; leaving credentials unchanged", normalizedEmail);
+            log.info("Admin already present; leaving credentials unchanged");
             return;
         }
-        userRepository.save(User.builder()
+        User saved = userRepository.save(User.builder()
                 .fullName(name)
                 .email(normalizedEmail)
                 .password(passwordHash)
@@ -80,6 +79,6 @@ public class DataSeeder {
                 .isActive(true)
                 .emailVerified(true)
                 .build());
-        log.info("Seeded admin user {}", normalizedEmail);
+        log.info("Seeded admin user {}", saved == null ? null : saved.getId());
     }
 }
