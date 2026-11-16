@@ -71,7 +71,15 @@ class SiteVisitFilterWebhookTest {
     @ValueSource(strings = {"/api/v1/hook/", "/api/v1/whatever/", "/api/v1/whatever/x%2F", "/api/v1/x;y=", "/"})
     void tokenShapedSegmentsAreRedacted(String prefix) throws Exception {
         String token = "kq3J7xYc0_Fv-9LmB2nRzT8wHa5dE1sQpU4oViGy6Xt";
-        for (String spelled : new String[]{token, token.replace("k", "%6B"), token.replace("k", "%256B")}) {
+        // every 8th character percent-encoded: no raw run of 32 token characters is left, only the decoded form has it
+        StringBuilder sparse = new StringBuilder();
+        for (int i = 0; i < token.length(); i++) {
+            char ch = token.charAt(i);
+            sparse.append(i % 8 == 7 ? String.format("%%%02X", (int) ch) : String.valueOf(ch));
+        }
+        assertThat(sparse.toString()).doesNotContainPattern("[A-Za-z0-9_-]{32}");
+        for (String spelled : new String[]{token, token.replace("k", "%6B"), token.replace("k", "%256B"), sparse.toString(),
+                sparse.toString().replace("%", "%25")}) {
             SiteVisitRepository repo = mock(SiteVisitRepository.class);
             new SiteVisitFilter(repo).doFilter(new MockHttpServletRequest("GET", prefix + spelled), new MockHttpServletResponse(),
                     new MockFilterChain());
