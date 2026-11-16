@@ -251,6 +251,17 @@ GET /api/v1/admin/shop-discount/current
 - `200 OK` with `data` = `ShopWideDiscountResponse` when one is configured.
 - `404` (ResourceNotFound) when none is in force right now (none configured, expired, or not started yet — API-04). Treat 404 as "no shop-wide discount" — show empty state, not an error toast.
 
+### 4.4b List shop-wide discounts in force or scheduled (API-06)
+
+```
+GET /api/v1/admin/shop-discount
+```
+
+- `200 OK` with `data` = array of `ShopWideDiscountResponse`: every discount that is switched on and has not ended, in
+  force now **or scheduled to start later**, soonest `startAt` first. `[]` when none (never 404). Normally 0 or 1 rows.
+- Use it to show a scheduled discount after a page reload and to end it (4.5) before it starts. `/current` (4.4) is
+  unchanged.
+
 ### 4.5 Deactivate a shop-wide discount
 
 ```
@@ -347,6 +358,7 @@ Effective prices are date-windowed and the catalog is cached (up to ~60 min, plu
 | `/api/v1/product/admin/{productId}/discount` | PUT | ADMIN | `ProductDiscountRequest` | `ProductDetails` |
 | `/api/v1/product/admin/{productId}/discount` | DELETE | ADMIN | — | `ProductDetails` |
 | `/api/v1/admin/shop-discount` | PUT | ADMIN | `ShopWideDiscountRequest` | `ShopWideDiscountResponse` |
+| `/api/v1/admin/shop-discount` | GET | ADMIN | — | `ShopWideDiscountResponse[]` in force or scheduled (API-06) |
 | `/api/v1/admin/shop-discount/current` | GET | ADMIN | — | `ShopWideDiscountResponse` (404 if none **in force now**) |
 | `/api/v1/admin/shop-discount/{id}` | DELETE | ADMIN | — | `204` |
 
@@ -381,7 +393,7 @@ All routes are `ADMIN` only (anonymous `401`, customer `403`). Envelope as in se
 | `maximumDiscountAmount` | **Now optional.** Cap for `PERCENTAGE` coupons only (`> 0` when sent, `null` = no cap). For `FLAT` it is **ignored and stored as `null`** (a flat coupon is already a fixed amount, bounded by the cart subtotal). Clients that still send a value for FLAT keep working. |
 | `minimumCartAmountForDiscount` | **Now optional**, `>= 0`, 2 decimals. |
 | `usageLimit` | Required integer `1..1000000`. Must be a JSON integer: `1.5`, `"7"` (string), `true` or an out-of-range number such as `99999999999` / `1E999999999` are a `400` with `description` `"usageLimit must be a whole number"` / `"usageLimit must be a whole number (a JSON number, not text)"` / `"usageLimit is out of range"` (before API-04 rework `1.5` was silently stored as `1` and `"7"` as `7`). |
-| `perUserUsageLimit` | **New**, optional integer `1..usageLimit`, same strict-integer rule as `usageLimit`. One customer can hold at most this many **live** redemptions (orders that are not cancelled, failed or expired); enforced by checkout, by `GET /api/v1/tax?couponCode=` and shown as invalid by the cart preview. |
+| `perUserUsageLimit` | **New**, optional integer `1..usageLimit` and never above 1,000,000 (`400` "Per-user usage limit cannot exceed 1000000"), same strict-integer rule as `usageLimit`. One customer can hold at most this many **live** redemptions (orders that are not cancelled, failed or expired); enforced by checkout and by `GET /api/v1/tax?couponCode=` (`400` with `data.code = "COUPON_PER_USER_LIMIT"`, API-06) and shown by the cart preview as `valid=false`, `reason=COUPON_PER_USER_LIMIT` (API-06; it used to be `COUPON_INVALID`). |
 | `isActive` | Required boolean. |
 | `startDate`, `expirationDate` | Required `yyyy-MM-dd`; `expirationDate` must not be before `startDate` (both days are valid; a one-day coupon has start = expiry). |
 
@@ -421,10 +433,17 @@ Responses `CouponDetailResponse` now also carries `perUserUsageLimit`. `CouponLi
 |---|---|---|---|
 | `/api/v1/payment-settings` | GET | — | `PaymentSettingsResponse` |
 | `/api/v1/payment-settings` | PUT | `PaymentSettingsRequest` | `PaymentSettingsResponse` |
-| `/api/v1/payment-settings/rotate-webhook-token` | POST | — | `PaymentSettingsResponse` (new `webhookUrl`) |
+| `/api/v1/payment-settings/rotate-webhook-token` | POST | — | `PaymentSettingsResponse` (new `webhookUrl`, the only place it is shown) |
 
 `PaymentSettingsRequest`: `secretKey` (optional on update, blank keeps the stored one), `publicKey` (required), `enabled`.
-`PaymentSettingsResponse`: `secretConfigured`, `publicKey`, `enabled`, `webhookUrl` (unchanged shape).
+`PaymentSettingsResponse`: `secretConfigured`, `publicKey`, `enabled`, `webhookUrl`, `hasWebhookToken`, `webhookUrlMasked`.
+
+**API-06, webhook URL shown once (breaking for the payment settings page).** `webhookUrl` is now returned only by the
+call that minted the token: `POST /rotate-webhook-token`, or the `PUT` that saved the settings for the first time. Every
+`GET` and every later `PUT` returns `webhookUrl: null`, `hasWebhookToken` (whether a URL exists) and `webhookUrlMasked`
+(`https://.../api/v1/webhook/****` + the token's last 4 characters, `null` when there is none). The page must show the
+full URL from the rotate (or first save) response once, tell the admin to copy it into Paystack now, and otherwise show
+the masked form. A lost URL is recovered only by rotating. See docs/api/checkout.md "Payment settings webhook URL".
 
 **New format checks (400, field-keyed, the message never echoes the value):** `secretKey` must look like `sk_test_...` / `sk_live_...`, `publicKey` like `pk_test_...` / `pk_live_...` (letters, digits, `_`, 4-200 chars after the prefix); when both are sent they must be the same mode (key `keyModesConsistent`). The check is shape only; the keys are not verified against Paystack.
 
