@@ -70,6 +70,7 @@ public class OrderServiceImpl implements OrderService {
     private final CouponRedemptionService couponRedemptionService;
     private final org.springframework.transaction.PlatformTransactionManager transactionManager;
     private final TransientRetry transientRetry;
+    private final com.example.perfume_budget.repository.OrderAuditEventRepository auditEventRepository;
     /** Orders are sortable only by these (a free-form sort path would be a column/oracle probe: user.password...). */
     public static final java.util.Set<String> ORDER_SORT_PROPERTIES =
             java.util.Set.of("createdAt", "orderNumber", "status", "deliveryStatus", "id");
@@ -431,7 +432,13 @@ public class OrderServiceImpl implements OrderService {
 
     public static final int MAX_SEARCH_LENGTH = 100;
     public static final int MAX_PAGE = 1_000_000;
-    public static final int MAX_PAGE_SIZE = 100;
+    /** ORD-02: was 100; 50 is what the prod profile (spring.data.web.pageable.max-page-size) already enforced. */
+    public static final int MAX_PAGE_SIZE = 50;
+    /**
+     * ORD-02: deepest row an admin list page may start at (OFFSET). Beyond it the database would scan and throw away
+     * every earlier row on each request; narrow the list with from/to, q or the status filters instead.
+     */
+    public static final int MAX_OFFSET = 10_000;
 
     /** Caps page/size, applies the sort whitelist and appends the unique id as the final tie-break. */
     private Pageable adminPage(Pageable pageable) {
@@ -440,6 +447,11 @@ public class OrderServiceImpl implements OrderService {
             throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "page must be <= " + MAX_PAGE + ".");
         }
         int size = Math.min(pageable.getPageSize(), MAX_PAGE_SIZE);
+        if ((long) pageable.getPageNumber() * size >= MAX_OFFSET) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_PAGE",
+                    "page * size must be below " + MAX_OFFSET + ": narrow the list with from/to, q or a status filter.",
+                    Map.of("maxOffset", MAX_OFFSET, "size", size));
+        }
         org.springframework.data.domain.Sort sort = pageable.getSort().isSorted()
                 ? pageable.getSort()
                 : org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt");
@@ -579,6 +591,36 @@ public class OrderServiceImpl implements OrderService {
         OrderLifecycleService.AdminUpdate result = lifecycleService.acknowledgeRefund(
                 orderNumber, authUserUtil.getCurrentUser().getEmail());
         return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+    }
+
+    @Override
+    @Transactional
+    public OrderResponse receiveReturn(String orderNumber) {
+        OrderLifecycleService.AdminUpdate result = lifecycleService.receiveReturn(
+                orderNumber, authUserUtil.getCurrentUser().getEmail());
+        return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+    }
+
+    public static final int MAX_AUDIT_PAGE_SIZE = 100;
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<com.example.perfume_budget.dto.order.OrderAuditEventResponse> getAuditEvents(
+            String orderNumber, Pageable pageable) {
+        String clean = orderNumber == null ? "" : orderNumber.trim().toUpperCase();
+        Long orderId = orderRepository.findIdByOrderNumber(clean)
+                .orElseThrow(() -> new ApiCodeException(HttpStatus.NOT_FOUND, "ORDER_NOT_FOUND", OrderLifecycleService.ORDER_NOT_FOUND));
+        if (pageable.getPageNumber() > MAX_PAGE) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "page must be <= " + MAX_PAGE + ".");
+        }
+        // fixed order (oldest first, unique id): a client sort is ignored, pages never reorder
+        Pageable page = org.springframework.data.domain.PageRequest.of(pageable.getPageNumber(),
+                Math.min(pageable.getPageSize(), MAX_AUDIT_PAGE_SIZE),
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.ASC, "id"));
+        return PaginationUtil.createPageResponse(auditEventRepository.findByOrderId(orderId, page)
+                .map(e -> new com.example.perfume_budget.dto.order.OrderAuditEventResponse(e.getId(), e.getEventType(),
+                        e.getFromStatus(), e.getToStatus(), e.isRefundRequired(), e.getActorEmail(),
+                        OrderMapper.toUtc(e.getCreatedAt()))));
     }
 
     @Override

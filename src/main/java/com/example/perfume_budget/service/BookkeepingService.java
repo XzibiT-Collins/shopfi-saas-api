@@ -100,6 +100,129 @@ public class BookkeepingService {
         log.info("Journal entry recorded for order: {}", order.getOrderNumber());
     }
 
+    /**
+     * ORD-02: reverses the order's posted SALE entry after a paid merchant cancel, as one SALE_REVERSAL entry dated now
+     * (closed periods stay untouched). The payment stays COMPLETED until the shop refunds by hand, so the cash line is
+     * NOT reversed into cash: it becomes a REFUND_PAYABLE credit (the shop owes the customer), settled by
+     * {@link #recordRefundPaid}. The revenue part (revenue, tax, discounts, cash -> refund payable) and the
+     * returned-goods part (COGS / inventory) are independent and each is posted at most once per order, so a repeated
+     * call, a later "return received" or a retried transaction never reverses twice. Mirrors the SALE lines exactly
+     * (same amounts), so the books net to zero for the order. Nothing is posted when no SALE entry exists (e.g. a
+     * payment that arrived after the order was closed is never booked as a sale).
+     *
+     * <p>Accounts are loaded in the same order as {@link #recordSale}; the caller holds the order row lock.
+     *
+     * @param revenuePart reverse revenue, tax, discounts and move the cash into refunds payable
+     * @param goodsPart   reverse COGS / inventory (only when the goods are back on the shelf)
+     * @return true when an entry was posted
+     */
+    @Transactional
+    public boolean recordSaleReversal(Order order, boolean revenuePart, boolean goodsPart, String recordedBy) {
+        String orderNumber = order.getOrderNumber();
+        List<JournalEntry> sales = journalEntryRepository.findByReferenceTypeAndReferenceIdAndTypeOrderByIdAsc(
+                "ORDER", orderNumber, JournalEntryType.SALE);
+        if (sales.isEmpty()) {
+            log.info("No sale entry for order {}: nothing to reverse", orderNumber);
+            return false;
+        }
+        boolean doRevenue = revenuePart && journalEntryRepository.countOrderLines(
+                orderNumber, JournalEntryType.SALE_REVERSAL, AccountCategory.SALES_REVENUE) == 0;
+        boolean doGoods = goodsPart && journalEntryRepository.countOrderLines(
+                orderNumber, JournalEntryType.SALE_REVERSAL, AccountCategory.COGS) == 0;
+        if (!doRevenue && !doGoods) {
+            return false;
+        }
+        // same load order as recordSale (cash, revenue, tax, discount, cogs, inventory), refunds payable last
+        getAccount(AccountCategory.CASH, false);
+        getAccount(AccountCategory.SALES_REVENUE, false);
+        getAccount(AccountCategory.TAX_PAYABLE, false);
+        getAccount(AccountCategory.DISCOUNT_EXPENSE, false);
+        getAccount(AccountCategory.COGS, false);
+        getAccount(AccountCategory.INVENTORY, false);
+        LedgerAccount refundPayable = getAccount(AccountCategory.REFUND_PAYABLE, false);
+
+        JournalEntry entry = JournalEntry.builder()
+                .entryNumber(entryNumberGenerator.generate())
+                .description("Sale reversed for cancelled order: " + orderNumber)
+                .type(JournalEntryType.SALE_REVERSAL)
+                .referenceType("ORDER")
+                .referenceId(orderNumber)
+                .isManual(false)
+                .recordedBy(recordedBy == null ? "System" : recordedBy)
+                .transactionDate(LocalDateTime.now())
+                .build();
+
+        List<JournalEntryLine> lines = new ArrayList<>();
+        for (JournalEntry sale : sales) {
+            for (JournalEntryLine line : sale.getLines()) {
+                AccountCategory category = line.getAccount().getCategory();
+                boolean goodsLine = category == AccountCategory.COGS || category == AccountCategory.INVENTORY;
+                if (goodsLine ? !doGoods : !doRevenue) {
+                    continue;
+                }
+                EntryType opposite = line.getEntryType() == EntryType.DEBIT ? EntryType.CREDIT : EntryType.DEBIT;
+                boolean cashReceived = (category == AccountCategory.CASH || category == AccountCategory.MOBILE_MONEY)
+                        && line.getEntryType() == EntryType.DEBIT;
+                if (cashReceived) {
+                    lines.add(buildLines(entry, refundPayable, EntryType.CREDIT, line.getAmount(),
+                            "Refund owed to the customer for order: " + orderNumber));
+                } else {
+                    lines.add(buildLines(entry, getAccount(category, false), opposite, line.getAmount(),
+                            "Reversal: " + line.getDescription()));
+                }
+            }
+        }
+        if (lines.isEmpty()) {
+            return false;
+        }
+        entry.setLines(lines);
+        validateEntry(lines, false);
+        journalEntryRepository.save(entry);
+        updateAccountBalances(lines, false);
+        log.info("Sale reversal recorded for order {} (revenue: {}, goods: {})", orderNumber, doRevenue, doGoods);
+        return true;
+    }
+
+    /**
+     * ORD-02: the shop confirmed it refunded the customer by hand. Settles what {@link #recordSaleReversal} put into
+     * REFUND_PAYABLE for this order (debit refunds payable, credit cash), once: the amount is what is still owed, so a
+     * repeat posts nothing. Nothing is posted when no reversal was booked.
+     *
+     * @return true when an entry was posted
+     */
+    @Transactional
+    public boolean recordRefundPaid(Order order, String recordedBy) {
+        String orderNumber = order.getOrderNumber();
+        BigDecimal owed = journalEntryRepository.sumOrderLines(orderNumber, JournalEntryType.SALE_REVERSAL,
+                        AccountCategory.REFUND_PAYABLE, EntryType.CREDIT)
+                .subtract(journalEntryRepository.sumOrderLines(orderNumber, JournalEntryType.REFUND,
+                        AccountCategory.REFUND_PAYABLE, EntryType.DEBIT));
+        if (owed.compareTo(BigDecimal.ZERO) <= 0) {
+            return false;
+        }
+        LedgerAccount cash = getAccount(AccountCategory.CASH, false);
+        LedgerAccount refundPayable = getAccount(AccountCategory.REFUND_PAYABLE, false);
+        JournalEntry entry = JournalEntry.builder()
+                .entryNumber(entryNumberGenerator.generate())
+                .description("Refund paid for cancelled order: " + orderNumber)
+                .type(JournalEntryType.REFUND)
+                .referenceType("ORDER")
+                .referenceId(orderNumber)
+                .isManual(false)
+                .recordedBy(recordedBy == null ? "System" : recordedBy)
+                .transactionDate(LocalDateTime.now())
+                .build();
+        List<JournalEntryLine> lines = new ArrayList<>();
+        lines.add(buildLines(entry, refundPayable, EntryType.DEBIT, owed, "Refund owed settled for order: " + orderNumber));
+        lines.add(buildLines(entry, cash, EntryType.CREDIT, owed, "Refund paid to the customer for order: " + orderNumber));
+        entry.setLines(lines);
+        validateEntry(lines, false);
+        journalEntryRepository.save(entry);
+        updateAccountBalances(lines, false);
+        log.info("Refund payment recorded for order {}", orderNumber);
+        return true;
+    }
+
     @Transactional
     public void recordWalkInSale(WalkInOrder order) {
         LedgerAccount cash = getAccount(AccountCategory.CASH, false);

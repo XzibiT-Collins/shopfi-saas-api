@@ -2,6 +2,7 @@ package com.example.perfume_budget.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.PageResponse;
+import com.example.perfume_budget.dto.order.OrderAuditEventResponse;
 import com.example.perfume_budget.dto.order.OrderListResponse;
 import com.example.perfume_budget.dto.order.OrderResponse;
 import com.example.perfume_budget.dto.order.OrderStatusUpdateRequest;
@@ -82,6 +83,27 @@ public class OrderController {
     public ResponseEntity<CustomApiResponse<OrderResponse>> acknowledgeRefund(@PathVariable String orderNumber){
         OrderResponse response = orderService.acknowledgeRefund(orderNumber);
         return etag(response).body(CustomApiResponse.success(response));
+    }
+
+    /**
+     * ORD-02: the goods of a paid order cancelled while OUT_FOR_DELIVERY are back in the shop: restock them once.
+     * 409 RETURN_NOT_APPLICABLE / NOTHING_TO_RESTOCK (docs/api/orders.md).
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/{orderNumber}/return-received")
+    public ResponseEntity<CustomApiResponse<OrderResponse>> receiveReturn(@PathVariable String orderNumber){
+        OrderResponse response = orderService.receiveReturn(orderNumber);
+        return etag(response).body(CustomApiResponse.success(response));
+    }
+
+    /** ORD-02: the order's append-only audit trail, oldest first, paged (size capped at 100). */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/{orderNumber}/audit-events")
+    public ResponseEntity<CustomApiResponse<PageResponse<OrderAuditEventResponse>>> getAuditEvents(
+            @PathVariable String orderNumber, Pageable pageable){
+        return ResponseEntity.ok().body(
+                CustomApiResponse.success(orderService.getAuditEvents(orderNumber, pageable))
+        );
     }
 
     private static ResponseEntity.BodyBuilder etag(OrderResponse response) {

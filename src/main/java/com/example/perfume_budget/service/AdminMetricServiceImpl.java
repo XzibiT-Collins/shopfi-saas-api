@@ -406,9 +406,10 @@ public class AdminMetricServiceImpl implements AdminMetricService {
 
     private List<String> journalEntryTypesFor(SalesAnalyticsSource source) {
         return switch (source) {
-            case ONLINE  -> List.of("SALE");
+            // ORD-02: SALE_REVERSAL (paid online order cancelled) nets the online sale back out
+            case ONLINE  -> List.of("SALE", "SALE_REVERSAL");
             case WALK_IN -> List.of("WALK_IN_SALE");
-            case ALL     -> List.of("SALE", "WALK_IN_SALE");
+            case ALL     -> List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL");
         };
     }
 
