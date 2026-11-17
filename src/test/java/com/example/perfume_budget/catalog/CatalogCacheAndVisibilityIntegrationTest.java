@@ -170,6 +170,44 @@ class CatalogCacheAndVisibilityIntegrationTest extends AbstractCheckoutIntegrati
         }
     }
 
+    private String nameOn(JsonNode items, long productId) {
+        for (JsonNode i : items) {
+            if (i.get("productId").asLong() == productId) {
+                return i.get("categoryName").asText();
+            }
+        }
+        throw new AssertionError("product " + productId + " not in " + items);
+    }
+
+    private String[] publicCategoryNames(long productId) throws Exception {
+        MvcResult listing = anon("/api/v1/product/listing");
+        MvcResult featured = anon("/api/v1/product/featured");
+        MvcResult detail = anon("/api/v1/product/" + slug(productId));
+        for (MvcResult r : List.of(listing, featured, detail)) {
+            assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+        }
+        return new String[]{
+                nameOn(body(listing).get("data").get("content"), productId),
+                nameOn(body(featured).get("data"), productId),
+                body(detail).get("data").get("category").asText()};
+    }
+
+    @Test
+    void afterARenameTheNextPublicListingFeaturedAndDetailShowTheNewName() throws Exception {
+        long id = category("CEDAR-" + tag);
+        long p = product(acme, "Cat02 Cedar " + tag, "9.00", 3);
+        jdbc.update("UPDATE tenant_acme.products SET category_id = ?, is_featured = true WHERE id = ?", id, p);
+        // warm all three caches with the old name
+        assertThat(publicCategoryNames(p)).containsOnly("CEDAR-" + tag);
+        assertThat(cache("productDetailsPage").get(slug(p))).as("detail cached").isNotNull();
+
+        MvcResult r = asAdmin(put("/api/v1/category/update/" + id).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("categoryName", "Vetiver-" + tag, "description", "cat02"))));
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+
+        assertThat(publicCategoryNames(p)).containsOnly("VETIVER-" + tag.toUpperCase());
+    }
+
     // ------------------------------------------------------------------ (c) hidden products stay hidden
 
     private List<Long> ids(JsonNode items) {
