@@ -240,9 +240,16 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
             }
         }
 
-        quantityByProduct.forEach((productId, consumedQuantity) ->
-                locationLedgerSync.deductForEcommerceSale(productById.get(productId), consumedQuantity,
-                        order.getOrderNumber(), "Fulfilled order " + order.getOrderNumber()));
+        quantityByProduct.forEach((productId, consumedQuantity) -> {
+            StorageLocation deductedAt = locationLedgerSync.deductForEcommerceSale(productById.get(productId), consumedQuantity,
+                    order.getOrderNumber(), "Fulfilled order " + order.getOrderNumber()).orElse(null);
+            // ORD-02: remember where the units left, so a return mirrors this deduction exactly
+            allocations.stream().filter(a -> a.getProduct().getId().equals(productId)).forEach(a -> {
+                a.setFulfilmentLocation(deductedAt);
+                a.setFulfilmentLocationRecorded(true);
+                inventoryAllocationRepository.save(a);
+            });
+        });
 
         refreshProducts(order.getItems().stream().map(OrderItem::getProductId).distinct().toList());
     }
@@ -261,6 +268,10 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
         stockLocks.lock(allocations.stream().map(a -> a.getProduct().getId()).toList());
         Map<Long, Product> productById = new LinkedHashMap<>();
         Map<Long, Integer> quantityByProduct = new LinkedHashMap<>();
+        // ORD-02: ledger return per (product, location the units were deducted from); null key = legacy fallback
+        Map<Long, Map<Long, Integer>> recordedReturns = new LinkedHashMap<>();
+        Map<Long, StorageLocation> locationById = new LinkedHashMap<>();
+        Map<Long, Integer> legacyReturns = new LinkedHashMap<>();
         int units = 0;
         for (InventoryAllocation allocation : allocations) {
             InventoryLayer layer = stockLocks.fresh(allocation.getLayer());
@@ -278,18 +289,39 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                     allocation.getUnitCost(),
                     allocation.getUnitSellingPrice(),
                     "Returned to stock: order " + order.getOrderNumber() + " cancelled by the merchant");
-            productById.putIfAbsent(allocation.getProduct().getId(), allocation.getProduct());
-            quantityByProduct.merge(allocation.getProduct().getId(), allocation.getQuantity(), Integer::sum);
+            Long productId = allocation.getProduct().getId();
+            productById.putIfAbsent(productId, allocation.getProduct());
+            quantityByProduct.merge(productId, allocation.getQuantity(), Integer::sum);
+            if (allocation.isFulfilmentLocationRecorded()) {
+                if (allocation.getFulfilmentLocation() != null) { // null: nothing was deducted, nothing goes back
+                    StorageLocation location = allocation.getFulfilmentLocation();
+                    locationById.putIfAbsent(location.getId(), location);
+                    recordedReturns.computeIfAbsent(productId, k -> new LinkedHashMap<>())
+                            .merge(location.getId(), allocation.getQuantity(), Integer::sum);
+                }
+            } else {
+                legacyReturns.merge(productId, allocation.getQuantity(), Integer::sum);
+            }
             units += allocation.getQuantity();
         }
 
-        quantityByProduct.forEach((productId, quantity) ->
-                locationLedgerSync.returnForEcommerceSale(productById.get(productId), quantity,
-                        order.getOrderNumber(), "Returned order " + order.getOrderNumber()));
+        String note = "Returned order " + order.getOrderNumber();
+        recordedReturns.forEach((productId, byLocation) -> byLocation.forEach((locationId, quantity) ->
+                locationLedgerSync.returnToLocation(productById.get(productId), locationById.get(locationId), quantity,
+                        order.getOrderNumber(), note)));
+        // Legacy rows (consumed before ORD-02, no matching deduction found by V14): the current fulfilment source
+        legacyReturns.forEach((productId, quantity) ->
+                locationLedgerSync.returnForEcommerceSale(productById.get(productId), quantity, order.getOrderNumber(), note));
         refreshProducts(new ArrayList<>(quantityByProduct.keySet()));
         // After the refresh: the loaded Product entities carry the old soldCount and would overwrite a bulk update.
         quantityByProduct.forEach((productId, quantity) -> productRepository.incrementSoldCount(productId, -quantity));
         return units;
+    }
+
+    @Override
+    public boolean hasConsumedOrderInventory(String orderNumber) {
+        return inventoryAllocationRepository.existsByReferenceTypeAndReferenceIdAndStatus(
+                InventoryReferenceType.ORDER, orderNumber, InventoryAllocationStatus.CONSUMED);
     }
 
     @Override

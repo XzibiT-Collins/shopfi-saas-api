@@ -83,10 +83,12 @@ public class LocationLedgerSyncImpl implements LocationLedgerSync {
 
     @Override
     @Transactional
-    public void deductForEcommerceSale(Product product, int quantity, String referenceId, String note) {
-        resolve(storageLocationRepository.findByIsEcommerceFulfilmentSourceTrue(), "e-commerce fulfilment source")
-                .ifPresent(location -> applyDelta(product, location, -quantity, StockTransferType.SALE_DEDUCTION,
-                        InventoryReferenceType.ORDER, referenceId, note, authUserUtil.getCurrentUser()));
+    public Optional<StorageLocation> deductForEcommerceSale(Product product, int quantity, String referenceId, String note) {
+        Optional<StorageLocation> source = resolve(storageLocationRepository.findByIsEcommerceFulfilmentSourceTrue(),
+                "e-commerce fulfilment source");
+        source.ifPresent(location -> applyDelta(product, location, -quantity, StockTransferType.SALE_DEDUCTION,
+                InventoryReferenceType.ORDER, referenceId, note, authUserUtil.getCurrentUser()));
+        return source;
     }
 
     @Override
@@ -95,6 +97,13 @@ public class LocationLedgerSyncImpl implements LocationLedgerSync {
         resolve(storageLocationRepository.findByIsEcommerceFulfilmentSourceTrue(), "e-commerce fulfilment source")
                 .ifPresent(location -> applyDelta(product, location, quantity, StockTransferType.SALE_RETURN,
                         InventoryReferenceType.ORDER, referenceId, note, authUserUtil.getCurrentUser()));
+    }
+
+    @Override
+    @Transactional
+    public void returnToLocation(Product product, StorageLocation location, int quantity, String referenceId, String note) {
+        applyDelta(product, location, quantity, StockTransferType.SALE_RETURN, InventoryReferenceType.ORDER, referenceId,
+                note, authUserUtil.getCurrentUser());
     }
 
     @Override

@@ -64,6 +64,19 @@ public class InventoryAllocation {
     @Column(nullable = false)
     private InventoryAllocationStatus status;
 
+    /**
+     * ORD-02: the location the consumed units were deducted from in the location ledger (SALE_DEDUCTION); a return
+     * goes back there. Null with {@link #fulfilmentLocationRecorded} = true: no location was configured, nothing was
+     * deducted. See V14 for the legacy rule.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "fulfilment_location_id")
+    private StorageLocation fulfilmentLocation;
+
+    @Builder.Default
+    @Column(name = "fulfilment_location_recorded", nullable = false)
+    private boolean fulfilmentLocationRecorded = false;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

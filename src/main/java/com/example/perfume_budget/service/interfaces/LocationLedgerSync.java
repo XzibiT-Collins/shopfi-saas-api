@@ -23,10 +23,17 @@ public interface LocationLedgerSync {
 
     void deductForWalkInSale(Product product, int quantity, String referenceId, String note);
 
-    void deductForEcommerceSale(Product product, int quantity, String referenceId, String note);
+    /**
+     * Deducts at the e-commerce fulfilment source.
+     * @return the location deducted from; empty when none is configured (nothing was deducted)
+     */
+    java.util.Optional<StorageLocation> deductForEcommerceSale(Product product, int quantity, String referenceId, String note);
 
     /** Puts units of a cancelled paid e-commerce order back at the e-commerce fulfilment source (reverse of the sale deduction). */
     void returnForEcommerceSale(Product product, int quantity, String referenceId, String note);
+
+    /** ORD-02: puts units of an e-commerce order back at the location they were deducted from (SALE_RETURN). */
+    void returnToLocation(Product product, StorageLocation location, int quantity, String referenceId, String note);
 
     void deductAtDefaultReceiving(Product product, int quantity, InventoryReferenceType referenceType,
                                   String referenceId, String note);

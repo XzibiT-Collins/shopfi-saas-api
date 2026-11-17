@@ -102,19 +102,24 @@ Wrapped in existing API envelope:
 
 ## Data Source Rules
 
+> **ORD-02 update.** A paid online order cancelled by the merchant posts a `SALE_REVERSAL` entry dated at the cancel.
+> Revenue, COGS and operating expenses are now **net** (credits minus debits for revenue, debits minus credits for COGS
+> and expenses), and `ONLINE` / `ALL` include `SALE_REVERSAL`, so the cancel takes the sale back out in the bucket of
+> the cancel date. A bucket (and its revenue) can therefore be negative when the sale was booked in an earlier bucket.
+
 ### Revenue
-- Source: `JournalEntryLine` where `account.category = SALES_REVENUE` and `entryType = CREDIT`
-- Journal entry types: `SALE` (online), `WALK_IN_SALE` (walk-in), both for ALL
+- Source: `JournalEntryLine` where `account.category = SALES_REVENUE`; net = CREDIT lines minus DEBIT lines (ORD-02)
+- Journal entry types: ONLINE = `SALE` + `SALE_REVERSAL`; WALK_IN = `WALK_IN_SALE`; ALL = all three (ORD-02)
 - Source-filtered
 
 ### COGS
-- Source: `JournalEntryLine` where `account.category = COGS` and `entryType = DEBIT`
-- Same journal entry type filter as revenue (SALE / WALK_IN_SALE)
+- Source: `JournalEntryLine` where `account.category = COGS`; net = DEBIT lines minus CREDIT lines (ORD-02)
+- Same journal entry type filter as revenue (SALE / SALE_REVERSAL / WALK_IN_SALE)
 - Source-filtered
 - Gross Profit = Revenue − COGS
 
 ### Operating Expenses (for Net Profit)
-- Source: `JournalEntryLine` where `account.category IN (DISCOUNT_EXPENSE, COUPON_EXPENSE, MARKETING_EXPENSE, LOGISTICS_EXPENSE, MISCELLANEOUS_EXPENSE, GENERAL_EXPENSE)` and `entryType = DEBIT`
+- Source: `JournalEntryLine` where `account.category IN (DISCOUNT_EXPENSE, COUPON_EXPENSE, MARKETING_EXPENSE, LOGISTICS_EXPENSE, MISCELLANEOUS_EXPENSE, GENERAL_EXPENSE)`; net = DEBIT lines minus CREDIT lines (ORD-02: the discount credited back by a `SALE_REVERSAL`, and manual credits, reduce it)
 - No filter on `journal_entry.type` — includes manual entries
 - **Always ALL regardless of source filter**
 - Net Profit = Gross Profit − Operating Expenses
@@ -140,12 +145,15 @@ Native SQL. One query per granularity (DAY, WEEK, MONTH, YEAR).
 ```sql
 SELECT
   DATE_TRUNC(:granularity, j.transaction_date) AS bucket_start,
-  SUM(CASE WHEN a.category = 'SALES_REVENUE' AND l.entry_type = 'CREDIT' THEN l.amount ELSE 0 END) AS revenue,
-  SUM(CASE WHEN a.category = 'COGS'          AND l.entry_type = 'DEBIT'  THEN l.amount ELSE 0 END) AS cogs
+  -- ORD-02: net amounts
+  COALESCE(SUM(CASE WHEN a.category = 'SALES_REVENUE' AND l.entry_type = 'CREDIT' THEN l.amount
+                    WHEN a.category = 'SALES_REVENUE' AND l.entry_type = 'DEBIT'  THEN -l.amount ELSE 0 END), 0) AS revenue,
+  COALESCE(SUM(CASE WHEN a.category = 'COGS'          AND l.entry_type = 'DEBIT'  THEN l.amount
+                    WHEN a.category = 'COGS'          AND l.entry_type = 'CREDIT' THEN -l.amount ELSE 0 END), 0) AS cogs
 FROM journal_entries j
 JOIN journal_entry_lines l ON l.journal_entry_id = j.id
 JOIN ledger_accounts a ON a.id = l.account_id
-WHERE j.type IN (:types)
+WHERE j.type IN (:types)   -- ONLINE: SALE, SALE_REVERSAL; WALK_IN: WALK_IN_SALE; ALL: all three
   AND j.transaction_date BETWEEN :start AND :end
 GROUP BY DATE_TRUNC(:granularity, j.transaction_date)
 ORDER BY bucket_start
@@ -158,13 +166,12 @@ Projection: `RevenueAndCOGSBucketProjection { getBucketStart(), getRevenue(), ge
 ```sql
 SELECT
   DATE_TRUNC(:granularity, j.transaction_date) AS bucket_start,
-  SUM(l.amount) AS expenses
+  COALESCE(SUM(CASE WHEN l.entry_type = 'DEBIT' THEN l.amount ELSE -l.amount END), 0) AS expenses  -- ORD-02: net
 FROM journal_entries j
 JOIN journal_entry_lines l ON l.journal_entry_id = j.id
 JOIN ledger_accounts a ON a.id = l.account_id
 WHERE a.category IN ('DISCOUNT_EXPENSE','COUPON_EXPENSE','MARKETING_EXPENSE',
                      'LOGISTICS_EXPENSE','MISCELLANEOUS_EXPENSE','GENERAL_EXPENSE')
-  AND l.entry_type = 'DEBIT'
   AND j.transaction_date BETWEEN :start AND :end
 GROUP BY DATE_TRUNC(:granularity, j.transaction_date)
 ORDER BY bucket_start
@@ -321,20 +328,21 @@ Examples:
 | Previous period empty | Trend = 100% isUp=true if current > 0, else 0% isUp=true |
 | COGS > revenue in a bucket | grossProfit negative — allowed |
 | No expense entries in period | expenses = 0, netProfit = grossProfit |
-| source=ALL, mixed COGS | SALE + WALK_IN_SALE COGS both summed in Query A |
+| source=ALL, mixed COGS | SALE + SALE_REVERSAL + WALK_IN_SALE COGS netted in Query A |
+| Paid online order cancelled (ORD-02) | SALE_REVERSAL dated at the cancel nets revenue / COGS / discount back out in the cancel bucket; that bucket may be negative |
 | Only one of from/to provided | Reject 400 |
-| Refund entries | Ignored in v1 (refund posting flow not active) |
+| Refund entries | `REFUND` entries (refund payout: Refunds Payable / Cash) touch no revenue, COGS or expense account and are not in the type filter |
 | Timezone | Use server-local date boundaries consistently |
 
 ---
 
 ## Exact Metric Semantics
 
-**Revenue:** SALES_REVENUE credit lines only. Excludes tax, discounts as standalone lines, COGS, inventory movements, cash/mobile-money debit lines.
+**Revenue:** SALES_REVENUE credit lines minus debit lines (ORD-02; the debits are the SALE_REVERSAL lines). Excludes tax, discounts as standalone lines, COGS, inventory movements, cash/mobile-money debit lines.
 
-**Gross Profit:** Revenue − COGS. COGS from SALE/WALK_IN_SALE entries only. Source-filtered.
+**Gross Profit:** Revenue − COGS. COGS (debits minus credits) from SALE/SALE_REVERSAL/WALK_IN_SALE entries only. Source-filtered.
 
-**Net Profit:** Gross Profit − all operating expense debits (DISCOUNT_EXPENSE, COUPON_EXPENSE, MARKETING_EXPENSE, LOGISTICS_EXPENSE, MISCELLANEOUS_EXPENSE, GENERAL_EXPENSE). Always business-wide regardless of source filter.
+**Net Profit:** Gross Profit − net operating expenses, debits minus credits (DISCOUNT_EXPENSE, COUPON_EXPENSE, MARKETING_EXPENSE, LOGISTICS_EXPENSE, MISCELLANEOUS_EXPENSE, GENERAL_EXPENSE). Always business-wide regardless of source filter.
 
 **Avg Order Value:** Revenue / completed order count. ALL uses combined totals.
 

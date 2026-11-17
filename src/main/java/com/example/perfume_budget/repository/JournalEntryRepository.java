@@ -82,14 +82,17 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
     /**
      * Query A: revenue + COGS per time bucket, filtered by journal entry types (source).
      * granularity must be one of: 'day', 'week', 'month', 'year'
-     * types must be one or both of: 'SALE', 'WALK_IN_SALE'
+     * types: 'SALE', 'WALK_IN_SALE', 'SALE_REVERSAL'. ORD-02: net amounts (revenue credits minus debits, COGS debits
+     * minus credits), so a SALE_REVERSAL dated at the cancel takes the sale back out in that bucket.
      */
     @Query(value = """
             SELECT DATE_TRUNC(:granularity, j.transaction_date) AS bucket_start,
-                   COALESCE(SUM(CASE WHEN a.category = 'SALES_REVENUE' AND l.entry_type = 'CREDIT'
-                                     THEN l.amount ELSE 0 END), 0) AS revenue,
-                   COALESCE(SUM(CASE WHEN a.category = 'COGS' AND l.entry_type = 'DEBIT'
-                                     THEN l.amount ELSE 0 END), 0) AS cogs
+                   COALESCE(SUM(CASE WHEN a.category = 'SALES_REVENUE' AND l.entry_type = 'CREDIT' THEN l.amount
+                                     WHEN a.category = 'SALES_REVENUE' AND l.entry_type = 'DEBIT' THEN -l.amount
+                                     ELSE 0 END), 0) AS revenue,
+                   COALESCE(SUM(CASE WHEN a.category = 'COGS' AND l.entry_type = 'DEBIT' THEN l.amount
+                                     WHEN a.category = 'COGS' AND l.entry_type = 'CREDIT' THEN -l.amount
+                                     ELSE 0 END), 0) AS cogs
             FROM journal_entries j
             JOIN journal_entry_lines l ON l.journal_entry_id = j.id
             JOIN ledger_accounts a ON a.id = l.account_id
@@ -105,18 +108,18 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             @Param("granularity") String granularity);
 
     /**
-     * Query B: operating expense debits per time bucket — no source filter, always ALL.
+     * Query B: operating expenses per time bucket — no source filter, always ALL. ORD-02: net (debits minus credits),
+     * so the discount given on a cancelled paid order (credited back by its SALE_REVERSAL) no longer counts.
      * expenseCategories: list of category names e.g. 'DISCOUNT_EXPENSE', 'MARKETING_EXPENSE' etc.
      * granularity must be one of: 'day', 'week', 'month', 'year'
      */
     @Query(value = """
             SELECT DATE_TRUNC(:granularity, j.transaction_date) AS bucket_start,
-                   COALESCE(SUM(l.amount), 0) AS expenses
+                   COALESCE(SUM(CASE WHEN l.entry_type = 'DEBIT' THEN l.amount ELSE -l.amount END), 0) AS expenses
             FROM journal_entries j
             JOIN journal_entry_lines l ON l.journal_entry_id = j.id
             JOIN ledger_accounts a ON a.id = l.account_id
             WHERE a.category IN (:expenseCategories)
-              AND l.entry_type = 'DEBIT'
               AND j.transaction_date BETWEEN :start AND :end
             GROUP BY 1
             ORDER BY 1
@@ -126,4 +129,38 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end,
             @Param("granularity") String granularity);
+
+    /** ORD-02: the automatic entries of one online order of a type (referenceType ORDER), oldest first. */
+    List<JournalEntry> findByReferenceTypeAndReferenceIdAndTypeOrderByIdAsc(
+            String referenceType, String referenceId, JournalEntryType type);
+
+    /** ORD-02: number of lines of the order's automatic entries of a type that hit an account category. */
+    @Query("""
+            SELECT COUNT(l.id)
+            FROM JournalEntryLine l
+            JOIN l.journalEntry j
+            WHERE j.referenceType = 'ORDER'
+            AND j.referenceId = :orderNumber
+            AND j.type = :type
+            AND l.account.category = :category
+            """)
+    long countOrderLines(@Param("orderNumber") String orderNumber,
+                         @Param("type") JournalEntryType type,
+                         @Param("category") AccountCategory category);
+
+    /** ORD-02: sum of the order's automatic lines of a type on one account category and side. */
+    @Query("""
+            SELECT COALESCE(SUM(l.amount), 0)
+            FROM JournalEntryLine l
+            JOIN l.journalEntry j
+            WHERE j.referenceType = 'ORDER'
+            AND j.referenceId = :orderNumber
+            AND j.type = :type
+            AND l.account.category = :category
+            AND l.entryType = :entryType
+            """)
+    BigDecimal sumOrderLines(@Param("orderNumber") String orderNumber,
+                             @Param("type") JournalEntryType type,
+                             @Param("category") AccountCategory category,
+                             @Param("entryType") EntryType entryType);
 }

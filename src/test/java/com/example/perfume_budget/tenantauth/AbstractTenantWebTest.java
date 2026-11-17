@@ -108,13 +108,22 @@ public abstract class AbstractTenantWebTest extends AbstractPostgresIntegrationT
         jdbc.update("UPDATE master.tenants SET custom_domain = NULL, webhook_token = NULL WHERE slug IN ('acme','bravo')");
         // leave the shared acme/bravo fixtures pristine for other test classes (e.g. PostgresBootTest)
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
-            jdbc.update("DELETE FROM " + schema + ".payments");
-            jdbc.update("DELETE FROM " + schema + ".orders");
+            resetOrders(schema);
             jdbc.update("DELETE FROM " + schema + ".payment_gateway_config");
             jdbc.update("DELETE FROM " + schema + ".profiles WHERE user_id IN (SELECT id FROM " + schema + ".users WHERE email NOT LIKE 'admin@%')");
             jdbc.update("DELETE FROM " + schema + ".users WHERE email NOT LIKE 'admin@%'");
             jdbc.update("UPDATE " + schema + ".feature_flags SET enabled = false");
         }
+    }
+
+    /**
+     * Empties a tenant's orders and payments. ORD-02: audit rows are append-only (row triggers reject DELETE) and their
+     * order FK is RESTRICT, so this test-only reset uses TRUNCATE ... CASCADE (fires no row trigger; also takes the
+     * order items, taxes and audit rows that a plain DELETE of the orders would trip over).
+     */
+    protected void resetOrders(String schema) {
+        jdbc.update("DELETE FROM " + schema + ".payments");
+        jdbc.execute("TRUNCATE " + schema + ".orders CASCADE");
     }
 
     protected MockHttpServletRequestBuilder postJson(String path, String tenantSlug, Object body) throws Exception {

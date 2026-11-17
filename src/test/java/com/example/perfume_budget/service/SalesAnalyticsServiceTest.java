@@ -83,11 +83,11 @@ class SalesAnalyticsServiceTest {
     // ----- source filter tests -----
 
     @Test
-    void source_ONLINE_passesOnlySaleType() {
+    void source_ONLINE_passesSaleAndItsReversal() {
         stubAllReposEmpty();
         service.getSalesAnalytics(SalesAnalyticsSource.ONLINE, SalesAnalyticsGranularity.DAY, null, null);
         verify(journalEntryRepository, atLeastOnce()).getRevenueAndCOGSByBucket(
-                eq(List.of("SALE")), any(), any(), anyString());
+                eq(List.of("SALE", "SALE_REVERSAL")), any(), any(), anyString()); // ORD-02
     }
 
     @Test
@@ -99,11 +99,11 @@ class SalesAnalyticsServiceTest {
     }
 
     @Test
-    void source_ALL_passesBothTypes() {
+    void source_ALL_passesBothSaleTypesAndTheOnlineReversal() {
         stubAllReposEmpty();
         service.getSalesAnalytics(SalesAnalyticsSource.ALL, SalesAnalyticsGranularity.DAY, null, null);
         verify(journalEntryRepository, atLeastOnce()).getRevenueAndCOGSByBucket(
-                eq(List.of("SALE", "WALK_IN_SALE")), any(), any(), anyString());
+                eq(List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL")), any(), any(), anyString()); // ORD-02
     }
 
     // ----- granularity bucket label tests -----
