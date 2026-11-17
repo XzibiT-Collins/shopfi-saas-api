@@ -89,7 +89,8 @@ class AuthorizationMatrixStructureTest {
         expect(ADMIN, "FeatureFlagController", "getAllFlags", "getFlag", "updateFlag");
         expect(ADMIN, "InventoryManagementController", "receiveStock", "adjustInventory", "getProductInventorySummary",
                 "getProductInventoryHistory");
-        expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus", "acknowledgeRefund");
+        expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus", "acknowledgeRefund", "receiveReturn",
+                "getAuditEvents");
         expect(ADMIN, "PaymentSettingsController", "get", "update", "rotateWebhookToken");
         expect(ADMIN, "ProductController", "createProduct", "updateProduct", "getAdminProductListings", "getProductDetails",
                 "setProductDiscount", "clearProductDiscount", "deleteProduct");

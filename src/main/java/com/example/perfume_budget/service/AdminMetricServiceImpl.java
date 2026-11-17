@@ -182,14 +182,20 @@ public class AdminMetricServiceImpl implements AdminMetricService {
     }
 
     @Override
+    // ORD-02 rework: reads the user's delivery addresses (lazy); without a transaction the endpoint failed with a 500
+    // (LazyInitializationException, no open-session-in-view)
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public CustomerFullDetailsResponse getCustomerDetails(Long userId) {
-        User user = userRepository.findById(userId)
+        // CAT-02: addresses are mapped below, outside a transaction: load them with the user (one query)
+        User user = userRepository.findWithDeliveryAddressesById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         List<Order> orders = orderRepository.findAllByUser(user);
         
         BigDecimal totalSpent = orders.stream()
                 .filter(o -> o.getStatus() == PaymentStatus.COMPLETED)
+                // ORD-02 rework (F5): a paid order the shop cancelled is refunded, not spent (as top customers)
+                .filter(o -> o.getDeliveryStatus() != OrderProcessingStatus.CANCELLED)
                 .map(o -> o.getTotalAmount().getAmount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
@@ -406,9 +412,10 @@ public class AdminMetricServiceImpl implements AdminMetricService {
 
     private List<String> journalEntryTypesFor(SalesAnalyticsSource source) {
         return switch (source) {
-            case ONLINE  -> List.of("SALE");
+            // ORD-02: SALE_REVERSAL (paid online order cancelled) nets the online sale back out
+            case ONLINE  -> List.of("SALE", "SALE_REVERSAL");
             case WALK_IN -> List.of("WALK_IN_SALE");
-            case ALL     -> List.of("SALE", "WALK_IN_SALE");
+            case ALL     -> List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL");
         };
     }
 

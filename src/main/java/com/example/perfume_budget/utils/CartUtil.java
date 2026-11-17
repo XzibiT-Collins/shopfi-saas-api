@@ -20,6 +20,21 @@ public class CartUtil {
         return cartRepository.findByUser(authUserUtil.getCurrentUser());
     }
 
+    /**
+     * CAT-02: the current user's cart with items and products already loaded (one query), for mapping to a response
+     * outside a transaction. Creates the (empty) cart if the user has none yet, like {@link #getCurrentUserCart()}.
+     */
+    public Cart getCurrentUserCartWithItems() {
+        User currentUser = authUserUtil.getCurrentUser();
+        return cartRepository.findWithItemsByUser(currentUser)
+                .orElseGet(() -> cartRepository.save(
+                        Cart.builder()
+                                .user(currentUser)
+                                .items(new ArrayList<>())
+                                .build()
+                ));
+    }
+
     public Cart getCurrentUserCart() {
         User currentUser = authUserUtil.getCurrentUser();
         return cartRepository.findByUser(currentUser)

@@ -13,6 +13,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -70,6 +71,11 @@ public class CategoryServiceImpl implements CategoryService {
                 .build()).toList();
     }
 
+    /**
+     * CAT-02: the public catalog caches hold DTOs that carry the category name, so a rename (or delete) evicts the same
+     * three caches the product writes evict; otherwise the old name is served until the TTL runs out.
+     */
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     @Transactional
     @Override
     public CategoryResponse updateCategory(Long categoryId, CategoryRequest request) {
@@ -94,6 +100,7 @@ public class CategoryServiceImpl implements CategoryService {
                 .build();
     }
 
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     @Override
     public void deleteCategory(Long categoryId) {
         categoryRepository.deleteById(categoryId);

@@ -66,6 +66,14 @@ class BookkeepingServiceTest {
         accountsPayableAccount = createAccount(9L, "2002", "Accounts Payable", AccountCategory.ACCOUNTS_PAYABLE, AccountType.LIABILITY, BigDecimal.ZERO);
 
         lenient().when(entryNumberGenerator.generate()).thenReturn("JE-001");
+        // ORD-02 rework: balances move through the atomic UPDATE ... RETURNING; emulate it on the in-memory accounts
+        lenient().when(ledgerAccountRepository.applyBalanceDelta(any(), any())).thenAnswer(i -> {
+            LedgerAccount a = java.util.stream.Stream.of(cashAccount, revenueAccount, taxPayableAccount, discountExpenseAccount, cogsAccount,
+                    inventoryAccount, inventoryDecreaseAccount, inventoryIncreaseAccount, accountsPayableAccount).filter(x -> x.getId().equals(i.getArgument(0))).findFirst().orElse(null);
+            if (a == null) return null;
+            a.setBalance(a.getBalance().add(i.<BigDecimal>getArgument(1)));
+            return a.getBalance();
+        });
     }
 
     private LedgerAccount createAccount(Long id, String code, String name, AccountCategory category, AccountType type, BigDecimal balance) {
@@ -194,8 +202,8 @@ class BookkeepingServiceTest {
         when(authUserUtil.getCurrentUser()).thenReturn(user);
         when(ledgerAccountRepository.findByCategory(AccountCategory.INVENTORY)).thenReturn(Optional.of(inventoryAccount));
         when(ledgerAccountRepository.findByCategory(AccountCategory.ACCOUNTS_PAYABLE)).thenReturn(Optional.of(accountsPayableAccount));
-        when(ledgerAccountRepository.findById(inventoryAccount.getId())).thenReturn(Optional.of(inventoryAccount));
-        when(ledgerAccountRepository.findById(accountsPayableAccount.getId())).thenReturn(Optional.of(accountsPayableAccount));
+        lenient().when(ledgerAccountRepository.findById(inventoryAccount.getId())).thenReturn(Optional.of(inventoryAccount));
+        lenient().when(ledgerAccountRepository.findById(accountsPayableAccount.getId())).thenReturn(Optional.of(accountsPayableAccount));
 
         // Act
         BigDecimal initialBalance = inventoryAccount.getBalance();
@@ -218,8 +226,8 @@ class BookkeepingServiceTest {
         when(authUserUtil.getCurrentUser()).thenReturn(user);
         when(ledgerAccountRepository.findByCategory(AccountCategory.INVENTORY_DECREASE)).thenReturn(Optional.of(inventoryDecreaseAccount));
         when(ledgerAccountRepository.findByCategory(AccountCategory.INVENTORY)).thenReturn(Optional.of(inventoryAccount));
-        when(ledgerAccountRepository.findById(inventoryDecreaseAccount.getId())).thenReturn(Optional.of(inventoryDecreaseAccount));
-        when(ledgerAccountRepository.findById(inventoryAccount.getId())).thenReturn(Optional.of(inventoryAccount));
+        lenient().when(ledgerAccountRepository.findById(inventoryDecreaseAccount.getId())).thenReturn(Optional.of(inventoryDecreaseAccount));
+        lenient().when(ledgerAccountRepository.findById(inventoryAccount.getId())).thenReturn(Optional.of(inventoryAccount));
 
         // Act
         bookkeepingService.recordInventoryAdjustment(product, 5, new BigDecimal("250.00"));
@@ -240,8 +248,8 @@ class BookkeepingServiceTest {
         when(authUserUtil.getCurrentUser()).thenReturn(user);
         when(ledgerAccountRepository.findByCategory(AccountCategory.INVENTORY_INCREASE)).thenReturn(Optional.of(inventoryIncreaseAccount));
         when(ledgerAccountRepository.findByCategory(AccountCategory.INVENTORY)).thenReturn(Optional.of(inventoryAccount));
-        when(ledgerAccountRepository.findById(inventoryIncreaseAccount.getId())).thenReturn(Optional.of(inventoryIncreaseAccount));
-        when(ledgerAccountRepository.findById(inventoryAccount.getId())).thenReturn(Optional.of(inventoryAccount));
+        lenient().when(ledgerAccountRepository.findById(inventoryIncreaseAccount.getId())).thenReturn(Optional.of(inventoryIncreaseAccount));
+        lenient().when(ledgerAccountRepository.findById(inventoryAccount.getId())).thenReturn(Optional.of(inventoryAccount));
 
         bookkeepingService.recordInventoryAdjustmentIn(product, 5, new BigDecimal("250.00"));
 
@@ -262,8 +270,8 @@ class BookkeepingServiceTest {
         when(authUserUtil.getCurrentUser()).thenReturn(user);
         when(ledgerAccountRepository.findByCategory(AccountCategory.CASH)).thenReturn(Optional.of(cashAccount));
         when(ledgerAccountRepository.findByCategory(AccountCategory.SALES_REVENUE)).thenReturn(Optional.of(revenueAccount));
-        when(ledgerAccountRepository.findById(cashAccount.getId())).thenReturn(Optional.of(cashAccount));
-        when(ledgerAccountRepository.findById(revenueAccount.getId())).thenReturn(Optional.of(revenueAccount));
+        lenient().when(ledgerAccountRepository.findById(cashAccount.getId())).thenReturn(Optional.of(cashAccount));
+        lenient().when(ledgerAccountRepository.findById(revenueAccount.getId())).thenReturn(Optional.of(revenueAccount));
 
         // Act
         bookkeepingService.recordManualEntry(request);

@@ -40,6 +40,13 @@ public interface OrderService {
     /** The shop refunded a refund-required order by hand: clears the flag and records who/when. */
     OrderResponse acknowledgeRefund(String orderNumber);
 
+    /** ORD-02: restock the goods of a paid order cancelled while OUT_FOR_DELIVERY once they are back (ADMIN). */
+    OrderResponse receiveReturn(String orderNumber);
+
+    /** ORD-02: the order's audit trail, oldest first, paged (ADMIN). */
+    PageResponse<com.example.perfume_budget.dto.order.OrderAuditEventResponse> getAuditEvents(String orderNumber,
+                                                                                            org.springframework.data.domain.Pageable pageable);
+
     void reserveStock(String orderNumber, List<OrderItem> orderItems);
 
     void releaseStock(String orderNumber);

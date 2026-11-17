@@ -251,6 +251,9 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(deliveryStatus(o.orderNumber())).isEqualTo("CANCELLED");
         assertThat(reservedQty(acme, o.productId())).as("straggling reservation released").isZero();
         assertThat(layerRemaining(acme, o.productId())).isEqualTo(10);
+        // X20: the audit row carries the real refund state (none owed here)
+        assertThat(jdbc.queryForObject("SELECT e.refund_required FROM tenant_acme.order_audit_events e JOIN tenant_acme.orders o ON o.id = e.order_id "
+                + "WHERE o.order_number = ? AND e.event_type = 'CANCELLED'", Boolean.class, o.orderNumber())).isFalse();
     }
 
     @Test
@@ -758,11 +761,19 @@ class AdminOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         three();
         MvcResult big = mvc.perform(admin(get("/api/v1/order/all?size=100000"))).andReturn();
         assertThat(status(big)).isEqualTo(200);
-        assertThat(body(big).at("/data/size").asInt()).isLessThanOrEqualTo(100);
+        assertThat(body(big).at("/data/size").asInt()).as("ORD-02: capped at 50").isEqualTo(50);
         MvcResult page = mvc.perform(admin(get("/api/v1/order/all?page=1000001"))).andReturn();
         assertThat(status(page)).isEqualTo(400);
         assertThat(code(page)).isEqualTo("INVALID_PAGE");
-        assertThat(status(mvc.perform(admin(get("/api/v1/order/all?page=1000000"))).andReturn())).isEqualTo(200);
+        // ORD-02: the deepest page starts below row 10,000 (page * size < 10,000)
+        assertThat(status(mvc.perform(admin(get("/api/v1/order/all?page=499&size=20"))).andReturn())).isEqualTo(200);
+        MvcResult deep = mvc.perform(admin(get("/api/v1/order/all?page=500&size=20"))).andReturn();
+        assertThat(status(deep)).isEqualTo(400);
+        assertThat(code(deep)).isEqualTo("INVALID_PAGE");
+        assertThat(body(deep).at("/data/maxOffset").asInt()).isEqualTo(10_000);
+        assertThat(status(mvc.perform(admin(get("/api/v1/order/all?page=199&size=50"))).andReturn())).isEqualTo(200);
+        assertThat(status(mvc.perform(admin(get("/api/v1/order/all?page=200&size=500"))).andReturn())).as("size clamped to 50 first").isEqualTo(400);
+        assertThat(status(mvc.perform(admin(get("/api/v1/order/all?page=1000000"))).andReturn())).isEqualTo(400);
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.example.perfume_budget.dto.product.response.ProductListing;
 import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.support.TestTenants;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.Cache;
@@ -31,6 +32,17 @@ class PublicCatalogExposureTest extends AbstractCheckoutIntegrationTest {
     static final Set<String> PUBLIC_KEYS = Set.of("productId", "productName", "productShortDescription", "productImageUrl",
             "categoryName", "price", "originalPrice", "onSale", "discountPercentage", "discountEndsAt", "isOutOfStock", "slug");
     static final List<String> LEAKS = List.of("stockQuantity", "isActive", "isEnlisted", "lowStockThreshold", "soldCount", "sku");
+
+    /**
+     * CAT-02: fixtures are written with SQL (no eviction), and other classes cache catalog pages of rows that the base
+     * class later truncates; start every test from empty catalog caches instead of depending on the class order.
+     */
+    @BeforeEach
+    void clearCatalogCaches() {
+        for (String name : List.of("publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage")) {
+            tenants.runAs(acme, () -> cacheManager.getCache(name)).clear();
+        }
+    }
 
     private long featured(long productId) {
         jdbc.update("UPDATE tenant_acme.products SET is_featured = true WHERE id = ?", productId);

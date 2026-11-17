@@ -59,6 +59,14 @@ class WalkInBookkeepingServiceTest {
         discountExpenseAccount = createAccount(5L, AccountCategory.DISCOUNT_EXPENSE, AccountType.EXPENSE, BigDecimal.ZERO);
         cogsAccount = createAccount(6L, AccountCategory.COGS, AccountType.EXPENSE, BigDecimal.ZERO);
         inventoryAccount = createAccount(7L, AccountCategory.INVENTORY, AccountType.ASSET, new BigDecimal("1000.00"));
+        // ORD-02 rework: balances move through the atomic UPDATE ... RETURNING; emulate it on the in-memory accounts
+        lenient().when(ledgerAccountRepository.applyBalanceDelta(any(), any())).thenAnswer(i -> {
+            LedgerAccount a = java.util.stream.Stream.of(cashAccount, mobileMoneyAccount, revenueAccount, taxPayableAccount, discountExpenseAccount,
+                    cogsAccount, inventoryAccount).filter(x -> x.getId().equals(i.getArgument(0))).findFirst().orElse(null);
+            if (a == null) return null;
+            a.setBalance(a.getBalance().add(i.<BigDecimal>getArgument(1)));
+            return a.getBalance();
+        });
 
         lenient().when(entryNumberGenerator.generate()).thenReturn("JE-WLK-001");
         when(ledgerAccountRepository.findByCategory(AccountCategory.CASH)).thenReturn(Optional.of(cashAccount));

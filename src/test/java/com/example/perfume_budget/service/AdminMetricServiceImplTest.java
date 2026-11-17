@@ -157,7 +157,7 @@ class AdminMetricServiceImplTest {
         order.setItems(new ArrayList<>());
         order.setTaxes(new ArrayList<>());
 
-        when(userRepository.findById(userId)).thenReturn(Optional.of(user));
+        when(userRepository.findWithDeliveryAddressesById(userId)).thenReturn(Optional.of(user));
         when(orderRepository.findAllByUser(user)).thenReturn(List.of(order));
 
         CustomerFullDetailsResponse result = adminMetricService.getCustomerDetails(userId);
@@ -171,7 +171,7 @@ class AdminMetricServiceImplTest {
     @Test
     void getCustomerDetails_UserNotFound() {
         Long userId = 1L;
-        when(userRepository.findById(userId)).thenReturn(Optional.empty());
+        when(userRepository.findWithDeliveryAddressesById(userId)).thenReturn(Optional.empty());
 
         assertThrows(ResourceNotFoundException.class, () -> adminMetricService.getCustomerDetails(userId));
     }
