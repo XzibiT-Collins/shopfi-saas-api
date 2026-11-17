@@ -1,24 +1,18 @@
 package com.example.perfume_budget.tenancy;
 
-import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.security.cors.RequestPaths;
-import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
 import org.springframework.core.env.Environment;
-import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.net.URI;
-import java.util.Optional;
 
 /**
  * Resolves the tenant for every request and binds it to {@link TenantContext} before any
@@ -36,7 +30,6 @@ import java.util.Optional;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class TenantResolutionFilter extends OncePerRequestFilter {
 
     private static final String PLATFORM_PATH_PREFIX = "/api/v1/platform";
@@ -51,9 +44,22 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
             "/error", "/favicon.ico"
     };
 
-    private final TenantRegistryService tenantRegistryService;
-    private final TenantResolutionProperties properties;
-    private final Environment environment;
+    private final RequestTenantResolver resolver;
+
+    public TenantResolutionFilter(RequestTenantResolver resolver) {
+        this.resolver = resolver;
+    }
+
+    /**
+     * The bean constructor: same dependencies as before SEC-03c (so MVC slice tests that mock them keep working). The
+     * resolver is stateless, so this instance and the {@link RequestTenantResolver} bean used by the WebSocket
+     * handshake apply identical rules.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public TenantResolutionFilter(TenantRegistryService tenantRegistryService, TenantResolutionProperties properties,
+                                  Environment environment) {
+        this(new RequestTenantResolver(tenantRegistryService, properties, environment));
+    }
 
     @Override
     protected void doFilterInternal(@NonNull HttpServletRequest request,
@@ -82,71 +88,34 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
                 return;
             }
 
-            String originHost = resolveOriginHost(request);
-            Optional<Tenant> resolved = resolveTenant(originHost, request);
-
-            if (resolved.isEmpty()) {
-                if (originHost != null) {
+            // SEC-03c: the rules live in RequestTenantResolver, shared with the WebSocket handshake.
+            RequestTenantResolver.Resolution resolution = resolver.resolve(request);
+            switch (resolution.outcome()) {
+                case UNKNOWN -> {
                     // A real browser origin that matches no tenant.
                     response.sendError(HttpServletResponse.SC_NOT_FOUND, "Unknown tenant");
                     return;
                 }
-                // No tenant signal: leave the context unbound. TenantRequiredFilter (next in the
-                // chain) rejects it unless the path is on the neutral allow-list.
-                filterChain.doFilter(request, response);
-                return;
+                case NO_SIGNAL -> {
+                    // No tenant signal: leave the context unbound. TenantRequiredFilter (next in the
+                    // chain) rejects it unless the path is on the neutral allow-list.
+                    filterChain.doFilter(request, response);
+                    return;
+                }
+                case SUSPENDED -> {
+                    response.sendError(423, "Tenant suspended");
+                    return;
+                }
+                case UNAVAILABLE -> {
+                    response.sendError(HttpServletResponse.SC_NOT_FOUND, "Tenant not available");
+                    return;
+                }
+                case RESOLVED -> TenantContext.set(resolution.identity());
             }
-
-            Tenant tenant = resolved.get();
-            if (tenant.getStatus() == TenantStatus.SUSPENDED) {
-                response.sendError(423, "Tenant suspended");
-                return;
-            }
-            if (tenant.getStatus() != TenantStatus.ACTIVE) {
-                response.sendError(HttpServletResponse.SC_NOT_FOUND, "Tenant not available");
-                return;
-            }
-
-            TenantContext.set(TenantIdentity.tenant(tenant.getSlug(), tenant.getSchemaName()));
             filterChain.doFilter(request, response);
         } finally {
             TenantContext.clear();
         }
-    }
-
-    private Optional<Tenant> resolveTenant(String originHost, HttpServletRequest request) {
-        if (originHost != null && !properties.isPlatformDomain(originHost)) {
-            Optional<Tenant> byDomain = tenantRegistryService.findByCustomDomain(originHost);
-            if (byDomain.isPresent()) {
-                return byDomain;
-            }
-            String subdomainSlug = extractSubdomainSlug(originHost);
-            if (subdomainSlug != null) {
-                Optional<Tenant> bySubdomain = tenantRegistryService.findBySlug(subdomainSlug);
-                if (bySubdomain.isPresent()) {
-                    return bySubdomain;
-                }
-            }
-        }
-
-        // Dev/test header, non-prod only.
-        if (properties.getHeaderResolution().isEnabled() && !environment.acceptsProfiles(Profiles.of("prod"))) {
-            String headerSlug = request.getHeader(properties.getHeaderName());
-            if (headerSlug != null && !headerSlug.isBlank()) {
-                return tenantRegistryService.findBySlug(headerSlug.trim().toLowerCase());
-            }
-        }
-
-        return Optional.empty();
-    }
-
-    /** Host from the {@code Origin} header, falling back to {@code Referer}. */
-    private String resolveOriginHost(HttpServletRequest request) {
-        String host = hostFromUrl(request.getHeader("Origin"));
-        if (host != null) {
-            return host;
-        }
-        return hostFromUrl(request.getHeader("Referer"));
     }
 
     /**
@@ -155,31 +124,7 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
      * that were resolved from anything else must not be shared-cacheable (THEME-04c).
      */
     public static boolean tenantSignalIsOrigin(HttpServletRequest request) {
-        return hostFromUrl(request.getHeader("Origin")) != null;
-    }
-
-    private static String hostFromUrl(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            String host = URI.create(value).getHost();
-            return host != null ? host.toLowerCase() : null;
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
-    }
-
-    private String extractSubdomainSlug(String host) {
-        String base = properties.getBaseDomain();
-        if (base == null || base.isBlank()) {
-            return null;
-        }
-        String suffix = "." + base.toLowerCase();
-        if (host.endsWith(suffix) && host.length() > suffix.length()) {
-            return host.substring(0, host.length() - suffix.length());
-        }
-        return null;
+        return RequestTenantResolver.hostFromUrl(request.getHeader("Origin")) != null;
     }
 
     /**

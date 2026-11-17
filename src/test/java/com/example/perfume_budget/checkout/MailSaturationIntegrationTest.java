@@ -55,6 +55,7 @@ import static org.mockito.Mockito.doAnswer;
 class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     @Autowired @Qualifier(AsyncConfig.MAIL_EXECUTOR) private TaskExecutor mailBean;
+    @Autowired @Qualifier(AsyncConfig.NOTIFICATION_EXECUTOR) private TaskExecutor notificationBean;
     @Autowired @Qualifier("brokerChannel") private MessageChannel brokerChannel;
     @Autowired private AdminSessionManager sessions;
     @Autowired private DataSource dataSource;
@@ -81,7 +82,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
     void setUp() {
         mail = (TrackedTaskExecutor) mailBean;
         ((InterceptableChannel) brokerChannel).addInterceptor(capture);
-        sessions.addAdmin(acme.adminEmail());
+        sessions.addAdmin(acme.slug(), acme.adminEmail(), "mail-saturation-session");
         dispatcherLogger = (Logger) LoggerFactory.getLogger(MailDispatcher.class);
         dispatcherLog = new ListAppender<>();
         dispatcherLog.start();
@@ -92,25 +93,30 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
     void tearDown() {
         release.countDown(); // free the mail executor before the base class waits for it
         ((InterceptableChannel) brokerChannel).removeInterceptor(capture);
-        sessions.removeAdmin(acme.adminEmail());
+        sessions.removeAdmin(acme.slug(), acme.adminEmail(), "mail-saturation-session");
         dispatcherLogger.detachAppender(dispatcherLog);
     }
 
     /** Occupies every mail thread (until {@link #release}) and every queue slot. */
     private void saturateMail(Runnable onEachThread) throws InterruptedException {
-        int threads = mail.getMaxPoolSize();
+        saturate(mail, onEachThread);
+    }
+
+    /** Occupies every thread of {@code executor} (until {@link #release}) and every queue slot. */
+    private static void saturate(TrackedTaskExecutor executor, Runnable onEachThread) throws InterruptedException {
+        int threads = executor.getMaxPoolSize();
         CountDownLatch started = new CountDownLatch(threads);
         for (int i = 0; i < threads; i++) {
-            mail.execute(() -> {
+            executor.execute(() -> {
                 started.countDown();
                 onEachThread.run();
             });
         }
-        assertThat(started.await(10, TimeUnit.SECONDS)).as("all mail threads busy").isTrue();
-        for (int i = 0; i < mail.getQueueCapacity(); i++) {
-            mail.execute(() -> { });
+        assertThat(started.await(10, TimeUnit.SECONDS)).as("all threads busy").isTrue();
+        for (int i = 0; i < executor.getQueueCapacity(); i++) {
+            executor.execute(() -> { });
         }
-        assertThat(mail.getThreadPoolExecutor().getQueue().remainingCapacity()).as("mail queue full").isZero();
+        assertThat(executor.getThreadPoolExecutor().getQueue().remainingCapacity()).as("queue full").isZero();
     }
 
     private void blockUntilReleased() {
@@ -206,8 +212,8 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
 
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
             assertThat(notifications(order)).as("notification rows committed").isEqualTo(1);
-            assertThat(pushedTo).as("STOMP push sent after the notification commit")
-                    .anySatisfy(d -> assertThat(d).contains(acme.adminEmail()));
+            assertThat(pushedTo).as("STOMP push sent after the notification commit, to the tenant-qualified user (SEC-03c)")
+                    .anySatisfy(d -> assertThat(d).isEqualTo("/user/" + acme.slug() + ":" + acme.adminEmail() + "/queue/notifications"));
         });
         assertThat(deliveredRecipients(order)).as("the delivered mark committed too").isEqualTo(1);
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(deferred("payment " + payment)).hasSize(2)
@@ -232,6 +238,62 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         awaitBackgroundIdle();
         assertThat(mails("Your Order Receipt - " + order)).as("exactly once").isEqualTo(1);
         assertThat(notifications(order)).isEqualTo(1);
+    }
+
+    /**
+     * SEC-03c x EVT-01b: an admin notification deferred to the outbox is later run by the drainer, which binds each
+     * tenant through {@code TenantRunner}. The push must still be addressed to THIS tenant's admins
+     * ({@code <tenant>:<email>}), never to a bravo admin with the same e-mail; and re-driving the row (a worker that
+     * died before marking it DONE) must neither write a second notification nor push again.
+     */
+    @Test
+    void notificationDeferredToTheOutbox_drainPushesToTheTenantQualifiedAdminOnly_andARerunIsDeduplicated() throws Exception {
+        sessions.addAdmin("bravo", acme.adminEmail(), "mail-saturation-bravo-session");
+        try {
+            Customer c = customer(acme, "sat-n@acme.test");
+            cart(c, product(acme, "P-SAT-N", "100.00", 20), 1);
+            String order = place(c);
+            String ref = reference(order);
+            Gateway g = configureGateway(acme);
+            awaitBackgroundIdle();
+            saturate((TrackedTaskExecutor) notificationBean, this::blockUntilReleased);
+
+            assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
+            long payment = paymentId(order);
+            await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.side_effect_outbox WHERE kind = "
+                        + "'PAYMENT_ADMIN_NOTIFICATION' AND reference = ?", Integer.class, String.valueOf(payment))).isEqualTo(1);
+                assertThat(deferred("payment " + payment)).as("the notification hand-off was refused (executor full)")
+                        .anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("notification"));
+            });
+            assertThat(outboxStatus("PAYMENT_ADMIN_NOTIFICATION", payment)).as("deferred to the outbox").isEqualTo("PENDING/0");
+            assertThat(notifications(order)).isZero();
+            assertThat(pushedTo).isEmpty();
+
+            release.countDown();
+            awaitBackgroundIdle();
+            drainNow(); // TenantRunner binds each active tenant (acme AND bravo) in turn
+            awaitBackgroundIdle();
+            String acmeAdmin = "/user/" + acme.slug() + ":" + acme.adminEmail() + "/queue/notifications";
+            await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
+                assertThat(outboxStatus("PAYMENT_ADMIN_NOTIFICATION", payment)).isEqualTo("DONE/1");
+                assertThat(pushedTo).as("pushed by the drain, to acme's admin only").containsExactly(acmeAdmin);
+            });
+            assertThat(notifications(order)).isEqualTo(1);
+            assertThat(deliveredRecipients(order)).isEqualTo(1);
+
+            // a worker that died after writing the notification but before marking the row DONE: the row runs again
+            jdbc.update("UPDATE tenant_acme.side_effect_outbox SET status = 'PENDING', completed_at = NULL "
+                    + "WHERE kind = 'PAYMENT_ADMIN_NOTIFICATION' AND reference = ?", String.valueOf(payment));
+            drainNow();
+            awaitBackgroundIdle();
+            await().atMost(Duration.ofSeconds(20)).untilAsserted(() ->
+                    assertThat(outboxStatus("PAYMENT_ADMIN_NOTIFICATION", payment)).isEqualTo("DONE/2"));
+            assertThat(notifications(order)).as("existsByTypeAndReferenceId: not written twice").isEqualTo(1);
+            assertThat(pushedTo).as("and not pushed twice").containsExactly(acmeAdmin);
+        } finally {
+            sessions.removeAdmin("bravo", acme.adminEmail(), "mail-saturation-bravo-session");
+        }
     }
 
     private record Seen(String thread, boolean nothingBound, boolean txActive, boolean syncActive) {}
