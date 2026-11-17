@@ -8,6 +8,7 @@ import com.example.perfume_budget.projection.TopProduct;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -22,8 +23,33 @@ import java.util.Optional;
 
 @Repository
 public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpecificationExecutor<Product> {
+    /*
+     * CAT-01: open-in-view is off and Product.category is LAZY, so every catalog read that maps a product to a DTO
+     * outside a transaction must load the category in the same query (entity graph = one LEFT JOIN, no N+1).
+     * Without it ProductMapper's getCategory().getName() throws LazyInitializationException (500).
+     */
+    String CATEGORY = "category";
+
     Optional<Product> findBySlug(String slug);
+
+    /** Public detail page (cached as a DTO by ProductCatalogCacheService). */
+    @EntityGraph(attributePaths = CATEGORY)
     Optional<Product> findBySlugAndIsActiveTrueAndIsEnlistedTrue(String slug);
+
+    /** Admin detail ({@code GET /product/main/{id}}). */
+    @EntityGraph(attributePaths = CATEGORY)
+    Optional<Product> findWithCategoryById(Long id);
+
+    /** Admin listing. */
+    @Override
+    @EntityGraph(attributePaths = CATEGORY)
+    Page<Product> findAll(Pageable pageable);
+
+    /** Public and admin search. */
+    @Override
+    @EntityGraph(attributePaths = CATEGORY)
+    Page<Product> findAll(Specification<Product> spec, Pageable pageable);
+
     Optional<Product> findByIdAndIsActiveTrueAndIsEnlistedTrue(Long id);
     /** Existence check for theme references (THEME-02): which of {@code ids} exist in the current tenant. */
     @org.springframework.data.jpa.repository.Query("select p.id from Product p where p.id in :ids")
@@ -76,8 +102,12 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
         """)
     List<LowStockProduct> findLowStockProducts(Pageable pageable);
 
+    /** Public listing (cached as a DTO page). */
+    @EntityGraph(attributePaths = CATEGORY)
     Page<Product> findAllByIsActiveTrueAndIsEnlistedTrue(Pageable pageable);
 
+    /** Public featured list (cached as DTOs). */
+    @EntityGraph(attributePaths = CATEGORY)
     List<Product> findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrue();
 
     Page<Product> findAllByIsActiveTrue(Specification<Product> spec, Pageable pageable);
