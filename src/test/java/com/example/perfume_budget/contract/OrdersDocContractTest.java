@@ -45,13 +45,15 @@ class OrdersDocContractTest {
         try (Stream<Path> files = Files.walk(Path.of("src/main/java"))) {
             for (Path f : files.filter(p -> p.toString().endsWith(".java")).toList()) src.append(Files.readString(f));
         }
-        for (String ep : new String[]{"/api/v1/order/update-order-status/{orderNumber}", "/api/v1/order/{orderNumber}/refund-acknowledgement", "/api/v1/order/all"}) {
+        for (String ep : new String[]{"/api/v1/order/update-order-status/{orderNumber}", "/api/v1/order/{orderNumber}/refund-acknowledgement", "/api/v1/order/all",
+                "/api/v1/order/{orderNumber}/return-received", "/api/v1/order/{orderNumber}/audit-events"}) {
             assertThat(md).contains(ep);
         }
-        assertThat(src.toString()).contains("\"/{orderNumber}/refund-acknowledgement\"").contains("\"/update-order-status/{orderNumber}\"");
+        assertThat(src.toString()).contains("\"/{orderNumber}/refund-acknowledgement\"").contains("\"/update-order-status/{orderNumber}\"")
+                .contains("\"/{orderNumber}/return-received\"").contains("\"/{orderNumber}/audit-events\"");
         for (String code : new String[]{"ORDER_FINAL_STATE", "ORDER_TRANSITION_NOT_ALLOWED", "ORDER_NOT_PAID", "VERSION_MISMATCH", "INVALID_IF_MATCH",
                 "INVALID_DATE_FILTER", "INVALID_DATE_RANGE", "INVALID_SEARCH", "INVALID_PAGE", "INVALID_SORT", "ORDER_NOT_FOUND",
-                "ORDER_VERSION_CONFLICT", "REFUND_NOT_REQUIRED"}) {
+                "ORDER_VERSION_CONFLICT", "REFUND_NOT_REQUIRED", "RETURN_NOT_APPLICABLE", "NOTHING_TO_RESTOCK"}) {
             assertThat(md).as("doc mentions " + code).contains("`" + code + "`");
             assertThat(src.toString()).as("code defines " + code).contains("\"" + code + "\"");
         }

@@ -601,7 +601,7 @@ public class OrderServiceImpl implements OrderService {
         return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
     }
 
-    public static final int MAX_AUDIT_PAGE_SIZE = 100;
+    public static final int MAX_AUDIT_PAGE_SIZE = 50;
 
     @Override
     @Transactional(readOnly = true)

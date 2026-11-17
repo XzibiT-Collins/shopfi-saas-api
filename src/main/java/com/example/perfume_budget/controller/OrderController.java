@@ -96,7 +96,7 @@ public class OrderController {
         return etag(response).body(CustomApiResponse.success(response));
     }
 
-    /** ORD-02: the order's append-only audit trail, oldest first, paged (size capped at 100). */
+    /** ORD-02: the order's append-only audit trail, oldest first, paged (size capped at 50). */
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{orderNumber}/audit-events")
     public ResponseEntity<CustomApiResponse<PageResponse<OrderAuditEventResponse>>> getAuditEvents(

@@ -437,7 +437,7 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         JsonNode second = body(auditEvents(o.orderNumber(), "page=1&size=2&sort=id,desc")).get("data");
         assertThat(second.get("size").asInt()).isEqualTo(2);
         assertThat(second.get("content").get(0).get("eventType").asText()).as("client sort ignored").isEqualTo("CANCELLED");
-        assertThat(body(auditEvents(o.orderNumber(), "size=100000")).at("/data/size").asInt()).isEqualTo(100);
+        assertThat(body(auditEvents(o.orderNumber(), "size=100000")).at("/data/size").asInt()).isEqualTo(50);
         assertThat(code(auditEvents(o.orderNumber(), "page=1000001"))).isEqualTo("INVALID_PAGE");
         MvcResult unknown = auditEvents("PB-20990101-NOPE", null);
         assertThat(status(unknown)).isEqualTo(404);
