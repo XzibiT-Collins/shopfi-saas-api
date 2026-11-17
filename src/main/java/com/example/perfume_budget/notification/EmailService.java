@@ -5,6 +5,7 @@ import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 
 public interface EmailService {
+    /** EVT-01b: throws {@link MailNotSentException} when not sent (the side-effect outbox retries it); same below. */
     void sendCustomerReceipt(Payment payment);
     void sendAdminOrderNotification(Payment payment);
     void notifyAdminOnSuccessfulOrderCreation(Order order);

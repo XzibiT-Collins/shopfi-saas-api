@@ -63,7 +63,7 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
                 .queryParam("success", "true")
                 .build().toUriString();
 
-        log.info("OAuth2 success for {}; redirecting to {}", user.getEmail(), target);
+        log.info("OAuth2 success for user {}; redirecting to {}", user.getId(), target);
         getRedirectStrategy().sendRedirect(request, response, target);
     }
 }

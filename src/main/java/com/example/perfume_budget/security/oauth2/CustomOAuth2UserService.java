@@ -112,7 +112,7 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         Profile profile = new Profile();
         user.setProfile(profile);
 
-        log.info("Registering new OAuth2 user: {}", user.getEmail());
+        log.info("Registering new OAuth2 user");
         return userRepository.save(user);
     }
 
@@ -124,7 +124,7 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         existingUser.setImageUrl(oAuth2UserInfo.getImageUrl());
         existingUser.setEmailVerified(true);
 
-        log.info("Updating existing OAuth2 user: {}", existingUser.getEmail());
+        log.info("Updating existing OAuth2 user {}", existingUser.getId());
         return userRepository.save(existingUser);
     }
 }

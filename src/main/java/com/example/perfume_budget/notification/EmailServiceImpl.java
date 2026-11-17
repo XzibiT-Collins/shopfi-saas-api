@@ -54,7 +54,7 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("order-receipt", context);
             sendEmail(htmlContent, user.getEmail(), subject);
         }catch (Exception e){
-            logLost("Customer receipt", payment, e);
+            throw lost("Customer receipt", payment, e);
         }
     }
 
@@ -70,7 +70,7 @@ public class EmailServiceImpl implements EmailService{
             String htmlContent = templateEngine.process("success-payment", context);
             sendEmail(htmlContent, adminEmail, subject);
         }catch (Exception e){
-            logLost("Admin payment e-mail", payment, e);
+            throw lost("Admin payment e-mail", payment, e);
         }
     }
 
@@ -85,7 +85,7 @@ public class EmailServiceImpl implements EmailService{
             sendEmail(htmlContent, adminEmail, subject);
             log.info("Admin notified of new order: {}", order.getOrderNumber());
         }catch (Exception e){
-            logLost("Admin new-order e-mail", "order " + (order == null ? null : order.getOrderNumber()), e);
+            throw new MailNotSentException("Admin new-order e-mail", "order " + (order == null ? null : order.getOrderNumber()), e);
         }
     }
 
@@ -139,14 +139,16 @@ public class EmailServiceImpl implements EmailService{
     // HELPER METHODS
 
     /**
+     * EVT-01b (L2): the receipt, admin payment and admin new-order e-mails run from the side-effect outbox, so they
+     * THROW {@link MailNotSentException} (reference + exception class, no cause) and the outbox logs and retries.
      * EVT-01: a receipt / order e-mail that was not sent is logged with the order / payment reference (so it can be
      * re-sent), never with the recipient's address or the exception text (a transport error can quote it). Rework 1
      * (F3): the stack trace is no longer logged at all (its messages can carry the address); OTP / reset e-mails log
      * no address either, only the tenant.
      */
-    private static void logLost(String what, Payment payment, Exception e) {
+    private static MailNotSentException lost(String what, Payment payment, Exception e) {
         Order order = payment == null ? null : payment.getOrder();
-        logLost(what, "order " + (order == null ? null : order.getOrderNumber()) + ", payment "
+        return new MailNotSentException(what, "order " + (order == null ? null : order.getOrderNumber()) + ", payment "
                 + (payment == null ? null : payment.getId()) + " (ref "
                 + (payment == null ? null : payment.getProviderPaymentReference()) + ")", e);
     }

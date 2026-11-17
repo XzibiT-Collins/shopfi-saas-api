@@ -170,19 +170,25 @@ public class SiteVisitFilter extends OncePerRequestFilter {
     // ---- EVT-01 rework 1 (F2)
 
     /**
-     * True when ANY spelling of the path, raw or after up to {@link #MAX_DECODE_ROUNDS} lenient decodings, spells
-     * "webhook" once reduced to its letters and digits: Unicode compatibility forms are folded (NFKD: full-width
-     * {@code ｗ}, mathematical letters, accents), common Cyrillic / Greek / small-capital look-alikes are mapped to
-     * Latin, and everything that is not a letter or digit is dropped (zero-width and other invisible characters,
-     * punctuation, {@code /}, {@code ;}). Such a path is never recorded: the router only serves the exact
-     * {@code /api/v1/webhook/{token}}, so these are mistyped or obfuscated webhook URLs whose next segment is likely
-     * the tenant's secret token. Deliberately broad (a page whose letters merely contain "webhook" is not counted):
-     * missing a visit is harmless, storing a token is not.
+     * True when ANY spelling of the path, raw or after up to {@link #MAX_DECODE_ROUNDS} lenient decodings, has a path
+     * SEGMENT that starts with "webhook" once reduced to its letters and digits: Unicode compatibility forms are folded
+     * (NFKD: full-width {@code ｗ}, mathematical letters, accents), common Cyrillic / Greek / small-capital look-alikes
+     * are mapped to Latin, and everything that is not a letter or digit is dropped (zero-width and other invisible
+     * characters, punctuation such as {@code -}, {@code _}, {@code .}, {@code ;}). Such a path is never recorded: the
+     * router only serves the exact {@code /api/v1/webhook/{token}}, so these are mistyped or obfuscated webhook URLs
+     * whose next segment is likely the tenant's secret token.
+     *
+     * <p>EVT-01b L4: per segment (split on {@code /} after each decoding, so an encoded {@code %2F} still starts a
+     * segment), and only at the START of a segment: {@code cobweb-hookah} or {@code cobweb/hookah} spell "webhook"
+     * only across a word or segment boundary and are counted again. Whatever is not caught here is still covered by
+     * the token redaction ({@link #redactSecretLikeSegments}).
      */
     static boolean resemblesWebhook(String rawPath) {
         for (String form : decodedForms(rawPath)) {
-            if (skeleton(form).contains("webhook")) {
-                return true;
+            for (String segment : form.split("[/\\\\]")) {
+                if (skeleton(segment).startsWith("webhook")) {
+                    return true;
+                }
             }
         }
         return false;

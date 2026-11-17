@@ -60,11 +60,45 @@ class ListenerPhaseStructureTest {
                 if (!frameworkEvent(m)) {
                     offenders.add(name + " is a plain @EventListener for an application payload");
                 }
+            } else if (tel.phase() == TransactionPhase.BEFORE_COMMIT && outboxRecorder(m)) {
+                // EVT-01b: writes the side-effect outbox row INSIDE the publishing transaction (checked below)
             } else if (tel.phase() != TransactionPhase.AFTER_COMMIT) {
                 offenders.add(name + " runs in phase " + tel.phase());
             }
         }
         assertThat(offenders).isEmpty();
+    }
+
+    private static boolean outboxRecorder(Method m) {
+        try {
+            List<String> calls = callsIn(m);
+            String store = org.springframework.asm.Type.getInternalName(com.example.perfume_budget.outbox.OutboxStore.class);
+            return calls.contains(store + "#record") && calls.stream().allMatch(c -> c.equals(store + "#record")
+                    || c.startsWith("org/slf4j/") || c.startsWith("java/lang/Object#") || c.startsWith("java/lang/Long#")
+                    || c.startsWith(org.springframework.asm.Type.getInternalName(com.example.perfume_budget.model.Payment.class) + "#getId")
+                    || c.startsWith(org.springframework.asm.Type.getInternalName(com.example.perfume_budget.model.Order.class) + "#getId"));
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * EVT-01b (L2): the only before-commit listeners are the outbox recorders: they run inside the publishing
+     * transaction and do nothing but {@code OutboxStore#record} (an INSERT of the outbox row; no mail, no other write).
+     */
+    @Test
+    void beforeCommitListenersOnlyRecordTheOutboxRow() throws Exception {
+        List<String> recorders = new ArrayList<>();
+        for (Method m : listenerMethods()) {
+            TransactionalEventListener tel = AnnotatedElementUtils.findMergedAnnotation(m, TransactionalEventListener.class);
+            if (tel != null && tel.phase() == TransactionPhase.BEFORE_COMMIT) {
+                assertThat(outboxRecorder(m)).as(m.getName() + " only records the outbox row").isTrue();
+                assertThat(AnnotatedElementUtils.hasAnnotation(m, Async.class)).as(m.getName() + " runs in the publishing tx").isFalse();
+                assertThat(AnnotatedElementUtils.hasAnnotation(m, org.springframework.transaction.annotation.Transactional.class)).isFalse();
+                recorders.add(m.getName());
+            }
+        }
+        assertThat(recorders).containsExactlyInAnyOrder("recordPaymentSideEffects", "recordNewOrderMail");
     }
 
     @Test
@@ -89,8 +123,16 @@ class ListenerPhaseStructureTest {
     /** Owners whose methods an inline (non-@Async) after-commit listener may call: hand-off and logging only. */
     private static boolean handOffOrLogging(String owner) {
         return owner.equals(org.springframework.asm.Type.getInternalName(MailDispatcher.class))
+                || owner.equals(org.springframework.asm.Type.getInternalName(com.example.perfume_budget.outbox.OutboxKind.class))
+                || owner.equals("java/lang/Long")
                 || owner.startsWith("org/slf4j/") || owner.equals("java/lang/Object") || owner.equals("java/lang/String")
                 || owner.equals("java/lang/StringBuilder") || owner.equals("java/util/Objects");
+    }
+
+    /** EVT-01b: reading the payload's id (a field already loaded, no query) to name the outbox row. */
+    private static boolean idOfThePayload(String call) {
+        return call.equals(org.springframework.asm.Type.getInternalName(com.example.perfume_budget.model.Payment.class) + "#getId")
+                || call.equals(org.springframework.asm.Type.getInternalName(com.example.perfume_budget.model.Order.class) + "#getId");
     }
 
     /**
@@ -133,17 +175,18 @@ class ListenerPhaseStructureTest {
         List<String> offenders = new ArrayList<>();
         int inline = 0;
         for (Method m : listenerMethods()) {
-            if (AnnotatedElementUtils.findMergedAnnotation(m, TransactionalEventListener.class) == null
-                    || AnnotatedElementUtils.hasAnnotation(m, Async.class)) {
+            TransactionalEventListener tel = AnnotatedElementUtils.findMergedAnnotation(m, TransactionalEventListener.class);
+            if (tel == null || tel.phase() != TransactionPhase.AFTER_COMMIT || AnnotatedElementUtils.hasAnnotation(m, Async.class)) {
                 continue;
             }
             inline++;
             for (String call : callsIn(m)) {
-                if (!handOffOrLogging(call.substring(0, call.indexOf('#')))) {
+                if (!handOffOrLogging(call.substring(0, call.indexOf('#'))) && !idOfThePayload(call)) {
                     offenders.add(m.getDeclaringClass().getSimpleName() + "#" + m.getName() + " calls " + call);
                 }
             }
-            if (callsIn(m).stream().noneMatch(c -> c.startsWith(org.springframework.asm.Type.getInternalName(MailDispatcher.class) + "#submit"))) {
+            if (callsIn(m).stream().noneMatch(c -> c.startsWith(org.springframework.asm.Type.getInternalName(MailDispatcher.class) + "#submit")
+                    || c.startsWith(org.springframework.asm.Type.getInternalName(MailDispatcher.class) + "#handOff"))) {
                 offenders.add(m.getDeclaringClass().getSimpleName() + "#" + m.getName() + " hands nothing off");
             }
         }
