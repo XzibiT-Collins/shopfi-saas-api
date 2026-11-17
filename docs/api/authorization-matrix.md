@@ -142,6 +142,7 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | SalesReportController | GET | `/api/v1/admin/inventory/sales/items-sold` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | SalesReportController | GET | `/api/v1/admin/inventory/sales/items-sold/{productId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | ShopWideDiscountController | PUT | `/api/v1/admin/shop-discount` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
+| ShopWideDiscountController | GET | `/api/v1/admin/shop-discount` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data (API-06: discounts in force or scheduled) |
 | ShopWideDiscountController | GET | `/api/v1/admin/shop-discount/current` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | ShopWideDiscountController | DELETE | `/api/v1/admin/shop-discount/{id}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | StockConversionController | GET | `/api/v1/admin/stock-conversions/reverse/{sourceProductId}/variants` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data |

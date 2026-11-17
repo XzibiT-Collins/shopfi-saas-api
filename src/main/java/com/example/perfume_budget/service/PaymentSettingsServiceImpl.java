@@ -53,15 +53,22 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
         config.setEnabled(request.enabled());
         config = configRepository.save(config);
 
-        String token = ensureWebhookToken();
-        return toResponse(config, token);
+        Tenant tenant = lockCurrentTenant();
+        boolean minted = false;
+        if (tenant.getWebhookToken() == null || tenant.getWebhookToken().isBlank()) {
+            tenant.setWebhookToken(generateToken());
+            tenantRepository.save(tenant);
+            minted = true;
+        }
+        // API-06: the full URL only in the response that minted the token (shown once)
+        return toResponse(config, tenant.getWebhookToken(), minted);
     }
 
     @Override
     @Transactional(readOnly = true)
     public PaymentSettingsResponse get() {
         PaymentGatewayConfig config = configRepository.findTopByOrderByIdAsc().orElse(null);
-        return toResponse(config, currentTenant().getWebhookToken());
+        return toResponse(config, currentTenant().getWebhookToken(), false);
     }
 
     @Override
@@ -70,16 +77,7 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
         Tenant tenant = lockCurrentTenant();
         tenant.setWebhookToken(generateToken());
         tenantRepository.save(tenant);
-        return toResponse(configRepository.findTopByOrderByIdAsc().orElse(null), tenant.getWebhookToken());
-    }
-
-    private String ensureWebhookToken() {
-        Tenant tenant = lockCurrentTenant();
-        if (tenant.getWebhookToken() == null || tenant.getWebhookToken().isBlank()) {
-            tenant.setWebhookToken(generateToken());
-            tenantRepository.save(tenant);
-        }
-        return tenant.getWebhookToken();
+        return toResponse(configRepository.findTopByOrderByIdAsc().orElse(null), tenant.getWebhookToken(), true);
     }
 
     private Tenant currentTenant() {
@@ -104,13 +102,21 @@ public class PaymentSettingsServiceImpl implements PaymentSettingsService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private PaymentSettingsResponse toResponse(PaymentGatewayConfig config, String token) {
+    /** Characters of the token kept visible in {@code webhookUrlMasked}. */
+    static final int MASK_VISIBLE = 4;
+    static final String MASK = "****";
+
+    /** @param showUrl true only for the response of the call that minted {@code token} (API-06: shown once) */
+    private PaymentSettingsResponse toResponse(PaymentGatewayConfig config, String token, boolean showUrl) {
         boolean secretConfigured = config != null
                 && config.getSecretKeyEncrypted() != null
                 && !config.getSecretKeyEncrypted().isBlank();
         String publicKey = config != null ? config.getPublicKey() : null;
         boolean enabled = config != null && config.isEnabled();
-        String webhookUrl = token != null ? apiBaseUrl + "/api/v1/webhook/" + token : null;
-        return new PaymentSettingsResponse(secretConfigured, publicKey, enabled, webhookUrl);
+        boolean hasToken = token != null && !token.isBlank();
+        String prefix = apiBaseUrl + "/api/v1/webhook/";
+        String webhookUrl = hasToken && showUrl ? prefix + token : null;
+        String masked = hasToken ? prefix + MASK + token.substring(Math.max(0, token.length() - MASK_VISIBLE)) : null;
+        return new PaymentSettingsResponse(secretConfigured, publicKey, enabled, webhookUrl, hasToken, masked);
     }
 }

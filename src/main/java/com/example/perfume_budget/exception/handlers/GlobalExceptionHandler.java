@@ -59,6 +59,21 @@ public class GlobalExceptionHandler {
         );
     }
 
+    /**
+     * API-06: a coupon refusal is the same 400 as any {@link BadRequestException} (same {@code description}), except
+     * the per-customer limit, which also carries {@code data.code} {@code COUPON_PER_USER_LIMIT} (the code the cart
+     * preview reports for it). The other reasons stay uncoded on purpose: they must not reveal which codes exist.
+     */
+    @ExceptionHandler(com.example.perfume_budget.exception.CouponRejectedException.class)
+    public ResponseEntity<CustomApiResponse<Object>> handleCouponRejected(
+            com.example.perfume_budget.exception.CouponRejectedException ex) {
+        if (ex.getReason() == com.example.perfume_budget.exception.CouponRejectedException.Reason.PER_USER_LIMIT) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage(),
+                    Map.of("code", com.example.perfume_budget.service.CouponPerUserLimit.CODE)));
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage()));
+    }
+
     @ExceptionHandler(BadRequestException.class)
     public ResponseEntity<CustomApiResponse<String>> handleBadRequestException(BadRequestException ex){
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage()));

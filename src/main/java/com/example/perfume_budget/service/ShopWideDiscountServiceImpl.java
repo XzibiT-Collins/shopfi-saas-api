@@ -10,6 +10,7 @@ import com.example.perfume_budget.service.interfaces.ShopWideDiscountService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -59,6 +60,20 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
         return toResponse(discount);
     }
 
+    /** Upper bound on {@link #listNotEnded()}; setting a discount retires the others, so normally there is one row. */
+    static final int LIST_LIMIT = 50;
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ShopWideDiscountResponse> listNotEnded() {
+        // API-06: unlike getCurrent this includes a discount whose start is still in the future, so the admin can read
+        // a scheduled discount back (e.g. after a page reload) and end it with DELETE /{id} before it starts.
+        LocalDateTime now = LocalDateTime.now(systemClock);
+        return shopWideDiscountRepository.findNotEnded(now, PageRequest.of(0, LIST_LIMIT)).stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
     @Override
     @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
@@ -71,9 +86,20 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
 
     private ShopWideDiscountResponse toResponse(ShopWideDiscount discount) {
         LocalDateTime now = LocalDateTime.now(systemClock);
-        boolean currentlyActive = Boolean.TRUE.equals(discount.getIsActive())
+        boolean switchedOn = Boolean.TRUE.equals(discount.getIsActive());
+        boolean currentlyActive = switchedOn
                 && !now.isBefore(discount.getStartAt())
                 && !now.isAfter(discount.getEndAt());
+        ShopWideDiscountResponse.Status status;
+        if (!switchedOn) {
+            status = ShopWideDiscountResponse.Status.INACTIVE;
+        } else if (now.isBefore(discount.getStartAt())) {
+            status = ShopWideDiscountResponse.Status.SCHEDULED;
+        } else if (now.isAfter(discount.getEndAt())) {
+            status = ShopWideDiscountResponse.Status.EXPIRED;
+        } else {
+            status = ShopWideDiscountResponse.Status.ACTIVE;
+        }
         return ShopWideDiscountResponse.builder()
                 .id(discount.getId())
                 .label(discount.getLabel())
@@ -82,6 +108,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
                 .endAt(discount.getEndAt())
                 .isActive(Boolean.TRUE.equals(discount.getIsActive()))
                 .currentlyActive(currentlyActive)
+                .status(status)
                 .build();
     }
 }

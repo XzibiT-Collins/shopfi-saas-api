@@ -25,6 +25,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.reset;
@@ -237,8 +238,14 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
         MvcResult r = mvc.perform(put("/api/v1/payment-settings").contentType("application/json").header("X-Tenant-ID", t.slug())
                 .cookie(cookie("accessToken", admin))
                 .content(json.writeValueAsString(Map.of("secretKey", secret, "publicKey", "pk_test_FAKE", "enabled", true)))).andReturn();
-        String url = json.readTree(r.getResponse().getContentAsString()).at("/data/webhookUrl").asText();
-        return new Gateway(url.substring(url.lastIndexOf('/') + 1), secret);
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+        // API-06: the URL is shown only by the call that minted the token, so read the live token from the tenant row
+        return new Gateway(webhookToken(t), secret);
+    }
+
+    /** The tenant's live webhook token, straight from the master row (API-06: GET no longer returns it). */
+    protected String webhookToken(TestTenant t) {
+        return jdbc.queryForObject("SELECT webhook_token FROM master.tenants WHERE slug = ?", String.class, t.slug());
     }
 
     protected int webhook(Gateway g, String body) throws Exception {
