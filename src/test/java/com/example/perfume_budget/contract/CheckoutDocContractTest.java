@@ -91,6 +91,29 @@ class CheckoutDocContractTest {
         assertThat(md).contains("Idempotency-Key").contains("callback_url").contains("charge.failed").contains("charge.success");
     }
 
+    /** API-06: the per-user code, the coupon limit messages and the whole-number 400s are documented as the code has them. */
+    @Test
+    void api06CouponGapsAreDocumentedWithTheRealMessages() throws Exception {
+        String md = Files.readString(DOC);
+        assertThat(md).contains("`COUPON_PER_USER_LIMIT`")
+                .contains(com.example.perfume_budget.service.CouponPerUserLimit.CODE)
+                .contains(com.example.perfume_budget.service.CouponPerUserLimit.MESSAGE);
+        String req = Files.readString(Path.of("src/main/java/com/example/perfume_budget/dto/coupon/request/CouponRequest.java"));
+        for (String msg : new String[]{"Usage limit must be at least 1", "Usage limit cannot exceed 1000000",
+                "Per-user usage limit must be at least 1", "Per-user usage limit cannot exceed 1000000",
+                "Per-user usage limit cannot exceed the total usage limit"}) {
+            assertThat(req).as("code has %s", msg).contains("\"" + msg + "\"");
+            assertThat(md).as("doc has %s", msg).contains(msg);
+        }
+        assertThat(req).contains("@Max(value = 1_000_000, message = \"Per-user usage limit cannot exceed 1000000\")");
+        String strict = Files.readString(Path.of("src/main/java/com/example/perfume_budget/dto/json/StrictIntegerDeserializer.java"));
+        for (String suffix : new String[]{" must be a whole number\"", " must be a whole number (a JSON number, not text)\"", " is out of range\""}) {
+            assertThat(strict).contains(suffix);
+            assertThat(md).contains("<field>" + suffix.substring(0, suffix.length() - 1));
+        }
+        assertThat(md).contains("GET /api/v1/admin/shop-discount").contains("webhookUrlMasked").contains("hasWebhookToken");
+    }
+
     private static String[] fields(JsonNode n) {
         java.util.List<String> l = new java.util.ArrayList<>();
         n.fieldNames().forEachRemaining(l::add);

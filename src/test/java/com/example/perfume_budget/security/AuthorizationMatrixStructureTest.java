@@ -96,7 +96,7 @@ class AuthorizationMatrixStructureTest {
                 "setProductDiscount", "clearProductDiscount", "deleteProduct");
         expect(ADMIN, "ProductFamilyController", "getAllFamilies", "getAvailableUoms");
         expect(ADMIN, "SalesReportController", "getItemsSold", "getProductSales");
-        expect(ADMIN, "ShopWideDiscountController", "setShopWideDiscount", "getCurrent", "deactivate");
+        expect(ADMIN, "ShopWideDiscountController", "setShopWideDiscount", "listNotEnded", "getCurrent", "deactivate");
         expect(ADMIN, "StorageLocationController", "create", "update", "updateDefaults");
         expect(ADMIN, "StoreThemeController", "put");
         expect(ADMIN, "TaxController", "addTax", "updateTax", "getTaxById", "deleteTax");

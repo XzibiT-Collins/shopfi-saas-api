@@ -199,10 +199,30 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         MvcResult second = checkout(c, "key-pu-0002-aaaa", "couponCode=ONCE");
         assertThat(second.getResponse().getStatus()).isEqualTo(400);
         assertThat(usageCount("ONCE")).isEqualTo(1);
+        // API-06: checkout's 400 carries the distinct code, and the preview reports the same code and message
+        assertThat(body(second).at("/data/code").asText()).isEqualTo("COUPON_PER_USER_LIMIT");
+        String checkoutMessage = body(second).at("/description").asText();
+        assertThat(checkoutMessage).isEqualTo("You have already used this coupon the maximum number of times");
 
         MvcResult preview = mvc.perform(as(post("/api/v1/cart/preview").contentType("application/json")
-                .content("{\"couponCode\":\"ONCE\"}"), c)).andReturn();
+                .content("{\"couponCode\":\"once\"}"), c)).andReturn();
+        assertThat(preview.getResponse().getStatus()).isEqualTo(200);
         assertThat(body(preview).at("/data/coupon/valid").asBoolean()).isFalse();
+        assertThat(body(preview).at("/data/coupon/code").asText()).isEqualTo("ONCE");
+        assertThat(body(preview).at("/data/coupon/reason").asText()).isEqualTo("COUPON_PER_USER_LIMIT");
+        assertThat(body(preview).at("/data/coupon/message").asText()).isEqualTo(checkoutMessage);
+        assertThat(body(preview).at("/data/couponDiscountAmount").asText()).isEqualTo("GHS 0.00");
+        // GET /tax?couponCode= shares the limit and now the code
+        MvcResult tax = mvc.perform(as(get("/api/v1/tax").param("subtotal", "100").param("couponCode", "ONCE"), c)).andReturn();
+        assertThat(tax.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(tax).at("/data/code").asText()).isEqualTo("COUPON_PER_USER_LIMIT");
+        // the existence-hiding collapse is unchanged: an unknown code is still COUPON_INVALID with no checkout code
+        MvcResult unknown = mvc.perform(as(post("/api/v1/cart/preview").contentType("application/json")
+                .content("{\"couponCode\":\"NOPE-NOT-HERE\"}"), c)).andReturn();
+        assertThat(body(unknown).at("/data/coupon/reason").asText()).isEqualTo("COUPON_INVALID");
+        MvcResult unknownCheckout = checkout(c, "key-pu-0009-aaaa", "couponCode=NOPE-NOT-HERE");
+        assertThat(unknownCheckout.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(unknownCheckout).get("data").isNull()).isTrue();
 
         Customer other = ready(acme, "pu2@acme.test", p);
         assertThat(checkout(other, "key-pu-0003-aaaa", "couponCode=ONCE").getResponse().getStatus()).isEqualTo(200);
@@ -554,6 +574,152 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(send(put("/api/v1/admin/shop-discount"), acme, adminA, put).getResponse().getStatus()).isEqualTo(400);
     }
 
+    // ---- API-06: scheduled shop-wide discount is readable (and endable) before it starts
+
+    @Test
+    void scheduledShopDiscountIsListedBeforeItStarts_andCanBeEndedFromTheList() throws Exception {
+        String start = java.time.LocalDateTime.now().plusDays(3).withNano(0).toString();
+        String end = java.time.LocalDateTime.now().plusDays(9).withNano(0).toString();
+        MvcResult set = send(put("/api/v1/admin/shop-discount"), acme, adminA,
+                Map.of("label", "Next week", "discountPercentage", 20, "startAt", start, "endAt", end));
+        assertThat(set.getResponse().getStatus()).as(set.getResponse().getContentAsString()).isEqualTo(200);
+        long id = data(set).at("/data/id").asLong();
+        assertThat(data(set).at("/data/status").asText()).isEqualTo("SCHEDULED");
+
+        // /current is unchanged: nothing in force yet -> 404
+        assertThat(send(get("/api/v1/admin/shop-discount/current"), acme, adminA, null).getResponse().getStatus()).isEqualTo(404);
+        // ...but the admin list ("after a page reload") shows it
+        MvcResult list = send(get("/api/v1/admin/shop-discount"), acme, adminA, null);
+        assertThat(list.getResponse().getStatus()).isEqualTo(200);
+        JsonNode rows = data(list).get("data");
+        assertThat(rows.isArray()).isTrue();
+        assertThat(rows.size()).isEqualTo(1);
+        assertThat(rows.get(0).get("id").asLong()).isEqualTo(id);
+        assertThat(rows.get(0).get("label").asText()).isEqualTo("Next week");
+        assertThat(rows.get(0).get("status").asText()).isEqualTo("SCHEDULED");
+        assertThat(rows.get(0).get("isActive").asBoolean()).isTrue();
+        assertThat(rows.get(0).get("currentlyActive").asBoolean()).isFalse();
+        // another tenant sees none of it
+        assertThat(data(send(get("/api/v1/admin/shop-discount"), bravo, adminB, null)).get("data").size()).isZero();
+        assertThat(send(delete("/api/v1/admin/shop-discount/" + id), bravo, adminB, null).getResponse().getStatus()).isEqualTo(404);
+
+        // end it before it starts, then it is gone from the list
+        assertThat(send(delete("/api/v1/admin/shop-discount/" + id), acme, adminA, null).getResponse().getStatus()).isEqualTo(204);
+        assertThat(data(send(get("/api/v1/admin/shop-discount"), acme, adminA, null)).get("data").size()).isZero();
+    }
+
+    @Test
+    void shopDiscountListHasInForceAndScheduled_soonestFirst_neverExpiredOrSwitchedOff() throws Exception {
+        String ins = "INSERT INTO tenant_acme.shop_wide_discounts (label, discount_percentage, start_at, end_at, is_active, created_at) VALUES (?, 10, now() + ?::interval, now() + ?::interval, ?, now())";
+        jdbc.update(ins, "Expired", "-10 days", "-1 day", true);
+        jdbc.update(ins, "Off", "-1 day", "1 day", false);
+        jdbc.update(ins, "OffLater", "2 days", "4 days", false);
+        jdbc.update(ins, "Later", "5 days", "6 days", true);
+        jdbc.update(ins, "Now", "-1 day", "1 day", true);
+        jdbc.update(ins, "Soon", "1 day", "2 days", true);
+        JsonNode rows = data(send(get("/api/v1/admin/shop-discount"), acme, adminA, null)).get("data");
+        List<String> labels = new ArrayList<>();
+        List<String> statuses = new ArrayList<>();
+        rows.forEach(r -> { labels.add(r.get("label").asText()); statuses.add(r.get("status").asText()); });
+        assertThat(labels).containsExactly("Now", "Soon", "Later");
+        assertThat(statuses).containsExactly("ACTIVE", "SCHEDULED", "SCHEDULED");
+        // /current still returns only the one in force
+        assertThat(data(send(get("/api/v1/admin/shop-discount/current"), acme, adminA, null)).at("/data/label").asText()).isEqualTo("Now");
+    }
+
+    @Test
+    void shopDiscountListIsAdminOnly() throws Exception {
+        Customer c = customer(acme, "sdl@acme.test");
+        assertThat(mvc.perform(as(get("/api/v1/admin/shop-discount"), c)).andReturn().getResponse().getStatus()).isEqualTo(403);
+        assertThat(send(get("/api/v1/admin/shop-discount"), acme, null, null).getResponse().getStatus()).isEqualTo(401);
+        // acme's admin cookie on bravo is anonymous there
+        assertThat(send(get("/api/v1/admin/shop-discount"), bravo, adminA, null).getResponse().getStatus()).isEqualTo(401);
+    }
+
+    // ---- API-06: perUserUsageLimit cap and whole-number 400s, as documented in docs/api/checkout.md
+
+    @Test
+    void perUserUsageLimitCapAndWholeNumber400s() throws Exception {
+        Map<String, Object> m = body("CAP1", "FLAT", "5");
+        m.put("usageLimit", 1_000_000);
+        m.put("perUserUsageLimit", 1_000_001);
+        MvcResult over = send(post("/api/v1/coupon/add-coupon"), acme, adminA, m);
+        assertThat(over.getResponse().getStatus()).isEqualTo(400);
+        assertThat(data(over).at("/description").asText()).isEqualTo("Validation failed");
+        assertThat(data(over).at("/data/perUserUsageLimit").asText()).isEqualTo("Per-user usage limit cannot exceed 1000000");
+        assertThat(data(over).at("/data/perUserLimitWithinTotal").asText()).isEqualTo("Per-user usage limit cannot exceed the total usage limit");
+
+        m.put("perUserUsageLimit", 1_000_000);
+        assertThat(send(post("/api/v1/coupon/add-coupon"), acme, adminA, m).getResponse().getStatus()).isEqualTo(200);
+
+        Map<String, Object> u = body("CAP2", "FLAT", "5");
+        u.put("usageLimit", 1_000_001);
+        MvcResult tooMany = send(post("/api/v1/coupon/add-coupon"), acme, adminA, u);
+        assertThat(tooMany.getResponse().getStatus()).isEqualTo(400);
+        assertThat(data(tooMany).at("/data/usageLimit").asText()).isEqualTo("Usage limit cannot exceed 1000000");
+
+        for (String[] c : new String[][]{{"2.5", "perUserUsageLimit must be a whole number"},
+                {"\"3\"", "perUserUsageLimit must be a whole number (a JSON number, not text)"},
+                {"3000000000", "perUserUsageLimit is out of range"}}) {
+            String raw = "{\"couponCode\":\"CAP3\",\"discountType\":\"FLAT\",\"discountValue\":5,\"usageLimit\":10,\"perUserUsageLimit\":"
+                    + c[0] + ",\"isActive\":true,\"startDate\":\"" + LocalDate.now() + "\",\"expirationDate\":\"" + LocalDate.now().plusDays(1) + "\"}";
+            MvcResult r = mvc.perform(post("/api/v1/coupon/add-coupon").header("X-Tenant-ID", acme.slug()).cookie(adminA)
+                    .contentType("application/json").content(raw)).andReturn();
+            assertThat(r.getResponse().getStatus()).as(c[0]).isEqualTo(400);
+            assertThat(data(r).at("/description").asText()).isEqualTo(c[1]);
+            assertThat(data(r).get("data").isNull()).isTrue();
+        }
+        assertThat(jdbc.queryForList("SELECT code FROM tenant_acme.coupons", String.class)).containsExactly("CAP1");
+    }
+
+    // ---- API-06: webhook URL shown once
+
+    @Test
+    void webhookUrlIsShownOnlyByTheCallThatMintedIt_neverByGetOrLaterSaves_neverLogged() throws Exception {
+        jdbc.update("UPDATE master.tenants SET webhook_token = NULL WHERE slug = 'acme'");
+        Logger root = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        root.addAppender(logs);
+        try {
+            MvcResult none = send(get("/api/v1/payment-settings"), acme, adminA, null);
+            assertThat(data(none).at("/data/hasWebhookToken").asBoolean()).isFalse();
+            assertThat(data(none).at("/data/webhookUrl").isNull()).isTrue();
+            assertThat(data(none).at("/data/webhookUrlMasked").isNull()).isTrue();
+
+            Map<String, Object> keys = Map.of("secretKey", "sk_test_FAKEONCE" + "a".repeat(16), "publicKey", "pk_test_FAKEONCEpub", "enabled", true);
+            MvcResult first = send(put("/api/v1/payment-settings"), acme, adminA, keys);
+            assertThat(first.getResponse().getStatus()).isEqualTo(200);
+            String token = webhookToken(acme);
+            assertThat(token).hasSize(43);
+            assertThat(data(first).at("/data/webhookUrl").asText()).endsWith("/api/v1/webhook/" + token);
+            assertThat(data(first).at("/data/hasWebhookToken").asBoolean()).isTrue();
+
+            for (MvcResult later : List.of(send(get("/api/v1/payment-settings"), acme, adminA, null),
+                    send(put("/api/v1/payment-settings"), acme, adminA, keys),
+                    send(put("/api/v1/payment-settings"), acme, adminA, Map.of("secretKey", "", "publicKey", "pk_test_FAKEONCEpub", "enabled", false)))) {
+                assertThat(later.getResponse().getStatus()).isEqualTo(200);
+                assertThat(later.getResponse().getContentAsString()).doesNotContain(token);
+                assertThat(data(later).at("/data/webhookUrl").isNull()).isTrue();
+                assertThat(data(later).at("/data/hasWebhookToken").asBoolean()).isTrue();
+                assertThat(data(later).at("/data/webhookUrlMasked").asText()).endsWith("/api/v1/webhook/****" + token.substring(39));
+            }
+            assertThat(webhookToken(acme)).as("re-saving never re-mints").isEqualTo(token);
+
+            MvcResult rot = send(post("/api/v1/payment-settings/rotate-webhook-token"), acme, adminA, null);
+            String fresh = webhookToken(acme);
+            assertThat(fresh).isNotEqualTo(token);
+            assertThat(data(rot).at("/data/webhookUrl").asText()).endsWith("/api/v1/webhook/" + fresh);
+            assertThat(send(get("/api/v1/payment-settings"), acme, adminA, null).getResponse().getContentAsString()).doesNotContain(fresh);
+
+            for (ILoggingEvent e : logs.list) {
+                assertThat(e.getFormattedMessage()).as("log line leaks a webhook token").doesNotContain(token).doesNotContain(fresh);
+            }
+        } finally {
+            root.detachAppender(logs);
+        }
+    }
+
     // ---- payment settings
 
     @Test
@@ -582,8 +748,7 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
             MvcResult saved = send(put("/api/v1/payment-settings"), acme, adminA,
                     Map.of("secretKey", secret, "publicKey", "pk_test_FAKEROTATEpub", "enabled", true));
             assertThat(saved.getResponse().getStatus()).isEqualTo(200);
-            String oldUrl = data(saved).at("/data/webhookUrl").asText();
-            String oldToken = oldUrl.substring(oldUrl.lastIndexOf('/') + 1);
+            String oldToken = webhookToken(acme);
             Gateway oldG = new Gateway(oldToken, secret);
             String evt = event("charge.failed", "REF-NONE", 100);
             assertThat(webhook(oldG, evt)).as("old token resolves before rotation").isNotEqualTo(404);
@@ -599,10 +764,12 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
 
             assertThat(webhook(oldG, evt)).as("old token is dead at once").isEqualTo(404);
             assertThat(webhook(new Gateway(newToken, secret), evt)).as("new token resolves").isNotEqualTo(404);
-            // GET reflects the new URL and still never returns the secret
+            // GET reflects the new URL in masked form only (API-06: shown once) and never returns the secret
             MvcResult got = send(get("/api/v1/payment-settings"), acme, adminA, null);
-            assertThat(data(got).at("/data/webhookUrl").asText()).isEqualTo(newUrl);
-            assertThat(got.getResponse().getContentAsString()).doesNotContain(secret);
+            assertThat(data(got).at("/data/webhookUrl").isNull()).isTrue();
+            assertThat(data(got).at("/data/webhookUrlMasked").asText())
+                    .isEqualTo(newUrl.substring(0, newUrl.lastIndexOf('/') + 1) + "****" + newToken.substring(39));
+            assertThat(got.getResponse().getContentAsString()).doesNotContain(secret).doesNotContain(newToken);
             // the secret itself is unchanged by rotation (decrypts: signature with it still verifies, above) and the stored value is not plaintext
             assertThat(jdbc.queryForObject("SELECT secret_key_encrypted FROM tenant_acme.payment_gateway_config", String.class)).doesNotContain(secret);
 

@@ -29,4 +29,16 @@ public interface ShopWideDiscountRepository extends JpaRepository<ShopWideDiscou
     }
 
     List<ShopWideDiscount> findByIsActiveTrueOrderByCreatedAtDesc();
+
+    /**
+     * API-06: every discount that is switched on and has not ended at {@code now}: the one in force and any scheduled
+     * for later. Soonest start first (newest first on a tie). Bounded by {@code page}.
+     */
+    @Query("""
+            SELECT s FROM ShopWideDiscount s
+            WHERE s.isActive = true
+              AND s.endAt >= :now
+            ORDER BY s.startAt ASC, s.createdAt DESC, s.id DESC
+            """)
+    List<ShopWideDiscount> findNotEnded(@Param("now") LocalDateTime now, org.springframework.data.domain.Pageable page);
 }

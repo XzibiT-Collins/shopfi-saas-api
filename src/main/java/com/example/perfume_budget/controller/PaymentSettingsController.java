@@ -11,8 +11,9 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * Tenant-admin management of the tenant's own Paystack credentials. The response includes the
- * per-tenant webhook URL to paste into that tenant's Paystack dashboard.
+ * Tenant-admin management of the tenant's own Paystack credentials. API-06: the per-tenant webhook URL (to paste into
+ * that tenant's Paystack dashboard) is shown once, in the response of the call that minted it (rotate, or the first
+ * save); GET returns only {@code hasWebhookToken} and a masked form. See {@link PaymentSettingsResponse}.
  */
 @RestController
 @RequestMapping("/api/v1/payment-settings")
@@ -27,7 +28,10 @@ public class PaymentSettingsController {
         return ResponseEntity.ok(CustomApiResponse.success(paymentSettingsService.get()));
     }
 
-    /** Revoke a leaked webhook URL: the old token stops resolving at once; paste the returned URL into Paystack. */
+    /**
+     * Revoke a leaked (or lost) webhook URL: the old token stops resolving at once; paste the returned URL into
+     * Paystack. This response is the only place the new URL is ever shown in full (API-06).
+     */
     @PostMapping("/rotate-webhook-token")
     @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<CustomApiResponse<PaymentSettingsResponse>> rotateWebhookToken() {

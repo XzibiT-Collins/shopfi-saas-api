@@ -29,6 +29,8 @@ import java.math.BigDecimal;
  * shown is what is charged. A coupon that cannot be applied does not fail the call: the totals are returned without it
  * and {@code coupon.valid=false} with a reason code. The reasons for "no such coupon / inactive / not started / expired
  * / used up" are deliberately collapsed into one {@code COUPON_INVALID} so the endpoint does not reveal which codes exist.
+ * API-06: the per-customer limit has its own reason {@link CouponPerUserLimit#CODE} with the same message checkout
+ * returns; it is only checked for an otherwise valid coupon, so it tells the customer nothing they did not know.
  */
 @Service
 @RequiredArgsConstructor
@@ -97,6 +99,7 @@ public class CartPreviewService {
         return switch (e.getReason()) {
             case MIN_AMOUNT -> new CouponPreview(code, false, "COUPON_MIN_AMOUNT", e.getMessage());
             case WITH_SALE_ITEMS -> new CouponPreview(code, false, "COUPON_NOT_COMBINABLE", e.getMessage());
+            case PER_USER_LIMIT -> new CouponPreview(code, false, CouponPerUserLimit.CODE, e.getMessage());
             default -> new CouponPreview(code, false, "COUPON_INVALID", CheckoutPricingService.INVALID_COUPON_CODE);
         };
     }
