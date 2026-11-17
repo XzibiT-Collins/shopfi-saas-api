@@ -19,7 +19,20 @@ class WebhookProcessorImplTest {
 
     @Mock PaymentSettlementService settlement;
     @org.mockito.Spy TransientRetry retry = new TransientRetry(0);
+    @Mock WebhookLockTimeout lockTimeout;
     @InjectMocks WebhookProcessorImpl processor;
+
+    @org.junit.jupiter.api.BeforeEach
+    void lockTimeoutPassesThrough() {
+        // EVT-01c: each attempt runs inside the bounded-lock-wait transaction (real one in the integration tests)
+        lenient().when(lockTimeout.call(any())).thenAnswer(inv -> ((java.util.function.Supplier<?>) inv.getArgument(0)).get());
+    }
+
+    @Test
+    void everySettlementAttemptRunsInsideTheBoundedLockWait() {
+        processor.processWebhook(body("charge.failed", ",\"message\":\"Declined\""));
+        verify(lockTimeout).call(any());
+    }
 
     private static String body(String event, String extra) {
         return "{\"event\":\"" + event + "\",\"unknownTop\":1,\"data\":{\"reference\":\"REF123\",\"channel\":\"card\"" + extra + "}}";

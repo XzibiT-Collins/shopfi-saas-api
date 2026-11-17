@@ -22,7 +22,8 @@ import org.springframework.stereotype.Service;
  * <p><b>Transient failures (API-04 rework 2).</b> A transient database failure while applying the event (deadlock
  * victim, serialization failure, lock timeout, {@code 503 COUPON_BUSY}, optimistic-lock conflict on a shared product
  * row) is retried here up to {@link TransientRetry#ATTEMPTS} times with a short back-off ({@link TransientRetry});
- * every attempt is a fresh transaction (the failed one was rolled back) and the settlement is idempotent.
+ * every attempt is a fresh transaction (the failed one was rolled back) and the settlement is idempotent. EVT-01c: each
+ * attempt's lock waits are bounded ({@link WebhookLockTimeout}), so a held row cannot hold the request thread forever.
  *
  * <p><b>No acknowledgement without the commit (EVT-01c).</b> The event used to be applied on the webhook executor after
  * Paystack had been answered 200, so a settlement that did not commit (last retry failed, or a before-commit step such
@@ -44,6 +45,7 @@ public class WebhookProcessorImpl implements WebhookProcessor {
 
     private final PaymentSettlementService settlementService;
     private final TransientRetry retry;
+    private final WebhookLockTimeout lockTimeout;
 
     @Override
     public void processWebhook(String body) {
@@ -75,13 +77,13 @@ public class WebhookProcessorImpl implements WebhookProcessor {
                         log.warn("Ignoring charge.success without amount/currency for reference {}", reference);
                         return;
                     }
-                    var outcome = retry.callIncludingLockTimeouts("charge.success " + reference, () -> settlementService.applySuccess(reference,
-                            data.channel(), data.amount(), data.currency(), body));
+                    var outcome = retry.callIncludingLockTimeouts("charge.success " + reference, () -> lockTimeout.call(() ->
+                            settlementService.applySuccess(reference, data.channel(), data.amount(), data.currency(), body)));
                     log.info("charge.success for reference {}: {}", reference, outcome);
                 }
                 case EVENT_CHARGE_FAILED -> {
-                    var outcome = retry.callIncludingLockTimeouts("charge.failed " + reference, () -> settlementService.applyFailure(reference,
-                            data.channel(), data.message(), body));
+                    var outcome = retry.callIncludingLockTimeouts("charge.failed " + reference, () -> lockTimeout.call(() ->
+                            settlementService.applyFailure(reference, data.channel(), data.message(), body)));
                     log.info("charge.failed for reference {}: {}", reference, outcome);
                 }
                 default -> log.info("Ignoring unhandled webhook event type for reference {}", reference);

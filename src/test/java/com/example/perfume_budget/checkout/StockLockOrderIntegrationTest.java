@@ -238,17 +238,56 @@ class StockLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         cart(c, low, 1);
         String on = placeOrder(c);
 
+        Future<Integer> answer;
         try (Holder h = new Holder(low)) {
-            assertThat(webhook(g, event("charge.success", reference(on), totalMinor(on)))).isEqualTo(200);
+            answer = webhookInBackground(g, event("charge.success", reference(on), totalMinor(on)));
             assertWaitsInTheStockLockBeforeAnyStockWrite(h);
             // before the rework the webhook had already UPDATEd the higher product (sold count) and held it here
             assertThat(lockableNow(high)).as("higher id still free while the webhook waits for the lower one").isTrue();
             h.commit();
         }
+        assertThat(answer.get(60, TimeUnit.SECONDS)).as("answered once the settlement committed").isEqualTo(200);
         awaitStatus(on, "COMPLETED");
         assertThat(productInt(low, "sold_count")).isEqualTo(1);
         assertThat(productInt(high, "sold_count")).isEqualTo(1);
         assertThat(reservedQty(acme, low) + reservedQty(acme, high)).isZero();
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.example.perfume_budget.service.WebhookLockTimeout webhookLockTimeout;
+
+    /**
+     * EVT-01c: the webhook settles before it answers, so a stock row held by another transaction must not hold the
+     * request (and Paystack's delivery) forever: each attempt's lock wait is bounded, the attempts are retried, and the
+     * webhook then answers 500 (not acknowledged) with nothing changed. The redelivery after the row is free applies it.
+     * (Without the bound this test hangs in the webhook call, which is how the EVT-01c b1 batch hung.)
+     */
+    @Test
+    void aWebhookWaitingForAHeldStockRowGivesUpWithin_theBound_unacknowledged_andTheRedeliveryApplies() throws Exception {
+        Gateway g = configureGateway(acme);
+        long p = product(acme, "WHeld", "50.00", 10);
+        Customer c = customer(acme, "wh@acme.test");
+        cart(c, p, 1);
+        String on = placeOrder(c);
+        String body = event("charge.success", reference(on), totalMinor(on));
+        long saved = webhookLockTimeout.timeoutMillis();
+        org.springframework.test.util.ReflectionTestUtils.setField(webhookLockTimeout, "timeoutMillis", 300L);
+        try (Holder h = new Holder(p)) {
+            long t0 = System.nanoTime();
+            Future<Integer> answer = webhookInBackground(g, body);
+            assertThat(answer.get(30, TimeUnit.SECONDS)).as("not acknowledged while the row is held").isEqualTo(500);
+            assertThat(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - t0)).as("bounded, not a hang").isLessThan(20);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid))",
+                    Integer.class, h.pid)).as("nothing left waiting for the held row").isZero();
+            h.commit();
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(webhookLockTimeout, "timeoutMillis", saved);
+        }
+        assertThat(orderStatus(acme, on)).isNotEqualTo("COMPLETED");
+        assertThat(productInt(p, "sold_count")).isZero();
+        assertThat(webhook(g, body)).as("the redelivery").isEqualTo(200);
+        assertThat(orderStatus(acme, on)).isEqualTo("COMPLETED");
+        assertThat(productInt(p, "sold_count")).isEqualTo(1);
     }
 
     @Test
@@ -269,8 +308,9 @@ class StockLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
 
         MvcResult xr;
         ExecutorService ex = Executors.newSingleThreadExecutor();
+        Future<Integer> answer;
         try (Holder h = new Holder(high)) {
-            assertThat(webhook(g, event("charge.success", reference(on), totalMinor(on)))).isEqualTo(200);
+            answer = webhookInBackground(g, event("charge.success", reference(on), totalMinor(on)));
             Blocked webhookWait = awaitBlockedBy(h); // the webhook waits for high
             Future<MvcResult> f = ex.submit(() -> checkout(x, null, null));
             // the checkout's reservation now queues as well (behind the webhook or the holder)
@@ -286,6 +326,7 @@ class StockLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         } finally {
             ex.shutdownNow();
         }
+        assertThat(answer.get(60, TimeUnit.SECONDS)).isEqualTo(200);
         awaitStatus(on, "COMPLETED");
         assertThat(xr.getResponse().getStatus()).as(xr.getResponse().getContentAsString()).isEqualTo(200);
         assertThat(initiateCalls.get()).isEqualTo(2);

@@ -253,6 +253,14 @@ public abstract class AbstractCheckoutIntegrationTest extends AbstractTenantWebT
                 .header("X-Paystack-Signature", hmac512(body, g.secret())).content(body)).andReturn().getResponse().getStatus();
     }
 
+    /**
+     * EVT-01c: the webhook applies the event before it answers, so a test that holds a row the settlement needs must
+     * send it from another thread. Runs on the webhook executor, which the cleanup waits for.
+     */
+    protected java.util.concurrent.Future<Integer> webhookInBackground(Gateway g, String body) {
+        return ((org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor) webhookExecutor).submit(() -> webhook(g, body));
+    }
+
     protected static String event(String type, String reference, long amountMinor) {
         return "{\"event\":\"" + type + "\",\"data\":{\"id\":1,\"reference\":\"" + reference + "\",\"status\":\""
                 + ("charge.success".equals(type) ? "success" : "failed") + "\",\"amount\":" + amountMinor
