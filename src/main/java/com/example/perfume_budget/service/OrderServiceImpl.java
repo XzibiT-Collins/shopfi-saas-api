@@ -163,14 +163,9 @@ public class OrderServiceImpl implements OrderService {
             throw new BadRequestException(EMPTY_CART);
         }
         validateCartItemsForEcommerce(cart);
-        if (key == null) {
-            String fingerprint = CheckoutFingerprint.of(cart, CheckoutFingerprint.normalizeCoupon(couponCode), delivery.getId());
-            LocalDateTime openCutoff = LocalDateTime.now().minusHours(expiryHours);
-            for (Order open : orderRepository.findOpenByFingerprint(user, fingerprint, openCutoff)) {
-                if (replay(open).isPresent()) {
-                    return false;
-                }
-            }
+        String fingerprint = CheckoutFingerprint.of(cart, CheckoutFingerprint.normalizeCoupon(couponCode), delivery.getId());
+        if (openOrderAnswer(user, fingerprint, LocalDateTime.now().minusHours(expiryHours)).isPresent()) {
+            return false; // PAY-03: answered by the customer's open order (re-checked under the customer lock)
         }
         pricingService.precheckCoupon(cart, couponCode);
         return true;
@@ -202,14 +197,11 @@ public class OrderServiceImpl implements OrderService {
 
         String couponNorm = CheckoutFingerprint.normalizeCoupon(couponCode);
         String fingerprint = CheckoutFingerprint.of(cart, couponNorm, delivery.getId());
-        if (key == null) {
-            // No key: the customer's still-open order for the very same cart/coupon/address is the answer.
-            for (Order open : orderRepository.findOpenByFingerprint(currentUser, fingerprint, openCutoff)) {
-                Optional<CheckoutResponse> replay = replay(open);
-                if (replay.isPresent()) {
-                    return CheckoutOutcome.replayed(replay.get());
-                }
-            }
+        // PAY-03: one open order per customer, whatever key (or none) the tab / device sent. Under the customer row
+        // lock, so of two concurrent checkouts the second sees the first one's committed order here.
+        Optional<CheckoutResponse> openAnswer = openOrderAnswer(currentUser, fingerprint, openCutoff);
+        if (openAnswer.isPresent()) {
+            return CheckoutOutcome.replayed(openAnswer.get());
         }
 
         if (hasCoupon && reservation == null) {
@@ -352,6 +344,49 @@ public class OrderServiceImpl implements OrderService {
                 Map.of("orderNumber", existing.getOrderNumber(), "paymentStatus", String.valueOf(existing.getStatus())));
     }
 
+    /**
+     * PAY-03. The customer's open order (payment INITIATED, inside the reservation TTL) for the very same request
+     * (cart lines, coupon, address) is returned as a replay; any other open order of the customer refuses the
+     * checkout with 409 {@code OPEN_ORDER_EXISTS} (nothing is created, reserved or cancelled: the customer pays or
+     * cancels that order first). Empty when the customer has no open order. Owner scoped: only {@code user}'s orders
+     * in the current tenant schema are read.
+     */
+    private Optional<CheckoutResponse> openOrderAnswer(User user, String fingerprint, LocalDateTime openCutoff) {
+        List<Order> open = orderRepository.findOpenByUser(user, openCutoff);
+        for (Order order : open) {
+            if (fingerprint.equals(order.getRequestFingerprint())) {
+                Optional<CheckoutResponse> replay = replay(order);
+                if (replay.isPresent()) {
+                    return replay;
+                }
+            }
+        }
+        if (open.isEmpty()) {
+            return Optional.empty();
+        }
+        Order blocking = open.get(0);
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("orderNumber", blocking.getOrderNumber());
+        data.put("expiresAt", String.valueOf(expiresAt(blocking)));
+        // The named order is for this very cart but cannot be replayed (its payment has no Paystack URL: legacy or
+        // corrupt row). Same code, but the message must not claim a different cart: the only way on is cancel.
+        String message = fingerprint.equals(blocking.getRequestFingerprint())
+                ? "You already have an unpaid order for this cart that cannot be resumed; cancel it first."
+                : "You already have an unpaid order for a different cart; pay or cancel it first.";
+        throw new ApiCodeException(HttpStatus.CONFLICT, "OPEN_ORDER_EXISTS", message, data);
+    }
+
+    /**
+     * Creation + reservation TTL, in UTC. Rounded to the microsecond the way the JDBC driver rounds the stored
+     * created_at (half up), so the response that created the order and every later replay of it carry the same
+     * instant (PAY-03: tabs compare it).
+     */
+    private java.time.OffsetDateTime expiresAt(Order order) {
+        return order.getCreatedAt() == null ? null : order.getCreatedAt().plusHours(expiryHours)
+                .plusNanos(500).truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+                .atZone(java.time.ZoneId.systemDefault()).withZoneSameInstant(java.time.ZoneOffset.UTC).toOffsetDateTime();
+    }
+
     private Optional<CheckoutResponse> replay(Order order) {
         return paymentRepository.findByOrder_OrderNumber(order.getOrderNumber())
                 .filter(p -> p.getAuthorizationUrl() != null && p.getProviderPaymentReference() != null)
@@ -370,8 +405,7 @@ public class OrderServiceImpl implements OrderService {
                 .orderNumber(order.getOrderNumber())
                 .paymentStatus(order.getStatus())
                 .totalAmount(order.getTotalAmount().toString())
-                .expiresAt(order.getCreatedAt() == null ? null : order.getCreatedAt().plusHours(expiryHours)
-                        .atZone(java.time.ZoneId.systemDefault()).withZoneSameInstant(java.time.ZoneOffset.UTC).toOffsetDateTime())
+                .expiresAt(expiresAt(order))
                 .idempotentReplay(replay)
                 .build();
     }
@@ -406,9 +440,28 @@ public class OrderServiceImpl implements OrderService {
         Order order = getOrder(orderNumber);
         Payment payment = referencesFor(List.of(order)).get(order.getId());
         // Account identity (name/email/id of the owner) is for an ADMIN only; customers only ever see their own orders.
-        return authUserUtil.getCurrentUser().getRoles() == UserRole.ADMIN
+        User caller = authUserUtil.getCurrentUser();
+        return caller.getRoles() == UserRole.ADMIN
                 ? OrderMapper.toAdminOrderResponse(order, payment)
-                : OrderMapper.toOrderResponse(order, payment);
+                : OrderMapper.toOwnerOrderResponse(order, payment, openAuthorizationUrl(order, payment, caller));
+    }
+
+    /**
+     * PAY-03 rework: the Paystack URL the owner can continue to pay with, or null. Only for the order's own customer
+     * and only while the order is open, the same definition checkout uses (payment INITIATED and created after
+     * now - TTL, i.e. now before {@code expiresAt}): never for a paid, failed, cancelled or expired order (an expired
+     * one the cleanup job has not cancelled yet included), and never to an ADMIN or another customer.
+     */
+    private String openAuthorizationUrl(Order order, Payment payment, User caller) {
+        if (payment == null || order.getUser() == null || caller == null
+                || !java.util.Objects.equals(order.getUser().getId(), caller.getId())) {
+            return null;
+        }
+        if (order.getStatus() != PaymentStatus.INITIATED || order.getCreatedAt() == null
+                || !order.getCreatedAt().isAfter(LocalDateTime.now().minusHours(expiryHours))) {
+            return null;
+        }
+        return payment.getAuthorizationUrl();
     }
 
     @Override
@@ -678,7 +731,8 @@ public class OrderServiceImpl implements OrderService {
                         || !Boolean.TRUE.equals(product.getIsEnlisted()));
 
         if (hasUnavailableProduct) {
-            throw new BadRequestException(PRODUCT_UNAVAILABLE);
+            // same 400 and description as before; the code is additive (PAY-03 rework: the storefront offers cancel)
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "PRODUCT_UNAVAILABLE", PRODUCT_UNAVAILABLE);
         }
     }
 }

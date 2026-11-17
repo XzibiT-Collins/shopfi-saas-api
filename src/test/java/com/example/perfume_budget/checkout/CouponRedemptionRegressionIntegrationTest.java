@@ -174,7 +174,9 @@ class CouponRedemptionRegressionIntegrationTest extends AbstractCheckoutIntegrat
     void perUserRefusalIsDecidedWithoutTouchingTheCoupon() throws Exception {
         createCoupon(body("PRE1", 10, 1));
         Customer c = ready("pre1@acme.test");
-        place(c, "PRE1");
+        String placed = place(c, "PRE1");
+        // PAY-03: an open order would answer 409 OPEN_ORDER_EXISTS first; a paid one still holds the redemption
+        jdbc.update("UPDATE tenant_acme.orders SET status = 'COMPLETED' WHERE order_number = ?", placed);
         cart(c, product(acme, "Second", "100.00", 50), 1); // a different cart: no fingerprint replay
         Timed t = whileCouponLocked("PRE1", () -> checkout(c, null, "couponCode=pre1"));
         assertThat(t.result().getResponse().getStatus()).as(t.result().getResponse().getContentAsString()).isEqualTo(400);

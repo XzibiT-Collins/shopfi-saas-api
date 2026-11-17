@@ -33,6 +33,15 @@ public class OrderMapper {
         return toOrderResponse(order, reference, false);
     }
 
+    /**
+     * Owner detail view (PAY-03 rework): the payment overload plus the Paystack {@code authorizationUrl}, which the
+     * CALLER has already decided is safe to show (owner, order open); pass null otherwise.
+     */
+    public static OrderResponse toOwnerOrderResponse(Order order, Payment payment, String authorizationUrl){
+        OrderResponse r = toOrderResponse(order, payment);
+        return authorizationUrl == null ? r : r.toBuilder().authorizationUrl(authorizationUrl).build();
+    }
+
     /** Admin view: same as the payment overload plus the owner's identity. */
     public static OrderResponse toAdminOrderResponse(Order order, Payment payment){
         return toOrderResponse(order, payment == null ? null : payment.getProviderPaymentReference(),
