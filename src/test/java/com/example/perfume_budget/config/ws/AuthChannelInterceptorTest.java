@@ -219,6 +219,62 @@ class AuthChannelInterceptorTest {
     }
 
     @Test
+    void caseAndTrailingSlashVariantsOfTheStaffQueueAreRefused() {
+        // review F6 / R02: the match is exact and case-sensitive (the broker's own matching is case-sensitive)
+        Map<String, Object> admin = connected("admin@acme.test");
+        for (String d : new String[]{"/USER/queue/notifications", "/user/QUEUE/notifications", "/user/queue/Notifications",
+                "/User/Queue/Notifications", "/user/queue/notifications/", "/user/queue/notifications//",
+                "/user/queue/notifications ", "/user/queue/notifications/x"}) {
+            refused(() -> subscribe(admin, d), "Destination not allowed");
+        }
+    }
+
+    @Test
+    void connectStoresTheTokensOwnExpiryAsTheSessionExpiry() {
+        // review F6 / R07: the session expiry is the token's exp (JWT exp is whole seconds), not "never" or "now + ttl"
+        long exp = (now.get() / 1000 + 754) * 1000;
+        Map<String, Object> session = attrs(ACME, null);
+        StompHeaderAccessor c = connect(session, token("admin@acme.test", "acme", exp));
+        assertThat(session.get(AuthChannelInterceptor.TOKEN_EXPIRY_ATTR)).isEqualTo(exp);
+        session.put("user", c.getUser());
+        now.set(exp - 1);
+        subscribe(session, "/user/queue/notifications");
+        now.set(exp);
+        refused(() -> subscribe(session, "/user/queue/notifications"), "Session expired");
+    }
+
+    @Test
+    void aSecondConnectOnAnAuthenticatedSessionIsRefused() {
+        // review F3: the principal is never re-authenticated or swapped in place
+        Map<String, Object> session = connected("admin@acme.test");
+        StompTenantAuthentication principal = (StompTenantAuthentication) session.get("user");
+        Object expiry = session.get(AuthChannelInterceptor.TOKEN_EXPIRY_ATTR);
+        for (String email : new String[]{"admin@acme.test", "other@acme.test"}) {
+            StompHeaderAccessor again = frame(StompCommand.CONNECT, session);
+            again.setUser(principal);
+            again.setNativeHeader("Authorization", "Bearer " + token(email, "acme", now.get() + 900_000));
+            refused(() -> interceptor.preSend(msg(again), channel), "Already connected");
+            assertThat(again.getUser()).as("principal unchanged").isSameAs(principal);
+        }
+        StompHeaderAccessor stomp = frame(StompCommand.STOMP, session);
+        stomp.setUser(principal);
+        refused(() -> interceptor.preSend(msg(stomp), channel), "Already connected");
+        assertThat(session.get(AuthChannelInterceptor.TOKEN_EXPIRY_ATTR)).as("expiry not extended").isEqualTo(expiry);
+        verify(users, times(1)).loadUserByUsername(anyString());
+    }
+
+    @Test
+    void aConnectCarryingTheHttpHandshakePrincipalIsStillAuthenticatedNormally() {
+        // the HTTP filter chain may have put a plain Authentication on the handshake; that is not a STOMP session login
+        StompHeaderAccessor a = frame(StompCommand.CONNECT, attrs(ACME, null));
+        a.setUser(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("admin@acme.test", null,
+                java.util.List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN"))));
+        a.setNativeHeader("Authorization", "Bearer " + valid("admin@acme.test"));
+        interceptor.preSend(msg(a), channel);
+        assertThat(a.getUser()).isInstanceOf(StompTenantAuthentication.class);
+    }
+
+    @Test
     void customerMayNotSubscribeToStaffDestinations() {
         Map<String, Object> customer = connected("customer@acme.test");
         refused(() -> subscribe(customer, "/user/queue/notifications"), "Destination not allowed");

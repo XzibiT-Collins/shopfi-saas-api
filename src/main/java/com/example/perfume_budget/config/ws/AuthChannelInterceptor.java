@@ -35,7 +35,8 @@ import java.util.function.LongSupplier;
  *       verify, be unexpired, carry a {@code tenant} claim equal to the handshake tenant, and name an enabled user of
  *       THAT tenant: the user lookup runs with the handshake tenant bound to {@link TenantContext} (restored
  *       afterwards). Anything else, including no token at all, is refused with an ERROR frame and the session closed.
- *       The session principal is a {@link StompTenantAuthentication} (tenant-qualified name).</li>
+ *       The session principal is a {@link StompTenantAuthentication} (tenant-qualified name). A second CONNECT on a
+ *       session that already has that principal is refused ({@code Already connected}) and the session closed.</li>
  *   <li><b>SUBSCRIBE / SEND</b>: require that principal, of the session's tenant, with the CONNECT token not yet expired,
  *       and a destination allowed by {@link StompDestinationPolicy}.</li>
  *   <li>Message handling on the inbound executor runs with the session's tenant bound and cleared afterwards
@@ -83,6 +84,12 @@ public class AuthChannelInterceptor implements ExecutorChannelInterceptor {
     }
 
     private void connect(StompHeaderAccessor accessor) {
+        if (accessor.getUser() instanceof StompTenantAuthentication) {
+            // A second CONNECT on an authenticated session (SEC-03c review F3): never re-authenticate or swap the
+            // principal in place; refuse it, which closes the session. Over a WebSocket, Spring's StompSubProtocolHandler
+            // already refuses it before this point ("Session already exists"); this is the explicit second line.
+            throw new StompAccessDeniedException("Already connected");
+        }
         Map<String, Object> attributes = accessor.getSessionAttributes();
         TenantIdentity tenant = sessionTenant(attributes);
         String token = token(accessor, attributes);

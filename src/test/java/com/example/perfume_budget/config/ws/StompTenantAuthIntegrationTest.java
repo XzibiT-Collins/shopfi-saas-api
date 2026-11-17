@@ -20,27 +20,40 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.MessageHeaders;
 import org.springframework.messaging.converter.MessageConverter;
 import org.springframework.messaging.simp.stomp.StompFrameHandler;
 import org.springframework.messaging.simp.stomp.StompHeaders;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.messaging.simp.stomp.StompSessionHandlerAdapter;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
+import org.springframework.messaging.simp.stomp.StompCommand;
+import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.simp.user.SimpUserRegistry;
+import org.springframework.messaging.support.AbstractSubscribableChannel;
+import org.springframework.messaging.support.ChannelInterceptor;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHttpHeaders;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.TextWebSocketHandler;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 import org.springframework.web.socket.sockjs.client.SockJsClient;
 import org.springframework.web.socket.sockjs.client.WebSocketTransport;
 
 import java.lang.reflect.Type;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -87,11 +100,35 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired AdminSessionManager adminSessions;
     @Autowired TenantOriginPolicy originPolicy;
     @Value("${application.security.jwt.secret-key}") String jwtSecret;
+    @Autowired @Qualifier("clientInboundChannel") AbstractSubscribableChannel clientInbound;
 
     private TestTenant acme;
     private TestTenant bravo;
     private WebSocketStompClient client;
     private final List<StompSession> open = new ArrayList<>();
+    private final List<WebSocketSession> rawOpen = new ArrayList<>();
+
+    /** A client frame that got past every inbound interceptor, i.e. was handed to the broker. */
+    record Passed(StompCommand command, String user, String destination) { }
+
+    /**
+     * Appended after AuthChannelInterceptor: records only frames that it let through to the broker. Added once and
+     * never removed: the channel's interceptor list is a plain ArrayList that server threads iterate (a removal while a
+     * closing session sends its DISCONNECT breaks that send), so recording is switched on and off per test instead.
+     */
+    private static final List<Passed> passed = new CopyOnWriteArrayList<>();
+    private static volatile boolean recording;
+    private static final ChannelInterceptor BROKER_SIDE = new ChannelInterceptor() {
+        @Override
+        public Message<?> preSend(Message<?> message, MessageChannel channel) {
+            StompHeaderAccessor a = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
+            if (recording && a != null && a.getCommand() != null) {
+                java.security.Principal user = SimpMessageHeaderAccessor.getUser(message.getHeaders());
+                passed.add(new Passed(a.getCommand(), user == null ? null : user.getName(), a.getDestination()));
+            }
+            return message;
+        }
+    };
 
     @BeforeEach
     void setUp() {
@@ -103,10 +140,23 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
         user(acme, ACME_CUSTOMER, UserRole.CUSTOMER);
         client = new WebSocketStompClient(new SockJsClient(List.of(new WebSocketTransport(new StandardWebSocketClient()))));
         client.setMessageConverter(new RawBytes());
+        synchronized (StompTenantAuthIntegrationTest.class) {
+            if (!clientInbound.getInterceptors().contains(BROKER_SIDE)) {
+                clientInbound.addInterceptor(BROKER_SIDE);
+            }
+        }
+        passed.clear();
+        recording = true;
     }
 
     @AfterEach
-    void tearDown() {
+    void tearDown() throws Exception {
+        recording = false;
+        for (WebSocketSession s : rawOpen) {
+            if (s.isOpen()) {
+                s.close();
+            }
+        }
         for (StompSession s : open) {
             if (s.isConnected()) {
                 s.disconnect();
@@ -141,9 +191,12 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private String expiredToken(TestTenant tenant, String email) {
-        long now = System.currentTimeMillis();
+        return tokenExpiringAt(tenant, email, System.currentTimeMillis() - 60_000);
+    }
+
+    private String tokenExpiringAt(TestTenant tenant, String email, long expiresAtMillis) {
         return Jwts.builder().subject(email).claims(Map.of("tenant", tenant.slug(), "role", "ADMIN"))
-                .issuedAt(new Date(now - 7_200_000)).expiration(new Date(now - 60_000))
+                .issuedAt(new Date(expiresAtMillis - 7_200_000)).expiration(new Date(expiresAtMillis))
                 .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtSecret))).compact();
     }
 
@@ -199,22 +252,47 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
         return new Attempt(f, recorder);
     }
 
+    /**
+     * A refused CONNECT: the client never gets CONNECTED, and no CONNECT reached the broker. The ERROR frame is
+     * best-effort (review F2: Spring may drop the buffered frame when it closes the session right after it), so the
+     * reason is checked only when the frame did arrive. Use only in tests where every CONNECT is expected to fail.
+     */
     private void assertConnectRefused(Attempt attempt, String reason) {
         assertThatThrownBy(attempt::session).as("CONNECT must not complete").isNotNull();
         if (reason != null) {
-            assertThat(attempt.recorder().errors).as("ERROR frame reason").contains(reason);
+            assertThat(attempt.recorder().errors).as("an ERROR frame, when it arrives, carries the reason").allMatch(reason::equals);
         }
+        assertThat(passed).as("a refused CONNECT never reaches the broker")
+                .noneMatch(f -> f.command() == StompCommand.CONNECT || f.command() == StompCommand.STOMP);
     }
 
-    private BlockingQueue<String> subscribe(StompSession session) {
+    /**
+     * A frame refused on a connected session: the client sees the ERROR reason or (best-effort, review F2) only the
+     * closed connection; the session is closed either way and the frame never reached the broker.
+     */
+    private void assertRefusedAndClosed(Attempt attempt, StompSession session, StompCommand command, String destination,
+                                        String reason) {
+        await().atMost(Duration.ofSeconds(10)).until(() ->
+                attempt.recorder().errors.contains(reason) || !session.isConnected());
+        assertThat(attempt.recorder().errors).as("an ERROR frame, when it arrives, carries the reason").allMatch(reason::equals);
+        await().atMost(Duration.ofSeconds(10)).until(() -> !session.isConnected());
+        assertThat(passed).as(command + " " + destination + " never reaches the broker")
+                .noneMatch(f -> f.command() == command && destination.equals(f.destination()));
+    }
+
+    private BlockingQueue<String> subscribe(StompSession session, String destination) {
         BlockingQueue<String> received = new LinkedBlockingQueue<>();
-        session.subscribe(QUEUE, new StompFrameHandler() {
+        session.subscribe(destination, new StompFrameHandler() {
             @Override public Type getPayloadType(StompHeaders headers) { return byte[].class; }
             @Override public void handleFrame(StompHeaders headers, Object payload) {
                 received.add(new String((byte[]) payload, StandardCharsets.UTF_8));
             }
         });
         return received;
+    }
+
+    private BlockingQueue<String> subscribe(StompSession session) {
+        return subscribe(session, QUEUE);
     }
 
     /** Waits until {@code count} sessions are subscribed to the queue (by destination only, not by user name). */
@@ -277,24 +355,85 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
     void customerSubscribingToTheAdminDestinationIsRejected() throws Exception {
         Attempt attempt = connect(origin(acme), token(acme, ACME_CUSTOMER), null);
         StompSession session = attempt.session();
-        subscribe(session);
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
-                assertThat(attempt.recorder().errors).contains("Destination not allowed"));
-        await().atMost(Duration.ofSeconds(10)).until(() -> !session.isConnected());
+        BlockingQueue<String> inbox = subscribe(session);
+        assertRefusedAndClosed(attempt, session, StompCommand.SUBSCRIBE, QUEUE, "Destination not allowed");
         assertThat(adminSessions.getConnectedAdmins("acme")).doesNotContain(ACME_CUSTOMER);
+        notifyNewPaidOrder(acme);
+        assertThat(inbox.poll(2, TimeUnit.SECONDS)).as("nothing delivered").isNull();
     }
 
     @Test
     void wildcardSubscriptionAndSendAreRejectedEvenForStaff() throws Exception {
         Attempt wildcard = connect(origin(acme), token(acme, SHARED_STAFF), null);
-        wildcard.session().subscribe("/queue/**", new StompSessionHandlerAdapter() { });
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
-                assertThat(wildcard.recorder().errors).contains("Destination not allowed"));
+        StompSession wildcardSession = wildcard.session();
+        BlockingQueue<String> wildcardInbox = subscribe(wildcardSession, "/queue/**");
+        assertRefusedAndClosed(wildcard, wildcardSession, StompCommand.SUBSCRIBE, "/queue/**", "Destination not allowed");
 
         Attempt send = connect(origin(acme), token(acme, SHARED_STAFF), null);
-        send.session().send("/app/anything", "x".getBytes(StandardCharsets.UTF_8));
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
-                assertThat(send.recorder().errors).contains("Destination not allowed"));
+        StompSession sendSession = send.session();
+        sendSession.send("/app/anything", "x".getBytes(StandardCharsets.UTF_8));
+        assertRefusedAndClosed(send, sendSession, StompCommand.SEND, "/app/anything", "Destination not allowed");
+
+        notifyNewPaidOrder(acme);
+        assertThat(wildcardInbox.poll(2, TimeUnit.SECONDS)).as("nothing delivered to the wildcard subscription").isNull();
+    }
+
+    @Test
+    void subscribeAfterTheConnectTokenExpiredIsRejected() throws Exception {
+        // review F6 / R07 end to end: the session expiry is the CONNECT token's own exp
+        long exp = (System.currentTimeMillis() / 1000 + 4) * 1000;
+        Attempt attempt = connect(origin(acme), tokenExpiringAt(acme, SHARED_STAFF, exp), null);
+        StompSession session = attempt.session();
+        assertThat(passed).anyMatch(f -> f.command() == StompCommand.CONNECT);
+        long wait = exp - System.currentTimeMillis() + 300;
+        if (wait > 0) {
+            Thread.sleep(wait);
+        }
+        BlockingQueue<String> inbox = subscribe(session);
+        assertRefusedAndClosed(attempt, session, StompCommand.SUBSCRIBE, QUEUE, "Session expired");
+        notifyNewPaidOrder(acme);
+        assertThat(inbox.poll(2, TimeUnit.SECONDS)).as("nothing delivered").isNull();
+    }
+
+    @Test
+    void aSecondConnectOnTheSameSessionIsRejectedAndClosesTheSession() throws Exception {
+        // review F3, over a raw WebSocket (the STOMP client cannot send a second CONNECT). Spring's own
+        // StompSubProtocolHandler already refuses it first ("Session already exists", an IllegalStateException that
+        // StompErrorHandler turns into the generic "Bad request"); AuthChannelInterceptor's "Already connected" is
+        // the second line (unit-tested). Either way: no second CONNECTED, session closed, broker saw one CONNECT.
+        BlockingQueue<String> frames = new LinkedBlockingQueue<>();
+        CompletableFuture<CloseStatus> closed = new CompletableFuture<>();
+        WebSocketHttpHeaders handshake = new WebSocketHttpHeaders();
+        handshake.setOrigin(origin(acme));
+        WebSocketSession ws = new StandardWebSocketClient().execute(new TextWebSocketHandler() {
+            @Override protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+                frames.add(message.getPayload());
+            }
+            @Override public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+                closed.complete(status);
+            }
+        }, handshake, URI.create("ws://127.0.0.1:" + port + "/ws/websocket")).get(15, TimeUnit.SECONDS);
+        rawOpen.add(ws);
+
+        ws.sendMessage(new TextMessage(connectFrame(token(acme, SHARED_STAFF))));
+        assertThat(frames.poll(15, TimeUnit.SECONDS)).as("first CONNECT").startsWith("CONNECTED");
+
+        ws.sendMessage(new TextMessage(connectFrame(token(acme, ACME_CUSTOMER))));
+        closed.get(15, TimeUnit.SECONDS);
+        await().atMost(Duration.ofSeconds(5)).until(() -> !ws.isOpen());
+        List<String> rest = new ArrayList<>();
+        frames.drainTo(rest);
+        assertThat(rest).as("no second CONNECTED; an ERROR frame, when it arrives, carries only a fixed reason")
+                .allMatch(f -> f.startsWith("ERROR")
+                        && (f.contains("message:Already connected") || f.contains("message:Bad request")))
+                .noneMatch(f -> f.contains("Session already exists") || f.contains("Exception"));
+        assertThat(passed.stream().filter(f -> f.command() == StompCommand.CONNECT).toList())
+                .as("only the first CONNECT reached the broker, as the staff user")
+                .containsExactly(new Passed(StompCommand.CONNECT, "acme:" + SHARED_STAFF, null));
+    }
+
+    private static String connectFrame(String token) {
+        return "CONNECT\naccept-version:1.2\nhost:localhost\nheart-beat:0,0\nAuthorization:Bearer " + token + "\n\n\u0000";
     }
 
     // ------------------------------------------------------------------ delivery

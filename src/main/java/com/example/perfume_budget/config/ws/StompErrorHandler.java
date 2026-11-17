@@ -11,6 +11,10 @@ import java.nio.charset.StandardCharsets;
 /**
  * ERROR frames for refused client frames (SEC-03c): a {@link StompAccessDeniedException} anywhere in the cause chain
  * yields its own short reason; anything else a generic text, so no internal exception detail reaches the client.
+ *
+ * <p>The ERROR frame is best-effort: Spring closes the session right after sending it, and the
+ * {@code ConcurrentWebSocketSessionDecorator} may drop a still-buffered frame on that close. A client can therefore see
+ * the reason or only the closed connection; either way the refused frame never reaches the broker.
  */
 public class StompErrorHandler extends StompSubProtocolErrorHandler {
 
