@@ -194,7 +194,7 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
      * product), coupon metrics (list and per coupon), analytics revenue / COGS / expenses (Query A + B).
      */
     private record Reports(BigDecimal totalRevenue, long completedOrders, int topProducts, long itemsSold, BigDecimal analyticsRevenue,
-                           BigDecimal analyticsCogs, BigDecimal analyticsExpenses, BigDecimal dailyRevenue, int topCustomers,
+                           BigDecimal analyticsCogs, BigDecimal analyticsExpenses, BigDecimal dailyRevenue, Map<String, String> topCustomers,
                            long couponListUsages, BigDecimal couponListRevenue, long couponUsages, BigDecimal couponRevenue,
                            Map<String, BigDecimal> soldByReference) {}
 
@@ -232,7 +232,9 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
                             .map(b -> b.getExpenses()).reduce(BigDecimal.ZERO, BigDecimal::add),
                     orderRepository.getDailyRevenue(PaymentStatus.COMPLETED, start, end).stream()
                             .map(d -> d.getRevenue()).reduce(BigDecimal.ZERO, BigDecimal::add),
-                    orderRepository.findTopCustomers(PaymentStatus.COMPLETED, org.springframework.data.domain.Pageable.ofSize(10)).size(),
+                    orderRepository.findTopCustomers(PaymentStatus.COMPLETED, org.springframework.data.domain.Pageable.ofSize(10)).stream()
+                            .collect(java.util.stream.Collectors.toMap(t -> t.getEmail(),
+                                    t -> t.getTotalOrders() + " / " + t.getTotalAmountSpent().stripTrailingZeros().toPlainString())),
                     coupons.stream().mapToLong(m -> m.getTotalUsages()).sum(),
                     coupons.stream().map(m -> m.getRevenueGenerated()).reduce(BigDecimal.ZERO, BigDecimal::add),
                     couponUsages, couponRevenue, byRef);
@@ -843,7 +845,8 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(only.couponListUsages()).isEqualTo(1);
         assertThat(only.couponUsages()).isEqualTo(1);
         assertThat(only.couponRevenue()).isEqualByComparingTo(keptTotal);
-        assertThat(only.topCustomers()).isEqualTo(1);
+        assertThat(only.topCustomers()).containsOnlyKeys(c.email());
+        assertThat(only.topCustomers().get(c.email())).startsWith("1 / ");
         assertThat(only.analyticsCogs()).isEqualByComparingTo("8.00");
         assertThat(only.analyticsExpenses()).isEqualByComparingTo("2.00");
         assertThat(only.soldByReference()).containsOnlyKeys(kept.orderNumber());
@@ -869,6 +872,11 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertSameReports(reports(), only, "with a NULL delivery status");
         assertThat(listedSpent(c)).as("customer list keeps a NULL delivery status").isEqualTo(listedOnly);
         assertThat(detailSpent(c)).as("customer details keep a NULL delivery status").isEqualTo(spentOnly);
+
+        // F5: an unpaid order is not money spent (customer list and details agree with top customers)
+        placeAs(c, null, 1, p);
+        assertThat(listedSpent(c)).as("customer list ignores an unpaid order").isEqualTo(listedOnly);
+        assertThat(detailSpent(c)).as("customer details ignore an unpaid order").isEqualTo(spentOnly);
     }
 
     @Test
