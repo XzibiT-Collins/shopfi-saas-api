@@ -6,6 +6,7 @@ import com.example.perfume_budget.platform.service.TenantRegistryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 /**
  * Runs an action once per ACTIVE tenant with that tenant bound to {@link TenantContext}. Used by
@@ -25,7 +26,7 @@ public class TenantRunner {
                 TenantContext.set(TenantIdentity.tenant(tenant.getSlug(), tenant.getSchemaName()));
                 action.run();
             } catch (Exception e) {
-                log.error("Scheduled action failed for tenant {}: {}", tenant.getSlug(), e.getClass().getName());
+                log.error("Scheduled action failed for tenant {}: {}", tenant.getSlug(), SafeStackTrace.of(e));
                 log.debug("Scheduled action failure detail for tenant {}", tenant.getSlug(), e);
             } finally {
                 TenantContext.clear();

@@ -175,7 +175,27 @@ lock timeout / `COUPON_BUSY`) is first retried in-process up to 3 times, each at
 rework 2; the settlement is idempotent). If it still fails, or any other step of the settlement fails (for example the
 side-effect outbox insert, which rolls the payment change back with it), nothing is committed and the endpoint answers
 `500` so Paystack redelivers the event; the customer's verify poll (`GET /payment/verify`) and, for an unpaid order,
-the expiry job remain the other ways it gets settled. A webhook never answers `503`.
+the expiry job remain the other ways it gets settled.
+
+Each attempt's lock waits are bounded (`shopfi.webhook.lock-timeout-ms`, 8 s per wait), and all attempts of one
+delivery share one budget (`shopfi.webhook.settlement-deadline-ms`, 20 s, under Paystack's 30 s timeout): no attempt
+starts with less than 250 ms left, and each attempt's lock timeout is capped to what is left. Past the budget the
+answer is `500` (redelivered; the settlement is idempotent).
+
+EVT-01c rework 1, **`503` when busy.** At most `shopfi.payments.webhook.max-concurrent-settlements` (default 3)
+settlements run at once, so a burst of webhooks waiting for the same locked rows cannot take the whole connection pool.
+A signed webhook that needs a settlement (`charge.success` / `charge.failed`) and finds no free slot within 50 ms
+(`shopfi.payments.webhook.permit-wait-ms`, at most 100 ms) is answered `503` with the plain body `Busy` and no details;
+nothing was applied and Paystack redelivers it. The signature is checked first (a bad one is still `403`), and an event
+that can never be applied is still acknowledged `200` without needing a slot.
+
+| webhook status | meaning |
+|---|---|
+| 200 `Processed` | applied and committed, or can never be applied (ignored) |
+| 403 | signature invalid |
+| 404 | unknown / inactive webhook token |
+| 500 `Error` | not applied (settlement failed, retries exhausted or deadline passed); redelivered |
+| 503 `Busy` | not applied, all settlement slots busy; redelivered |
 
 **Payment-success side effects (API-04 rework 3).** The customer receipt e-mail, the admin "payment successful" e-mail
 and the admin in-app / WebSocket notification are sent only after the settling transaction COMMITS, once per settled
@@ -200,7 +220,7 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
-| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). Webhooks never answer 503 (see above) |
+| 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). The webhook's own `503` is the plain-text `Busy` (see above), never `COUPON_BUSY` |
 | 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. API-05: also any optimistic-lock failure (`ObjectOptimisticLockingFailureException`) on any endpoint, including a version conflict while a stock writer takes the product locks (rework: that one used to surface as JPA's own exception, `409`); checkout itself no longer produces one (see "Concurrent checkouts" below) |
 
 Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.

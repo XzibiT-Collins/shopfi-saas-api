@@ -39,6 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code String m = e.getMessage();}) is itself sensitive, transitively;</li>
  *   <li><b>side effects (EVT-01c 9):</b> no {@code save(..)}, {@code delete(..)}, {@code publishEvent(..)}, ... inside
  *       log arguments: a log level that is switched off must not change what the code does.</li>
+ *   <li><b>rework 1:</b> a logger with any name ({@code Logger audit = ..}), and a cause pulled out of a throwable
+ *       ({@code e.getCause()}) counts as the throwable. The sanctioned way to put a trace into an ERROR line is
+ *       {@code SafeStackTrace.of(e)} (class names and frames, never a message).</li>
  * </ul>
  */
 class NoPersonalDataInLogsTest {
@@ -46,6 +49,10 @@ class NoPersonalDataInLogsTest {
     private static final Pattern LOG_CALL = Pattern.compile(
             "\\b(?:\\w*[Ll]og(?:ger)?|\\w*LOG(?:GER)?)\\s*\\.\\s*(trace|debug|info|warn|error)\\s*\\(");
     private static final Pattern FLUENT_CALL = Pattern.compile("\\.\\s*at(Trace|Debug|Info|Warn|Error|Level)\\s*\\(");
+    /** EVT-01c rework 1: a logger field or local with any name ({@code Logger audit = LoggerFactory.getLogger(..)}). */
+    private static final Pattern LOGGER_DECLARATION = Pattern.compile("\\b(?:System\\s*\\.\\s*)?Logger\\s+(\\w+)\\s*[=;]");
+    /** EVT-01c rework 1: a cause pulled out of a throwable is a throwable too ({@code log.error("..", e.getCause())}). */
+    private static final String CAUSE_OF = "(?:\\s*\\.\\s*(?:getCause|getRootCause|getMostSpecificCause)\\s*\\(\\s*\\))+";
     private static final Pattern MDC_CALL = Pattern.compile("\\bMDC\\s*\\.\\s*(?:put|putCloseable)\\s*\\(");
     private static final Pattern STDOUT_CALL = Pattern.compile("\\bSystem\\s*\\.\\s*(?:out|err)\\s*\\.\\s*(?:print|println|printf|format)\\s*\\(");
     private static final Pattern SENSITIVE = Pattern.compile(
@@ -123,6 +130,19 @@ class NoPersonalDataInLogsTest {
         Matcher m = LOG_CALL.matcher(code);
         while (m.find()) {
             out.add(new Call(m.group(1), argumentsFrom(code, m.end())));
+        }
+        Matcher decl = LOGGER_DECLARATION.matcher(code);
+        Set<String> otherLoggers = new LinkedHashSet<>();
+        while (decl.find()) {
+            if (!Pattern.compile("(?:\\w*[Ll]og(?:ger)?|\\w*LOG(?:GER)?)").matcher(decl.group(1)).matches()) {
+                otherLoggers.add(decl.group(1)); // not already caught by LOG_CALL
+            }
+        }
+        for (String name : otherLoggers) {
+            Matcher o = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*\\.\\s*(trace|debug|info|warn|error)\\s*\\(").matcher(code);
+            while (o.find()) {
+                out.add(new Call(o.group(1), argumentsFrom(code, o.end())));
+            }
         }
         Matcher f = FLUENT_CALL.matcher(code);
         while (f.find()) {
@@ -299,7 +319,7 @@ class NoPersonalDataInLogsTest {
                 String q = Pattern.quote(t);
                 boolean asText = part.matches("String\\s*\\.\\s*valueOf\\(\\s*" + q + "\\s*\\)|" + q + "\\s*\\.\\s*toString\\(\\s*\\)")
                         || Pattern.compile("(?:^|\\+)\\s*" + q + "\\s*(?:\\+|$)").matcher(part).find() && part.contains("+");
-                boolean bare = part.equals(t);
+                boolean bare = part.equals(t) || part.matches(q + CAUSE_OF);
                 if (asText || (bare && !detailAllowed)) {
                     out.add("throwable " + t);
                 }
@@ -379,7 +399,15 @@ class NoPersonalDataInLogsTest {
                             log.error("Failed", e);                                         // stack trace at ERROR
                             log.debug("Failed detail", e);                                  // allowed at DEBUG
                             log.error("Failed: {}", e.getClass().getName());                // safe
+                            log.error("Failed: {}", SafeStackTrace.of(e));                  // safe: the sanctioned trace
+                            log.error("Failed", e.getCause());                              // cause's trace at ERROR
+                            log.debug("Failed cause", e.getCause());                        // allowed at DEBUG
                         }
+                    }
+                    private static final Logger audit = LoggerFactory.getLogger(X.class);
+                    void d(User user) {
+                        audit.info("Audit {}", user.getEmail());                            // any logger name
+                        audit.info("Audit {}", user.getId());                               // safe
                     }
                     ResponseEntity<?> c(DataIntegrityViolationException ex) {
                         log.warn("Constraint: {}", ex.toString());                          // handler parameter
@@ -388,7 +416,10 @@ class NoPersonalDataInLogsTest {
                 }
                 """;
         List<String> problems = problemsIn(sample);
-        assertThat(problems).as(String.join("\n", problems)).hasSize(14);
+        assertThat(problems).as(String.join("\n", problems)).hasSize(16);
+        assertThat(problems).anySatisfy(p -> assertThat(p).isEqualTo("[getEmail] in info(\"\", user.getEmail())"));
+        assertThat(problems).noneSatisfy(p -> assertThat(p).contains("SafeStackTrace"));
+        assertThat(problems).noneSatisfy(p -> assertThat(p).contains("user.getId()"));
         assertThat(problems).anySatisfy(p -> assertThat(p).contains("tainted local again"));
         assertThat(problems).anySatisfy(p -> assertThat(p).contains("getPhoneNumber"));
         assertThat(problems).anySatisfy(p -> assertThat(p).contains("username"));
@@ -399,7 +430,7 @@ class NoPersonalDataInLogsTest {
         assertThat(problems).anySatisfy(p -> assertThat(p).contains("[side effect]"));
         assertThat(problems).anySatisfy(p -> assertThat(p).contains("[tainted local m]"));
         assertThat(problems).anySatisfy(p -> assertThat(p).contains("[throwable ex]"));
-        assertThat(problems).filteredOn(p -> p.contains("throwable e]")).hasSize(3);
+        assertThat(problems).filteredOn(p -> p.contains("throwable e]")).hasSize(4); // incl. e.getCause() at ERROR
         assertThat(problems).filteredOn(p -> p.contains("exception message")).hasSize(1);
         assertThat(problems).noneSatisfy(p -> assertThat(p).contains("saved.getId"));
         assertThat(problems).noneSatisfy(p -> assertThat(p).contains("found.getId"));

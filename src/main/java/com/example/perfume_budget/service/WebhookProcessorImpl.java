@@ -2,11 +2,16 @@ package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.dto.payment.request.PaystackWebhook;
 import com.example.perfume_budget.dto.payment.request.WebhookData;
+import com.example.perfume_budget.service.WebhookSettlementBulkhead.WebhookBusyException;
 import com.example.perfume_budget.service.interfaces.WebhookProcessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 /**
  * Applies a signature-verified Paystack event, on the request thread under the tenant context the controller bound.
@@ -32,6 +37,12 @@ import org.springframework.stereotype.Service;
  * answers non-2xx, so Paystack redelivers it (the settlement is idempotent). A body that cannot be applied at all
  * (unparseable, no reference, an ignored event type, an unknown reference) is still acknowledged: a redelivery could
  * not change that.
+ *
+ * <p><b>Bulkhead and deadline (EVT-01c rework 1).</b> Only an event that needs a settlement takes one of the
+ * {@link WebhookSettlementBulkhead} permits, before any connection; none free means {@link WebhookBusyException} (503,
+ * redelivered). All attempts of one delivery share one budget ({@link WebhookLockTimeout#deadlineMillis()}): no attempt
+ * starts with less than {@link WebhookLockTimeout#MIN_ATTEMPT_MILLIS} left, each attempt's lock_timeout is capped to
+ * what is left, and running out is a failure like any other (500, redelivered).
  */
 @Slf4j
 @Service
@@ -46,6 +57,7 @@ public class WebhookProcessorImpl implements WebhookProcessor {
     private final PaymentSettlementService settlementService;
     private final TransientRetry retry;
     private final WebhookLockTimeout lockTimeout;
+    private final WebhookSettlementBulkhead bulkhead;
 
     @Override
     public void processWebhook(String body) {
@@ -77,21 +89,46 @@ public class WebhookProcessorImpl implements WebhookProcessor {
                         log.warn("Ignoring charge.success without amount/currency for reference {}", reference);
                         return;
                     }
-                    var outcome = retry.callIncludingLockTimeouts("charge.success " + reference, () -> lockTimeout.call(() ->
-                            settlementService.applySuccess(reference, data.channel(), data.amount(), data.currency(), body)));
+                    var outcome = settle("charge.success " + reference, () ->
+                            settlementService.applySuccess(reference, data.channel(), data.amount(), data.currency(), body));
                     log.info("charge.success for reference {}: {}", reference, outcome);
                 }
                 case EVENT_CHARGE_FAILED -> {
-                    var outcome = retry.callIncludingLockTimeouts("charge.failed " + reference, () -> lockTimeout.call(() ->
-                            settlementService.applyFailure(reference, data.channel(), data.message(), body)));
+                    var outcome = settle("charge.failed " + reference, () ->
+                            settlementService.applyFailure(reference, data.channel(), data.message(), body));
                     log.info("charge.failed for reference {}: {}", reference, outcome);
                 }
                 default -> log.info("Ignoring unhandled webhook event type for reference {}", reference);
             }
+        } catch (WebhookBusyException e) {
+            log.warn("Webhook event not applied: all settlement permits are taken; the provider is asked to redeliver it");
+            throw e;
         } catch (RuntimeException e) {
             // not committed: answer non-2xx so the provider redelivers (EVT-01c). Class only, never the message.
-            log.error("Webhook event not applied ({}); the provider is asked to redeliver it", e.getClass().getSimpleName());
+            log.error("Webhook event not applied; the provider is asked to redeliver it: {}", SafeStackTrace.of(e));
             throw new WebhookNotAppliedException(e);
+        }
+    }
+
+    /**
+     * Applies one settlement: a bulkhead permit first (no connection is held while waiting for it), then the retried
+     * attempts, each in its own transaction with its lock waits capped to the delivery's remaining budget.
+     */
+    private <T> T settle(String what, Supplier<T> settlement) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(lockTimeout.deadlineMillis());
+        return bulkhead.call(() -> retry.callIncludingLockTimeouts(what, () -> {
+            long left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (left < WebhookLockTimeout.MIN_ATTEMPT_MILLIS) {
+                throw new WebhookDeadlineExceededException();
+            }
+            return lockTimeout.call(Math.min(lockTimeout.timeoutMillis(), left), settlement);
+        }));
+    }
+
+    /** The delivery's settlement budget ran out before an attempt committed; not retried, answered 500. */
+    public static class WebhookDeadlineExceededException extends RuntimeException {
+        WebhookDeadlineExceededException() {
+            super("Webhook settlement deadline exceeded", null, false, false);
         }
     }
 

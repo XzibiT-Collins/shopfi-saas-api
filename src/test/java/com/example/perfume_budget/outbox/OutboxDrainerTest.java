@@ -151,6 +151,69 @@ class OutboxDrainerTest {
         assertThat(scheduler.isRunning()).isFalse();
     }
 
+    /** EVT-01c rework 1 (M10): an Error (not only a RuntimeException) in a round must not end the drain thread. */
+    @Test
+    void anErrorInARoundDoesNotStopTheDrains() throws Exception {
+        OutboxDrainer d = mock(OutboxDrainer.class);
+        CountDownLatch rounds = new CountDownLatch(3);
+        AtomicBoolean first = new AtomicBoolean(true);
+        doAnswer(inv -> {
+            rounds.countDown();
+            if (first.getAndSet(false)) {
+                throw new StackOverflowError();
+            }
+            return null;
+        }).when(d).drainAllTenants();
+        scheduler = new OutboxDrainScheduler(d, 10, 0);
+        scheduler.start();
+        assertThat(rounds.await(10, TimeUnit.SECONDS)).as("rounds continue after an Error").isTrue();
+    }
+
+    /** M11: the drain thread is a daemon (never keeps the JVM alive). */
+    @Test
+    void theDrainThreadIsADaemon() throws Exception {
+        OutboxDrainer d = mock(OutboxDrainer.class);
+        List<Boolean> daemon = new CopyOnWriteArrayList<>();
+        CountDownLatch ran = new CountDownLatch(1);
+        doAnswer(inv -> {
+            daemon.add(Thread.currentThread().isDaemon());
+            ran.countDown();
+            return null;
+        }).when(d).drainAllTenants();
+        scheduler = new OutboxDrainScheduler(d, 10, 0);
+        scheduler.start();
+        assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(daemon).isNotEmpty().allSatisfy(b -> assertThat(b).isTrue());
+    }
+
+    /** M12: stop() shuts the executor down: no round after it, and the drain thread ends. */
+    @Test
+    void stopEndsTheDrainThread_andNoRoundRunsAfterIt() throws Exception {
+        OutboxDrainer d = mock(OutboxDrainer.class);
+        List<Thread> threads = new CopyOnWriteArrayList<>();
+        AtomicInteger rounds = new AtomicInteger();
+        CountDownLatch ran = new CountDownLatch(2);
+        doAnswer(inv -> {
+            threads.add(Thread.currentThread());
+            rounds.incrementAndGet();
+            ran.countDown();
+            return null;
+        }).when(d).drainAllTenants();
+        scheduler = new OutboxDrainScheduler(d, 10, 0);
+        scheduler.start();
+        assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
+        long t0 = System.nanoTime();
+        scheduler.stop();
+        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0)).as("stopped promptly, not after the 5 s wait")
+                .isLessThan(3000);
+        Thread drain = threads.getFirst();
+        drain.join(3000);
+        assertThat(drain.isAlive()).as("the drain thread ended").isFalse();
+        int after = rounds.get();
+        Thread.sleep(200);
+        assertThat(rounds.get()).as("no round after stop()").isEqualTo(after);
+    }
+
     @Test
     void theSchedulerHonoursTheConfiguredInitialDelay() throws Exception {
         OutboxDrainer d = mock(OutboxDrainer.class);

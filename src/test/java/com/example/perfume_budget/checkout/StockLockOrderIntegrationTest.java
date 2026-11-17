@@ -290,6 +290,149 @@ class StockLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(productInt(p, "sold_count")).isEqualTo(1);
     }
 
+    /**
+     * EVT-01c rework 1 (reviewer probe P2): the webhook's lock_timeout is transaction-local (set_config(.., true)).
+     * After one webhook that ran into it (500) and one that settled (200), no pooled connection still has it.
+     */
+    @Test
+    void theWebhookLockTimeoutStaysInItsTransaction_pooledConnectionsKeepTheDefault() throws Exception {
+        Gateway g = configureGateway(acme);
+        long p = product(acme, "WLocal", "50.00", 10);
+        Customer c = customer(acme, "wlocal@acme.test");
+        cart(c, p, 1);
+        String on = placeOrder(c);
+        String body = event("charge.success", reference(on), totalMinor(on));
+        long saved = webhookLockTimeout.timeoutMillis();
+        org.springframework.test.util.ReflectionTestUtils.setField(webhookLockTimeout, "timeoutMillis", 300L);
+        try (Holder h = new Holder(p)) {
+            assertThat(webhookInBackground(g, body).get(30, TimeUnit.SECONDS)).isEqualTo(500);
+            h.commit();
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(webhookLockTimeout, "timeoutMillis", saved);
+        }
+        assertThat(webhook(g, body)).isEqualTo(200);
+        assertThat(orderStatus(acme, on)).isEqualTo("COMPLETED");
+        awaitBackgroundIdle();
+        // borrow every connection the pool can hold at once: each one the webhooks used is among them
+        List<Connection> borrowed = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < poolMax; i++) {
+                borrowed.add(jdbc.getDataSource().getConnection());
+            }
+            for (Connection conn : borrowed) {
+                try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery("SHOW lock_timeout")) {
+                    rs.next();
+                    assertThat(rs.getString(1)).as("lock_timeout of a pooled connection").isEqualTo("0");
+                }
+            }
+        } finally {
+            for (Connection conn : borrowed) {
+                conn.close();
+            }
+        }
+    }
+
+    @org.springframework.beans.factory.annotation.Value("${spring.datasource.hikari.maximum-pool-size}")
+    private int poolMax;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.example.perfume_budget.service.WebhookSettlementBulkhead bulkhead;
+
+    /**
+     * EVT-01c rework 1 (reviewer starvation probe, the MEDIUM). A product row is held; 12 signed charge.success
+     * webhooks for 12 orders of that product arrive at once. Without a bulkhead each one held a pooled connection
+     * waiting for the row (pool 10: an unrelated query waited seconds for a connection). Now only the 3 permits
+     * settle (and wait), the other 9 are answered 503 at once without taking a connection, an unrelated pooled query
+     * stays fast, and once the row is free the 3 commit and the redeliveries of the 9 apply.
+     */
+    @Test
+    void aBurstOfWebhooksForAHeldHotProduct_onlyThePermitsWait_theRestAre503Fast_andThePoolStaysUsable() throws Exception {
+        Gateway g = configureGateway(acme);
+        long p = product(acme, "Hot", "50.00", 50);
+        int n = 12;
+        int permits = 3;
+        List<String> orders = new java.util.ArrayList<>();
+        List<String> bodies = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            Customer c = customer(acme, "hot" + i + "@acme.test");
+            cart(c, p, 1);
+            String on = placeOrder(c);
+            orders.add(on);
+            bodies.add(event("charge.success", reference(on), totalMinor(on)));
+        }
+        awaitBackgroundIdle();
+        java.util.concurrent.Semaphore original = (java.util.concurrent.Semaphore)
+                org.springframework.test.util.ReflectionTestUtils.getField(bulkhead, "permits");
+        org.springframework.test.util.ReflectionTestUtils.setField(bulkhead, "permits", new java.util.concurrent.Semaphore(permits));
+        ExecutorService pool = Executors.newFixedThreadPool(n);
+        List<Future<long[]>> answers = new java.util.ArrayList<>();
+        long selectMillis;
+        try {
+            try (Holder h = new Holder(p)) {
+                java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+                for (String body : bodies) {
+                    answers.add(pool.submit(() -> {
+                        go.await();
+                        long t0 = System.nanoTime();
+                        int status = webhook(g, body);
+                        return new long[]{status, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0)};
+                    }));
+                }
+                go.countDown();
+                long deadline = System.currentTimeMillis() + 15_000;
+                while (System.currentTimeMillis() < deadline && answers.stream().filter(Future::isDone).count() < n - permits) {
+                    Thread.sleep(20);
+                }
+                assertThat(answers.stream().filter(Future::isDone).count()).as("the excess webhooks were answered while the row is held")
+                        .isEqualTo(n - permits);
+                for (Future<long[]> f : answers) {
+                    if (f.isDone()) {
+                        assertThat(f.get()[0]).as("refused, not settled").isEqualTo(503);
+                        assertThat(f.get()[1]).as("refused at once").isLessThan(2000);
+                    }
+                }
+                // waiting for the row: the first waiter is blocked by the holder, the next ones queue behind it
+                String waiting = "SELECT count(*) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0";
+                while (System.currentTimeMillis() < deadline && jdbc.queryForObject(waiting, Integer.class) < permits) {
+                    Thread.sleep(20);
+                }
+                Thread.sleep(200); // a 4th waiter (no bulkhead) would show up here as well
+                assertThat(jdbc.queryForObject(waiting, Integer.class)).as("only the permit holders wait for the row").isEqualTo(permits);
+
+                long t0 = System.nanoTime();
+                assertThat(jdbc.queryForObject("SELECT 1", Integer.class)).isEqualTo(1);
+                selectMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+                h.commit();
+            }
+            for (Future<long[]> f : answers) {
+                assertThat(f.get(60, TimeUnit.SECONDS)[0]).isIn(200L, 503L);
+            }
+        } finally {
+            pool.shutdown();
+            if (!pool.awaitTermination(60, TimeUnit.SECONDS)) {
+                pool.shutdownNow();
+            }
+            org.springframework.test.util.ReflectionTestUtils.setField(bulkhead, "permits", original);
+        }
+        assertThat(selectMillis).as("an unrelated pooled query does not wait for a connection").isLessThan(500);
+        List<Integer> refused = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            if (answers.get(i).get()[0] == 503) {
+                refused.add(i);
+            } else {
+                assertThat(orderStatus(acme, orders.get(i))).isEqualTo("COMPLETED");
+            }
+        }
+        assertThat(refused).hasSize(n - permits);
+        for (int i : refused) {
+            assertThat(orderStatus(acme, orders.get(i))).as("a refused webhook changed nothing").isNotEqualTo("COMPLETED");
+            assertThat(webhook(g, bodies.get(i))).as("the redelivery").isEqualTo(200);
+            assertThat(orderStatus(acme, orders.get(i))).isEqualTo("COMPLETED");
+        }
+        assertThat(productInt(p, "sold_count")).isEqualTo(n);
+        assertThat(bulkhead.availablePermits()).as("every permit of the real bulkhead is free").isEqualTo(64);
+    }
+
     @Test
     void checkoutAndPaymentWebhookOfTheSameTwoProductsInOppositeOrders_doNotDeadlock() throws Exception {
         // reviewer probe R2b: before the rework the webhook (items high, low) took high via its sold-count UPDATE and

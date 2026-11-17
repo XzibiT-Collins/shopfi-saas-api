@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 /**
  * Handles failed OAuth2 authentication by sending the browser back to the TENANT's storefront with a FIXED error
@@ -57,7 +58,7 @@ public class OAuth2AuthenticationFailureHandler extends SimpleUrlAuthenticationF
                 .replaceQueryParam("error", ERROR_CODE)
                 .build().toUriString();
 
-        log.error("OAuth2 authentication failed for tenant {}: {}", slug, exception.getClass().getSimpleName());
+        log.error("OAuth2 authentication failed for tenant {}: {}", slug, SafeStackTrace.of(exception));
         getRedirectStrategy().sendRedirect(request, response, targetUrl);
     }
 }

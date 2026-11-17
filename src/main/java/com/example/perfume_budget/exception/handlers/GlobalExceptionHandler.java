@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 @Slf4j
 @RestControllerAdvice
@@ -371,7 +372,7 @@ public class GlobalExceptionHandler {
         }
         Throwable cause = ex.getRootCause();
         // EVT-01c: class only; a constraint message quotes row values (Postgres "Key (email)=(...) already exists")
-        log.error("Transaction failed: {}", cause != null ? cause.getClass().getName() : ex.getClass().getName());
+        log.error("Transaction failed: {}", SafeStackTrace.of(ex)); // EVT-01c rework 1: classes + frames, no messages
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(CustomApiResponse.error(cause != null ? cause.getMessage() : "Transaction failed", null));
     }
@@ -383,8 +384,9 @@ public class GlobalExceptionHandler {
             return tryAgain(ex); // however it was wrapped (commit-time failure, JpaSystemException, ...)
         }
         // EVT-01c (overlaps SEC-01d): class only at ERROR; a database message can quote row values (Postgres
-        // "Key (email)=(...) already exists"), a JDBC URL or credentials. The full detail only at DEBUG.
-        log.error("Unexpected error occurred: {}", ex.getClass().getName());
+        // "Key (email)=(...) already exists"), a JDBC URL or credentials. Rework 1: the stack trace (class names and
+        // frames, no messages) is back at ERROR; the full detail only at DEBUG.
+        log.error("Unexpected error occurred: {}", SafeStackTrace.of(ex)); // classes + frames of the cause chain, no messages
         log.debug("Unexpected error detail", ex);
         return ResponseEntity.internalServerError().body(CustomApiResponse.error("Unexpected error occurred"));
     }

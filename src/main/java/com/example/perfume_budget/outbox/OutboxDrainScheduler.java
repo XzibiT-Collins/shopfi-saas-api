@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 /**
  * EVT-01c (7): drives {@link OutboxDrainer#drainAllTenants()} on a thread of its own ({@value #THREAD_PREFIX}N), with
@@ -57,7 +58,7 @@ public class OutboxDrainScheduler implements SmartLifecycle {
         try {
             drainer.drainAllTenants();
         } catch (RuntimeException | Error e) {
-            log.error("Outbox drain round failed ({}); the next round runs as scheduled", e.getClass().getName());
+            log.error("Outbox drain round failed; the next round runs as scheduled: {}", SafeStackTrace.of(e));
         }
     }
 

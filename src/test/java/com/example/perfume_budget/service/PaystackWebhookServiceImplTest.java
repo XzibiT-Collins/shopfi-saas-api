@@ -64,6 +64,30 @@ class PaystackWebhookServiceImplTest {
         assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
     }
 
+    @Test
+    void noFreeSettlementPermit_answers503WithAGenericBody_soPaystackRedelivers() throws Exception {
+        // EVT-01c rework 1: the bulkhead refused; nothing was applied
+        doThrow(new WebhookSettlementBulkhead.WebhookBusyException()).when(webhookProcessor).processWebhook(body);
+        ResponseEntity<String> response = webhookService.checkWebhookSignature(body, hmacSha512(body, secret));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals("Busy", response.getBody());
+    }
+
+    @Test
+    void aFailureAnswers500WithoutItsMessage() throws Exception {
+        doThrow(new IllegalStateException("Key (email)=(p3@x.test) already exists")).when(webhookProcessor).processWebhook(body);
+        ResponseEntity<String> response = webhookService.checkWebhookSignature(body, hmacSha512(body, secret));
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
+        assertEquals("Error", response.getBody());
+    }
+
+    @Test
+    void theSignatureIsCheckedBeforeAnySettlement_aBadOneNeverReachesTheBulkhead() {
+        ResponseEntity<String> response = webhookService.checkWebhookSignature(body, null);
+        assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
+        verifyNoInteractions(webhookProcessor);
+    }
+
     // Helper to generate signature for testing
     private String hmacSha512(String data, String secret) throws Exception {
         Mac sha512Hmac = Mac.getInstance("HmacSHA512");
