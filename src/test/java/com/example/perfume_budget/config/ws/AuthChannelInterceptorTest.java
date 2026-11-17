@@ -252,10 +252,13 @@ class AuthChannelInterceptorTest {
     @Test
     void subscribeAfterTheTokenExpiredIsRefused() {
         Map<String, Object> admin = connected("admin@acme.test");
-        now.addAndGet(600_000); // exactly the expiry instant
+        long expiry = (Long) admin.get(AuthChannelInterceptor.TOKEN_EXPIRY_ATTR); // JWT exp, whole seconds
+        now.set(expiry - 1);
+        subscribe(admin, "/user/queue/notifications"); // one millisecond before expiry: still fine
+        now.set(expiry); // exactly the expiry instant
         refused(() -> subscribe(admin, "/user/queue/notifications"), "Session expired");
         admin.remove(AuthChannelInterceptor.TOKEN_EXPIRY_ATTR);
-        now.addAndGet(-600_000);
+        now.set(expiry - 1);
         refused(() -> subscribe(admin, "/user/queue/notifications"), "Session expired");
     }
 
