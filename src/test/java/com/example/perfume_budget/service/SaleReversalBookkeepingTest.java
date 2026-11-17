@@ -66,6 +66,13 @@ class SaleReversalBookkeepingTest {
         lenient().when(accounts.findById(any())).thenAnswer(i -> byCategory.values().stream()
                 .filter(a -> a.getId().equals(i.getArgument(0))).findFirst());
         lenient().when(numbers.generate()).thenReturn("JE-1");
+        // ORD-02 rework: balances move through the atomic UPDATE ... RETURNING; emulate it on the in-memory accounts
+        lenient().when(accounts.applyBalanceDelta(any(), any())).thenAnswer(i -> {
+            LedgerAccount a = byCategory.values().stream().filter(x -> x.getId().equals(i.getArgument(0))).findFirst().orElse(null);
+            if (a == null) return null;
+            a.setBalance(a.getBalance().add(i.<BigDecimal>getArgument(1)));
+            return a.getBalance();
+        });
     }
 
     private JournalEntry sale() {
@@ -193,5 +200,51 @@ class SaleReversalBookkeepingTest {
         when(journal.sumOrderLines(eq("PB-1"), eq(JournalEntryType.REFUND), any(), any())).thenReturn(new BigDecimal("205.00"));
         assertThat(service.recordRefundPaid(order, "x")).isFalse();
         verify(journal, never()).save(any());
+    }
+
+    // ------------------------------------------------------------------ ORD-02 rework F1 / F2
+
+    @Test
+    void balancesMoveByOneAtomicUpdatePerAccountInAscendingIdOrder() {
+        saleBooked();
+        service.recordSaleReversal(order, true, true, "x");
+        org.mockito.InOrder inOrder = inOrder(accounts);
+        // the reversal touches revenue(2), tax(3), discount(4), cogs(5), inventory(6), refunds payable(7): never cash(1)
+        inOrder.verify(accounts).applyBalanceDelta(2L, new BigDecimal("-200.00"));
+        inOrder.verify(accounts).applyBalanceDelta(3L, new BigDecimal("-15.00"));
+        inOrder.verify(accounts).applyBalanceDelta(4L, new BigDecimal("-10.00"));
+        inOrder.verify(accounts).applyBalanceDelta(5L, new BigDecimal("-120.00"));
+        inOrder.verify(accounts).applyBalanceDelta(6L, new BigDecimal("120.00"));
+        inOrder.verify(accounts).applyBalanceDelta(7L, new BigDecimal("205.00"));
+        verify(accounts, never()).applyBalanceDelta(eq(1L), any());
+        // no read-modify-write of the entity: nothing is re-read or saved
+        verify(accounts, never()).findById(any());
+        verify(accounts, never()).save(any());
+    }
+
+    @Test
+    void refundWithTooLittleCashIsA409InsufficientCashWithTheBalanceAndAmount() {
+        byCategory.get(AccountCategory.CASH).setBalance(new BigDecimal("100.00"));
+        byCategory.get(AccountCategory.REFUND_PAYABLE).setBalance(new BigDecimal("205.00"));
+        when(journal.sumOrderLines("PB-1", JournalEntryType.SALE_REVERSAL, AccountCategory.REFUND_PAYABLE, EntryType.CREDIT))
+                .thenReturn(new BigDecimal("205.00"));
+        when(journal.sumOrderLines("PB-1", JournalEntryType.REFUND, AccountCategory.REFUND_PAYABLE, EntryType.DEBIT))
+                .thenReturn(BigDecimal.ZERO);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.recordRefundPaid(order, "x"))
+                .isInstanceOfSatisfying(com.example.perfume_budget.exception.ApiCodeException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(e.getCode()).isEqualTo("INSUFFICIENT_CASH");
+                    assertThat(e.body()).containsEntry("orderNumber", "PB-1")
+                            .containsEntry("currentBalance", "100.00")
+                            .containsEntry("attemptedAmount", "205.00");
+                });
+    }
+
+    @Test
+    void aNegativeNonCriticalAccountOnlyWarns() {
+        saleBooked();
+        byCategory.get(AccountCategory.SALES_REVENUE).setBalance(new BigDecimal("50.00"));
+        assertThat(service.recordSaleReversal(order, true, false, "x")).isTrue();
+        assertThat(balance(AccountCategory.SALES_REVENUE)).isEqualByComparingTo("-150.00");
     }
 }

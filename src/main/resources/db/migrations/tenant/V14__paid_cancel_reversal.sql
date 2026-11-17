@@ -34,8 +34,12 @@ WHERE a.reference_type = 'ORDER'
 --    purpose (a deliberate whole-table operator/test reset, e.g. TRUNCATE orders ... CASCADE), and DROP SCHEMA ...
 --    CASCADE (tenant drop / provisioning compensation) fires no row trigger.
 ALTER TABLE order_audit_events DROP CONSTRAINT fk_order_audit_events_order;
+-- Added NOT VALID and then validated (the standard online-FK pattern: the VALIDATE scan itself only needs SHARE UPDATE
+-- EXCLUSIVE). Note: Flyway runs this file in one transaction and the DROP CONSTRAINT above already holds ACCESS
+-- EXCLUSIVE on order_audit_events until commit, so the gain here is limited to not holding the scan under the ADD.
 ALTER TABLE order_audit_events
-    ADD CONSTRAINT fk_order_audit_events_order FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE RESTRICT;
+    ADD CONSTRAINT fk_order_audit_events_order FOREIGN KEY (order_id) REFERENCES orders (id) ON DELETE RESTRICT NOT VALID;
+ALTER TABLE order_audit_events VALIDATE CONSTRAINT fk_order_audit_events_order;
 
 CREATE FUNCTION order_audit_events_immutable() RETURNS trigger AS
 $$

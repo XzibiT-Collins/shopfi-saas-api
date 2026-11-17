@@ -145,14 +145,26 @@ The customer gets the usual status e-mail once, after the transaction commits. S
   nothing to reverse.
 * **Refund acknowledgement** posts a `REFUND` entry: debit Refunds Payable, credit Cash and Bank, for what the order
   still owes (once). Cash and Bank may not go negative; if the books show less cash than the refund the acknowledgement
-  is refused with a 400 and nothing is written.
+  is refused with **409 `INSUFFICIENT_CASH`** and nothing is written (see the refund acknowledgement below).
+* **Ledger balances are concurrency-safe** (ORD-02 rework). Every posting (sale, paid cancel, refund, walk-in sale,
+  manual entry, ...) moves each account with one atomic `UPDATE ... SET balance = balance + delta`, in ascending account
+  id order, as the last lock of its transaction. Simultaneous cancels, acknowledgements and payment webhooks therefore
+  never lose a balance update, and the negative-balance guard sees the true balance.
 * **Sales analytics** (`GET /admin/metrics/sales-analytics`): revenue and COGS are net (credits minus debits / debits
   minus credits) and `ONLINE`/`ALL` include `SALE_REVERSAL`, so the cancel takes the sale back out **in the bucket of the
   cancel date**. Operating expenses are net too (a discount credited back no longer counts; this also nets manual
   credits to an expense account). "Total Orders" counts completed orders that are not cancelled.
+* **Analytics vs order reports: different days.** The analytics are journal-based and dated by the transaction: the
+  sale counts on the payment date and its reversal on the **cancel date**. A cancel on a later day than the sale
+  therefore shows the sale on its day and a **negative** revenue (and COGS, if the goods came back) on the cancel day;
+  a bucket can be negative overall. The order-based reports below are keyed by the **order date** and simply drop the
+  cancelled order from it, so for the sale's day they show less than the analytics until the cancel day is included.
 * **Order-based reports** exclude paid orders that were cancelled (`deliveryStatus = CANCELLED`), keyed by the order
-  date as before: dashboard total and daily revenue, top products, top customers, coupon metrics, and the items-sold
-  report (`/admin/inventory/sales/items-sold`, its per-product view and totals).
+  date as before: dashboard total and daily revenue, top products, top customers, coupon metrics (per coupon and the
+  list), the completed-order count, the customer list's and customer details' `totalSpent` (paid, not cancelled
+  orders; `orderCount` still counts every order), and the items-sold report (`/admin/inventory/sales/items-sold`, its
+  per-product view and totals). An order whose `deliveryStatus` is empty (`NULL`, legacy rows) is not cancelled and is
+  counted.
 
 ### Restock policy for a paid cancel from `OUT_FOR_DELIVERY` (ORD-02 decision)
 
@@ -183,6 +195,11 @@ No body. Call it once the shop has refunded the customer by hand. Sets `refundRe
 
 * No refund pending (never required, or already acknowledged, including the loser of two simultaneous calls): **409
   `REFUND_NOT_REQUIRED`**, nothing written. The effect is idempotent: exactly one audit row per refund.
+* The books show less in Cash and Bank than the refund (the `REFUND` entry would take it below zero): **409
+  `INSUFFICIENT_CASH`**, nothing written (`refundRequired` stays `true`, no audit row, no journal entry). `data`:
+  `orderNumber`, `currentBalance` (Cash and Bank before the refund) and `attemptedAmount` (the refund), both decimal
+  strings, e.g. `{"code": "INSUFFICIENT_CASH", "orderNumber": "PB-...", "currentBalance": "19.00", "attemptedAmount": "20.00"}`.
+  Record the missing cash (e.g. a manual journal entry) and retry.
 * Unknown / other tenant's order: 404 `ORDER_NOT_FOUND`.
 
 ## POST /api/v1/order/{orderNumber}/return-received (ADMIN, ORD-02)
@@ -258,12 +275,14 @@ tenants' numbers return the same 404.
 | 409 | `REFUND_NOT_REQUIRED` | nothing to acknowledge |
 | 409 | `RETURN_NOT_APPLICABLE` | return-received on an order that is not a cancelled paid order |
 | 409 | `NOTHING_TO_RESTOCK` | return-received when no consumed units are left |
+| 409 | `INSUFFICIENT_CASH` | refund acknowledgement when Cash and Bank is lower than the refund (`orderNumber`, `currentBalance`, `attemptedAmount`) |
 
 ## What the frontend must adopt
 
 1. Send `version` (or `If-Match`) with every status change; handle 409 `ORDER_VERSION_CONFLICT` by reloading the order.
 2. Offer only the moves of the graph; do not offer `DELIVERED` for an order that is not paid; handle the new 400 codes.
-3. Show `refundRequired` after a cancel and call the refund acknowledgement once refunded (409 `REFUND_NOT_REQUIRED` means someone already did).
+3. Show `refundRequired` after a cancel and call the refund acknowledgement once refunded (409 `REFUND_NOT_REQUIRED` means someone already did). On 409
+   `INSUFFICIENT_CASH` tell the admin the books show too little cash (`data.currentBalance` vs `data.attemptedAmount`).
 4. Read `orderedAt`, `taxes.orderTaxes[].taxRatePercent`/`currency`/`taxAmountFormatted` instead of `orderDate`/`taxRate`; show `account` on the admin detail.
 5. Wire `q`, `from`, `to` and `sort` of `/order/all`; a repeat of a final status is now a 200.
 6. (ORD-02) Request at most 50 rows per `/order/all` page and do not page past row 10,000 (400 `INVALID_PAGE`); offer the

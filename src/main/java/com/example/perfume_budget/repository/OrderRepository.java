@@ -69,19 +69,25 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         SELECT u.id AS userId, u.fullName AS fullName, u.email AS email,
                u.isActive AS isActive, u.createdAt AS createdAt,
                COUNT(o.id) AS totalOrders,
-               COALESCE(SUM(o.totalAmount.amount), 0) AS totalAmountSpent
+               COALESCE(SUM(CASE WHEN o.status = com.example.perfume_budget.enums.PaymentStatus.COMPLETED
+                                  AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
+                                 THEN o.totalAmount.amount ELSE 0 END), 0) AS totalAmountSpent
         FROM Order o
         JOIN o.user u
         GROUP BY u.id, u.fullName, u.email, u.isActive, u.createdAt
         ORDER BY COUNT(o.id) DESC
         """)
     Page<CustomerOrderSummary> getCustomerOrderSummary(Pageable pageable);
+    // ORD-02 rework (F5): totalAmountSpent counts paid (COMPLETED) orders that were not cancelled, like top customers
+    // and the customer details; totalOrders still counts every order of the customer.
 
     @Query("""
         SELECT u.id AS userId, u.fullName AS fullName, u.email AS email,
                u.isActive AS isActive, u.createdAt AS createdAt,
                COUNT(o.id) AS totalOrders,
-               COALESCE(SUM(o.totalAmount.amount), 0) AS totalAmountSpent
+               COALESCE(SUM(CASE WHEN o.status = com.example.perfume_budget.enums.PaymentStatus.COMPLETED
+                                  AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
+                                 THEN o.totalAmount.amount ELSE 0 END), 0) AS totalAmountSpent
         FROM Order o
         JOIN o.user u
         WHERE u.id = :userId
@@ -134,7 +140,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         FROM Order o
         WHERE o.coupon.id = :couponId
         AND o.status = :status
-        AND o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED
+        AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
         """)
     CouponMetrics getCouponMetrics(@Param("couponId") Long couponId,
                                    @Param("status") PaymentStatus status);
@@ -148,7 +154,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         FROM Order o
         WHERE o.coupon IS NOT NULL
         AND o.status = :status
-        AND o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED
+        AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
         GROUP BY o.coupon.id, o.coupon.code, o.coupon.expirationDate
         ORDER BY revenueGenerated DESC
         """)
@@ -159,7 +165,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
                COALESCE(SUM(o.totalAmount.amount), 0) AS revenue
         FROM Order o
         WHERE o.status = :status
-        AND o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED
+        AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
         AND o.createdAt BETWEEN :start AND :end
         GROUP BY CAST(o.createdAt AS date)
         ORDER BY CAST(o.createdAt AS date) ASC
@@ -171,7 +177,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
 
 
     @Query("SELECT COALESCE(SUM(o.totalAmount.amount), 0) FROM Order o WHERE o.status = :status"
-            + " AND o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED")
+            + " AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)")
     BigDecimal getTotalRevenue(@Param("status") PaymentStatus status);
 
     @Query("""
@@ -188,7 +194,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         FROM Order o
         JOIN o.user u
         WHERE o.status = :status
-        AND o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED
+        AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
         GROUP BY u.id, u.fullName, u.email
         ORDER BY totalOrders DESC, totalAmountSpent DESC
         """)
@@ -198,7 +204,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         SELECT COUNT(o.id)
         FROM Order o
         WHERE o.status = com.example.perfume_budget.enums.PaymentStatus.COMPLETED
-          AND o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED
+          AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
           AND o.createdAt BETWEEN :start AND :end
         """)
     long countCompletedOnlineOrders(

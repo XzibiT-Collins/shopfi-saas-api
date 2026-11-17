@@ -86,12 +86,15 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
     }
 
     private Placed place(String email, int qty, long... products) throws Exception {
+        return placeAs(customer(acme, email), null, qty, products);
+    }
+
+    private Placed placeAs(Customer c, String query, int qty, long... products) throws Exception {
         List<Long> ps = new ArrayList<>();
-        if (products.length == 0) ps.add(costedProduct("Rev " + email, 10));
+        if (products.length == 0) ps.add(costedProduct("Rev " + c.email(), 10));
         else for (long p : products) ps.add(p);
-        Customer c = customer(acme, email);
         for (long p : ps) cart(c, p, qty);
-        MvcResult r = checkout(c, null, null);
+        MvcResult r = checkout(c, null, query);
         assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
         JsonNode d = body(r).get("data");
         return new Placed(c, ps, d.get("orderNumber").asText(), d.at("/data/reference").asText());
@@ -106,7 +109,10 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
     }
 
     private Placed placePaid(String email, int qty, long... products) throws Exception {
-        Placed o = place(email, qty, products);
+        return settle(place(email, qty, products));
+    }
+
+    private Placed settle(Placed o) throws Exception {
         verifyAnswer = new PaystackVerifyTransactionResponse(true, "ok",
                 new PaystackVerifyTransactionResponse.Data("success", o.reference(), BigDecimal.valueOf(minor(o.orderNumber())), "GHS", "card", "Successful"));
         verify(o.c(), o.reference());
@@ -182,18 +188,73 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
                 .miniStats().stream().filter(m -> m.label().equals("Total Revenue")).findFirst().orElseThrow().value());
     }
 
-    private record Reports(BigDecimal totalRevenue, long completedOrders, int topProducts, long itemsSold, BigDecimal analyticsRevenue) {}
+    /**
+     * Every order-based report with a paid-cancel exclusion, and the netted analytics queries (ORD-02 rework F3): dashboard
+     * total and daily revenue, completed count, top products, top customers, items sold (total and per order of each
+     * product), coupon metrics (list and per coupon), analytics revenue / COGS / expenses (Query A + B).
+     */
+    private record Reports(BigDecimal totalRevenue, long completedOrders, int topProducts, long itemsSold, BigDecimal analyticsRevenue,
+                           BigDecimal analyticsCogs, BigDecimal analyticsExpenses, BigDecimal dailyRevenue, int topCustomers,
+                           long couponListUsages, BigDecimal couponListRevenue, long couponUsages, BigDecimal couponRevenue,
+                           Map<String, BigDecimal> soldByReference) {}
+
+    private static final List<String> EXPENSE_CATEGORIES = List.of("DISCOUNT_EXPENSE", "COUPON_EXPENSE", "MARKETING_EXPENSE",
+            "LOGISTICS_EXPENSE", "MISCELLANEOUS_EXPENSE", "GENERAL_EXPENSE");
 
     private Reports reports() {
         LocalDateTime start = LocalDate.now().minusDays(1).atStartOfDay();
         LocalDateTime end = LocalDate.now().plusDays(1).atStartOfDay();
-        return tenants.runAs(acme, () -> new Reports(
-                orderRepository.getTotalRevenue(PaymentStatus.COMPLETED),
-                orderRepository.countCompletedOnlineOrders(start, end),
-                orderItemRepository.findTopProductsByRevenue(PaymentStatus.COMPLETED).size(),
-                movementRepository.sumSales(List.of(InventoryReferenceType.ORDER), start, end).getTotalQuantity(),
-                journalRepository.getRevenueAndCOGSByBucket(List.of("SALE", "SALE_REVERSAL"), start, end, "day").stream()
-                        .map(b -> b.getRevenue()).reduce(BigDecimal.ZERO, BigDecimal::add)));
+        List<Long> couponIds = jdbc.queryForList("SELECT id FROM tenant_acme.coupons", Long.class);
+        List<Long> productIds = jdbc.queryForList("SELECT DISTINCT product_id FROM tenant_acme.inventory_movements WHERE movement_type = 'SALE'", Long.class);
+        return tenants.runAs(acme, () -> {
+            var buckets = journalRepository.getRevenueAndCOGSByBucket(List.of("SALE", "SALE_REVERSAL"), start, end, "day");
+            var coupons = orderRepository.getAllCouponMetrics(PaymentStatus.COMPLETED);
+            long couponUsages = 0;
+            BigDecimal couponRevenue = BigDecimal.ZERO;
+            for (Long id : couponIds) {
+                var m = orderRepository.getCouponMetrics(id, PaymentStatus.COMPLETED);
+                couponUsages += m.getTotalUsages();
+                couponRevenue = couponRevenue.add(m.getRevenueGenerated());
+            }
+            Map<String, BigDecimal> byRef = new java.util.TreeMap<>();
+            for (Long p : productIds) {
+                movementRepository.sumSaleAmountsByReference(p, List.of(InventoryReferenceType.ORDER), start, end)
+                        .forEach(a -> byRef.merge(a.getReferenceId(), a.getAmount().stripTrailingZeros(), BigDecimal::add));
+            }
+            return new Reports(
+                    orderRepository.getTotalRevenue(PaymentStatus.COMPLETED),
+                    orderRepository.countCompletedOnlineOrders(start, end),
+                    orderItemRepository.findTopProductsByRevenue(PaymentStatus.COMPLETED).size(),
+                    movementRepository.sumSales(List.of(InventoryReferenceType.ORDER), start, end).getTotalQuantity(),
+                    buckets.stream().map(b -> b.getRevenue()).reduce(BigDecimal.ZERO, BigDecimal::add),
+                    buckets.stream().map(b -> b.getCogs()).reduce(BigDecimal.ZERO, BigDecimal::add),
+                    journalRepository.getExpensesByBucket(EXPENSE_CATEGORIES, start, end, "day").stream()
+                            .map(b -> b.getExpenses()).reduce(BigDecimal.ZERO, BigDecimal::add),
+                    orderRepository.getDailyRevenue(PaymentStatus.COMPLETED, start, end).stream()
+                            .map(d -> d.getRevenue()).reduce(BigDecimal.ZERO, BigDecimal::add),
+                    orderRepository.findTopCustomers(PaymentStatus.COMPLETED, org.springframework.data.domain.Pageable.ofSize(10)).size(),
+                    coupons.stream().mapToLong(m -> m.getTotalUsages()).sum(),
+                    coupons.stream().map(m -> m.getRevenueGenerated()).reduce(BigDecimal.ZERO, BigDecimal::add),
+                    couponUsages, couponRevenue, byRef);
+        });
+    }
+
+    /** Field-by-field equality (BigDecimal by value), so two report snapshots can be compared. */
+    private static void assertSameReports(Reports actual, Reports expected, String as) {
+        assertThat(actual.totalRevenue()).as(as + " totalRevenue").isEqualByComparingTo(expected.totalRevenue());
+        assertThat(actual.completedOrders()).as(as + " completedOrders").isEqualTo(expected.completedOrders());
+        assertThat(actual.topProducts()).as(as + " topProducts").isEqualTo(expected.topProducts());
+        assertThat(actual.itemsSold()).as(as + " itemsSold").isEqualTo(expected.itemsSold());
+        assertThat(actual.analyticsRevenue()).as(as + " analyticsRevenue").isEqualByComparingTo(expected.analyticsRevenue());
+        assertThat(actual.analyticsCogs()).as(as + " analyticsCogs").isEqualByComparingTo(expected.analyticsCogs());
+        assertThat(actual.analyticsExpenses()).as(as + " analyticsExpenses").isEqualByComparingTo(expected.analyticsExpenses());
+        assertThat(actual.dailyRevenue()).as(as + " dailyRevenue").isEqualByComparingTo(expected.dailyRevenue());
+        assertThat(actual.topCustomers()).as(as + " topCustomers").isEqualTo(expected.topCustomers());
+        assertThat(actual.couponListUsages()).as(as + " couponListUsages").isEqualTo(expected.couponListUsages());
+        assertThat(actual.couponListRevenue()).as(as + " couponListRevenue").isEqualByComparingTo(expected.couponListRevenue());
+        assertThat(actual.couponUsages()).as(as + " couponUsages").isEqualTo(expected.couponUsages());
+        assertThat(actual.couponRevenue()).as(as + " couponRevenue").isEqualByComparingTo(expected.couponRevenue());
+        assertThat(actual.soldByReference()).as(as + " soldByReference").isEqualTo(expected.soldByReference());
     }
 
     private <T> List<T> concurrently(List<Callable<T>> tasks) throws Exception {
@@ -409,6 +470,33 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(row.get("rec")).isEqualTo(true);
     }
 
+    @Test
+    void v14BackfillPicksTheNewestOfSeveralDeductions() throws Exception {
+        long source = fulfilmentSource();
+        Placed o = placePaid("rv9b@acme.test", 2);
+        long p = o.products().get(0);
+        long other = jdbc.queryForObject("INSERT INTO tenant_acme.storage_locations (name, type, active, is_default_receiving, is_walk_in_sale_source, "
+                + "is_ecommerce_fulfilment_source, version, created_at) VALUES ('Backfill ' || gen_random_uuid(), 'STORE_ROOM', true, false, false, false, 0, now()) RETURNING id", Long.class);
+        long third = jdbc.queryForObject("INSERT INTO tenant_acme.storage_locations (name, type, active, is_default_receiving, is_walk_in_sale_source, "
+                + "is_ecommerce_fulfilment_source, version, created_at) VALUES ('Backfill ' || gen_random_uuid(), 'STORE_ROOM', true, false, false, false, 0, now()) RETURNING id", Long.class);
+        // two later deductions of the same order and product (e.g. a re-fulfilment): the newest (highest id) is `other`
+        for (long loc : new long[]{third, other}) {
+            jdbc.update("INSERT INTO tenant_acme.stock_transfers (product_id, from_location_id, quantity, transfer_type, reference_type, reference_id, created_at) "
+                    + "VALUES (?, ?, 2, 'SALE_DEDUCTION', 'ORDER', ?, now())", p, loc, o.orderNumber());
+        }
+        // a newer deduction of ANOTHER order of the same product must not be picked
+        jdbc.update("INSERT INTO tenant_acme.stock_transfers (product_id, from_location_id, quantity, transfer_type, reference_type, reference_id, created_at) "
+                + "VALUES (?, ?, 1, 'SALE_DEDUCTION', 'ORDER', 'PB-OTHER', now())", p, source);
+        jdbc.update("UPDATE tenant_acme.inventory_allocations SET fulfilment_location_id = NULL, fulfilment_location_recorded = false WHERE reference_id = ?",
+                o.orderNumber());
+        String sql = new String(getClass().getResourceAsStream("/db/migrations/tenant/V14__paid_cancel_reversal.sql").readAllBytes());
+        String update = sql.substring(sql.indexOf("UPDATE inventory_allocations"), sql.indexOf(";", sql.indexOf("UPDATE inventory_allocations")));
+        jdbc.execute(update.replace("UPDATE inventory_allocations", "UPDATE tenant_acme.inventory_allocations")
+                .replace("FROM stock_transfers", "FROM tenant_acme.stock_transfers"));
+        assertThat(jdbc.queryForObject("SELECT fulfilment_location_id FROM tenant_acme.inventory_allocations WHERE reference_id = ?",
+                Long.class, o.orderNumber())).as("newest deduction wins").isEqualTo(other);
+    }
+
     // ---------------------------------------------------------------------- items 3 + 6: audit trail
 
     @Test
@@ -588,5 +676,224 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo(total(o.orderNumber()));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.order_audit_events e JOIN tenant_acme.orders o ON o.id = e.order_id "
                 + "WHERE o.order_number = ? AND e.event_type = 'CANCELLED'", Integer.class, o.orderNumber())).isEqualTo(1);
+    }
+
+    // ------------------------------------------------- rework F1: ledger balances under concurrent postings
+
+    /**
+     * Per account category: stored balance minus the normal-side sum of all its journal lines. The fixture moves balances
+     * without journal lines (and the class cleanup truncates the journal but keeps the balances), so a test compares
+     * this drift before and after: a posting that loses a balance update changes it.
+     */
+    private Map<String, BigDecimal> drift() {
+        Map<String, BigDecimal> out = new java.util.TreeMap<>();
+        jdbc.query("SELECT a.category, a.balance - coalesce((SELECT sum(CASE WHEN (a.type IN ('ASSET', 'EXPENSE')) = (l.entry_type = 'DEBIT') "
+                + "THEN l.amount ELSE -l.amount END) FROM tenant_acme.journal_entry_lines l WHERE l.account_id = a.id), 0) "
+                + "FROM tenant_acme.ledger_accounts a", (org.springframework.jdbc.core.RowCallbackHandler) rs ->
+                out.put(rs.getString(1), rs.getBigDecimal(2)));
+        return out;
+    }
+
+    private void assertNoDrift(Map<String, BigDecimal> before, String as) {
+        Map<String, BigDecimal> after = drift();
+        Map<String, BigDecimal> changed = new java.util.TreeMap<>();
+        after.forEach((k, v) -> {
+            BigDecimal d = v.subtract(before.getOrDefault(k, BigDecimal.ZERO));
+            if (d.signum() != 0) changed.put(k, d);
+        });
+        assertThat(changed).as(as + ": every ledger balance moves exactly by its journal lines").isEmpty();
+    }
+
+    /** "200", or the status and body of any other response (so a failure shows why). */
+    private static String outcome(MvcResult r) throws Exception {
+        return status(r) == 200 ? "200" : status(r) + " " + r.getResponse().getContentAsString();
+    }
+
+    private List<Callable<String>> cancelTasks(List<Placed> orders) {
+        List<Callable<String>> t = new ArrayList<>();
+        for (Placed o : orders) t.add(() -> outcome(setStatus(o.orderNumber(), "CANCELLED")));
+        return t;
+    }
+
+    private List<Callable<String>> ackTasks(List<Placed> orders) {
+        List<Callable<String>> t = new ArrayList<>();
+        for (Placed o : orders) t.add(() -> outcome(ack(o.orderNumber())));
+        return t;
+    }
+
+    private List<Callable<String>> webhookTasks(Gateway g, List<Placed> orders) {
+        List<Callable<String>> t = new ArrayList<>();
+        for (Placed o : orders) {
+            long m = minor(o.orderNumber());
+            t.add(() -> String.valueOf(webhook(g, event("charge.success", o.reference(), m))));
+        }
+        return t;
+    }
+
+    private void awaitSettled(List<Placed> orders) throws Exception {
+        await().atMost(java.time.Duration.ofSeconds(30)).until(() ->
+                orders.stream().allMatch(o -> entries(o.orderNumber(), "SALE") == 1));
+        awaitBackgroundIdle();
+    }
+
+    @Test
+    void concurrentPaidCancelsThenConcurrentRefundAcksKeepEveryBalanceEqualToItsJournal() throws Exception {
+        int n = 6;
+        for (int round = 0; round < 2; round++) {
+            List<Placed> paid = new ArrayList<>();
+            for (int i = 0; i < n; i++) paid.add(placePaid("lb-c" + round + "-" + i + "@acme.test", 2));
+            Map<String, BigDecimal> before = drift();
+
+            assertThat(concurrently(cancelTasks(paid))).as("round " + round).containsOnly("200");
+            for (Placed o : paid) assertThat(entries(o.orderNumber(), "SALE_REVERSAL")).isEqualTo(1);
+            assertNoDrift(before, "round " + round + " after " + n + " concurrent paid cancels");
+
+            assertThat(concurrently(ackTasks(paid))).as("round " + round).containsOnly("200");
+            for (Placed o : paid) assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+            assertNoDrift(before, "round " + round + " after " + n + " concurrent refund acks");
+        }
+    }
+
+    @Test
+    void concurrentSuccessWebhooksKeepEveryBalanceEqualToItsJournal() throws Exception {
+        Gateway g = configureGateway(acme);
+        int n = 6;
+        for (int round = 0; round < 2; round++) {
+            List<Placed> pending = new ArrayList<>();
+            for (int i = 0; i < n; i++) pending.add(place("lb-w" + round + "-" + i + "@acme.test", 2));
+            Map<String, BigDecimal> before = drift();
+            assertThat(concurrently(webhookTasks(g, pending))).as("round " + round).containsOnly("200");
+            awaitSettled(pending);
+            assertNoDrift(before, "round " + round + " after " + n + " concurrent success webhooks");
+        }
+    }
+
+    @Test
+    void mixedConcurrentCancelsAcksAndWebhooksKeepEveryBalanceEqualToItsJournal() throws Exception {
+        Gateway g = configureGateway(acme);
+        for (int round = 0; round < 2; round++) {
+            List<Placed> toCancel = new ArrayList<>();
+            List<Placed> toAck = new ArrayList<>();
+            List<Placed> pending = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                toCancel.add(placePaid("lb-mc" + round + "-" + i + "@acme.test", 2));
+                Placed a = placePaid("lb-ma" + round + "-" + i + "@acme.test", 1);
+                assertThat(status(setStatus(a.orderNumber(), "CANCELLED"))).isEqualTo(200);
+                toAck.add(a);
+                pending.add(place("lb-mw" + round + "-" + i + "@acme.test", 3));
+            }
+            Map<String, BigDecimal> before = drift();
+            List<Callable<String>> tasks = new ArrayList<>();
+            List<Callable<String>> c = cancelTasks(toCancel), a = ackTasks(toAck), w = webhookTasks(g, pending);
+            for (int i = 0; i < 3; i++) { tasks.add(c.get(i)); tasks.add(a.get(i)); tasks.add(w.get(i)); }
+            assertThat(concurrently(tasks)).as("round " + round).containsOnly("200");
+            awaitSettled(pending);
+            for (Placed o : toCancel) assertThat(entries(o.orderNumber(), "SALE_REVERSAL")).isEqualTo(1);
+            for (Placed o : toAck) assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+            assertNoDrift(before, "round " + round + " after mixed concurrent postings");
+        }
+    }
+
+    // ------------------------------------------------- rework F2: refund ack with too little cash
+
+    @Test
+    void refundAckWithTooLittleCashIsA409InsufficientCashAndPostsNothing() throws Exception {
+        Placed o = placePaid("lb-ic@acme.test", 2);
+        BigDecimal total = total(o.orderNumber());
+        assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        BigDecimal cash = accountBalance("CASH");
+        BigDecimal low = total.subtract(new BigDecimal("1.00"));
+        jdbc.update("UPDATE tenant_acme.ledger_accounts SET balance = ? WHERE category = 'CASH'", low);
+        try {
+            MvcResult r = ack(o.orderNumber());
+            assertThat(status(r)).as(r.getResponse().getContentAsString()).isEqualTo(409);
+            assertThat(code(r)).isEqualTo("INSUFFICIENT_CASH");
+            assertThat(new BigDecimal(body(r).at("/data/currentBalance").asText())).isEqualByComparingTo(low);
+            assertThat(new BigDecimal(body(r).at("/data/attemptedAmount").asText())).isEqualByComparingTo(total);
+            assertThat(body(r).at("/data/orderNumber").asText()).isEqualTo(o.orderNumber());
+            assertThat(accountBalance("CASH")).as("rolled back").isEqualByComparingTo(low);
+            assertThat(entries(o.orderNumber(), "REFUND")).isZero();
+            assertThat(jdbc.queryForObject("SELECT p.refund_required FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id "
+                    + "WHERE o.order_number = ?", Boolean.class, o.orderNumber())).as("the refund stays required").isTrue();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.order_audit_events e JOIN tenant_acme.orders o ON o.id = e.order_id "
+                    + "WHERE o.order_number = ? AND e.event_type = 'REFUND_ACKNOWLEDGED'", Integer.class, o.orderNumber())).isZero();
+            // exactly enough cash: the refund goes through
+            jdbc.update("UPDATE tenant_acme.ledger_accounts SET balance = ? WHERE category = 'CASH'", total);
+            assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
+            assertThat(accountBalance("CASH")).isEqualByComparingTo("0");
+            assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+        } finally {
+            jdbc.update("UPDATE tenant_acme.ledger_accounts SET balance = ? WHERE category = 'CASH'", cash);
+        }
+    }
+
+    // ------------------------------------------- rework F3/F4/F5: every report exclusion, NULL delivery status
+
+    @Test
+    void paidCancelOfACouponOrderDropsOutOfEveryReportAndKeepsNullDeliveryStatusRows() throws Exception {
+        coupon(acme, "ORD02RW", 10);
+        long p = costedProduct("Coupon rework", 20);
+        Customer c = customer(acme, "lb-cp@acme.test");
+        Placed kept = settle(placeAs(c, "couponCode=ORD02RW", 2, p));
+        BigDecimal keptTotal = total(kept.orderNumber());
+        Reports only = reports();
+        // the kept order shows in every report (so an exclusion that drops everything is caught too)
+        assertThat(only.totalRevenue()).isEqualByComparingTo(keptTotal);
+        assertThat(only.dailyRevenue()).isEqualByComparingTo(keptTotal);
+        assertThat(only.couponListUsages()).isEqualTo(1);
+        assertThat(only.couponUsages()).isEqualTo(1);
+        assertThat(only.couponRevenue()).isEqualByComparingTo(keptTotal);
+        assertThat(only.topCustomers()).isEqualTo(1);
+        assertThat(only.analyticsCogs()).isEqualByComparingTo("8.00");
+        assertThat(only.analyticsExpenses()).isEqualByComparingTo("2.00");
+        assertThat(only.soldByReference()).containsOnlyKeys(kept.orderNumber());
+        String spentOnly = detailSpent(c);
+        String listedOnly = listedSpent(c);
+
+        Placed cancelled = settle(placeAs(c, "couponCode=ORD02RW", 3, p));
+        Reports both = reports();
+        assertThat(both.couponUsages()).isEqualTo(2);
+        assertThat(both.analyticsCogs()).isEqualByComparingTo("20.00");
+        assertThat(both.analyticsExpenses()).isEqualByComparingTo("5.00");
+        assertThat(both.soldByReference()).containsOnlyKeys(kept.orderNumber(), cancelled.orderNumber());
+        assertThat(detailSpent(c)).isNotEqualTo(spentOnly);
+
+        assertThat(status(setStatus(cancelled.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        assertSameReports(reports(), only, "after the paid cancel");
+        assertThat(detailSpent(c))
+                .as("customer details exclude the cancelled paid order").isEqualTo(spentOnly);
+        assertThat(listedSpent(c)).as("customer list excludes the cancelled paid order").isEqualTo(listedOnly);
+
+        // F4: a paid order whose delivery status is NULL (legacy row) is NOT a cancelled order and stays in every report
+        jdbc.update("UPDATE tenant_acme.orders SET delivery_status = NULL WHERE order_number = ?", kept.orderNumber());
+        assertSameReports(reports(), only, "with a NULL delivery status");
+        assertThat(listedSpent(c)).as("customer list keeps a NULL delivery status").isEqualTo(listedOnly);
+        assertThat(detailSpent(c)).as("customer details keep a NULL delivery status").isEqualTo(spentOnly);
+    }
+
+    @Test
+    void theSharedTestResetCopesWithAppendOnlyAuditRows() throws Exception {
+        Placed o = placePaid("lb-reset@acme.test", 1);
+        assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.order_audit_events", Integer.class)).isPositive();
+        awaitBackgroundIdle();
+        resetOrders("tenant_acme"); // the order part of the AbstractTenantWebTest @AfterEach: must not trip over the RESTRICT FK / DELETE trigger
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.order_audit_events", Integer.class)).isZero();
+    }
+
+    private String detailSpent(Customer c) throws Exception {
+        MvcResult r = mvc.perform(admin(get("/api/v1/admin/metrics/customers/" + c.id()))).andReturn();
+        assertThat(status(r)).as(r.getResponse().getContentAsString()).isEqualTo(200);
+        return body(r).at("/data/totalSpent").asText();
+    }
+
+    private String listedSpent(Customer c) throws Exception {
+        MvcResult r = mvc.perform(admin(get("/api/v1/admin/metrics/customers?page=0&size=50"))).andReturn();
+        assertThat(status(r)).as(r.getResponse().getContentAsString()).isEqualTo(200);
+        for (JsonNode x : body(r).at("/data/content")) {
+            if (x.get("email").asText().equals(c.email())) return x.get("totalSpent").asText();
+        }
+        throw new AssertionError("customer not listed: " + body(r));
     }
 }
