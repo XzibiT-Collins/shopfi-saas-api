@@ -52,18 +52,18 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
 
     Optional<Order> findByUserAndIdempotencyKey(User user, String idempotencyKey);
 
-    /** The customer's open (payment initiated) orders for the same normalised request, newest first. */
+    /**
+     * PAY-03: the customer's open orders (payment INITIATED and created after {@code cutoff}, i.e. still inside the
+     * reservation TTL), newest first, whatever request they were created for. Checkout allows at most one.
+     */
     @Query("""
         SELECT o FROM Order o
         WHERE o.user = :user
-          AND o.requestFingerprint = :fingerprint
           AND o.status = com.example.perfume_budget.enums.PaymentStatus.INITIATED
           AND o.createdAt > :cutoff
-        ORDER BY o.createdAt DESC
+        ORDER BY o.createdAt DESC, o.id DESC
         """)
-    List<Order> findOpenByFingerprint(@Param("user") User user,
-                                      @Param("fingerprint") String fingerprint,
-                                      @Param("cutoff") LocalDateTime cutoff);
+    List<Order> findOpenByUser(@Param("user") User user, @Param("cutoff") LocalDateTime cutoff);
 
     @Query("""
         SELECT u.id AS userId, u.fullName AS fullName, u.email AS email,

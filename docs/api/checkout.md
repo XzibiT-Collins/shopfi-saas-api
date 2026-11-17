@@ -58,10 +58,37 @@ nothing else: the order number and reference come back in this response.
 * Same key, different request: 422 `IDEMPOTENCY_KEY_REUSED`.
 * Same key, order no longer payable (paid, failed, cancelled, expired): 409 `IDEMPOTENT_ORDER_CLOSED` with
   `data.orderNumber` and `data.paymentStatus`; use a new key to start over.
-* Without a key, the customer's still-open (INITIATED, not expired) order for the very same cart + coupon + address is
-  reused (also `idempotentReplay: true`), so a double submit or Back button never creates a second order.
 * Concurrent requests of one customer are serialised server side; failed initialisations leave nothing behind, so the
   same key can be retried.
+
+### One open order per customer (PAY-03)
+
+A customer has at most ONE open order per tenant. "Open" = payment `INITIATED` and created less than the reservation
+TTL ago (`expiresAt` in the future; default 1 h). Paid (`COMPLETED`), `FAILED`, `CANCELLED` and expired orders are not
+open (an expired order the cleanup job has not cancelled yet does not count either). This holds whatever
+`Idempotency-Key` each tab / device sends, and without a key. The rules apply when the key is new (or absent); a key
+that already created an order keeps the semantics above (replay / `422` / `409 IDEMPOTENT_ORDER_CLOSED`).
+
+* **Same cart** = the same request fingerprint: the cart lines (product id + quantity, order of lines ignored), the
+  coupon code (trimmed, case-insensitive, none = blank) and the delivery address id (the explicit `deliveryDetailId`, or
+  the default address's id when absent). Prices, taxes and discounts are NOT part of it: the open order keeps the
+  totals it was created with until `expiresAt` (it is the quote the customer is paying), exactly like a keyed replay.
+* Same cart, open order exists: that order is returned: `200`, `idempotentReplay: true`, the SAME `orderNumber`,
+  `orderId`, `totalAmount`, `expiresAt` and Paystack `authorization_url` / `access_code` / `reference`. No second
+  order, no second Paystack call, no second stock or coupon reservation. The authorization URL is not refreshed: it
+  stays valid for the life of the open order, and a new Paystack transaction for the same order would give one order
+  two payable references.
+* Different cart (any line, quantity, coupon or address differs), open order exists: `409` `OPEN_ORDER_EXISTS` with
+  `data.orderNumber` and `data.expiresAt` of the open order. Nothing is created, reserved or cancelled and the key is
+  not used up. The storefront should offer "continue to payment" for that order (same cart again, or the order page)
+  or "cancel it" (`POST /api/v1/order/{orderNumber}/cancel`) and then re-send the checkout (the same key may be
+  re-sent). The old order is never cancelled automatically: the other tab may already be on the Paystack page, and
+  cancelling an order that is then paid leaves a paid-but-cancelled order (stock re-reserved or a refund).
+* A key that was answered with the open order of another key is not bound to that order: re-sending it returns the
+  open order while it is open; once that order is closed the key behaves like a new key.
+* Concurrency: checkouts of one customer take the customer row lock first, so of two tabs racing with different keys
+  the second one waits and then sees the first one's committed order: same cart -> that order, different cart ->
+  `409 OPEN_ORDER_EXISTS`. A coupon redemption the waiting request reserved is given back.
 
 `callback_url` is sent to Paystack automatically: the tenant storefront origin (verified custom domain, else
 `<slug>.<base-domain>`) + `/checkout/callback`; Paystack redirects the browser to
@@ -197,6 +224,7 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 404 | `DELIVERY_DETAIL_NOT_FOUND` | address not the caller's |
 | 409 | `ORDER_NOT_CANCELLABLE` | order already paid/failed |
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
+| 409 | `OPEN_ORDER_EXISTS` | (PAY-03) the customer already has an open (unpaid, not expired) order for a different cart / coupon / address; `data.orderNumber`, `data.expiresAt` (ISO-8601 UTC). Nothing was created or reserved; pay or cancel that order, then retry |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
 | 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). Webhooks never answer 503 (see above) |

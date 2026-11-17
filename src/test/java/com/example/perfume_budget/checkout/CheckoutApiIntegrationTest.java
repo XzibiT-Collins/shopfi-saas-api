@@ -159,12 +159,19 @@ class CheckoutApiIntegrationTest extends AbstractCheckoutIntegrationTest {
     }
 
     @Test
-    void changedCartWithoutKeyCreatesANewOrder() throws Exception {
+    void changedCartWithoutKeyIs409WhileTheFirstOrderIsOpen() throws Exception {
+        // PAY-03: was "creates a new order"; a customer now has at most one open order (OpenOrderReuseIntegrationTest)
         long p = product(acme, "Scent Nine", "50.00", 10);
         Customer c = ready("a10@acme.test", p, 1);
-        checkout(c, null, null);
+        String n1 = body(checkout(c, null, null)).at("/data/orderNumber").asText();
         cart(c, product(acme, "Scent Ten", "20.00", 5), 1);
-        checkout(c, null, null);
+        MvcResult r = checkout(c, null, null);
+        assertThat(r.getResponse().getStatus()).isEqualTo(409);
+        assertThat(body(r).at("/data/code").asText()).isEqualTo("OPEN_ORDER_EXISTS");
+        assertThat(body(r).at("/data/orderNumber").asText()).isEqualTo(n1);
+        assertThat(count(acme, "orders")).isEqualTo(1);
+        assertThat(cancel(c, n1).getResponse().getStatus()).isEqualTo(200);
+        assertThat(checkout(c, null, null).getResponse().getStatus()).isEqualTo(200);
         assertThat(count(acme, "orders")).isEqualTo(2);
     }
 

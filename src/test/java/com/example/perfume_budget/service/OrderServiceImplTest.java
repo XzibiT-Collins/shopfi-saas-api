@@ -428,8 +428,10 @@ class OrderServiceImplTest {
     void checkout_AReplayThePreCheckSawButThatIsGoneRunsAgainWithAReservation() {
         stubCouponCheckoutBasics();
         Order open = Order.builder().id(9L).orderNumber("ORD-OPEN").status(PaymentStatus.INITIATED)
+                .requestFingerprint(com.example.perfume_budget.utils.CheckoutFingerprint.of(testCart, "DISCOUNT10",
+                        testDeliveryDetail.getId()))
                 .totalAmount(new Money(new BigDecimal("180.00"), CurrencyCode.GHS)).build();
-        when(orderRepository.findOpenByFingerprint(eq(testUser), any(), any()))
+        when(orderRepository.findOpenByUser(eq(testUser), any()))
                 .thenReturn(List.of(open))   // pre-check: an open order to replay
                 .thenReturn(List.of());       // checkout transaction: it was cancelled in between
         when(paymentRepository.findByOrder_OrderNumber("ORD-OPEN")).thenReturn(Optional.of(
@@ -449,6 +451,63 @@ class OrderServiceImplTest {
         verify(couponRedemptionService, times(1)).reserve("DISCOUNT10");
         verify(couponRedemptionService, never()).releaseReservation(any());
         verify(userRepository, times(2)).lockById(1L); // the first run stopped before pricing and rolled back
+    }
+
+    private Order openOrder(String number, String fingerprint) {
+        return Order.builder().id(9L).orderNumber(number).status(PaymentStatus.INITIATED)
+                .requestFingerprint(fingerprint).createdAt(java.time.LocalDateTime.now())
+                .totalAmount(new Money(new BigDecimal("180.00"), CurrencyCode.GHS)).build();
+    }
+
+    @Test
+    void checkout_PAY03_NewKeySameCartReusesTheOpenOrderWithoutReservingTheCoupon() {
+        stubCouponCheckoutBasics();
+        Order open = openOrder("ORD-OPEN", CheckoutFingerprint.of(testCart, "DISCOUNT10", testDeliveryDetail.getId()));
+        when(orderRepository.findOpenByUser(eq(testUser), any())).thenReturn(List.of(open));
+        when(paymentRepository.findByOrder_OrderNumber("ORD-OPEN")).thenReturn(Optional.of(
+                Payment.builder().authorizationUrl("url").providerPaymentReference("ref").accessCode("c").build()));
+
+        CheckoutResponse r = orderService.checkout("discount10", null, "another-tab-key-1");
+
+        assertTrue(r.idempotentReplay());
+        assertEquals("ORD-OPEN", r.orderNumber());
+        verify(couponRedemptionService, never()).reserve(any());
+        verifyNoInteractions(gatewayAPIService);
+        verify(orderRepository, never()).save(any());
+        verify(userRepository).lockById(1L);
+    }
+
+    @Test
+    void checkout_PAY03_DifferentCartIsRefusedBeforeReservingTheCoupon() {
+        stubCouponCheckoutBasics();
+        Order open = openOrder("ORD-OPEN", CheckoutFingerprint.of(testCart, "", testDeliveryDetail.getId()));
+        when(orderRepository.findOpenByUser(eq(testUser), any())).thenReturn(List.of(open));
+
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(
+                com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> orderService.checkout("DISCOUNT10", null, "another-tab-key-2"));
+        assertEquals("OPEN_ORDER_EXISTS", e.getCode());
+        assertEquals(org.springframework.http.HttpStatus.CONFLICT, e.getStatus());
+        assertEquals("ORD-OPEN", e.body().get("orderNumber"));
+        verify(couponRedemptionService, never()).reserve(any());
+        verifyNoInteractions(gatewayAPIService);
+        verify(orderRepository, never()).save(any());
+    }
+
+    @Test
+    void checkout_PAY03_DifferentCartWithoutCouponIsRefusedUnderTheCustomerLock() {
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
+        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        Order open = openOrder("ORD-OPEN", "a-different-fingerprint");
+        when(orderRepository.findOpenByUser(eq(testUser), any())).thenReturn(List.of(open));
+
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(
+                com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> orderService.checkout(null, null, "another-tab-key-3"));
+        assertEquals("OPEN_ORDER_EXISTS", e.getCode());
+        verify(userRepository).lockById(1L);
+        verifyNoInteractions(gatewayAPIService);
     }
 
     @Test

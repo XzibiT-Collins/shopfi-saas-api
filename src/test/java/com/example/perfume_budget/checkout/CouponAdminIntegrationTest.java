@@ -193,7 +193,11 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         createCoupon(acme, adminA, b);
 
         Customer c = ready(acme, "pu1@acme.test", p);
-        assertThat(checkout(c, "key-pu-0001-aaaa", "couponCode=ONCE").getResponse().getStatus()).isEqualTo(200);
+        MvcResult first = checkout(c, "key-pu-0001-aaaa", "couponCode=ONCE");
+        assertThat(first.getResponse().getStatus()).isEqualTo(200);
+        // PAY-03: while that order is open the same cart would just return it; once paid it still holds the redemption
+        jdbc.update("UPDATE tenant_acme.orders SET status = 'COMPLETED' WHERE order_number = ?",
+                body(first).at("/data/orderNumber").asText());
         jdbc.update("DELETE FROM tenant_acme.cart_items");
         cart(c, p, 1);
         MvcResult second = checkout(c, "key-pu-0002-aaaa", "couponCode=ONCE");
@@ -248,11 +252,20 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
         jdbc.update("UPDATE tenant_acme.orders SET status = 'FAILED' WHERE order_number = ?", second.get("orderNumber").asText());
         jdbc.update("DELETE FROM tenant_acme.cart_items");
         cart(c, p, 1);
-        assertThat(checkout(c, "key-pc-0003-aaaa", "couponCode=AGAIN").getResponse().getStatus()).isEqualTo(200);
-        // ...but a live (pending) order holds it
+        MvcResult third = checkout(c, "key-pc-0003-aaaa", "couponCode=AGAIN");
+        assertThat(third.getResponse().getStatus()).isEqualTo(200);
+        String thirdNumber = body(third).at("/data/orderNumber").asText();
+        int usageBefore = usageCount("AGAIN");
+        // ...but a live (pending) order holds it: PAY-03, the same cart from another tab gets that very order back
         jdbc.update("DELETE FROM tenant_acme.cart_items");
         cart(c, p, 1);
-        assertThat(checkout(c, "key-pc-0004-aaaa", "couponCode=AGAIN").getResponse().getStatus()).isEqualTo(400);
+        MvcResult otherTab = checkout(c, "key-pc-0004-aaaa", "couponCode=AGAIN");
+        assertThat(otherTab.getResponse().getStatus()).isEqualTo(200);
+        assertThat(body(otherTab).at("/data/orderNumber").asText()).isEqualTo(thirdNumber);
+        assertThat(usageCount("AGAIN")).as("the reused order takes no second redemption").isEqualTo(usageBefore);
+        // ...and so does a paid one: a new checkout is refused by the per-user limit
+        jdbc.update("UPDATE tenant_acme.orders SET status = 'COMPLETED' WHERE order_number = ?", thirdNumber);
+        assertThat(checkout(c, "key-pc-0005-aaaa", "couponCode=AGAIN").getResponse().getStatus()).isEqualTo(400);
     }
 
     // ---- update / deactivate / delete

@@ -277,8 +277,10 @@ class CouponRetryWiringIntegrationTest extends AbstractCheckoutIntegrationTest {
         long id = createCoupon(couponBody("RW18", 1, "50", 1));
         Customer a = customer(acme, "rw18a@acme.test");
         cart(a, product(acme, "P-RW18", "100.00", 20), 1);
-        place(a, null, "RW18");
+        String placed = place(a, null, "RW18");
         assertThat(usage("RW18")).isEqualTo(1);
+        // PAY-03: paid, so a new request of the same cart is a new checkout (an open order would be returned)
+        jdbc.update("UPDATE tenant_acme.orders SET status = 'COMPLETED' WHERE order_number = ?", placed);
         assertThat(jdbc.queryForObject("SELECT is_active FROM tenant_acme.coupons WHERE id = ?", Boolean.class, id)).isFalse();
         assertThat(jdbc.queryForObject("SELECT limit_deactivated FROM tenant_acme.coupons WHERE id = ?", Boolean.class, id)).isTrue();
 
