@@ -46,12 +46,16 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
 
     private final RequestTenantResolver resolver;
 
-    @org.springframework.beans.factory.annotation.Autowired
     public TenantResolutionFilter(RequestTenantResolver resolver) {
         this.resolver = resolver;
     }
 
-    /** Convenience for tests that build the filter by hand; same rules as the Spring bean. */
+    /**
+     * The bean constructor: same dependencies as before SEC-03c (so MVC slice tests that mock them keep working). The
+     * resolver is stateless, so this instance and the {@link RequestTenantResolver} bean used by the WebSocket
+     * handshake apply identical rules.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
     public TenantResolutionFilter(TenantRegistryService tenantRegistryService, TenantResolutionProperties properties,
                                   Environment environment) {
         this(new RequestTenantResolver(tenantRegistryService, properties, environment));
