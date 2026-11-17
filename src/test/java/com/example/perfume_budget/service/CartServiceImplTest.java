@@ -88,12 +88,13 @@ class CartServiceImplTest {
 
     @Test
     void getCart_Success() {
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartWithItems()).thenReturn(testCart);
 
         CartResponse result = cartService.getCart();
 
         assertNotNull(result);
-        verify(cartUtil).getCurrentUserCart();
+        verify(cartUtil).getCurrentUserCartWithItems();
+        verify(cartUtil, never()).getCurrentUserCart();
     }
 
     @Test
@@ -110,7 +111,7 @@ class CartServiceImplTest {
         CartItemRequest itemRequest = new CartItemRequest(1L, 2);
         PopulateCartItemRequest populateRequest = new PopulateCartItemRequest(List.of(itemRequest));
 
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartWithItems()).thenReturn(testCart);
 
         cartService.populateCartFromLocalStorage(populateRequest);
 

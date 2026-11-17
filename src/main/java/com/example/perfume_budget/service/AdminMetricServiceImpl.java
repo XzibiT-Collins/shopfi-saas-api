@@ -186,7 +186,8 @@ public class AdminMetricServiceImpl implements AdminMetricService {
     // (LazyInitializationException, no open-session-in-view)
     @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public CustomerFullDetailsResponse getCustomerDetails(Long userId) {
-        User user = userRepository.findById(userId)
+        // CAT-02: addresses are mapped below, outside a transaction: load them with the user (one query)
+        User user = userRepository.findWithDeliveryAddressesById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         List<Order> orders = orderRepository.findAllByUser(user);

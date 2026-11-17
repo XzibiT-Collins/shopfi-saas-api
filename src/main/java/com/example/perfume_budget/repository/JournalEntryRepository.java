@@ -7,6 +7,7 @@ import com.example.perfume_budget.model.JournalEntry;
 import com.example.perfume_budget.projection.DailyCashFlowProjection;
 import com.example.perfume_budget.projection.RevenueAndCOGSBucketProjection;
 import com.example.perfume_budget.projection.ExpenseBucketProjection;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -17,6 +18,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
+/*
+ * CAT-02: the journal-entry report reads map every line and its account outside a transaction (open-in-view is off), so
+ * those three reads load lines + accounts in the same query (entity graph; one row per entry, no N+1).
+ */
 public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long> {
     // entries within a date range
     @Query("""
@@ -24,6 +29,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             WHERE j.transactionDate BETWEEN :start AND :end
             ORDER BY j.transactionDate DESC
             """)
+    @EntityGraph(attributePaths = {"lines", "lines.account"})
     List<JournalEntry> findAllByDateRange(
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
@@ -41,9 +47,11 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             @Param("end") LocalDateTime end);
 
     // manual entries only
+    @EntityGraph(attributePaths = {"lines", "lines.account"})
     List<JournalEntry> findByIsManualTrueOrderByTransactionDateDesc();
 
     // entries by reference
+    @EntityGraph(attributePaths = {"lines", "lines.account"})
     List<JournalEntry> findByReferenceTypeAndReferenceId(
             String referenceType, String referenceId);
 
