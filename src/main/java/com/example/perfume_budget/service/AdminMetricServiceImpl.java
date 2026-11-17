@@ -183,7 +183,8 @@ public class AdminMetricServiceImpl implements AdminMetricService {
 
     @Override
     public CustomerFullDetailsResponse getCustomerDetails(Long userId) {
-        User user = userRepository.findById(userId)
+        // CAT-02: addresses are mapped below, outside a transaction: load them with the user (one query)
+        User user = userRepository.findWithDeliveryAddressesById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         List<Order> orders = orderRepository.findAllByUser(user);

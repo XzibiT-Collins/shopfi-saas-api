@@ -54,4 +54,35 @@ class CartUtilTest {
         assertEquals(cart, result);
         verify(cartRepository).save(any(Cart.class));
     }
+
+    @Test
+    void getCurrentUserCartWithItems_ExistingCartUsesTheFetchingQuery() {
+        User user = User.builder().id(1L).build();
+        Cart cart = Cart.builder().id(10L).user(user).build();
+
+        when(authUserUtil.getCurrentUser()).thenReturn(user);
+        when(cartRepository.findWithItemsByUser(user)).thenReturn(Optional.of(cart));
+
+        Cart result = cartUtil.getCurrentUserCartWithItems();
+
+        assertEquals(cart, result);
+        verify(cartRepository, never()).save(any());
+        verify(cartRepository, never()).findByUser(any());
+    }
+
+    @Test
+    void getCurrentUserCartWithItems_NewCartIsCreatedEmptyForThatUser() {
+        User user = User.builder().id(1L).build();
+
+        when(authUserUtil.getCurrentUser()).thenReturn(user);
+        when(cartRepository.findWithItemsByUser(user)).thenReturn(Optional.empty());
+        when(cartRepository.save(any(Cart.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Cart result = cartUtil.getCurrentUserCartWithItems();
+
+        assertEquals(user, result.getUser());
+        assertNotNull(result.getItems());
+        assertTrue(result.getItems().isEmpty());
+        verify(cartRepository).save(any(Cart.class));
+    }
 }

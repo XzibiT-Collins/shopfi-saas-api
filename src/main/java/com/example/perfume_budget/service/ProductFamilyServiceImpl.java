@@ -27,14 +27,14 @@ public class ProductFamilyServiceImpl implements ProductFamilyService {
 
     @Override
     public List<ProductFamilySummaryResponse> getAllFamilies() {
-        return familyRepository.findAll().stream()
+        return familyRepository.findAllWithBaseUnit().stream()
                 .map(ProductFamilyMapper::toSummary)
                 .toList();
     }
 
     @Override
     public AvailableUomsResponse getAvailableUoms(Long familyId) {
-        ProductFamily family = familyRepository.findById(familyId)
+        ProductFamily family = familyRepository.findWithBaseUnitById(familyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product family not found."));
 
         Set<String> takenUoms = productRepository.findByFamily(family).stream()

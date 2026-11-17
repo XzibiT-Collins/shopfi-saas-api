@@ -30,6 +30,8 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     java.util.List<Long> findExistingIds(@org.springframework.data.repository.query.Param("ids") java.util.Collection<Long> ids);
 
     boolean existsBySku(String sku);
+    /** CAT-02: the family's members with their unit of measure in the same query (available-uoms maps the code). */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = "unitOfMeasure")
     List<Product> findByFamily(ProductFamily family);
 
     /**
@@ -43,26 +45,26 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
 
     @Modifying
     @Transactional
-    @Query("UPDATE Product p SET p.soldCount = p.soldCount + :quantity WHERE p.id = :productId")
+    @Query("UPDATE Product p SET p.soldCount = COALESCE(p.soldCount, 0) + :quantity WHERE p.id = :productId")
     void incrementSoldCount(@Param("productId") Long productId, @Param("quantity") int quantity);
 
     @Modifying
     @Transactional
-    @Query("UPDATE Product p SET p.viewCount = p.viewCount + 1L WHERE p.id = :productId")
+    @Query("UPDATE Product p SET p.viewCount = COALESCE(p.viewCount, 0L) + 1L WHERE p.id = :productId")
     void incrementViewCount(@Param("productId") Long productId);
 
     @Modifying
     @Transactional
-    @Query("UPDATE Product p SET p.addToCartCount = p.addToCartCount + 1L WHERE p.id = :productId")
+    @Query("UPDATE Product p SET p.addToCartCount = COALESCE(p.addToCartCount, 0L) + 1L WHERE p.id = :productId")
     void incrementCartTimesCount(@Param("productId") Long productId);
 
 
     @Query("""
         SELECT p.id AS id, p.name AS productName,
-               p.viewCount AS viewCount, p.soldCount AS soldCount,
-               p.addToCartCount AS addToCartCount
+               COALESCE(p.viewCount, 0L) AS viewCount, COALESCE(p.soldCount, 0) AS soldCount,
+               COALESCE(p.addToCartCount, 0L) AS addToCartCount
         FROM Product p
-        ORDER BY p.soldCount DESC
+        ORDER BY COALESCE(p.soldCount, 0) DESC, p.id ASC
         LIMIT 6
         """)
     List<TopProduct> findTopSixMostSoldProducts();

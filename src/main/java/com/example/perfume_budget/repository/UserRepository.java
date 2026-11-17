@@ -19,6 +19,10 @@ import java.util.Optional;
 public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByEmail(String email);
 
+    /** CAT-02: admin customer details map the addresses outside a transaction: load them in the same query. */
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = "deliveryAddresses")
+    Optional<User> findWithDeliveryAddressesById(Long id);
+
     /** Row lock used to serialise one customer's checkouts (double submit, concurrent tabs). */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT u FROM User u WHERE u.id = :id")
