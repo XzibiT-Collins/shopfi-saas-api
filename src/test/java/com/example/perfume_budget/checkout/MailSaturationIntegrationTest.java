@@ -260,8 +260,15 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
 
             assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
             long payment = paymentId(order);
+            await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.side_effect_outbox WHERE kind = "
+                        + "'PAYMENT_ADMIN_NOTIFICATION' AND reference = ?", Integer.class, String.valueOf(payment))).isEqualTo(1);
+                assertThat(deferred("payment " + payment)).as("the notification hand-off was refused (executor full)")
+                        .anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("notification"));
+            });
             assertThat(outboxStatus("PAYMENT_ADMIN_NOTIFICATION", payment)).as("deferred to the outbox").isEqualTo("PENDING/0");
             assertThat(notifications(order)).isZero();
+            assertThat(pushedTo).isEmpty();
 
             release.countDown();
             awaitBackgroundIdle();
