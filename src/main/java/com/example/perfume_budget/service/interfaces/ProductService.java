@@ -28,9 +28,6 @@ public interface ProductService {
 
     /** {@code countView=false} for HEAD: the response is identical but no view is recorded. */
     ProductDetailsPageResponse getProductDetailsPage(String slug, boolean countView);
-
-    /** Records one storefront view of the product (skipped for an admin caller). SEC-03c: deduplicated by the caller. */
-    void recordProductView(Long productId);
     ProductDetails updateProduct(Long productId, ProductRequest request);
     ProductDetails setProductDiscount(Long productId, ProductDiscountRequest request);
     ProductDetails clearProductDiscount(Long productId);
