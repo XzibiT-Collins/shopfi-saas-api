@@ -144,10 +144,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 - [ ] Isolation integration tests for each customer surface
 
 ### 3d. WebSocket tenant binding (`config/ws/`)
-- [ ] `WebSocketConfig` handshake — stash tenant in STOMP session attrs
-- [ ] `AuthChannelInterceptor` CONNECT — validate token tenant vs handshake; reject mismatch
-- [ ] Restore `TenantContext` on inbound messages + `NotificationService` sends
-- [ ] `AdminSessionManager` — key by `(tenant, username)`; namespace destinations by tenant
+- [x] `WebSocketConfig` handshake — stash tenant in STOMP session attrs (SEC-03c, `TenantHandshakeInterceptor` + shared `RequestTenantResolver`)
+- [x] `AuthChannelInterceptor` CONNECT — validate token tenant vs handshake; reject mismatch (also anonymous / expired; SUBSCRIBE/SEND default-deny)
+- [x] Restore `TenantContext` on inbound messages + `NotificationService` sends
+- [x] `AdminSessionManager` — key by `(tenant, username)`; namespace destinations by tenant (principal name `<tenant>:<email>`)
 
 ### 3e. Platform super-admin control plane (`platform/`)
 - [ ] `PlatformAuthController` @ `/api/v1/platform/auth/login` (apex host, `tenant="__platform__"`)
@@ -157,12 +157,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ### 3f. Custom domains + dynamic CORS
 - [ ] `setAllowedOriginPatterns` (wildcard subdomains) keeping `allowCredentials(true)`
 - [ ] `DynamicTenantCorsConfigurationSource` from approved `Tenant.customDomain` (cacheable)
-- [ ] Same dynamic origins for WebSocket
+- [x] Same dynamic origins for WebSocket
 
 ### Stage 3 gate — verification
 - [ ] `GET /theme` public defaults → `PUT /theme` (ADMIN) persists color+logo/background to Cloudinary; acme ≠ bravo
 - [ ] SMS OTP + order SMS delivered via provider (or stub)
-- [ ] WebSocket rejects tenant/token mismatch; admins namespaced by tenant
+- [x] WebSocket rejects tenant/token mismatch; admins namespaced by tenant (`StompTenantAuthIntegrationTest`)
 - [ ] Platform super-admin lists + suspends tenants (suspended → 423/403)
 - [ ] Custom-domain CORS honored
 

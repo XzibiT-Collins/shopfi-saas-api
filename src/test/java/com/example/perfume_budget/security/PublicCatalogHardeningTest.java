@@ -188,6 +188,25 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
     }
 
     @Test
+    void everyGetCountsAView_evenFromOneClient_documentedResidualUntilView01() throws Exception {
+        // SEC-03c rework (PO decision on review F1): no per-client-IP dedupe on GET, because the storefront renders
+        // product pages server-side and every visitor would share the frontend server's IP. A GET counts as on main;
+        // real per-visitor counting is the browser-side beacon of VIEW-01.
+        long p = product(acme, "Every Get Scent", "10.00", 5);
+        String slug = jdbc.queryForObject("SELECT slug FROM tenant_acme.products WHERE id = ?", String.class, p);
+        jdbc.update("UPDATE tenant_acme.products SET view_count = 0 WHERE id = ?", p);
+        for (int i = 0; i < 3; i++) {
+            assertThat(mvc.perform(get("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")
+                    .with(r -> { r.setRemoteAddr("203.0.113.7"); return r; })).andReturn().getResponse().getStatus()).isEqualTo(200);
+        }
+        long deadline = System.currentTimeMillis() + 8000;
+        while (views(p) < 3 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+        }
+        assertThat(views(p)).as("3 GETs from the same client IP (e.g. the SSR frontend server) count 3 views").isEqualTo(3);
+    }
+
+    @Test
     void headDoesNotRecordASiteVisit() throws Exception {
         String path = "/api/v1/product/visit-probe-" + System.nanoTime(); // a page nobody visited today
         int before = count(acme, "site_visits");

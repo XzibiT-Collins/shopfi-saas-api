@@ -42,8 +42,14 @@ class NotificationPushAfterCommitTest {
     private final TransactionTemplate tx = new TransactionTemplate(new NoopTxManager());
     private Payment payment;
 
+    @org.junit.jupiter.api.AfterEach
+    void clearTenant() {
+        com.example.perfume_budget.tenancy.TenantContext.clear();
+    }
+
     @BeforeEach
     void setUp() {
+        com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.tenant("acme", "tenant_acme"));
         messaging = mock(SimpMessageSendingOperations.class);
         AdminSessionManager sessions = mock(AdminSessionManager.class);
         UserRepository users = mock(UserRepository.class);
@@ -59,7 +65,7 @@ class NotificationPushAfterCommitTest {
         });
         when(recipients.saveAll(any())).thenAnswer(i -> i.getArgument(0));
         when(recipients.existsByNotificationTypeAndNotificationReferenceIdAndIsReadFalse(any(), any())).thenReturn(false);
-        when(sessions.getConnectedAdmins()).thenReturn(Set.of("admin@shop.test"));
+        when(sessions.getConnectedAdmins("acme")).thenReturn(Set.of("admin@shop.test"));
         Order order = Order.builder().orderNumber("PB-1").build();
         payment = Payment.builder().order(order).build();
     }
@@ -89,12 +95,12 @@ class NotificationPushAfterCommitTest {
             service.notifyStaffOfShopFloorShortage(5L, "Oud", 1, 9);
             verifyNoInteractions(messaging); // not before the commit
         });
-        verify(messaging, times(2)).convertAndSendToUser(eq("admin@shop.test"), eq("/queue/notifications"), any());
+        verify(messaging, times(2)).convertAndSendToUser(eq("acme:admin@shop.test"), eq("/queue/notifications"), any());
     }
 
     @Test
     void outsideATransactionThePushIsImmediate() {
         service.notifyAdminsOfSuccessfulPayment(payment);
-        verify(messaging, times(1)).convertAndSendToUser(eq("admin@shop.test"), eq("/queue/notifications"), any());
+        verify(messaging, times(1)).convertAndSendToUser(eq("acme:admin@shop.test"), eq("/queue/notifications"), any());
     }
 }
