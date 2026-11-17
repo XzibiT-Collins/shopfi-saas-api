@@ -285,7 +285,8 @@ public class ProductServiceImpl implements ProductService {
     @Override
     public ProductDetails getProductDetails(Long productId) {
         log.info("Product details requested");
-        Product product = productRepository.findById(productId).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
+        // CAT-01: the category is fetched with the product (the mapper reads it after the session closed)
+        Product product = productRepository.findWithCategoryById(productId).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
         return toDetails(product);
     }
 
