@@ -25,7 +25,8 @@ public class TenantRunner {
                 TenantContext.set(TenantIdentity.tenant(tenant.getSlug(), tenant.getSchemaName()));
                 action.run();
             } catch (Exception e) {
-                log.error("Scheduled action failed for tenant {}: {}", tenant.getSlug(), e.getMessage(), e);
+                log.error("Scheduled action failed for tenant {}: {}", tenant.getSlug(), e.getClass().getName());
+                log.debug("Scheduled action failure detail for tenant {}", tenant.getSlug(), e);
             } finally {
                 TenantContext.clear();
             }

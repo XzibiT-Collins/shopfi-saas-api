@@ -322,6 +322,41 @@ class PaymentLifecycleIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(movements("SALE", o.orderNumber())).isEqualTo(1);
     }
 
+    /**
+     * EVT-01c (6): the webhook is answered only after the settlement committed. Here the side-effect outbox insert (a
+     * before-commit step of the settlement) fails, which rolls the payment change back: the webhook must not be
+     * acknowledged (Paystack then redelivers it), and the redelivery applies it once with its outbox rows.
+     */
+    @Test
+    void aWebhookWhoseSettlementDidNotCommitIsNotAcknowledged_andTheRedeliveryAppliesIt() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("w9@acme.test", 1);
+        String body = event("charge.success", o.reference(), totalMinor(o.orderNumber()));
+        long paymentId = jdbc.queryForObject("SELECT p.id FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id"
+                + " WHERE o.order_number = ?", Long.class, o.orderNumber());
+        jdbc.execute("CREATE OR REPLACE FUNCTION tenant_acme.evt01c_outbox_down() RETURNS trigger LANGUAGE plpgsql AS"
+                + " $$ BEGIN RAISE EXCEPTION 'outbox insert refused'; END $$");
+        jdbc.execute("CREATE TRIGGER evt01c_outbox_down BEFORE INSERT ON tenant_acme.side_effect_outbox"
+                + " FOR EACH ROW EXECUTE FUNCTION tenant_acme.evt01c_outbox_down()");
+        int refused;
+        try {
+            refused = webhook(g, body);
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS evt01c_outbox_down ON tenant_acme.side_effect_outbox");
+            jdbc.execute("DROP FUNCTION IF EXISTS tenant_acme.evt01c_outbox_down()");
+        }
+        assertThat(refused).as("not acknowledged: the provider redelivers").isGreaterThanOrEqualTo(500);
+        assertThat(orderStatus(acme, o.orderNumber())).as("the payment change rolled back with the outbox insert").isEqualTo("INITIATED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.side_effect_outbox WHERE kind LIKE 'PAYMENT_%' AND reference = ?",
+                Integer.class, String.valueOf(paymentId))).isZero();
+
+        assertThat(webhook(g, body)).as("the redelivery").isEqualTo(200);
+        assertThat(orderStatus(acme, o.orderNumber())).as("applied before the answer").isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.side_effect_outbox WHERE kind LIKE 'PAYMENT_%' AND reference = ?",
+                Integer.class, String.valueOf(paymentId))).isEqualTo(3);
+        assertThat(movements("SALE", o.orderNumber())).isEqualTo(1);
+    }
+
     @Test
     void webhookAmountMismatchIsNotApplied() throws Exception {
         Gateway g = configureGateway(acme);

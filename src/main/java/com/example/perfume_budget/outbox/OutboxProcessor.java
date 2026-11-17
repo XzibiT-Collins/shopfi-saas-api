@@ -76,13 +76,22 @@ public class OutboxProcessor {
             perform(row);
         } catch (RuntimeException | Error e) {
             String error = e.getClass().getName(); // never the message: a transport error can quote the recipient
+            boolean retryable = OutboxRetryPolicy.retryable(e);
             try {
-                if (store.fail(row, error)) {
-                    log.error("{} for {} was NOT sent: gave up after {} attempts ({}); outbox row marked FAILED",
-                            row.kind().what(), row.describe(), row.attempts(), error);
-                } else {
-                    log.warn("{} for {} failed (attempt {} of {}, {}); the outbox retries it", row.kind().what(),
+                switch (store.fail(row, error, retryable)) {
+                    case FAILED -> {
+                        if (retryable) {
+                            log.error("{} for {} was NOT sent: gave up after {} attempts ({}); outbox row marked FAILED",
+                                    row.kind().what(), row.describe(), row.attempts(), error);
+                        } else {
+                            log.error("{} for {} was NOT sent: gave up at attempt {}, the error is not retryable ({});"
+                                    + " outbox row marked FAILED", row.kind().what(), row.describe(), row.attempts(), error);
+                        }
+                    }
+                    case RETRY -> log.warn("{} for {} failed (attempt {} of {}, {}); the outbox retries it", row.kind().what(),
                             row.describe(), row.attempts(), OutboxStore.MAX_ATTEMPTS, error);
+                    case STALE -> log.warn("{} for {} failed ({}) after its claim (attempt {}) went stale: another worker"
+                            + " owns the row now, left to it", row.kind().what(), row.describe(), error, row.attempts());
                 }
             } catch (RuntimeException storeDown) {
                 log.error("{} for {} failed ({}) and the failure could not be recorded ({}); retried after the lease",
@@ -91,7 +100,10 @@ public class OutboxProcessor {
             return;
         }
         try {
-            store.complete(row.id());
+            if (!store.complete(row)) {
+                log.warn("{} for {} was done, but its claim (attempt {}) went stale: another worker owns the row now,"
+                        + " which may repeat it", row.kind().what(), row.describe(), row.attempts());
+            }
         } catch (RuntimeException e) {
             log.warn("{} for {} was done but not marked DONE ({}); it may be repeated after the lease",
                     row.kind().what(), row.describe(), e.getClass().getName());

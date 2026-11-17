@@ -41,7 +41,8 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         try {
             return processOAuth2User(userRequest, oAuth2User);
         } catch (Exception ex) {
-            log.error("Error processing OAuth2 user", ex);
+            log.error("Error processing OAuth2 user: {}", ex.getClass().getName());
+            log.debug("OAuth2 user processing failure detail", ex);
             throw new OAuth2AuthenticationException(ex.getMessage());
         }
     }

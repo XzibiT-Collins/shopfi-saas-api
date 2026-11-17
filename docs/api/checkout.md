@@ -168,13 +168,14 @@ The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 
 * `charge.failed`: the only event that marks the payment/order FAILED and releases the stock. Never overrides COMPLETED.
 * any other event type: ignored.
 
-The endpoint answers `200` as soon as the signature is verified; the event is applied asynchronously, so a webhook
-never returns `503` (or any other status) because of a database conflict. API-04 rework 2: a transient database
+EVT-01c: the event is applied **before** the endpoint answers, and `200` means it committed (or can never be applied:
+unparseable body, no reference, an ignored event type, an unknown reference, an amount mismatch). A transient database
 failure while applying it (deadlock victim, serialization failure, optimistic-lock conflict on a shared product row,
-lock timeout / `COUPON_BUSY`) is retried in-process up to 3 times, each attempt a fresh transaction (the settlement is
-idempotent). If it still fails the event is logged and dropped (Paystack already has its 200 and does not resend);
-the order is then settled by the customer's verify poll (`GET /payment/verify`, which asks Paystack and applies the
-same settlement) or, if it stays unpaid, cancelled by the expiry job, which gives its stock and coupon redemption back.
+lock timeout / `COUPON_BUSY`) is first retried in-process up to 3 times, each attempt a fresh transaction (API-04
+rework 2; the settlement is idempotent). If it still fails, or any other step of the settlement fails (for example the
+side-effect outbox insert, which rolls the payment change back with it), nothing is committed and the endpoint answers
+`500` so Paystack redelivers the event; the customer's verify poll (`GET /payment/verify`) and, for an unpaid order,
+the expiry job remain the other ways it gets settled. A webhook never answers `503`.
 
 **Payment-success side effects (API-04 rework 3).** The customer receipt e-mail, the admin "payment successful" e-mail
 and the admin in-app / WebSocket notification are sent only after the settling transaction COMMITS, once per settled

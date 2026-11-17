@@ -40,26 +40,22 @@ public class NotificationService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void notifyAdminsOfSuccessfulPayment(Payment payment) {
         String tenant = TenantContext.getSlug();
-        // EVT-01b (L2): idempotent, the outbox may run it again (a retry, or a worker that died before marking it DONE)
-        if (notificationRepository.existsByTypeAndReferenceId("PAYMENT_SUCCESS", payment.getOrder().getOrderNumber())) {
-            log.info("Payment notification for order {} already written; not repeated", payment.getOrder().getOrderNumber());
-            return;
-        }
+        String orderNumber = payment.getOrder().getOrderNumber();
         List<User> adminUsers = userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK));
         if (adminUsers.isEmpty()) {
-            log.info("No admin users found to persist notification for order {}", payment.getOrder().getOrderNumber());
+            log.info("No admin users found to persist notification for order {}", orderNumber);
             return;
         }
 
-        Notification notification = notificationRepository.save(
-                Notification.builder()
-                        .type("PAYMENT_SUCCESS")
-                        .title("Payment received")
-                        .message("Order #" + payment.getOrder().getOrderNumber() + " has been successfully paid.")
-                        .referenceType("ORDER")
-                        .referenceId(payment.getOrder().getOrderNumber())
-                        .build()
-        );
+        // EVT-01b (L2): idempotent, the outbox may run it again (a retry, or a worker that died before marking it DONE).
+        // EVT-01c (O5): decided by the unique partial index (V15), so two concurrent runs cannot both write it.
+        List<Long> inserted = notificationRepository.insertPaymentSuccessOnce("Payment received",
+                "Order #" + orderNumber + " has been successfully paid.", orderNumber, LocalDateTime.now());
+        if (inserted.isEmpty()) {
+            log.info("Payment notification for order {} already written; not repeated", orderNumber);
+            return;
+        }
+        Notification notification = notificationRepository.findById(inserted.getFirst()).orElseThrow();
 
         List<NotificationRecipient> recipients = new ArrayList<>();
         for (User adminUser : adminUsers) {

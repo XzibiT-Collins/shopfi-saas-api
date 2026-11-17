@@ -61,12 +61,13 @@ class PlatformTenantServiceTest {
     TenantProvisioningService saga = mock(TenantProvisioningService.class);
     TenantOriginPolicy cors = mock(TenantOriginPolicy.class);
     PlatformTransactionManager tm = mock(PlatformTransactionManager.class);
+    com.example.perfume_budget.tenancy.TenantSchemaMigrator migrator = mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class);
     PlatformTenantService service;
 
     @BeforeEach
     void setUp() {
         when(tm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        service = new PlatformTenantService(tenants, signups, audits, saga, cors, tm, 1000, 15, 60);
+        service = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60);
     }
 
     private Tenant tenant(String slug, TenantStatus status) {
@@ -213,6 +214,41 @@ class PlatformTenantServiceTest {
         assertThat(a.getPreviousStatus()).isEqualTo(TenantStatus.SUSPENDED);
         assertThat(a.getNewStatus()).isEqualTo(TenantStatus.ACTIVE);
         verify(cors, times(1)).invalidateAll();
+    }
+
+    // ---- EVT-01c (6): a reactivated tenant is migrated first (boot migrates ACTIVE schemas only)
+
+    @Test
+    void reactivate_migratesTheTenantSchemaBeforeTheStatusFlips() {
+        Tenant t = stub("acme", TenantStatus.SUSPENDED);
+        when(tenants.transitionStatus(eq(1L), any(), eq(TenantStatus.ACTIVE))).thenReturn(1);
+        assertThat(service.reactivate("acme", ADMIN).changed()).isTrue();
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(migrator, tenants);
+        order.verify(migrator).migrateTenant(t.getSchemaName());
+        order.verify(tenants).transitionStatus(eq(1L), any(), eq(TenantStatus.ACTIVE));
+    }
+
+    @Test
+    void reactivate_migrationFailure_keepsTheTenantSuspended_writesNoAudit_andIsA500Exception() {
+        Tenant t = stub("acme", TenantStatus.SUSPENDED);
+        org.mockito.Mockito.doThrow(new IllegalStateException("jdbc:postgresql://db.internal password=hunter2"))
+                .when(migrator).migrateTenant(t.getSchemaName());
+        assertThatThrownBy(() -> service.reactivate("acme", ADMIN))
+                .isInstanceOf(TenantMigrationFailedException.class)
+                .hasMessageNotContaining("hunter2").hasMessageNotContaining("jdbc");
+        verify(tenants, never()).transitionStatus(anyLong(), any(), any());
+        verify(audits, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void onlyAReactivationThatWillFlipMigrates_notSuspendNoOpsOrIllegalCalls() {
+        stub("acme", TenantStatus.ACTIVE);
+        when(tenants.transitionStatus(eq(1L), any(), eq(TenantStatus.SUSPENDED))).thenReturn(1);
+        service.suspend("acme", ADMIN);
+        service.reactivate("acme", ADMIN); // ACTIVE: idempotent no-op
+        stub("acme", TenantStatus.FAILED);
+        assertThatThrownBy(() -> service.reactivate("acme", ADMIN)).isInstanceOf(IllegalTenantTransitionException.class);
+        verifyNoInteractions(migrator);
     }
 
     @Test
@@ -590,7 +626,7 @@ class PlatformTenantServiceTest {
 
     @Test
     void perAdminActionThrottle_returns429Exception_andIsPerAdmin() {
-        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, tm, 2, 15, 60);
+        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60);
         stub("acme", TenantStatus.SUSPENDED);
         limited.suspend("acme", ADMIN);
         limited.suspend("acme", ADMIN);

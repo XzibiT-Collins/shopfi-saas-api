@@ -99,16 +99,20 @@ class WebhookProcessorImplTest {
     }
 
     @Test
-    void retriesAreBounded_andTheFailureIsSwallowedAfterTheLastAttempt() {
+    void retriesAreBounded_andTheLastFailureIsRaisedSoTheWebhookIsNotAcknowledged() {
         when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(deadlock());
-        processor.processWebhook(body("charge.failed", ""));
+        // EVT-01c: no longer swallowed; the webhook answers non-2xx and Paystack redelivers the event
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> processor.processWebhook(body("charge.failed", "")))
+                .isInstanceOf(WebhookProcessorImpl.WebhookNotAppliedException.class);
         verify(settlement, times(TransientRetry.ATTEMPTS)).applyFailure(any(), any(), any(), any());
     }
 
     @Test
     void nonTransientFailuresAreNotRetried() {
-        when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(new IllegalStateException("bug"));
-        processor.processWebhook(body("charge.failed", ""));
+        when(settlement.applyFailure(any(), any(), any(), any())).thenThrow(new IllegalStateException("bug ob@x.test"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> processor.processWebhook(body("charge.failed", "")))
+                .isInstanceOf(WebhookProcessorImpl.WebhookNotAppliedException.class)
+                .hasMessageNotContaining("ob@x.test").hasNoCause();
         verify(settlement, times(1)).applyFailure(any(), any(), any(), any());
     }
 
@@ -119,5 +123,22 @@ class WebhookProcessorImplTest {
                 .thenReturn(PaymentSettlementService.Outcome.COMPLETED);
         processor.processWebhook(body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\""));
         verify(settlement, times(2)).applySuccess(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aSettlementThatThrowsIsNotAcknowledged_successAndFailureEvents() {
+        when(settlement.applySuccess(any(), any(), any(), any(), any())).thenThrow(new IllegalStateException("outbox insert"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> processor.processWebhook(
+                        body("charge.success", ",\"amount\":1250,\"currency\":\"GHS\",\"status\":\"success\"")))
+                .isInstanceOf(WebhookProcessorImpl.WebhookNotAppliedException.class);
+    }
+
+    @Test
+    void theProcessorIsNotAsync_theAnswerWaitsForTheSettlement() throws Exception {
+        java.lang.reflect.Method m = WebhookProcessorImpl.class.getMethod("processWebhook", String.class);
+        org.assertj.core.api.Assertions.assertThat(org.springframework.core.annotation.AnnotatedElementUtils
+                .hasAnnotation(m, org.springframework.scheduling.annotation.Async.class)).isFalse();
+        org.assertj.core.api.Assertions.assertThat(org.springframework.core.annotation.AnnotatedElementUtils
+                .hasAnnotation(WebhookProcessorImpl.class, org.springframework.scheduling.annotation.Async.class)).isFalse();
     }
 }

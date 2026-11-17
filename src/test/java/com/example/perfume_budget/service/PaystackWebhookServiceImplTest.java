@@ -56,6 +56,14 @@ class PaystackWebhookServiceImplTest {
         verify(webhookProcessor, never()).processWebhook(anyString());
     }
 
+    @Test
+    void aWebhookThatWasNotAppliedIsNotAcknowledged() throws Exception {
+        // EVT-01c: the processor runs synchronously and throws when the settlement did not commit
+        doThrow(new IllegalStateException("not applied")).when(webhookProcessor).processWebhook(body);
+        ResponseEntity<String> response = webhookService.checkWebhookSignature(body, hmacSha512(body, secret));
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
+    }
+
     // Helper to generate signature for testing
     private String hmacSha512(String data, String secret) throws Exception {
         Mac sha512Hmac = Mac.getInstance("HmacSHA512");

@@ -105,7 +105,9 @@ class NotificationServiceTest {
                 .build();
 
         when(userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK))).thenReturn(List.of(adminOne, adminTwo));
-        when(notificationRepository.save(any(Notification.class))).thenReturn(savedNotification);
+        when(notificationRepository.insertPaymentSuccessOnce(eq("Payment received"), eq("Order #ORD-123 has been successfully paid."),
+                eq("ORD-123"), any())).thenReturn(List.of(10L));
+        when(notificationRepository.findById(10L)).thenReturn(java.util.Optional.of(savedNotification));
         when(notificationRecipientRepository.saveAll(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(adminSessionManager.getConnectedAdmins("acme")).thenReturn(Set.of());
 
@@ -147,7 +149,8 @@ class NotificationServiceTest {
                 .build();
 
         when(userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK))).thenReturn(List.of(adminOne, adminTwo));
-        when(notificationRepository.save(any(Notification.class))).thenReturn(savedNotification);
+        when(notificationRepository.insertPaymentSuccessOnce(any(), any(), eq("ORD-123"), any())).thenReturn(List.of(10L));
+        when(notificationRepository.findById(10L)).thenReturn(java.util.Optional.of(savedNotification));
         when(notificationRecipientRepository.saveAll(any()))
                 .thenReturn(List.of(recipientOne, recipientTwo))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -247,14 +250,19 @@ class NotificationServiceTest {
         verify(messagingTemplate, times(1)).convertAndSendToUser(eq("acme:admin2@example.com"), eq("/queue/notifications"), any());
     }
 
-    /** EVT-01b (L2): the outbox may run the payment notification again; an order that already has it gets no second. */
+    /**
+     * EVT-01b (L2): the outbox may run the payment notification again; an order that already has it gets no second.
+     * EVT-01c (O5): the insert itself decides (ON CONFLICT on the V15 unique index): no row back means it exists.
+     */
     @Test
     void notifyAdminsOfSuccessfulPayment_IsIdempotentPerOrder() {
-        when(notificationRepository.existsByTypeAndReferenceId("PAYMENT_SUCCESS", "ORD-123")).thenReturn(true);
+        when(userRepository.findAllByRolesIn(List.of(UserRole.ADMIN, UserRole.FRONT_DESK))).thenReturn(List.of(adminOne, adminTwo));
+        when(notificationRepository.insertPaymentSuccessOnce(any(), any(), eq("ORD-123"), any())).thenReturn(List.of());
 
         notificationService.notifyAdminsOfSuccessfulPayment(payment);
 
         verify(notificationRepository, never()).save(any(Notification.class));
+        verify(notificationRepository, never()).findById(any());
         verify(notificationRecipientRepository, never()).saveAll(any());
         verify(messagingTemplate, never()).convertAndSendToUser(any(), any(), any());
     }

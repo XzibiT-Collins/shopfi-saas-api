@@ -63,11 +63,11 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
             throw new PaymentException("Payment provider is currently unavailable, please try again later");
         } catch (ResourceAccessException e) {
             // network issues, timeouts
-            log.error("Could not reach Paystack: {}", e.getMessage());
+            log.error("Could not reach Paystack: {}", e.getClass().getName());
             throw new PaymentException("Could not reach payment provider, please check your connection and try again");
         } catch (RestClientException e) {
             // any other REST errors
-            log.error("Unexpected error communicating with Paystack: {}", e.getMessage());
+            log.error("Unexpected error communicating with Paystack: {}", e.getClass().getName());
             throw new PaymentException("An unexpected error occurred while processing your payment");
         }
         throw new PaymentException("Payment initialization failed due to an unexpected error");

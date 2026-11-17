@@ -51,7 +51,7 @@ public class StoreThemeExceptionHandler {
 
     @ExceptionHandler(BrandingStorageException.class)
     ResponseEntity<CustomApiResponse<Void>> storage(BrandingStorageException ex) {
-        log.error("Branding storage failed: {}", ex.getMessage());
+        log.error("Branding storage failed: {}", ex.getClass().getName());
         return reply(HttpStatus.BAD_GATEWAY, CustomApiResponse.error("Image storage is unavailable; theme unchanged"));
     }
 

@@ -57,7 +57,7 @@ public class OAuth2AuthenticationFailureHandler extends SimpleUrlAuthenticationF
                 .replaceQueryParam("error", ERROR_CODE)
                 .build().toUriString();
 
-        log.error("OAuth2 authentication failed for tenant {}: {}", slug, exception.getMessage());
+        log.error("OAuth2 authentication failed for tenant {}: {}", slug, exception.getClass().getSimpleName());
         getRedirectStrategy().sendRedirect(request, response, targetUrl);
     }
 }

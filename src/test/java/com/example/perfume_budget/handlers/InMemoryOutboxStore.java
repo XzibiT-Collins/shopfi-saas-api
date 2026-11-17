@@ -106,25 +106,40 @@ class InMemoryOutboxStore extends OutboxStore {
     }
 
     @Override
-    public synchronized void release(Collection<Long> released) {
-        rows.values().stream().filter(e -> released.contains(e.id)).forEach(e -> e.due = true);
+    public synchronized int release(Collection<Row> released) {
+        int n = 0;
+        for (Row r : released) {
+            for (Entry e : rows.values()) {
+                if (e.id == r.id() && e.status.equals("PENDING") && e.attempts == r.attempts()) {
+                    e.due = true;
+                    n++;
+                }
+            }
+        }
+        return n;
     }
 
     @Override
-    public synchronized void complete(long id) {
-        rows.values().stream().filter(e -> e.id == id).forEach(e -> e.status = "DONE");
-    }
-
-    @Override
-    public synchronized boolean fail(Row claimed, String error) {
+    public synchronized boolean complete(Row claimed) {
         for (Entry e : rows.values()) {
-            if (e.id == claimed.id()) {
-                e.lastError = error;
-                e.status = e.attempts >= MAX_ATTEMPTS ? "FAILED" : "PENDING";
-                return e.status.equals("FAILED");
+            if (e.id == claimed.id() && e.status.equals("PENDING") && e.attempts == claimed.attempts()) {
+                e.status = "DONE";
+                return true;
             }
         }
         return false;
+    }
+
+    @Override
+    public synchronized FailOutcome fail(Row claimed, String error, boolean retryable) {
+        for (Entry e : rows.values()) {
+            if (e.id == claimed.id() && e.status.equals("PENDING") && e.attempts == claimed.attempts()) {
+                e.lastError = error;
+                e.status = e.attempts >= MAX_ATTEMPTS || !retryable ? "FAILED" : "PENDING";
+                return e.status.equals("FAILED") ? FailOutcome.FAILED : FailOutcome.RETRY;
+            }
+        }
+        return FailOutcome.STALE;
     }
 
     @Override
