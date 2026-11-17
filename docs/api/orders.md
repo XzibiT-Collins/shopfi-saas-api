@@ -17,6 +17,7 @@ tenant is a 404 `ORDER_NOT_FOUND` exactly like a non-existent one (see [authoriz
     "orderId": 42,
     "orderNumber": "PB-20260101-7KQ3M8XW2D",
     "reference": "T123456789012",
+    "authorizationUrl": null,
     "subtotal": "GHS 200.00",
     "originalSubtotal": "GHS 200.00",
     "automaticDiscountAmount": "",
@@ -66,6 +67,7 @@ tenant is a 404 `ORDER_NOT_FOUND` exactly like a non-existent one (see [authoriz
 | `cancelSource` (new) | `CUSTOMER`, `ADMIN` or `EXPIRY`; `null` while not cancelled and for orders cancelled before ORD-01. |
 | `account` (new) | **ADMIN responses only** (detail `GET /order/{n}`, the PUT and the refund acknowledgement). Owner `id`, `fullName`, `email`. The key is absent for customers (their own order) and in list rows. |
 | `refundRequired` | Now correct in the PUT response too (it was always `false` there). |
+| `authorizationUrl` (new, PAY-03 rework) | The Paystack checkout URL, **only** on the owner's own detail `GET /order/{n}` (and cancel) as CUSTOMER while the order is open (payment `INITIATED`, now before `expiresAt`). `null` once paid, failed, cancelled or expired, and **always `null` in ADMIN responses** (detail, PUT, refund acknowledgement, return received). Not in list rows. Other customers / tenants: 404 as before. See [checkout.md](checkout.md) "Continue to payment". |
 | `reference` | Now present in the PUT response too. |
 
 `OrderListResponse` (`GET /order/all`, `GET /order/my-orders`) gains `orderedAt` and `version`; `orderDate` is deprecated the same way.

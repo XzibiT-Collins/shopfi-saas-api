@@ -12,11 +12,17 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 
-@Builder
+@Builder(toBuilder = true)
 public record OrderResponse(
         Long orderId,
         String orderNumber,
         String reference,             // Paystack reference of this order's payment (what /checkout/callback?reference= carries); null before initialisation
+        /**
+         * PAY-03 rework: the Paystack checkout URL of this order's payment, so the owner can continue to payment from the
+         * order page. Set ONLY on the owner's own detail ({@code GET /api/v1/order/{n}} as CUSTOMER) while the order is
+         * open (payment INITIATED and now before expiresAt); null otherwise and in every ADMIN response.
+         */
+        String authorizationUrl,
         String subtotal,              // net of automatic (product/shop) discount
         String originalSubtotal,      // gross, before automatic discount
         String automaticDiscountAmount, // product/shop discount baked into subtotal

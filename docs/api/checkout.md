@@ -80,15 +80,55 @@ that already created an order keeps the semantics above (replay / `422` / `409 I
   two payable references.
 * Different cart (any line, quantity, coupon or address differs), open order exists: `409` `OPEN_ORDER_EXISTS` with
   `data.orderNumber` and `data.expiresAt` of the open order. Nothing is created, reserved or cancelled and the key is
-  not used up. The storefront should offer "continue to payment" for that order (same cart again, or the order page)
-  or "cancel it" (`POST /api/v1/order/{orderNumber}/cancel`) and then re-send the checkout (the same key may be
-  re-sent). The old order is never cancelled automatically: the other tab may already be on the Paystack page, and
-  cancelling an order that is then paid leaves a paid-but-cancelled order (stock re-reserved or a refund).
+  not used up. The storefront offers "continue to payment" (see "Continue to payment" below) or "cancel it"
+  (`POST /api/v1/order/{orderNumber}/cancel`) and then re-sends the checkout (the same key may be re-sent). The old
+  order is never cancelled automatically: the other tab may already be on the Paystack page, and cancelling an order
+  that is then paid leaves a paid-but-cancelled order (stock re-reserved or a refund).
+* Same cart, but the open order cannot be resumed (its payment has no stored Paystack URL: a legacy or corrupt row):
+  also `409` `OPEN_ORDER_EXISTS` naming that order, with the description "You already have an unpaid order for this
+  cart that cannot be resumed; cancel it first." (it does NOT claim a different cart). No new Paystack transaction is
+  started for it (one order, one reference). Its order detail has `authorizationUrl: null`, so the only way on is
+  cancel, then re-send the checkout. Never parse `description`: the code and `data` are the same in both 409 cases.
 * A key that was answered with the open order of another key is not bound to that order: re-sending it returns the
   open order while it is open; once that order is closed the key behaves like a new key.
 * Concurrency: checkouts of one customer take the customer row lock first, so of two tabs racing with different keys
   the second one waits and then sees the first one's committed order: same cart -> that order, different cart ->
   `409 OPEN_ORDER_EXISTS`. A coupon redemption the waiting request reserved is given back.
+
+#### Continue to payment (PAY-03 rework)
+
+The owner's order detail `GET /api/v1/order/{orderNumber}` (role CUSTOMER, own orders only) carries
+`authorizationUrl`: the Paystack checkout URL of that order's payment, the same value checkout returned as
+`data.data.authorization_url`. It is set ONLY while the order is open (payment `INITIATED` and now before
+`expiresAt`) and is `null` for paid (`COMPLETED`), `FAILED`, `CANCELLED` and expired orders (also an expired order the
+cleanup job has not cancelled yet), and when the payment has no stored URL. It is never in list rows
+(`my-orders`, `/all`), always `null` in ADMIN responses (the merchant is not the payer), and another customer's or
+another tenant's order stays the usual 404 `ORDER_NOT_FOUND`. `reference` (already present) is the Paystack
+reference. The Paystack `access_code` is not exposed: the storefront uses the redirect flow (`authorization_url`), not
+the inline popup that needs the access code; it can be added if the inline flow is adopted.
+
+So "continue to payment" after a `409 OPEN_ORDER_EXISTS` is: `GET /api/v1/order/{data.orderNumber}` and, when
+`authorizationUrl` is non-null and `Date.now() < Date.parse(expiresAt)`, redirect to it (validate it against the
+Paystack origin, as after checkout). Re-sending the SAME cart as that order also returns the URL (`200`,
+`idempotentReplay: true`). When `authorizationUrl` is null, offer only "cancel it".
+
+#### Frontend notes (UI-04d)
+
+* **Treat the open-order marker as dead once `now >= expiresAt`**, even if the order still reads `INITIATED` (the
+  cleanup job cancels it up to `cleanup-interval-ms`, default 15 min, later). The server already treats it as not open:
+  it no longer blocks a checkout and its detail no longer carries `authorizationUrl`. Do not offer "continue to payment"
+  for it. **Pre-existing risk (not new in PAY-03):** the old Paystack URL itself is not revoked at `expiresAt`; a tab
+  that already holds it can still pay until the expiry job cancels the order, and even after that a late payment is
+  accepted (stock re-reserved, or `refundRequired` when the stock is gone; see "Webhook behaviour"). Never re-open an
+  old URL after `expiresAt`.
+* **Changing the default delivery address counts as a different cart.** A checkout without `deliveryDetailId` uses the
+  current default address's id, so after the customer switches the default, the same lines and coupon are a `409
+  OPEN_ORDER_EXISTS` against the order created for the old address. Offer pay or cancel as for any other change.
+* **A product in the cart deactivated or delisted since the order was created:** checkout answers `400` with
+  `data.code` `PRODUCT_UNAVAILABLE` (description unchanged, "One or more products in your cart are no longer available
+  for ecommerce purchase.") before any open-order check. If the customer has an open order (from the marker), offer
+  "cancel it" (`POST /api/v1/order/{orderNumber}/cancel`) and ask them to remove the product from the cart. The open
+  order itself can still be paid via its `authorizationUrl` while it is open.
 
 `callback_url` is sent to Paystack automatically: the tenant storefront origin (verified custom domain, else
 `<slug>.<base-domain>`) + `/checkout/callback`; Paystack redirects the browser to
@@ -180,6 +220,8 @@ reference, null until initialised) so an order is found by the callback referenc
 customer paid but the order had already been cancelled/expired and could not be re-reserved, so the **merchant must
 refund**; the admin list `GET /api/v1/order/all` and the detail show it for that purpose. `GET /api/v1/order/{orderNumber}`
 returns 404 with `data.code` `ORDER_NOT_FOUND` for unknown, other customers' and other tenants' orders (identical body).
+`OrderResponse` (detail and cancel) also has `authorizationUrl` (PAY-03 rework): the owner's Paystack URL while the
+order is open, else `null` (see "Continue to payment"); list rows do not have it.
 `orderDate` is a zone-less server-local timestamp (legacy field); use `expiresAt` for anything time-critical.
 `my-orders` and `/all` sorts only by `createdAt`, `orderNumber`, `status`, `deliveryStatus`, `id`
 (`?sort=createdAt,desc`); any other sort property is 400 `INVALID_SORT`.
@@ -216,6 +258,7 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 400 | `INVALID_REFERENCE` | malformed `reference` |
 | 400 | `IDEMPOTENCY_KEY_INVALID` | bad `Idempotency-Key` |
 | 400 | `INVALID_SORT` | unsupported sort property |
+| 400 | `PRODUCT_UNAVAILABLE` | (PAY-03 rework, additive: the same 400 and `description` as before, "One or more products in your cart are no longer available for ecommerce purchase.") a cart product is deactivated or not listed for e-commerce. Nothing is created or reserved; an open order is not touched (offer cancel) |
 | 400 | `COUPON_PER_USER_LIMIT` | (API-06) checkout or `GET /tax?couponCode=`: the customer already holds `perUserUsageLimit` live redemptions of this coupon (orders that are not cancelled / failed / expired). `description` "You have already used this coupon the maximum number of times". The cart preview reports the same code as `coupon.reason`. Nothing is reserved |
 | 400 | none | (coupon create `POST /api/v1/coupon/add-coupon` and update `PUT /api/v1/coupon/{id}`) `usageLimit` or `perUserUsageLimit` is not a JSON whole number. `description` is `"<field> must be a whole number"` for a decimal (`1.5`, `1E999999999`), `"<field> must be a whole number (a JSON number, not text)"` for a string (`"7"`), `"<field> is out of range"` for an integer outside 32-bit range (`99999999999`); `data` is null and the submitted value is never echoed. Nothing is stored |
 | 400 | none | (coupon create / update) a field rule is broken: `description` `"Validation failed"`, `data` maps field to message, e.g. `{"usageLimit": "Usage limit cannot exceed 1000000"}`, `{"perUserUsageLimit": "Per-user usage limit cannot exceed 1000000"}`, `{"perUserLimitWithinTotal": "Per-user usage limit cannot exceed the total usage limit"}`. Limits in "Coupon limits" below |
@@ -224,13 +267,14 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 404 | `DELIVERY_DETAIL_NOT_FOUND` | address not the caller's |
 | 409 | `ORDER_NOT_CANCELLABLE` | order already paid/failed |
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
-| 409 | `OPEN_ORDER_EXISTS` | (PAY-03) the customer already has an open (unpaid, not expired) order for a different cart / coupon / address; `data.orderNumber`, `data.expiresAt` (ISO-8601 UTC). Nothing was created or reserved; pay or cancel that order, then retry |
+| 409 | `OPEN_ORDER_EXISTS` | (PAY-03) the customer already has an open (unpaid, not expired) order for a different cart / coupon / address, or for this cart but it cannot be resumed (no stored Paystack URL); `data.orderNumber`, `data.expiresAt` (ISO-8601 UTC). Nothing was created or reserved; pay (order detail `authorizationUrl`) or cancel that order, then retry |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
 | 429 | none | too many coupon previews (`Retry-After`) |
 | 503 | `COUPON_BUSY` | the coupon row stayed locked past the wait limit (5 s) while checkout reserved a redemption or a cancel (owner / admin) / verify poll gave one back or took it again; nothing changed, retry. `Retry-After: 1` (rework 3). Webhooks never answer 503 (see above) |
 | 503 | `TRY_AGAIN` | (API-04 rework 2) a concurrency conflict that survived 3 in-process attempts: deadlock victim (40P01), serialization failure (40001) or, on cancel / admin status / verify, an optimistic-lock conflict with a webhook or cancel touching the same product. Rolled back, nothing changed; `Retry-After: 1`. Never a 500. API-05: also any optimistic-lock failure (`ObjectOptimisticLockingFailureException`) on any endpoint, including a version conflict while a stock writer takes the product locks (rework: that one used to surface as JPA's own exception, `409`); checkout itself no longer produces one (see "Concurrent checkouts" below) |
 
-Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code.
+Other 400s (empty cart, invalid coupon, no address, out of stock) keep their existing `description` text and have no code
+(an unavailable product now has `PRODUCT_UNAVAILABLE`, above).
 "Invalid coupon" stays uncoded on purpose (unknown, inactive, not started, expired and used up are not
 told apart by a code); only the per-user limit has one.
 Out of stock is `400` with `description` `"Insufficient stock for: <product name>"`.

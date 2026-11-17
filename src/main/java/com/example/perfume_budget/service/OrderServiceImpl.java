@@ -368,8 +368,12 @@ public class OrderServiceImpl implements OrderService {
         Map<String, Object> data = new java.util.LinkedHashMap<>();
         data.put("orderNumber", blocking.getOrderNumber());
         data.put("expiresAt", String.valueOf(expiresAt(blocking)));
-        throw new ApiCodeException(HttpStatus.CONFLICT, "OPEN_ORDER_EXISTS",
-                "You already have an unpaid order for a different cart; pay or cancel it first.", data);
+        // The named order is for this very cart but cannot be replayed (its payment has no Paystack URL: legacy or
+        // corrupt row). Same code, but the message must not claim a different cart: the only way on is cancel.
+        String message = fingerprint.equals(blocking.getRequestFingerprint())
+                ? "You already have an unpaid order for this cart that cannot be resumed; cancel it first."
+                : "You already have an unpaid order for a different cart; pay or cancel it first.";
+        throw new ApiCodeException(HttpStatus.CONFLICT, "OPEN_ORDER_EXISTS", message, data);
     }
 
     /**
@@ -436,9 +440,28 @@ public class OrderServiceImpl implements OrderService {
         Order order = getOrder(orderNumber);
         Payment payment = referencesFor(List.of(order)).get(order.getId());
         // Account identity (name/email/id of the owner) is for an ADMIN only; customers only ever see their own orders.
-        return authUserUtil.getCurrentUser().getRoles() == UserRole.ADMIN
+        User caller = authUserUtil.getCurrentUser();
+        return caller.getRoles() == UserRole.ADMIN
                 ? OrderMapper.toAdminOrderResponse(order, payment)
-                : OrderMapper.toOrderResponse(order, payment);
+                : OrderMapper.toOwnerOrderResponse(order, payment, openAuthorizationUrl(order, payment, caller));
+    }
+
+    /**
+     * PAY-03 rework: the Paystack URL the owner can continue to pay with, or null. Only for the order's own customer
+     * and only while the order is open, the same definition checkout uses (payment INITIATED and created after
+     * now - TTL, i.e. now before {@code expiresAt}): never for a paid, failed, cancelled or expired order (an expired
+     * one the cleanup job has not cancelled yet included), and never to an ADMIN or another customer.
+     */
+    private String openAuthorizationUrl(Order order, Payment payment, User caller) {
+        if (payment == null || order.getUser() == null || caller == null
+                || !java.util.Objects.equals(order.getUser().getId(), caller.getId())) {
+            return null;
+        }
+        if (order.getStatus() != PaymentStatus.INITIATED || order.getCreatedAt() == null
+                || !order.getCreatedAt().isAfter(LocalDateTime.now().minusHours(expiryHours))) {
+            return null;
+        }
+        return payment.getAuthorizationUrl();
     }
 
     @Override
@@ -708,7 +731,8 @@ public class OrderServiceImpl implements OrderService {
                         || !Boolean.TRUE.equals(product.getIsEnlisted()));
 
         if (hasUnavailableProduct) {
-            throw new BadRequestException(PRODUCT_UNAVAILABLE);
+            // same 400 and description as before; the code is additive (PAY-03 rework: the storefront offers cancel)
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "PRODUCT_UNAVAILABLE", PRODUCT_UNAVAILABLE);
         }
     }
 }

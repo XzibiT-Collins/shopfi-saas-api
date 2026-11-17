@@ -517,7 +517,11 @@ class OrderServiceImplTest {
         when(deliveryDetailRepository.findByUserAndIsDefaultTrue(testUser)).thenReturn(Optional.of(testDeliveryDetail));
         when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
 
-        assertThrows(BadRequestException.class, () -> orderService.checkout(null, null, null));
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(
+                com.example.perfume_budget.exception.ApiCodeException.class, () -> orderService.checkout(null, null, null));
+        assertEquals("PRODUCT_UNAVAILABLE", e.getCode());
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, e.getStatus());
+        assertEquals("One or more products in your cart are no longer available for ecommerce purchase.", e.getMessage());
         verifyNoInteractions(orderRepository, paymentRepository, gatewayAPIService);
     }
 
