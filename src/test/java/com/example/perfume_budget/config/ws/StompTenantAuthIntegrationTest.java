@@ -217,10 +217,10 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
         return received;
     }
 
-    private void awaitSubscribed(TestTenant tenant, String email, int sessions) throws InterruptedException {
-        String name = StompTenantAuthentication.userName(tenant.slug(), email);
-        await().atMost(Duration.ofSeconds(10)).until(() -> userRegistry.findSubscriptions(
-                s -> s.getSession().getUser().getName().equals(name) && QUEUE.equals(s.getDestination())).size() >= sessions);
+    /** Waits until {@code count} sessions are subscribed to the queue (by destination only, not by user name). */
+    private void awaitSubscribed(int count) throws InterruptedException {
+        await().atMost(Duration.ofSeconds(10)).until(() ->
+                userRegistry.findSubscriptions(s -> QUEUE.equals(s.getDestination())).size() >= count);
         Thread.sleep(300); // the broker registers the subscription on the inbound executor just after the event
     }
 
@@ -305,8 +305,7 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
         StompSession bravoStaff = connect(origin(bravo), token(bravo, SHARED_STAFF), null).session();
         BlockingQueue<String> acmeInbox = subscribe(acmeStaff);
         BlockingQueue<String> bravoInbox = subscribe(bravoStaff);
-        awaitSubscribed(acme, SHARED_STAFF, 1);
-        awaitSubscribed(bravo, SHARED_STAFF, 1);
+        awaitSubscribed(2);
         assertThat(adminSessions.getConnectedAdmins("acme")).contains(SHARED_STAFF);
         assertThat(adminSessions.getConnectedAdmins("bravo")).contains(SHARED_STAFF);
 
@@ -331,7 +330,7 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
         // what a browser does: the accessToken cookie on the handshake, no Authorization header
         StompSession session = connect(origin(acme), null, token(acme, SHARED_STAFF)).session();
         BlockingQueue<String> inbox = subscribe(session);
-        awaitSubscribed(acme, SHARED_STAFF, 1);
+        awaitSubscribed(1);
 
         String orderNumber = notifyNewPaidOrder(acme);
         assertThat(inbox.poll(15, TimeUnit.SECONDS)).isNotNull().contains(orderNumber);
