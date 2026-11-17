@@ -20,6 +20,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -32,6 +33,7 @@ class OrderLifecycleServiceTest {
     @Mock com.example.perfume_budget.repository.OrderAuditEventRepository audits;
     @Mock org.springframework.context.ApplicationEventPublisher events;
     @Mock CouponRedemptionService couponRedemptionService;
+    @Mock BookkeepingService bookkeeping;
     @InjectMocks OrderLifecycleService service;
 
     private final User owner = User.builder().id(1L).build();
@@ -260,5 +262,131 @@ class OrderLifecycleServiceTest {
             assertEquals("boss@shop.test", order.getCancelledBy());
             assertNotNull(order.getCancelledAt());
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------------ ORD-02
+
+    private void paid(OrderProcessingStatus from) {
+        order.setStatus(PaymentStatus.COMPLETED);
+        order.setDeliveryStatus(from);
+        payment.setStatus(PaymentStatus.COMPLETED);
+    }
+
+    @Test
+    void paidCancelBeforeDispatchRestocksThenReversesRevenueAndGoodsInLockOrder() {
+        for (OrderProcessingStatus from : new OrderProcessingStatus[]{OrderProcessingStatus.PENDING, OrderProcessingStatus.PACKING}) {
+            clearInvocations(inventory, bookkeeping);
+            paid(from);
+            admin(OrderProcessingStatus.CANCELLED, null);
+            org.mockito.InOrder io = inOrder(inventory, bookkeeping);
+            io.verify(inventory).restockConsumedOrderInventory(order);
+            io.verify(bookkeeping).recordSaleReversal(order, true, true, "boss@shop.test");
+            verifyNoMoreInteractions(bookkeeping);
+        }
+    }
+
+    @Test
+    void paidCancelOutForDeliveryReversesRevenueButNotGoods() {
+        paid(OrderProcessingStatus.OUT_FOR_DELIVERY);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        verify(bookkeeping).recordSaleReversal(order, true, false, "boss@shop.test");
+        verify(inventory, never()).restockConsumedOrderInventory(any());
+    }
+
+    @Test
+    void unpaidOrFailedCancelNeverTouchesTheBooks() {
+        admin(OrderProcessingStatus.CANCELLED, null);
+        order.setStatus(PaymentStatus.FAILED);
+        order.setDeliveryStatus(OrderProcessingStatus.PENDING);
+        payment.setStatus(PaymentStatus.FAILED);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        verifyNoInteractions(bookkeeping);
+    }
+
+    @Test
+    void repeatedPaidCancelReversesOnce() {
+        paid(OrderProcessingStatus.PACKING);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        verify(bookkeeping, times(1)).recordSaleReversal(any(), anyBoolean(), anyBoolean(), any());
+        verify(inventory, times(1)).restockConsumedOrderInventory(any());
+    }
+
+    @Test
+    void x20_failedPaymentCancelAuditCarriesAnOutstandingRefund() {
+        // PAY-01 late payment on a FAILED order without stock: payment COMPLETED + refund flagged, order still FAILED
+        order.setStatus(PaymentStatus.FAILED);
+        payment.setStatus(PaymentStatus.COMPLETED);
+        payment.setRefundRequired(true);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        verify(audits).save(argThat(e -> e.getEventType() == OrderAuditEventType.CANCELLED && e.isRefundRequired()));
+        assertTrue(payment.isRefundRequired());
+        verifyNoInteractions(bookkeeping);
+    }
+
+    @Test
+    void x20_failedPaymentCancelWithoutARefundAuditsFalse() {
+        order.setStatus(PaymentStatus.FAILED);
+        payment.setStatus(PaymentStatus.FAILED);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        verify(audits).save(argThat(e -> e.getEventType() == OrderAuditEventType.CANCELLED && !e.isRefundRequired()));
+    }
+
+    @Test
+    void x20_aStatusChangeIsNeverAuditedAsARefund() {
+        paid(OrderProcessingStatus.PENDING);
+        payment.setRefundRequired(true);
+        admin(OrderProcessingStatus.PACKING, null);
+        verify(audits).save(argThat(e -> e.getEventType() == OrderAuditEventType.STATUS_CHANGED && !e.isRefundRequired()));
+    }
+
+    @Test
+    void acknowledgeSettlesTheRefundInTheBooksOnce() {
+        payment.setRefundRequired(true);
+        service.acknowledgeRefund("ORD-1", "boss@shop.test");
+        assertThrows(ApiCodeException.class, () -> service.acknowledgeRefund("ORD-1", "boss@shop.test"));
+        verify(bookkeeping, times(1)).recordRefundPaid(order, "boss@shop.test");
+    }
+
+    @Test
+    void returnReceivedRestocksReversesGoodsAuditsAndMovesTheVersion() {
+        paid(OrderProcessingStatus.CANCELLED);
+        payment.setRefundRequired(true);
+        when(inventory.hasConsumedOrderInventory("ORD-1")).thenReturn(true);
+        service.receiveReturn(" ord-1 ", "boss@shop.test");
+        org.mockito.InOrder io = inOrder(inventory, bookkeeping, orderRepository);
+        io.verify(inventory).restockConsumedOrderInventory(order);
+        io.verify(bookkeeping).recordSaleReversal(order, false, true, "boss@shop.test");
+        io.verify(orderRepository).saveAndFlush(order);
+        assertNotNull(order.getUpdatedAt());
+        verify(audits).save(argThat(e -> e.getEventType() == OrderAuditEventType.RETURN_RECEIVED && e.isRefundRequired()
+                && "boss@shop.test".equals(e.getActorEmail()) && e.getOrderId() == 10L));
+    }
+
+    @Test
+    void returnReceivedTwiceIsNothingToRestock() {
+        paid(OrderProcessingStatus.CANCELLED);
+        when(inventory.hasConsumedOrderInventory("ORD-1")).thenReturn(false);
+        ApiCodeException e = assertThrows(ApiCodeException.class, () -> service.receiveReturn("ORD-1", "boss@shop.test"));
+        assertEquals("NOTHING_TO_RESTOCK", e.getCode());
+        assertEquals(409, e.getStatus().value());
+        verify(inventory, never()).restockConsumedOrderInventory(any());
+        verifyNoInteractions(bookkeeping, audits);
+    }
+
+    @Test
+    void returnReceivedOnlyForPaidCancelledOrders() {
+        // paid but not cancelled
+        paid(OrderProcessingStatus.OUT_FOR_DELIVERY);
+        assertEquals("RETURN_NOT_APPLICABLE", assertThrows(ApiCodeException.class,
+                () -> service.receiveReturn("ORD-1", "boss@shop.test")).getCode());
+        // cancelled but never paid
+        order.setStatus(PaymentStatus.CANCELLED);
+        order.setDeliveryStatus(OrderProcessingStatus.CANCELLED);
+        ApiCodeException e = assertThrows(ApiCodeException.class, () -> service.receiveReturn("ORD-1", "boss@shop.test"));
+        assertEquals("RETURN_NOT_APPLICABLE", e.getCode());
+        assertEquals(409, e.getStatus().value());
+        verify(inventory, never()).restockConsumedOrderInventory(any());
+        verifyNoInteractions(bookkeeping, audits);
     }
 }

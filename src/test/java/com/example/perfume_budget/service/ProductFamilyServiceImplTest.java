@@ -68,7 +68,7 @@ class ProductFamilyServiceImplTest {
 
     @Test
     void getAllFamilies_ReturnsMappedSummaries() {
-        when(familyRepository.findAll()).thenReturn(List.of(family));
+        when(familyRepository.findAllWithBaseUnit()).thenReturn(List.of(family));
 
         List<ProductFamilySummaryResponse> result = productFamilyService.getAllFamilies();
 
@@ -80,7 +80,7 @@ class ProductFamilyServiceImplTest {
     @Test
     void getAvailableUoms_ExcludesTakenUoms() {
         Product takenVariant = Product.builder().unitOfMeasure(boxUom).build();
-        when(familyRepository.findById(100L)).thenReturn(Optional.of(family));
+        when(familyRepository.findWithBaseUnitById(100L)).thenReturn(Optional.of(family));
         when(productRepository.findByFamily(family)).thenReturn(List.of(family.getBaseUnit(), takenVariant));
         when(unitOfMeasureRepository.findAll()).thenReturn(List.of(eachUom, boxUom, packUom));
 
@@ -93,7 +93,7 @@ class ProductFamilyServiceImplTest {
 
     @Test
     void getAvailableUoms_WhenFamilyMissing_Throws() {
-        when(familyRepository.findById(100L)).thenReturn(Optional.empty());
+        when(familyRepository.findWithBaseUnitById(100L)).thenReturn(Optional.empty());
 
         assertThrows(ResourceNotFoundException.class, () -> productFamilyService.getAvailableUoms(100L));
     }

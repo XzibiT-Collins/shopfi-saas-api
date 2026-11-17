@@ -40,7 +40,7 @@ public class CartServiceImpl implements CartService {
     @Transactional
     @Override
     public CartResponse getCart() {
-        Cart myCart = cartUtil.getCurrentUserCart();
+        Cart myCart = cartUtil.getCurrentUserCartWithItems();
         return CartMapper.toCartResponse(myCart, effectivePriceService);
     }
 
@@ -71,6 +71,8 @@ public class CartServiceImpl implements CartService {
         if(!failedItems.isEmpty()){
             throw new PartialSuccessException("Some items could not be added to cart", failedItems);
         }
-        return CartMapper.toCartResponse(cartUtil.getCurrentUserCart(), effectivePriceService);
+        // CAT-02: no transaction here on purpose (each item above commits or fails on its own), so the cart is re-read
+        // with its items and products in one query: mapping it no longer walks lazy proxies after the session closed
+        return CartMapper.toCartResponse(cartUtil.getCurrentUserCartWithItems(), effectivePriceService);
     }
 }

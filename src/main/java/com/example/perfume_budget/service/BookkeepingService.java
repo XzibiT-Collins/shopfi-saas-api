@@ -7,7 +7,9 @@ import com.example.perfume_budget.enums.EntryType;
 import com.example.perfume_budget.enums.JournalEntryType;
 import com.example.perfume_budget.enums.WalkInPaymentMethod;
 import com.example.perfume_budget.exception.AccountingException;
+import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.exception.BadRequestException;
+import com.example.perfume_budget.exception.NegativeBalanceException;
 import com.example.perfume_budget.model.*;
 import com.example.perfume_budget.repository.JournalEntryRepository;
 import com.example.perfume_budget.repository.LedgerAccountRepository;
@@ -16,13 +18,18 @@ import com.example.perfume_budget.utils.AuthUserUtil;
 import com.example.perfume_budget.utils.JournalEntryNumberGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 @Slf4j
 @Service
@@ -98,6 +105,140 @@ public class BookkeepingService {
         updateAccountBalances(lines, false);
 
         log.info("Journal entry recorded for order: {}", order.getOrderNumber());
+    }
+
+    /**
+     * ORD-02: reverses the order's posted SALE entry after a paid merchant cancel, as one SALE_REVERSAL entry dated now
+     * (closed periods stay untouched). The payment stays COMPLETED until the shop refunds by hand, so the cash line is
+     * NOT reversed into cash: it becomes a REFUND_PAYABLE credit (the shop owes the customer), settled by
+     * {@link #recordRefundPaid}. The revenue part (revenue, tax, discounts, cash -> refund payable) and the
+     * returned-goods part (COGS / inventory) are independent and each is posted at most once per order, so a repeated
+     * call, a later "return received" or a retried transaction never reverses twice. Mirrors the SALE lines exactly
+     * (same amounts), so the books net to zero for the order. Nothing is posted when no SALE entry exists (e.g. a
+     * payment that arrived after the order was closed is never booked as a sale).
+     *
+     * <p>The caller holds the order row lock; the ledger account rows are locked last, in ascending id order, by
+     * {@link #updateAccountBalances}.
+     *
+     * @param revenuePart reverse revenue, tax, discounts and move the cash into refunds payable
+     * @param goodsPart   reverse COGS / inventory (only when the goods are back on the shelf)
+     * @return true when an entry was posted
+     */
+    @Transactional
+    public boolean recordSaleReversal(Order order, boolean revenuePart, boolean goodsPart, String recordedBy) {
+        String orderNumber = order.getOrderNumber();
+        List<JournalEntry> sales = journalEntryRepository.findByReferenceTypeAndReferenceIdAndTypeOrderByIdAsc(
+                "ORDER", orderNumber, JournalEntryType.SALE);
+        if (sales.isEmpty()) {
+            log.info("No sale entry for order {}: nothing to reverse", orderNumber);
+            return false;
+        }
+        boolean doRevenue = revenuePart && journalEntryRepository.countOrderLines(
+                orderNumber, JournalEntryType.SALE_REVERSAL, AccountCategory.SALES_REVENUE) == 0;
+        boolean doGoods = goodsPart && journalEntryRepository.countOrderLines(
+                orderNumber, JournalEntryType.SALE_REVERSAL, AccountCategory.COGS) == 0;
+        if (!doRevenue && !doGoods) {
+            return false;
+        }
+        LedgerAccount refundPayable = getAccount(AccountCategory.REFUND_PAYABLE, false);
+
+        JournalEntry entry = JournalEntry.builder()
+                .entryNumber(entryNumberGenerator.generate())
+                .description("Sale reversed for cancelled order: " + orderNumber)
+                .type(JournalEntryType.SALE_REVERSAL)
+                .referenceType("ORDER")
+                .referenceId(orderNumber)
+                .isManual(false)
+                .recordedBy(recordedBy == null ? "System" : recordedBy)
+                .transactionDate(LocalDateTime.now())
+                .build();
+
+        List<JournalEntryLine> lines = new ArrayList<>();
+        for (JournalEntry sale : sales) {
+            for (JournalEntryLine line : sale.getLines()) {
+                AccountCategory category = line.getAccount().getCategory();
+                boolean goodsLine = category == AccountCategory.COGS || category == AccountCategory.INVENTORY;
+                if (goodsLine ? !doGoods : !doRevenue) {
+                    continue;
+                }
+                EntryType opposite = line.getEntryType() == EntryType.DEBIT ? EntryType.CREDIT : EntryType.DEBIT;
+                boolean cashReceived = (category == AccountCategory.CASH || category == AccountCategory.MOBILE_MONEY)
+                        && line.getEntryType() == EntryType.DEBIT;
+                if (cashReceived) {
+                    lines.add(buildLines(entry, refundPayable, EntryType.CREDIT, line.getAmount(),
+                            "Refund owed to the customer for order: " + orderNumber));
+                } else {
+                    lines.add(buildLines(entry, getAccount(category, false), opposite, line.getAmount(),
+                            "Reversal: " + line.getDescription()));
+                }
+            }
+        }
+        if (lines.isEmpty()) {
+            return false;
+        }
+        entry.setLines(lines);
+        validateEntry(lines, false);
+        journalEntryRepository.save(entry);
+        updateAccountBalances(lines, false);
+        log.info("Sale reversal recorded for order {} (revenue: {}, goods: {})", orderNumber, doRevenue, doGoods);
+        return true;
+    }
+
+    /**
+     * ORD-02: the shop confirmed it refunded the customer by hand. Settles what {@link #recordSaleReversal} put into
+     * REFUND_PAYABLE for this order (debit refunds payable, credit cash), once: the amount is what is still owed, so a
+     * repeat posts nothing. Nothing is posted when no reversal was booked. 409 INSUFFICIENT_CASH (nothing posted, the
+     * transaction rolls back) when Cash and Bank would go negative.
+     *
+     * @return true when an entry was posted
+     */
+    @Transactional
+    public boolean recordRefundPaid(Order order, String recordedBy) {
+        String orderNumber = order.getOrderNumber();
+        BigDecimal owed = journalEntryRepository.sumOrderLines(orderNumber, JournalEntryType.SALE_REVERSAL,
+                        AccountCategory.REFUND_PAYABLE, EntryType.CREDIT)
+                .subtract(journalEntryRepository.sumOrderLines(orderNumber, JournalEntryType.REFUND,
+                        AccountCategory.REFUND_PAYABLE, EntryType.DEBIT));
+        if (owed.compareTo(BigDecimal.ZERO) <= 0) {
+            return false;
+        }
+        LedgerAccount cash = getAccount(AccountCategory.CASH, false);
+        LedgerAccount refundPayable = getAccount(AccountCategory.REFUND_PAYABLE, false);
+        JournalEntry entry = JournalEntry.builder()
+                .entryNumber(entryNumberGenerator.generate())
+                .description("Refund paid for cancelled order: " + orderNumber)
+                .type(JournalEntryType.REFUND)
+                .referenceType("ORDER")
+                .referenceId(orderNumber)
+                .isManual(false)
+                .recordedBy(recordedBy == null ? "System" : recordedBy)
+                .transactionDate(LocalDateTime.now())
+                .build();
+        List<JournalEntryLine> lines = new ArrayList<>();
+        lines.add(buildLines(entry, refundPayable, EntryType.DEBIT, owed, "Refund owed settled for order: " + orderNumber));
+        lines.add(buildLines(entry, cash, EntryType.CREDIT, owed, "Refund paid to the customer for order: " + orderNumber));
+        entry.setLines(lines);
+        validateEntry(lines, false);
+        journalEntryRepository.save(entry);
+        try {
+            updateAccountBalances(lines, false);
+        } catch (NegativeBalanceException e) {
+            if (e.getCategory() != AccountCategory.CASH) {
+                throw e;
+            }
+            // ORD-02 rework (F2): the books show too little cash to pay the refund out. Coded 409; the transaction
+            // rolls back, so the refund stays required and nothing is posted.
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("orderNumber", orderNumber);
+            data.put("currentBalance", e.getBalanceBefore().toPlainString());
+            data.put("attemptedAmount", e.getAttemptedDeduction().toPlainString());
+            throw new ApiCodeException(HttpStatus.CONFLICT, "INSUFFICIENT_CASH",
+                    "Cash and Bank is too low to record this refund. Current balance: "
+                            + e.getBalanceBefore().toPlainString() + ", refund: " + e.getAttemptedDeduction().toPlainString(),
+                    data);
+        }
+        log.info("Refund payment recorded for order {}", orderNumber);
+        return true;
     }
 
     @Transactional
@@ -394,50 +535,52 @@ public class BookkeepingService {
         log.info("Inventory revaluation recorded - {} by GHS {}", isIncrease ? "increased" : "decreased", absoluteVariance);
     }
 
+    /**
+     * ORD-02 rework (F1): applies the entry to the stored balances atomically. The lines are netted per account and each
+     * account gets ONE {@code UPDATE ledger_accounts SET balance = balance + :delta ... RETURNING balance}, in ascending
+     * account id order. No read-modify-write in memory, so concurrent postings (paid cancels, refund acks, success
+     * webhooks, walk-in sales, ...) never lose an update; the fixed order means two postings always take their ledger
+     * row locks in the same sequence and cannot deadlock on each other. The locks are held to commit and are the last
+     * locks a posting transaction takes (order row, products, location ledger, then ledger accounts).
+     *
+     * <p>The negative-balance guard checks the balance the UPDATE returned, which includes every committed posting,
+     * so it is exact under concurrency; a rejected posting rolls back with its transaction.
+     */
     private void updateAccountBalances(List<JournalEntryLine> lines, boolean isManual) {
-        lines.forEach(line -> {
-            LedgerAccount account = ledgerAccountRepository.findById(line.getAccount().getId())
-                    .orElseThrow(() -> isManual ? new BadRequestException(line.getAccount().getCode() + " Account not found") : new AccountingException("Account not found for code: " + line.getAccount().getCode()));
-
-            // Assets and Expenses have normal DEBIT balances
-            // Liabilities, Equity and Revenue have normal CREDIT balances
+        Map<Long, BigDecimal> deltas = new TreeMap<>();
+        Map<Long, LedgerAccount> accounts = new HashMap<>();
+        for (JournalEntryLine line : lines) {
+            LedgerAccount account = line.getAccount();
+            // Assets and Expenses have normal DEBIT balances; Liabilities, Equity and Revenue normal CREDIT balances
             boolean isDebitNormal = account.getType() == AccountType.ASSET
                     || account.getType() == AccountType.EXPENSE;
-
-            if (isDebitNormal) {
-                // for debit-normal accounts: debit increases, credit decreases
-                if (line.getEntryType() == EntryType.DEBIT) {
-                    account.setBalance(account.getBalance().add(line.getAmount()));
-                } else {
-                    account.setBalance(account.getBalance().subtract(line.getAmount()));
-                }
-            } else {
-                // for credit-normal accounts: credit increases, debit decreases
-                if (line.getEntryType() == EntryType.CREDIT) {
-                    account.setBalance(account.getBalance().add(line.getAmount()));
-                } else {
-                    account.setBalance(account.getBalance().subtract(line.getAmount()));
-                }
+            boolean increases = isDebitNormal == (line.getEntryType() == EntryType.DEBIT);
+            deltas.merge(account.getId(), increases ? line.getAmount() : line.getAmount().negate(), BigDecimal::add);
+            accounts.putIfAbsent(account.getId(), account);
+        }
+        String reference = lines.isEmpty() || lines.get(0).getJournalEntry() == null
+                ? null : lines.get(0).getJournalEntry().getReferenceId();
+        deltas.forEach((accountId, delta) -> {
+            LedgerAccount account = accounts.get(accountId);
+            if (delta.signum() == 0) {
+                return;
             }
-
-            if(account.getBalance().compareTo(BigDecimal.ZERO) < 0){
+            BigDecimal balance = ledgerAccountRepository.applyBalanceDelta(accountId, delta);
+            if (balance == null) {
+                throw isManual ? new BadRequestException(account.getCode() + " Account not found")
+                        : new AccountingException("Account not found for code: " + account.getCode());
+            }
+            if (balance.compareTo(BigDecimal.ZERO) < 0) {
                 boolean isCriticalAccount = account.getCategory() == AccountCategory.CASH
                         || account.getCategory() == AccountCategory.MOBILE_MONEY
                         || account.getCategory() == AccountCategory.INVENTORY;
-                if(isManual || isCriticalAccount){
-                    throw new BadRequestException(
-                            account.getName() + " cannot go negative. " +
-                                    "Current balance: " + account.getBalance() +
-                                    ", attempted deduction: " + line.getAmount()
-                    );
-                }else{
-                    log.warn("LEDGER ALERT: Account {} ({}) has gone negative: {}. " +
-                                    "Reference: {}",
-                            account.getCode(), account.getName(),
-                            account.getBalance(), line.getJournalEntry().getReferenceId());
+                if (isManual || isCriticalAccount) {
+                    throw new NegativeBalanceException(account.getName(), account.getCategory(),
+                            balance.subtract(delta), delta.negate(), balance);
                 }
+                log.warn("LEDGER ALERT: Account {} ({}) has gone negative: {}. Reference: {}",
+                        account.getCode(), account.getName(), balance, reference);
             }
-            ledgerAccountRepository.save(account);
         });
     }
 

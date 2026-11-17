@@ -40,4 +40,43 @@ class TopProductMapperTest {
 
         assertEquals(BigDecimal.ZERO, response.conversionRate());
     }
+
+    @Test
+    void toMostPurchasedProduct_NullCountersMapToZero() {
+        // CAT-02: nullable counter columns with no DB default used to NPE here (500 on /admin/metrics/top-products)
+        when(topProduct.getAddToCartCount()).thenReturn(null);
+        when(topProduct.getSoldCount()).thenReturn(null);
+        when(topProduct.getViewCount()).thenReturn(null);
+
+        MostPurchaseProductResponse response = TopProductMapper.toMostPurchasedProduct(topProduct);
+
+        assertEquals(0L, response.addToCartCount());
+        assertEquals(0L, response.soldCount());
+        assertEquals(0L, response.viewCount());
+        assertEquals(BigDecimal.ZERO, response.conversionRate());
+    }
+
+    @Test
+    void toMostPurchasedProduct_NullSoldWithCartsIsZeroRate() {
+        when(topProduct.getAddToCartCount()).thenReturn(4L);
+        when(topProduct.getSoldCount()).thenReturn(null);
+
+        MostPurchaseProductResponse response = TopProductMapper.toMostPurchasedProduct(topProduct);
+
+        assertEquals(4L, response.addToCartCount());
+        assertEquals(0, new BigDecimal("0.00").compareTo(response.conversionRate()));
+    }
+
+    @Test
+    void toMostPurchasedProduct_OneCartOneSaleIsHundredPercent() {
+        when(topProduct.getAddToCartCount()).thenReturn(1L);
+        when(topProduct.getSoldCount()).thenReturn(1L);
+        when(topProduct.getViewCount()).thenReturn(7L);
+
+        MostPurchaseProductResponse response = TopProductMapper.toMostPurchasedProduct(topProduct);
+
+        assertEquals(new BigDecimal("100.00"), response.conversionRate());
+        assertEquals(7L, response.viewCount());
+        assertEquals(1L, response.soldCount());
+    }
 }

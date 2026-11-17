@@ -32,6 +32,9 @@ public interface InventoryManagementService {
      * @return the number of units returned to stock
      */
     int restockConsumedOrderInventory(Order order);
+
+    /** ORD-02: true while consumed (sold, not returned) stock of the order exists. */
+    boolean hasConsumedOrderInventory(String orderNumber);
     void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items);
 
     /**

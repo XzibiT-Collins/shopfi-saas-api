@@ -187,7 +187,7 @@ class LocationLedgerSyncImplTest {
         LocationStock roomStock = balance(storeRoom, 6);
         when(locationStockRepository.findForUpdate(7L, 2L)).thenReturn(Optional.of(roomStock));
 
-        locationLedgerSync.deductForEcommerceSale(product, 6, "ORD-9", "order ORD-9");
+        assertEquals(Optional.of(storeRoom), locationLedgerSync.deductForEcommerceSale(product, 6, "ORD-9", "order ORD-9"));
 
         assertEquals(0, roomStock.getQuantityOnHand());
         ArgumentCaptor<StockTransfer> captor = ArgumentCaptor.forClass(StockTransfer.class);
@@ -288,5 +288,31 @@ class LocationLedgerSyncImplTest {
 
         assertEquals(0, fromStock.getQuantityOnHand());
         assertEquals(6, toStock.getQuantityOnHand());
+    }
+
+    @Test
+    void deductForEcommerceSale_WithoutSourceReportsNothingDeducted() {
+        when(storageLocationRepository.findByIsEcommerceFulfilmentSourceTrue()).thenReturn(Optional.empty());
+        assertEquals(Optional.empty(), locationLedgerSync.deductForEcommerceSale(product, 6, "ORD-9", "x"));
+        verifyNoInteractions(stockTransferRepository);
+    }
+
+    @Test
+    void returnToLocation_PutsUnitsBackAtThatLocationAsSaleReturn() {
+        when(authUserUtil.getCurrentUser()).thenReturn(null);
+        LocationStock roomStock = balance(storeRoom, -6);
+        when(locationStockRepository.findForUpdate(7L, 2L)).thenReturn(Optional.of(roomStock));
+
+        locationLedgerSync.returnToLocation(product, storeRoom, 6, "ORD-9", "Returned order ORD-9");
+
+        assertEquals(0, roomStock.getQuantityOnHand());
+        ArgumentCaptor<StockTransfer> captor = ArgumentCaptor.forClass(StockTransfer.class);
+        verify(stockTransferRepository).save(captor.capture());
+        assertEquals(StockTransferType.SALE_RETURN, captor.getValue().getTransferType());
+        assertEquals(storeRoom, captor.getValue().getToLocation());
+        assertNull(captor.getValue().getFromLocation());
+        assertEquals(InventoryReferenceType.ORDER, captor.getValue().getReferenceType());
+        assertEquals("ORD-9", captor.getValue().getReferenceId());
+        verifyNoInteractions(storageLocationRepository);
     }
 }

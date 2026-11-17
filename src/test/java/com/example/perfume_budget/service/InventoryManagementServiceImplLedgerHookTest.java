@@ -42,11 +42,14 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -293,5 +296,85 @@ class InventoryManagementServiceImplLedgerHookTest {
         ProductStockByLocationResponse response = inventoryManagementService.getProductStockByLocation(1L);
 
         assertFalse(response.balancesMatchGlobal());
+    }
+
+    // ---------------------------------------------------------------- ORD-02: fulfilment location on the allocation
+
+    private InventoryAllocation consumedAlloc(long id, int qty, StorageLocation loc, boolean recorded) {
+        return InventoryAllocation.builder()
+                .id(id).layer(layer).product(product)
+                .referenceType(InventoryReferenceType.ORDER).referenceId("ORD-7").referenceLineKey("product:1")
+                .quantity(qty).unitCost(new BigDecimal("10.00")).unitSellingPrice(new BigDecimal("20.00"))
+                .currencyCode(CurrencyCode.GHS).status(InventoryAllocationStatus.CONSUMED)
+                .fulfilmentLocation(loc).fulfilmentLocationRecorded(recorded)
+                .build();
+    }
+
+    private Order finalizeOrd9(java.util.Optional<StorageLocation> source, InventoryAllocation... reserved) {
+        when(inventoryAllocationRepository.findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
+                InventoryReferenceType.ORDER, "ORD-9", InventoryAllocationStatus.RESERVED)).thenReturn(List.of(reserved));
+        when(inventoryAllocationRepository.save(any(InventoryAllocation.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(locationLedgerSync.deductForEcommerceSale(any(), anyInt(), any(), any())).thenReturn(source);
+        OrderItem item = OrderItem.builder().productId(1L).quantity(5)
+                .unitPrice(new Money(new BigDecimal("20.00"), CurrencyCode.GHS)).build();
+        Order order = Order.builder().orderNumber("ORD-9").items(List.of(item)).build();
+        inventoryManagementService.finalizeReservedOrder(order);
+        return order;
+    }
+
+    private InventoryAllocation reservedAlloc(long id, int qty) {
+        return InventoryAllocation.builder()
+                .id(id).layer(layer).product(product)
+                .referenceType(InventoryReferenceType.ORDER).referenceId("ORD-9").referenceLineKey("product:1")
+                .quantity(qty).unitCost(new BigDecimal("10.00")).unitSellingPrice(new BigDecimal("20.00"))
+                .currencyCode(CurrencyCode.GHS).status(InventoryAllocationStatus.RESERVED)
+                .build();
+    }
+
+    @Test
+    void finalize_RecordsTheDeductionLocationOnEveryAllocationOfTheProduct() {
+        StorageLocation floor = StorageLocation.builder().id(7L).name("Floor").build();
+        InventoryAllocation a = reservedAlloc(81L, 2);
+        InventoryAllocation b = reservedAlloc(82L, 3);
+        finalizeOrd9(java.util.Optional.of(floor), a, b);
+        for (InventoryAllocation x : List.of(a, b)) {
+            assertEquals(floor, x.getFulfilmentLocation());
+            assertTrue(x.isFulfilmentLocationRecorded());
+        }
+    }
+
+    @Test
+    void finalize_WithoutAFulfilmentSourceRecordsThatNothingWasDeducted() {
+        InventoryAllocation a = reservedAlloc(81L, 5);
+        finalizeOrd9(java.util.Optional.empty(), a);
+        assertNull(a.getFulfilmentLocation());
+        assertTrue(a.isFulfilmentLocationRecorded());
+    }
+
+    @Test
+    void restock_ReturnsToTheRecordedLocationsSkipsUndeductedAndFallsBackForLegacyRows() {
+        StorageLocation floor = StorageLocation.builder().id(7L).name("Floor").build();
+        StorageLocation backRoom = StorageLocation.builder().id(8L).name("Back").build();
+        InventoryAllocation atFloor = consumedAlloc(91L, 2, floor, true);
+        InventoryAllocation atFloorToo = consumedAlloc(92L, 1, floor, true);
+        InventoryAllocation atBack = consumedAlloc(93L, 3, backRoom, true);
+        InventoryAllocation neverDeducted = consumedAlloc(94L, 4, null, true);
+        InventoryAllocation legacy = consumedAlloc(95L, 6, null, false);
+        when(inventoryAllocationRepository.findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
+                InventoryReferenceType.ORDER, "ORD-7", InventoryAllocationStatus.CONSUMED))
+                .thenReturn(List.of(atFloor, atFloorToo, atBack, neverDeducted, legacy));
+        layer.setRemainingQuantity(0);
+
+        int units = inventoryManagementService.restockConsumedOrderInventory(Order.builder().orderNumber("ORD-7").build());
+
+        assertEquals(16, units);
+        assertEquals(16, layer.getRemainingQuantity());
+        verify(locationLedgerSync).returnToLocation(product, floor, 3, "ORD-7", "Returned order ORD-7");
+        verify(locationLedgerSync).returnToLocation(product, backRoom, 3, "ORD-7", "Returned order ORD-7");
+        verify(locationLedgerSync).returnForEcommerceSale(product, 6, "ORD-7", "Returned order ORD-7");
+        verify(locationLedgerSync, times(2)).returnToLocation(any(), any(), anyInt(), any(), any());
+        verify(locationLedgerSync, times(1)).returnForEcommerceSale(any(), anyInt(), any(), any());
+        verify(productRepository).incrementSoldCount(1L, -16);
+        assertEquals(InventoryAllocationStatus.RETURNED, legacy.getStatus());
     }
 }

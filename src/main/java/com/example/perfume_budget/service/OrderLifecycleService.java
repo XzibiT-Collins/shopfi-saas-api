@@ -52,6 +52,7 @@ public class OrderLifecycleService {
     private final OrderAuditEventRepository auditRepository;
     private final ApplicationEventPublisher eventPublisher;
     private final CouponRedemptionService couponRedemptionService;
+    private final BookkeepingService bookkeepingService;
 
     /**
      * Owner cancel. Same 404 for "no such order", "someone else's order" and "other tenant's order".
@@ -194,12 +195,16 @@ public class OrderLifecycleService {
             order.setDeliveryStatus(target);
         }
         Order saved = orderRepository.saveAndFlush(order); // flush: the response carries the bumped version
+        // X20 (ORD-02): a cancel records the order's real refund state after the cancel, not only whether THIS cancel
+        // raised it: a FAILED/CANCELLED order whose payment was later collected without stock (PAY-01 late payment)
+        // already owes a refund, and its audit row must say so.
+        boolean refundOutstanding = refundRequired || (payment != null && payment.isRefundRequired());
         auditRepository.save(OrderAuditEvent.builder()
                 .orderId(saved.getId())
                 .eventType(target == OrderProcessingStatus.CANCELLED ? OrderAuditEventType.CANCELLED : OrderAuditEventType.STATUS_CHANGED)
                 .fromStatus(from)
                 .toStatus(target)
-                .refundRequired(refundRequired)
+                .refundRequired(target == OrderProcessingStatus.CANCELLED && refundOutstanding)
                 .actorEmail(actorEmail)
                 .createdAt(LocalDateTime.now())
                 .build());
@@ -236,10 +241,16 @@ public class OrderLifecycleService {
             releaseCouponIfHeld(order);
             return false;
         }
-        if (from == OrderProcessingStatus.PENDING || from == OrderProcessingStatus.PACKING) {
+        // ORD-02 restock policy: PENDING/PACKING goods never left the shop and go back to the shelf now; OUT_FOR_DELIVERY
+        // goods are with the courier, stay CONSUMED (not sellable) and are restocked by POST .../return-received.
+        boolean restocked = from == OrderProcessingStatus.PENDING || from == OrderProcessingStatus.PACKING;
+        if (restocked) {
             int units = inventoryManagementService.restockConsumedOrderInventory(order);
             log.info("Admin cancel of paid order {}: {} unit(s) returned to stock", order.getOrderNumber(), units);
         }
+        // ORD-02: undo the sale in the books (revenue, tax, discounts; cash -> refunds payable; COGS only if restocked).
+        // After the stock writes: lock order order -> products -> location ledger -> ledger accounts (as the webhook).
+        bookkeepingService.recordSaleReversal(order, true, restocked, actorEmail);
         if (payment != null) {
             payment.setRefundRequired(true);
             paymentRepository.save(payment);
@@ -264,6 +275,8 @@ public class OrderLifecycleService {
         payment.setRefundAcknowledgedAt(now);
         payment.setRefundAcknowledgedBy(actorEmail);
         paymentRepository.save(payment);
+        // ORD-02: the money left the shop: settle the refunds payable booked by the cancel (once; nothing if none)
+        bookkeepingService.recordRefundPaid(order, actorEmail);
         order.setUpdatedAt(now); // dirties the row so the version moves: the order's refund state changed
         Order saved = orderRepository.saveAndFlush(order);
         auditRepository.save(OrderAuditEvent.builder()
@@ -274,6 +287,45 @@ public class OrderLifecycleService {
                 .createdAt(now)
                 .build());
         log.info("Refund acknowledged for order {}", saved.getOrderNumber());
+        return new AdminUpdate(saved, payment);
+    }
+
+    /**
+     * ORD-02: the goods of a paid order cancelled while OUT_FOR_DELIVERY are back in the shop. Restocks the consumed
+     * allocations (inventory layers, RETURN movement, location-ledger SALE_RETURN at the location the units were
+     * deducted from, soldCount), reverses COGS in the books and appends a RETURN_RECEIVED audit row. Exactly once: the
+     * order row lock serialises callers and a second call finds nothing consumed (409 NOTHING_TO_RESTOCK).
+     * 409 RETURN_NOT_APPLICABLE unless the order is paid (COMPLETED) and CANCELLED.
+     */
+    @Transactional
+    public AdminUpdate receiveReturn(String orderNumber, String actorEmail) {
+        Order order = lockByNumber(orderNumber);
+        Payment payment = paymentRepository.findByOrder_OrderNumber(order.getOrderNumber()).orElse(null);
+        if (order.getDeliveryStatus() != OrderProcessingStatus.CANCELLED || order.getStatus() != PaymentStatus.COMPLETED) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, "RETURN_NOT_APPLICABLE",
+                    "Only a paid order that was cancelled can have its goods returned to stock.",
+                    Map.of("orderNumber", order.getOrderNumber(), "deliveryStatus", String.valueOf(order.getDeliveryStatus()),
+                            "paymentStatus", String.valueOf(order.getStatus())));
+        }
+        if (!inventoryManagementService.hasConsumedOrderInventory(order.getOrderNumber())) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, "NOTHING_TO_RESTOCK",
+                    "The goods of this order are already back in stock.", Map.of("orderNumber", order.getOrderNumber()));
+        }
+        int units = inventoryManagementService.restockConsumedOrderInventory(order);
+        bookkeepingService.recordSaleReversal(order, false, true, actorEmail);
+        LocalDateTime now = LocalDateTime.now();
+        order.setUpdatedAt(now); // the version moves
+        Order saved = orderRepository.saveAndFlush(order);
+        auditRepository.save(OrderAuditEvent.builder()
+                .orderId(saved.getId())
+                .eventType(OrderAuditEventType.RETURN_RECEIVED)
+                .fromStatus(OrderProcessingStatus.CANCELLED)
+                .toStatus(OrderProcessingStatus.CANCELLED)
+                .refundRequired(payment != null && payment.isRefundRequired())
+                .actorEmail(actorEmail)
+                .createdAt(now)
+                .build());
+        log.info("Return received for order {}: {} unit(s) restocked", saved.getOrderNumber(), units);
         return new AdminUpdate(saved, payment);
     }
 
