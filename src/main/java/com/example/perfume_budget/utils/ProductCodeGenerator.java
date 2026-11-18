@@ -11,15 +11,27 @@ public final class ProductCodeGenerator {
         throw new IllegalStateException("Utility class");
     }
 
+    /** A family code with the default 3-digit random suffix: {@code <prefix>-<ddd>[-<SIZE>]}. */
     public static String generateFamilyCode(String name, String brand, String size) {
+        return generateFamilyCode(name, brand, size, 3);
+    }
+
+    /**
+     * ORD-02c: {@code <prefix>-<suffixDigits random digits, zero-padded>[-<SIZE>]}. The prefix is three letters of the
+     * brand (or the name); the suffix width is 3 by default and 4 for the fallback when the 3-digit space is crowded.
+     */
+    public static String generateFamilyCode(String name, String brand, String size, int suffixDigits) {
+        if (suffixDigits < 1 || suffixDigits > 9) {
+            throw new IllegalArgumentException("Unsupported family code suffix width.");
+        }
         String baseLabel = hasText(brand) ? brand : name;
         if (!hasText(baseLabel)) {
             throw new IllegalArgumentException("A product name or brand is required to generate a family code.");
         }
-
+        int bound = (int) Math.pow(10, suffixDigits);
         StringBuilder code = new StringBuilder(buildBrandCode(baseLabel))
                 .append("-")
-                .append(String.format(Locale.ROOT, "%03d", ThreadLocalRandom.current().nextInt(1000)));
+                .append(String.format(Locale.ROOT, "%0" + suffixDigits + "d", ThreadLocalRandom.current().nextInt(bound)));
 
         if (hasText(size)) {
             code.append("-").append(normalizeSize(size));

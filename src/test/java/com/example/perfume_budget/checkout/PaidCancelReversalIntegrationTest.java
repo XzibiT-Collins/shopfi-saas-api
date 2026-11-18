@@ -966,14 +966,23 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
     @Test
     void ord02b_v16ReleasesTheRedemptionOfPaidOrdersCancelledBeforeThisReleaseOnce() throws Exception {
         coupon(acme, "V16", 10);
-        jdbc.update("UPDATE tenant_acme.coupons SET usage_limit = 2 WHERE code = 'V16'");
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_limit = 4 WHERE code = 'V16'");
         long p = costedProduct("V16 backfill", 20);
         Placed live = settle(placeAs(customer(acme, "v16-1@acme.test"), "couponCode=V16", 1, p));
         Placed legacy = settle(placeAs(customer(acme, "v16-2@acme.test"), "couponCode=V16", 1, p));
+        // ORD-02c: paid coupon orders that are DELIVERED or still in progress (PACKING) are not cancelled: V16 keeps
+        // their redemptions (a V16 that also matched DELIVERED, or any paid order, would release them)
+        Placed delivered = settle(placeAs(customer(acme, "v16-4@acme.test"), "couponCode=V16", 1, p));
+        assertThat(status(setStatus(delivered.orderNumber(), "DELIVERED"))).isEqualTo(200);
+        Placed packing = settle(placeAs(customer(acme, "v16-5@acme.test"), "couponCode=V16", 1, p));
+        assertThat(status(setStatus(packing.orderNumber(), "PACKING"))).isEqualTo(200);
+        assertThat(jdbc.queryForList("SELECT status || '/' || delivery_status FROM tenant_acme.orders WHERE order_number IN (?, ?) "
+                + "ORDER BY delivery_status", String.class, delivered.orderNumber(), packing.orderNumber()))
+                .containsExactly("COMPLETED/DELIVERED", "COMPLETED/PACKING");
         assertThat(status(setStatus(legacy.orderNumber(), "CANCELLED"))).isEqualTo(200);
         // what a paid cancel left behind before ORD-02b: the redemption still held, the coupon switched off at its limit
         jdbc.update("UPDATE tenant_acme.orders SET coupon_redemption_released = false WHERE order_number = ?", legacy.orderNumber());
-        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = 2, is_active = false, limit_deactivated = true WHERE code = 'V16'");
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = 4, is_active = false, limit_deactivated = true WHERE code = 'V16'");
         // an unpaid cancelled order (released at its cancel) and a paid order with a NULL delivery status stay as they are
         Placed unpaid = placeAs(customer(acme, "v16-3@acme.test"), null, 1, p);
         assertThat(status(setStatus(unpaid.orderNumber(), "CANCELLED"))).isEqualTo(200);
@@ -981,17 +990,76 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         runV16Backfill();
         assertThat(released(legacy.orderNumber())).isTrue();
         assertThat(released(live.orderNumber())).isFalse();
-        assertThat(couponRow("V16")).containsEntry("usage_count", 1).containsEntry("is_active", true).containsEntry("limit_deactivated", false);
+        assertThat(released(delivered.orderNumber())).as("DELIVERED keeps its redemption").isFalse();
+        assertThat(released(packing.orderNumber())).as("PACKING keeps its redemption").isFalse();
+        assertThat(couponRow("V16")).as("only the legacy paid cancel released")
+                .containsEntry("usage_count", 3).containsEntry("is_active", true).containsEntry("limit_deactivated", false);
         runV16Backfill();
-        assertThat(couponRow("V16")).as("idempotent").containsEntry("usage_count", 1);
+        assertThat(couponRow("V16")).as("idempotent").containsEntry("usage_count", 3);
+        assertThat(released(delivered.orderNumber())).isFalse();
+        assertThat(released(packing.orderNumber())).isFalse();
 
         // a coupon an admin switched off (not limit-deactivated) is never switched back on
         jdbc.update("UPDATE tenant_acme.orders SET coupon_redemption_released = false WHERE order_number = ?", legacy.orderNumber());
-        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = 2, is_active = false, limit_deactivated = false WHERE code = 'V16'");
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = 4, is_active = false, limit_deactivated = false WHERE code = 'V16'");
         jdbc.update("UPDATE tenant_acme.orders SET delivery_status = NULL WHERE order_number = ?", live.orderNumber());
         runV16Backfill();
-        assertThat(couponRow("V16")).containsEntry("usage_count", 1).containsEntry("is_active", false);
+        assertThat(couponRow("V16")).containsEntry("usage_count", 3).containsEntry("is_active", false);
         assertThat(released(live.orderNumber())).isFalse();
+        assertThat(released(delivered.orderNumber())).isFalse();
+        assertThat(released(packing.orderNumber())).isFalse();
+    }
+
+    /**
+     * ORD-02c (from the ORD-02b reviewer's probe G): V16 through the real Flyway run on a realistic mix of orders
+     * releases only the legacy paid cancel, once; delivered, in-progress and still-pending coupon orders keep theirs.
+     */
+    @Test
+    void ord02c_v16ThroughRealFlywayReleasesOnlyLegacyPaidCancelsOnce() throws Exception {
+        Gateway g = configureGateway(acme);
+        coupon(acme, "PRG", 10);
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_limit = 50 WHERE code = 'PRG'");
+        long p = costedProduct("PRG prod", 200);
+        Placed newCancel = settle(placeAs(customer(acme, "prg-1@acme.test"), "couponCode=PRG", 1, p));
+        assertThat(status(setStatus(newCancel.orderNumber(), "CANCELLED"))).isEqualTo(200); // released by the app
+        Placed legacy = settle(placeAs(customer(acme, "prg-2@acme.test"), "couponCode=PRG", 1, p));
+        assertThat(status(setStatus(legacy.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        jdbc.update("UPDATE tenant_acme.orders SET coupon_redemption_released = false WHERE order_number = ?", legacy.orderNumber());
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = usage_count + 1 WHERE code = 'PRG'"); // legacy state
+        Placed delivered = settle(placeAs(customer(acme, "prg-3@acme.test"), "couponCode=PRG", 1, p));
+        assertThat(status(setStatus(delivered.orderNumber(), "DELIVERED"))).isEqualTo(200);
+        Placed packing = settle(placeAs(customer(acme, "prg-4@acme.test"), "couponCode=PRG", 1, p));
+        assertThat(status(setStatus(packing.orderNumber(), "PACKING"))).isEqualTo(200);
+        Placed unpaidCancel = placeAs(customer(acme, "prg-5@acme.test"), "couponCode=PRG", 1, p);
+        assertThat(status(setStatus(unpaidCancel.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        Placed latePaid = placeAs(customer(acme, "prg-6@acme.test"), "couponCode=PRG", 1, p);
+        assertThat(status(setStatus(latePaid.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        assertThat(webhook(g, event("charge.success", latePaid.reference(), minor(latePaid.orderNumber())))).isEqualTo(200);
+        Placed noCoupon = placePaid("prg-7@acme.test", 1, p);
+        assertThat(status(setStatus(noCoupon.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        Placed livePending = placeAs(customer(acme, "prg-8@acme.test"), "couponCode=PRG", 1, p);
+        awaitBackgroundIdle();
+        // held: delivered, packing, livePending, legacy = 4
+        assertThat(couponRow("PRG")).containsEntry("usage_count", 4);
+
+        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version = '16'");
+        migrator.migrateTenant("tenant_acme");
+        assertThat(jdbc.queryForObject("SELECT success FROM tenant_acme.flyway_schema_history WHERE version = '16'", Boolean.class)).isTrue();
+        assertThat(couponRow("PRG")).as("only the legacy paid cancel released").containsEntry("usage_count", 3);
+        assertThat(released(legacy.orderNumber())).isTrue();
+        assertThat(released(delivered.orderNumber())).isFalse();
+        assertThat(released(packing.orderNumber())).isFalse();
+        assertThat(released(livePending.orderNumber())).isFalse();
+        migrator.migrateTenant("tenant_acme"); // no-op
+        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version = '16'");
+        migrator.migrateTenant("tenant_acme"); // re-run the data fix
+        assertThat(couponRow("PRG")).as("idempotent re-run").containsEntry("usage_count", 3);
+        assertThat(released(delivered.orderNumber())).isFalse();
+        assertThat(released(packing.orderNumber())).isFalse();
+        // a paid cancel after the migration still releases once; a DELIVERED order cannot be cancelled
+        assertThat(status(setStatus(delivered.orderNumber(), "CANCELLED"))).isEqualTo(400);
+        assertThat(status(setStatus(packing.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        assertThat(couponRow("PRG")).containsEntry("usage_count", 2);
     }
 
     @Test
@@ -1034,6 +1102,111 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
         assertNoDrift(before, "late payment refunded");
         assertJournalBalanced("late payment refunded");
+    }
+
+    private BigDecimal refundPaid(String orderNumber) {
+        return jdbc.queryForObject("SELECT coalesce(sum(l.amount), 0) FROM tenant_acme.journal_entry_lines l "
+                + "JOIN tenant_acme.journal_entries j ON j.id = l.journal_entry_id JOIN tenant_acme.ledger_accounts a ON a.id = l.account_id "
+                + "WHERE j.reference_id = ? AND j.type = 'REFUND' AND a.category = 'REFUND_PAYABLE' AND l.entry_type = 'DEBIT'",
+                BigDecimal.class, orderNumber);
+    }
+
+    /**
+     * ORD-02c (ORD-02b review low 4): the LATE_PAYMENT date, the posting's own once-per-order guard and the REFUND
+     * amount (what is still owed = Refunds Payable credits minus earlier REFUNDs) against the real app + Postgres.
+     */
+    @Test
+    void ord02c_latePaymentIsDatedAtThePaymentGuardedOnceAndItsRefundPaysOnlyWhatIsStillOwed() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("lp-3@acme.test", 2);
+        BigDecimal total = total(o.orderNumber());
+        assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        BigDecimal cashBefore = accountBalance("CASH");
+        Map<String, BigDecimal> before = drift();
+        assertThat(webhook(g, event("charge.success", o.reference(), minor(o.orderNumber())))).isEqualTo(200);
+        awaitBackgroundIdle();
+
+        // dated at the payment (paidAt, microsecond-exact), not at a later clock read
+        Map<String, Object> dates = jdbc.queryForMap("SELECT p.paid_at, j.transaction_date FROM tenant_acme.payments p "
+                + "JOIN tenant_acme.orders o ON o.id = p.order_id JOIN tenant_acme.journal_entries j ON j.reference_id = o.order_number "
+                + "AND j.type = 'LATE_PAYMENT' WHERE o.order_number = ?", o.orderNumber());
+        assertThat(dates.get("paid_at")).isNotNull();
+        assertThat(dates.get("transaction_date")).as("LATE_PAYMENT transaction_date = paidAt").isEqualTo(dates.get("paid_at"));
+        assertThat(entries(o.orderNumber(), "LATE_PAYMENT")).isEqualTo(1);
+
+        // the posting's own guard: a settlement attempt whose COMPLETED write was lost (payment back to its
+        // pre-settlement state) runs the late-payment path again and must not book a second LATE_PAYMENT
+        jdbc.update("UPDATE tenant_acme.payments SET status = 'CANCELLED' WHERE order_id = "
+                + "(SELECT id FROM tenant_acme.orders WHERE order_number = ?)", o.orderNumber());
+        assertThat(webhook(g, event("charge.success", o.reference(), minor(o.orderNumber())))).isEqualTo(200);
+        awaitBackgroundIdle();
+        assertThat(jdbc.queryForObject("SELECT p.status FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id "
+                + "WHERE o.order_number = ?", String.class, o.orderNumber())).as("settled again").isEqualTo("COMPLETED");
+        assertThat(entries(o.orderNumber(), "LATE_PAYMENT")).as("guarded: still one").isEqualTo(1);
+        assertThat(accountBalance("CASH")).isEqualByComparingTo(cashBefore.add(total));
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo(total);
+        assertNoDrift(before, "late payment re-settled");
+
+        // the ack pays out exactly what is owed; a second ack is 409 REFUND_NOT_REQUIRED and posts nothing
+        assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
+        assertThat(refundPaid(o.orderNumber())).as("REFUND = owed").isEqualByComparingTo(total);
+        MvcResult again = ack(o.orderNumber());
+        assertThat(status(again)).isEqualTo(409);
+        assertThat(code(again)).isEqualTo("REFUND_NOT_REQUIRED");
+        assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+
+        // the REFUND subtracts earlier REFUNDs: if the refund flag is raised again with nothing left owed, the ack posts
+        // nothing (without the subtraction it would pay the whole amount out a second time)
+        jdbc.update("UPDATE tenant_acme.payments SET refund_required = true WHERE order_id = "
+                + "(SELECT id FROM tenant_acme.orders WHERE order_number = ?)", o.orderNumber());
+        assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
+        assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+        assertThat(refundPaid(o.orderNumber())).isEqualByComparingTo(total);
+        assertThat(net(o.orderNumber(), "CASH")).isEqualByComparingTo("0");
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo("0");
+        assertThat(accountBalance("CASH")).isEqualByComparingTo(cashBefore);
+        assertNoDrift(before, "late payment refunded once");
+        assertJournalBalanced("late payment refunded once");
+    }
+
+    /** ORD-02c (review low 3, documented in orders.md): how an admin finds and resolves a late payment on a FAILED order. */
+    @Test
+    void ord02c_latePaymentOnAFailedOrderIsFoundByTheDocumentedListFilterAndResolvedByCancelThenAck() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("lp-4@acme.test", 2);
+        BigDecimal total = total(o.orderNumber());
+        assertThat(webhook(g, event("charge.failed", o.reference(), minor(o.orderNumber())))).isEqualTo(200);
+        awaitBackgroundIdle();
+        assertThat(orderStatus(acme, o.orderNumber())).isEqualTo("FAILED");
+        Placed other = place("lp-5@acme.test", 1); // an ordinary open order: must not match the filter
+        jdbc.update("UPDATE tenant_acme.inventory_layers SET remaining_quantity = 0 WHERE product_id = ?", o.products().get(0));
+        assertThat(webhook(g, event("charge.success", o.reference(), minor(o.orderNumber())))).isEqualTo(200);
+        awaitBackgroundIdle();
+
+        MvcResult list = mvc.perform(admin(get("/api/v1/order/all?paymentStatus=FAILED&orderStatus=PENDING&size=50"))).andReturn();
+        assertThat(status(list)).as(list.getResponse().getContentAsString()).isEqualTo(200);
+        List<String> flagged = new ArrayList<>();
+        for (JsonNode row : body(list).at("/data/content")) {
+            assertThat(row.get("paymentStatus").asText()).isEqualTo("FAILED");
+            assertThat(row.get("deliveryStatus").asText()).isEqualTo("PENDING");
+            if (row.get("refundRequired").asBoolean()) flagged.add(row.get("orderNumber").asText());
+        }
+        assertThat(flagged).containsExactly(o.orderNumber());
+        assertThat(flagged).doesNotContain(other.orderNumber());
+        assertThat(entries(o.orderNumber(), "LATE_PAYMENT")).isEqualTo(1);
+
+        MvcResult cancelled = setStatus(o.orderNumber(), "CANCELLED");
+        assertThat(status(cancelled)).isEqualTo(200);
+        assertThat(body(cancelled).at("/data/refundRequired").asBoolean()).isTrue();
+        assertThat(entries(o.orderNumber(), "SALE_REVERSAL")).as("no sale to reverse").isZero();
+        assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
+        assertThat(refundPaid(o.orderNumber())).isEqualByComparingTo(total);
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo("0");
+        MvcResult after = mvc.perform(admin(get("/api/v1/order/all?paymentStatus=FAILED&orderStatus=PENDING&size=50"))).andReturn();
+        for (JsonNode row : body(after).at("/data/content")) {
+            assertThat(row.get("orderNumber").asText()).isNotEqualTo(o.orderNumber());
+        }
+        assertJournalBalanced("late payment on a failed order resolved");
     }
 
     @Test

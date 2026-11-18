@@ -10,6 +10,7 @@ import com.example.perfume_budget.dto.product.response.PublicProductListing;
 import com.example.perfume_budget.enums.DiscountType;
 import com.example.perfume_budget.enums.UserRole;
 import com.example.perfume_budget.events.ViewCountEvent;
+import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.mapper.ProductMapper;
 import com.example.perfume_budget.model.*;
@@ -23,6 +24,7 @@ import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.specification.ProductSpecification;
 import com.example.perfume_budget.utils.AuthUserUtil;
 import com.example.perfume_budget.utils.CloudinaryFileUploadUtil;
+import com.example.perfume_budget.utils.DbErrorDetails;
 import com.example.perfume_budget.utils.PaginationUtil;
 import com.example.perfume_budget.utils.ProductCodeGenerator;
 import com.example.perfume_budget.utils.SlugGenerator;
@@ -33,15 +35,21 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -62,15 +70,42 @@ public class ProductServiceImpl implements ProductService {
     private final BookkeepingService bookkeepingService;
     private final ProductCatalogCacheService productCatalogCacheService;
     private final EffectivePriceService effectivePriceService;
+    private final PlatformTransactionManager transactionManager;
 
+    /**
+     * ORD-02c: not one big transaction any more. The image is uploaded once, then the rows are written in a
+     * transaction of their own, so a family-code clash with a concurrent create (check-then-insert race on the
+     * family_code / base SKU unique constraints) can be retried once in a fresh transaction. A second clash answers
+     * 409 FAMILY_CODE_UNAVAILABLE. Only the new-family path retries; adding a variant keeps its answers.
+     */
     @Override
-    @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public ProductDetails createProduct(ProductRequest request) {
         checkIfImageIsPresentForEcommerceProduct(request);
 
         String uploadedImageUrl = uploadToCloudIfImageIsPresent(request.productImage());
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        if (!Boolean.TRUE.equals(request.isNewProduct())) {
+            return tx.execute(status -> createProductRows(request, uploadedImageUrl));
+        }
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return tx.execute(status -> createProductRows(request, uploadedImageUrl));
+            } catch (DataIntegrityViolationException e) {
+                if (!isFamilyCodeClash(e)) {
+                    throw e;
+                }
+                DbErrorDetails details = DbErrorDetails.of(e);
+                if (attempt >= FAMILY_CODE_TRANSACTION_ATTEMPTS) {
+                    log.warn("Family code taken by a concurrent create again ({}): answering {}", details, FAMILY_CODE_UNAVAILABLE);
+                    throw familyCodeUnavailable();
+                }
+                log.info("Family code taken by a concurrent create ({}): retrying once", details);
+            }
+        }
+    }
 
+    private ProductDetails createProductRows(ProductRequest request, String uploadedImageUrl) {
         String size = request.size() != null ? " " + request.size() : "";
         String name = request.productName() + size;
 
@@ -94,25 +129,53 @@ public class ProductServiceImpl implements ProductService {
         return createNewProduct(newProduct, request, size);
     }
 
-    /** ORD-02b: draws per new family before giving up (the unique constraint then reports the clash). */
+    /** ORD-02b/ORD-02c: draws per suffix width before moving on (3 digits, then 4 digits). */
     static final int FAMILY_CODE_ATTEMPTS = 10;
+    /** ORD-02c (PO decision 2026-11-18): the 3-digit suffix first, then the 4-digit fallback. */
+    static final int[] FAMILY_CODE_SUFFIX_DIGITS = {3, 4};
+    /** ORD-02c: the first transaction plus one retry after a concurrent unique violation on the family code / base SKU. */
+    static final int FAMILY_CODE_TRANSACTION_ATTEMPTS = 2;
+    public static final String FAMILY_CODE_UNAVAILABLE = "FAMILY_CODE_UNAVAILABLE";
+    public static final String FAMILY_CODE_UNAVAILABLE_MESSAGE =
+            "Could not allocate a product code for this name/brand; try again or change the name";
+    /** The unique constraints a new family's rows can clash on (V1: product_families.family_code, products.sku). */
+    static final Set<String> FAMILY_CODE_CONSTRAINTS = Set.of("uc_product_families_family_code", "uc_products_sku");
+
+    private static ApiCodeException familyCodeUnavailable() {
+        return new ApiCodeException(HttpStatus.CONFLICT, FAMILY_CODE_UNAVAILABLE, FAMILY_CODE_UNAVAILABLE_MESSAGE);
+    }
+
+    /** A unique violation (SQLState 23505) on the family code or the SKU: a concurrent create took the same code. */
+    static boolean isFamilyCodeClash(DataIntegrityViolationException e) {
+        DbErrorDetails details = DbErrorDetails.of(e);
+        String constraint = details.constraint();
+        if (!"23505".equals(details.sqlState()) || constraint == null) {
+            return false;
+        }
+        String name = constraint.substring(constraint.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT);
+        return FAMILY_CODE_CONSTRAINTS.contains(name);
+    }
 
     /**
-     * ORD-02b: the family code is a 3-letter prefix plus 3 random digits, so families with the same prefix (same brand,
-     * or names like "X Item1", "X Item2") collide by chance; a taken code is redrawn instead of failing the create with
-     * the family_code / sku unique constraint. A concurrent create can still take the same code between the check and
-     * the insert: the constraint then refuses it as before.
+     * ORD-02b/ORD-02c: the family code is a 3-letter prefix plus random digits, so families with the same prefix (same
+     * brand, or names like "X Item1", "X Item2") collide by chance. A code is free when no family has it and no product
+     * already holds its base SKU {@code <code>-EA} (a legacy / customised SKU would hit uc_products_sku). Up to 10 draws
+     * with a 3-digit suffix, then up to 10 with a 4-digit suffix; existing codes are never changed. When all 20 are taken:
+     * 409 FAMILY_CODE_UNAVAILABLE. A concurrent create can still take the code between this check and the insert; the
+     * caller retries that once.
      */
     private String unusedFamilyCode(ProductRequest request) {
-        String code = null;
-        for (int attempt = 0; attempt < FAMILY_CODE_ATTEMPTS; attempt++) {
-            code = ProductCodeGenerator.generateFamilyCode(request.productName(), request.brand(), request.size());
-            if (!productFamilyRepository.existsByFamilyCode(code)) {
-                return code;
+        for (int digits : FAMILY_CODE_SUFFIX_DIGITS) {
+            for (int attempt = 0; attempt < FAMILY_CODE_ATTEMPTS; attempt++) {
+                String code = ProductCodeGenerator.generateFamilyCode(request.productName(), request.brand(), request.size(), digits);
+                if (!productFamilyRepository.existsByFamilyCode(code) && !productRepository.existsBySku(code + "-EA")) {
+                    return code;
+                }
             }
         }
-        log.warn("No free family code after {} draws for prefix of {}", FAMILY_CODE_ATTEMPTS, code);
-        return code;
+        log.warn("No free family code after {} draws per suffix width {}: answering {}", FAMILY_CODE_ATTEMPTS,
+                java.util.Arrays.toString(FAMILY_CODE_SUFFIX_DIGITS), FAMILY_CODE_UNAVAILABLE);
+        throw familyCodeUnavailable();
     }
 
     private ProductDetails createNewProduct(Product newProduct, ProductRequest request, String size) {

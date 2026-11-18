@@ -16,7 +16,7 @@ business messages and are kept. Status codes and `data.code`s did not change.
 | 500 | anything unhandled | `Unexpected error occurred` | unchanged |
 | 500 | `InputOutputException` | `File processing failed` | its message |
 | 500 | `ServiceCommunicationException` | `Interservice communication failed` | unchanged |
-| 409 | `DataIntegrityViolationException` | `A constraint violation occurred` | unchanged (now also logged, see below) |
+| 409 | `DataIntegrityViolationException` | `A constraint violation occurred` | unchanged (now also logged, see below). Product create: a family-code / base-SKU clash is retried once and then answers `FAMILY_CODE_UNAVAILABLE` instead (ORD-02c, [catalog.md](catalog.md)) |
 | 405 | `UnsupportedOperationException` | `Operation not supported` | its message |
 | 405 | `HttpRequestMethodNotSupportedException` | `Request method not supported` | Spring's message (echoed the method) |
 | 404 | `NoResourceFoundException` | `Resource not found` | Spring's message (echoed the path) |

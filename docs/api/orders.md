@@ -238,6 +238,36 @@ and post nothing, and the posting itself refuses a second `LATE_PAYMENT` for the
 ORD-02b were not booked; their acknowledgement posts nothing (as before), the books stay balanced. Orders cancelled by the customer or by expiry keep the checkout.md behaviour (a late
 payment re-reserves the stock when it can; the revived order is live again, so `cancelledAt` and `cancelSource` go back to `null`). `deliveryStatus = CANCELLED` now counts as closed in the settlement.
 
+**Late payment on a `FAILED` order: what the admin sees and does (ORD-02c, documentation only).** When a
+`charge.success` arrives for an order whose payment had already failed (`charge.failed`) and its stock is gone, the
+order is **not** revived and is **not** closed automatically. It stays:
+
+| Field (admin list row / detail) | Value |
+|---|---|
+| `paymentStatus` (the order's status) | `FAILED` |
+| `deliveryStatus` | `PENDING` |
+| `refundRequired` | `true` (the payment row is `COMPLETED`; the money is booked once as `LATE_PAYMENT`, see above) |
+
+How to find these orders: `GET /api/v1/order/all` has **no `refundRequired` filter** (filters are only `paymentStatus`,
+`orderStatus`, `from`/`to`, `q`). Use **`?paymentStatus=FAILED&orderStatus=PENDING`** and pick the rows whose
+`refundRequired` is `true` (the field is on every list row). A `FAILED` order normally never shows `refundRequired: true`,
+so that combination is exactly this case. Paid merchant cancels that still owe a refund show up under
+`?orderStatus=CANCELLED` with `refundRequired: true` the same way.
+
+How to resolve one (both steps are needed; until then it stays in the list as above):
+
+1. Refund the customer outside Shopfi (Paystack dashboard / by hand).
+2. `PUT /api/v1/order/update-order-status/{orderNumber}` with `{"orderStatus": "CANCELLED"}`: `deliveryStatus` ->
+   `CANCELLED`, nothing is reversed (there was no sale), `refundRequired` stays `true`, the `CANCELLED` audit row records
+   `refundRequired: true`.
+3. `POST /api/v1/order/{orderNumber}/refund-acknowledgement`: posts the `REFUND` entry that clears the `LATE_PAYMENT`
+   (same `INSUFFICIENT_CASH` rule) and sets `refundRequired: false`.
+
+The acknowledgement also works without step 2, but the order then stays `FAILED` / `PENDING` in the list. Do not move such
+an order forward: `PACKING` / `OUT_FOR_DELIVERY` are not blocked for it (only `DELIVERED` answers 400 `ORDER_NOT_PAID`),
+and there is no stock reserved for it. The books are correct in every state (cash in and refund owed from the late
+payment, cleared by the acknowledgement); a dedicated filter or automatic close is not part of this release.
+
 ## POST /api/v1/order/{orderNumber}/refund-acknowledgement (ADMIN)
 
 No body. Call it once the shop has refunded the customer by hand. Sets `refundRequired` to `false`, stores who/when
