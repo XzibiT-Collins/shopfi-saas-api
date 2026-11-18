@@ -360,7 +360,9 @@ class PaymentLifecycleIntegrationTest extends AbstractCheckoutIntegrationTest {
         String logged = next.find(at) ? all.substring(at, next.start()) : all.substring(at);
         assertThat(logged).as("the ERROR entry carries the stack trace again").contains("\tat com.example.perfume_budget.")
                 .contains("Caused by: ");
-        assertThat(logged).doesNotContain("p3-leak").doesNotContain("Key (email)").doesNotContain("users_email_key");
+        assertThat(logged).doesNotContain("p3-leak").doesNotContain("Key (email)").doesNotContain("already exists");
+        // SEC-01d (PO decision): the SQLState and the constraint NAME are safe and are recorded; the message is not
+        assertThat(logged).contains("[SQLState 23505");
         assertThat(webhook(g, body)).as("the redelivery").isEqualTo(200);
     }
 
