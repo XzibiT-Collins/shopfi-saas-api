@@ -267,10 +267,11 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
             for (Callable<T> t : tasks) fs.add(pool.submit(() -> { go.await(); return t.call(); }));
             go.countDown();
             List<T> out = new ArrayList<>();
-            for (Future<T> f : fs) out.add(f.get());
+            // ORD-02b: bounded, so a task stuck on a held row lock fails the test instead of hanging the suite
+            for (Future<T> f : fs) out.add(f.get(90, java.util.concurrent.TimeUnit.SECONDS));
             return out;
         } finally {
-            pool.shutdown();
+            pool.shutdownNow();
         }
     }
 
@@ -339,18 +340,11 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
     }
 
     @Test
-    void unpaidCancelAndLatePaymentRefundsNeverTouchTheBooks() throws Exception {
-        Gateway g = configureGateway(acme);
+    void unpaidCancelPostsNothing() throws Exception {
         Placed o = place("rv3@acme.test", 1);
         assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).isEqualTo(200);
-        assertThat(webhook(g, event("charge.success", o.reference(), minor(o.orderNumber())))).isEqualTo(200);
-        await().atMost(java.time.Duration.ofSeconds(15)).untilAsserted(() -> assertThat(
-                jdbc.queryForObject("SELECT p.refund_required FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id WHERE o.order_number = ?",
-                        Boolean.class, o.orderNumber())).isTrue());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.journal_entries WHERE reference_id = ?", Integer.class, o.orderNumber())).isZero();
-        assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.journal_entries WHERE reference_id = ?", Integer.class, o.orderNumber()))
-                .as("a payment that was never booked as a sale is not booked as a refund either").isZero();
+        assertThat(code(ack(o.orderNumber()))).isEqualTo("REFUND_NOT_REQUIRED");
     }
 
     // -------------------------------------------------------------------------- item 7: OUT_FOR_DELIVERY + return
@@ -888,6 +882,223 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         resetOrders("tenant_acme"); // the order part of the AbstractTenantWebTest @AfterEach: must not trip over the RESTRICT FK / DELETE trigger
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.orders", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.order_audit_events", Integer.class)).isZero();
+    }
+
+    // ------------------------------------------------------------------------------------------------- ORD-02b
+
+    /** Every journal entry of the tenant balances (sum of debits = sum of credits per entry, hence overall). */
+    private void assertJournalBalanced(String as) {
+        List<Map<String, Object>> unbalanced = jdbc.queryForList("SELECT j.id, j.type FROM tenant_acme.journal_entries j "
+                + "JOIN tenant_acme.journal_entry_lines l ON l.journal_entry_id = j.id GROUP BY j.id, j.type "
+                + "HAVING sum(CASE WHEN l.entry_type = 'DEBIT' THEN l.amount ELSE -l.amount END) <> 0");
+        assertThat(unbalanced).as(as + ": unbalanced journal entries").isEmpty();
+        assertThat(jdbc.queryForObject("SELECT coalesce(sum(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE -amount END), 0) "
+                + "FROM tenant_acme.journal_entry_lines", BigDecimal.class)).as(as + ": total debits = total credits").isEqualByComparingTo("0");
+    }
+
+    private Map<String, Object> couponRow(String code) {
+        return jdbc.queryForMap("SELECT usage_count, is_active, limit_deactivated FROM tenant_acme.coupons WHERE code = ?", code);
+    }
+
+    private boolean released(String orderNumber) {
+        return jdbc.queryForObject("SELECT coupon_redemption_released FROM tenant_acme.orders WHERE order_number = ?", Boolean.class, orderNumber);
+    }
+
+    private boolean refundRequired(String orderNumber) {
+        return jdbc.queryForObject("SELECT p.refund_required FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id "
+                + "WHERE o.order_number = ?", Boolean.class, orderNumber);
+    }
+
+    /** n deliveries of the same charge.success at once, each from a background (webhook executor) thread. */
+    private List<Integer> duplicateDeliveries(Gateway g, Placed o, int n) throws Exception {
+        long m = minor(o.orderNumber());
+        List<Future<Integer>> fs = new ArrayList<>();
+        for (int i = 0; i < n; i++) fs.add(webhookInBackground(g, event("charge.success", o.reference(), m)));
+        List<Integer> codes = new ArrayList<>();
+        for (Future<Integer> f : fs) codes.add(f.get(90, java.util.concurrent.TimeUnit.SECONDS));
+        return codes;
+    }
+
+    @Test
+    void ord02b_paidCancelGivesTheCouponRedemptionBackExactlyOnceUnderConcurrentCancels() throws Exception {
+        coupon(acme, "ORD02B", 10);
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_limit = 2, per_user_usage_limit = 1 WHERE code = 'ORD02B'");
+        long p = costedProduct("Coupon give-back", 20);
+        Customer c = customer(acme, "cb-1@acme.test");
+        Placed kept = settle(placeAs(customer(acme, "cb-2@acme.test"), "couponCode=ORD02B", 1, p)); // another live redemption
+        Placed o = settle(placeAs(c, "couponCode=ORD02B", 2, p));
+        assertThat(couponRow("ORD02B")).containsEntry("usage_count", 2).containsEntry("is_active", false)
+                .containsEntry("limit_deactivated", true);
+        // per-user limit reached for c while the order holds the redemption
+        cart(c, p, 1);
+        MvcResult refused = checkout(c, null, "couponCode=ORD02B");
+        assertThat(status(refused)).as(refused.getResponse().getContentAsString()).isEqualTo(400);
+        jdbc.update("DELETE FROM tenant_acme.cart_items WHERE cart_id IN (SELECT id FROM tenant_acme.carts WHERE user_id = ?)", c.id());
+
+        Map<String, BigDecimal> before = drift();
+        assertThat(concurrently(List.of(() -> outcome(setStatus(o.orderNumber(), "CANCELLED")),
+                () -> outcome(setStatus(o.orderNumber(), "CANCELLED")), () -> outcome(setStatus(o.orderNumber(), "CANCELLED")))))
+                .containsOnly("200");
+        assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).as("retry").isEqualTo(200);
+
+        assertThat(released(o.orderNumber())).isTrue();
+        assertThat(released(kept.orderNumber())).isFalse();
+        // exactly one release: the other customer's redemption is still counted (a double release would show 0)
+        assertThat(couponRow("ORD02B")).containsEntry("usage_count", 1).containsEntry("is_active", true)
+                .containsEntry("limit_deactivated", false);
+        assertThat(entries(o.orderNumber(), "SALE_REVERSAL")).isEqualTo(1);
+        assertThat(net(o.orderNumber(), "DISCOUNT_EXPENSE")).as("the coupon discount is reversed with the sale").isEqualByComparingTo("0");
+        assertNoDrift(before, "paid cancel with a coupon");
+        assertJournalBalanced("paid cancel with a coupon");
+
+        // the per-user limit no longer counts the cancelled order: c can redeem the coupon again
+        Placed again = placeAs(c, "couponCode=ORD02B", 1, p);
+        assertThat(couponRow("ORD02B")).containsEntry("usage_count", 2);
+        assertThat(released(again.orderNumber())).isFalse();
+    }
+
+    private void runV16Backfill() throws Exception {
+        String sql = new String(getClass().getResourceAsStream("/db/migrations/tenant/V16__paid_cancel_coupon_release.sql").readAllBytes());
+        String stmt = sql.substring(sql.indexOf("WITH released AS"), sql.indexOf(";", sql.indexOf("WITH released AS")));
+        jdbc.execute(stmt.replace("UPDATE orders", "UPDATE tenant_acme.orders").replace("UPDATE coupons", "UPDATE tenant_acme.coupons"));
+    }
+
+    @Test
+    void ord02b_v16ReleasesTheRedemptionOfPaidOrdersCancelledBeforeThisReleaseOnce() throws Exception {
+        coupon(acme, "V16", 10);
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_limit = 2 WHERE code = 'V16'");
+        long p = costedProduct("V16 backfill", 20);
+        Placed live = settle(placeAs(customer(acme, "v16-1@acme.test"), "couponCode=V16", 1, p));
+        Placed legacy = settle(placeAs(customer(acme, "v16-2@acme.test"), "couponCode=V16", 1, p));
+        assertThat(status(setStatus(legacy.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        // what a paid cancel left behind before ORD-02b: the redemption still held, the coupon switched off at its limit
+        jdbc.update("UPDATE tenant_acme.orders SET coupon_redemption_released = false WHERE order_number = ?", legacy.orderNumber());
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = 2, is_active = false, limit_deactivated = true WHERE code = 'V16'");
+        // an unpaid cancelled order (released at its cancel) and a paid order with a NULL delivery status stay as they are
+        Placed unpaid = placeAs(customer(acme, "v16-3@acme.test"), null, 1, p);
+        assertThat(status(setStatus(unpaid.orderNumber(), "CANCELLED"))).isEqualTo(200);
+
+        runV16Backfill();
+        assertThat(released(legacy.orderNumber())).isTrue();
+        assertThat(released(live.orderNumber())).isFalse();
+        assertThat(couponRow("V16")).containsEntry("usage_count", 1).containsEntry("is_active", true).containsEntry("limit_deactivated", false);
+        runV16Backfill();
+        assertThat(couponRow("V16")).as("idempotent").containsEntry("usage_count", 1);
+
+        // a coupon an admin switched off (not limit-deactivated) is never switched back on
+        jdbc.update("UPDATE tenant_acme.orders SET coupon_redemption_released = false WHERE order_number = ?", legacy.orderNumber());
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_count = 2, is_active = false, limit_deactivated = false WHERE code = 'V16'");
+        jdbc.update("UPDATE tenant_acme.orders SET delivery_status = NULL WHERE order_number = ?", live.orderNumber());
+        runV16Backfill();
+        assertThat(couponRow("V16")).containsEntry("usage_count", 1).containsEntry("is_active", false);
+        assertThat(released(live.orderNumber())).isFalse();
+    }
+
+    @Test
+    void ord02b_latePaymentOnAMerchantCancelledOrderIsBookedOnceAndItsRefundAckClearsIt() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("lp-1@acme.test", 2);
+        BigDecimal total = total(o.orderNumber());
+        assertThat(status(setStatus(o.orderNumber(), "CANCELLED"))).isEqualTo(200);
+        BigDecimal cashBefore = accountBalance("CASH");
+        BigDecimal owedBefore = accountBalance("REFUND_PAYABLE");
+        Map<String, BigDecimal> before = drift();
+
+        // Paystack redelivers: three simultaneous deliveries, then a late one
+        assertThat(duplicateDeliveries(g, o, 3)).containsOnly(200);
+        assertThat(webhook(g, event("charge.success", o.reference(), minor(o.orderNumber())))).isEqualTo(200);
+        awaitBackgroundIdle();
+
+        assertThat(refundRequired(o.orderNumber())).isTrue();
+        assertThat(orderStatus(acme, o.orderNumber())).isEqualTo("CANCELLED");
+        assertThat(entries(o.orderNumber(), "LATE_PAYMENT")).as("booked exactly once").isEqualTo(1);
+        assertThat(entries(o.orderNumber(), "SALE")).as("no sale").isZero();
+        assertThat(net(o.orderNumber(), "SALES_REVENUE")).isEqualByComparingTo("0");
+        assertThat(net(o.orderNumber(), "CASH")).as("cash debited").isEqualByComparingTo(total.negate());
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).as("refund owed credited").isEqualByComparingTo(total);
+        assertThat(accountBalance("CASH")).isEqualByComparingTo(cashBefore.add(total));
+        assertThat(accountBalance("REFUND_PAYABLE")).isEqualByComparingTo(owedBefore.add(total));
+        assertNoDrift(before, "late payment booked");
+        assertJournalBalanced("late payment booked");
+
+        assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
+        assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+        assertThat(net(o.orderNumber(), "CASH")).isEqualByComparingTo("0");
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo("0");
+        assertThat(accountBalance("CASH")).isEqualByComparingTo(cashBefore);
+        assertThat(accountBalance("REFUND_PAYABLE")).isEqualByComparingTo(owedBefore);
+        assertThat(code(ack(o.orderNumber()))).isEqualTo("REFUND_NOT_REQUIRED");
+        assertThat(webhook(g, event("charge.success", o.reference(), minor(o.orderNumber())))).as("redelivery after the ack").isEqualTo(200);
+        awaitBackgroundIdle();
+        assertThat(entries(o.orderNumber(), "LATE_PAYMENT")).isEqualTo(1);
+        assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+        assertNoDrift(before, "late payment refunded");
+        assertJournalBalanced("late payment refunded");
+    }
+
+    @Test
+    void ord02b_latePaymentWithoutStockIsBookedOnceAndItsAckHonoursInsufficientCash() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("lp-2@acme.test", 6);
+        BigDecimal total = total(o.orderNumber());
+        assertThat(status(cancel(o.c(), o.orderNumber()))).isEqualTo(200);
+        // someone else takes the stock meanwhile: the late payment cannot revive the order
+        jdbc.update("UPDATE tenant_acme.inventory_layers SET remaining_quantity = 0 WHERE product_id = ?", o.products().get(0));
+        Map<String, BigDecimal> before = drift();
+
+        assertThat(duplicateDeliveries(g, o, 3)).containsOnly(200);
+        awaitBackgroundIdle();
+        assertThat(refundRequired(o.orderNumber())).isTrue();
+        assertThat(orderStatus(acme, o.orderNumber())).isEqualTo("CANCELLED");
+        assertThat(entries(o.orderNumber(), "LATE_PAYMENT")).isEqualTo(1);
+        assertThat(entries(o.orderNumber(), "SALE")).isZero();
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo(total);
+        assertNoDrift(before, "late payment without stock");
+        assertJournalBalanced("late payment without stock");
+
+        BigDecimal cash = accountBalance("CASH");
+        BigDecimal low = total.subtract(new BigDecimal("0.01"));
+        jdbc.update("UPDATE tenant_acme.ledger_accounts SET balance = ? WHERE category = 'CASH'", low);
+        try {
+            MvcResult r = ack(o.orderNumber());
+            assertThat(status(r)).as(r.getResponse().getContentAsString()).isEqualTo(409);
+            assertThat(code(r)).isEqualTo("INSUFFICIENT_CASH");
+            assertThat(new BigDecimal(body(r).at("/data/attemptedAmount").asText())).isEqualByComparingTo(total);
+            assertThat(new BigDecimal(body(r).at("/data/currentBalance").asText())).isEqualByComparingTo(low);
+            assertThat(accountBalance("CASH")).isEqualByComparingTo(low);
+            assertThat(entries(o.orderNumber(), "REFUND")).isZero();
+            assertThat(refundRequired(o.orderNumber())).isTrue();
+        } finally {
+            jdbc.update("UPDATE tenant_acme.ledger_accounts SET balance = ? WHERE category = 'CASH'", cash);
+        }
+        assertThat(status(ack(o.orderNumber()))).isEqualTo(200);
+        assertThat(entries(o.orderNumber(), "REFUND")).isEqualTo(1);
+        assertThat(net(o.orderNumber(), "REFUND_PAYABLE")).isEqualByComparingTo("0");
+        assertThat(net(o.orderNumber(), "CASH")).isEqualByComparingTo("0");
+        assertNoDrift(before, "late payment without stock refunded");
+        assertJournalBalanced("late payment without stock refunded");
+    }
+
+    @Test
+    void ord02b_aDeliveredOrderIsNotReturnableOrCancellableToday() throws Exception {
+        Placed o = placePaid("dl-1@acme.test", 1);
+        assertThat(status(setStatus(o.orderNumber(), "DELIVERED"))).isEqualTo(200);
+        MvcResult cancel = setStatus(o.orderNumber(), "CANCELLED");
+        assertThat(status(cancel)).isEqualTo(400);
+        assertThat(code(cancel)).isEqualTo("ORDER_FINAL_STATE");
+        MvcResult ret = returnReceived(o.orderNumber());
+        assertThat(status(ret)).isEqualTo(409);
+        assertThat(code(ret)).isEqualTo("RETURN_NOT_APPLICABLE");
+        assertThat(body(ret).at("/data/deliveryStatus").asText()).isEqualTo("DELIVERED");
+        assertThat(body(ret).at("/data/paymentStatus").asText()).isEqualTo("COMPLETED");
+        MvcResult refund = ack(o.orderNumber());
+        assertThat(status(refund)).isEqualTo(409);
+        assertThat(code(refund)).isEqualTo("REFUND_NOT_REQUIRED");
+        MvcResult own = cancel(o.c(), o.orderNumber());
+        assertThat(status(own)).isEqualTo(409);
+        assertThat(code(own)).isEqualTo("ORDER_NOT_CANCELLABLE");
+        assertThat(entries(o.orderNumber(), "SALE")).isEqualTo(1);
+        assertThat(entries(o.orderNumber(), "SALE_REVERSAL")).isZero();
     }
 
     private String detailSpent(Customer c) throws Exception {

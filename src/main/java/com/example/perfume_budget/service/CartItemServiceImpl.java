@@ -54,8 +54,9 @@ public class CartItemServiceImpl implements CartItemService {
         if(product.getStockQuantity() == 0){
             throw new ResourceNotFoundException(PRODUCT_OUT_OF_STOCK);
         }
-        // Get my cart
-        Cart myCart = cartUtil.getCurrentUserCart();
+        // Get my cart (CAT-03: created race-free if missing, and row-locked so this customer's concurrent adds queue
+        // here: the line read below and the write after it cannot interleave with another add of the same product)
+        Cart myCart = cartUtil.getCurrentUserCartForUpdate();
 
         Optional<CartItem> existingCartItem = cartItemRepository.findByProductIdAndCartId(product.getId(), myCart.getId());
 

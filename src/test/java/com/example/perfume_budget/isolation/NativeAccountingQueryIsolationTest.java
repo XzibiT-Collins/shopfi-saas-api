@@ -76,8 +76,9 @@ class NativeAccountingQueryIsolationTest extends AbstractTenantIsolationTest {
         TestTenant bravo = tenants.bravo();
         seedEntry(acme, "JE-QA-ACME-JPQL", "SALE", "SALES_REVENUE", new BigDecimal("1.00"), "CREDIT");
         seedEntry(bravo, "JE-QA-BRAVO-JPQL", "SALE", "SALES_REVENUE", new BigDecimal("2.00"), "CREDIT");
-        var a = tenants.runAs(acme, () -> journalRepo.findAllByDateRange(START, END));
-        var b = tenants.runAs(bravo, () -> journalRepo.findAllByDateRange(START, END));
+        var page = org.springframework.data.domain.PageRequest.of(0, 50);
+        var a = tenants.runAs(acme, () -> journalRepo.findWithLinesByIdIn(journalRepo.findIdPageByDateRange(START, END, page).getContent()));
+        var b = tenants.runAs(bravo, () -> journalRepo.findWithLinesByIdIn(journalRepo.findIdPageByDateRange(START, END, page).getContent()));
         assertThat(a).extracting("entryNumber").contains("JE-QA-ACME-JPQL").doesNotContain("JE-QA-BRAVO-JPQL");
         assertThat(b).extracting("entryNumber").contains("JE-QA-BRAVO-JPQL").doesNotContain("JE-QA-ACME-JPQL");
     }

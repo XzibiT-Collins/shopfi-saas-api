@@ -396,7 +396,7 @@ class LazyLoadSweepIntegrationTest extends AbstractCheckoutIntegrationTest {
 
         List<JsonNode> results = List.of(
                 okData(asAdmin(get("/api/v1/admin/accounting/journal-entries").param("startDate", LocalDate.now().minusDays(1).toString())
-                        .param("endDate", LocalDate.now().plusDays(1).toString())), "journal entries " + today),
+                        .param("endDate", LocalDate.now().plusDays(1).toString())), "journal entries " + today).get("content"), // CAT-03: paged
                 okData(asAdmin(get("/api/v1/admin/accounting/journal-entries/reference").param("referenceType", "ORDER")
                         .param("referenceId", "R1" + tag)), "by reference"),
                 okData(asAdmin(get("/api/v1/admin/accounting/journal-entries/manual")), "manual"));
@@ -420,7 +420,8 @@ class LazyLoadSweepIntegrationTest extends AbstractCheckoutIntegrationTest {
         journalEntry(true, "R3" + tag);
 
         List<List<JournalEntry>> reads = tenants.runAs(acme, () -> List.of(
-                journalEntryRepository.findAllByDateRange(LocalDate.now().minusDays(1).atStartOfDay(), LocalDate.now().plusDays(1).atStartOfDay()),
+                journalEntryRepository.findWithLinesByIdIn(journalEntryRepository.findIdPageByDateRange(LocalDate.now().minusDays(1).atStartOfDay(),
+                        LocalDate.now().plusDays(1).atStartOfDay(), org.springframework.data.domain.PageRequest.of(0, 50)).getContent()),
                 journalEntryRepository.findByReferenceTypeAndReferenceId("ORDER", "R2" + tag),
                 journalEntryRepository.findByIsManualTrueOrderByTransactionDateDesc()));
 

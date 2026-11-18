@@ -1,6 +1,8 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.accounts.request.DateRangeRequest;
+import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.dto.accounts.response.*;
 import com.example.perfume_budget.enums.AccountCategory;
 import com.example.perfume_budget.enums.AccountType;
@@ -12,8 +14,13 @@ import com.example.perfume_budget.projection.DailyCashFlowProjection;
 import com.example.perfume_budget.repository.JournalEntryRepository;
 import com.example.perfume_budget.repository.LedgerAccountRepository;
 import com.example.perfume_budget.service.interfaces.AccountingReportService;
+import com.example.perfume_budget.utils.PaginationUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -212,14 +219,39 @@ public class AccountingReportServiceImpl implements AccountingReportService {
     }
 
     @Override
-    public List<JournalEntryResponse> getJournalEntries(DateRangeRequest dateRange) {
+    public PageResponse<JournalEntryResponse> getJournalEntries(DateRangeRequest dateRange, Pageable pageable) {
+        if (dateRange.startDate().isAfter(dateRange.endDate())) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_RANGE", "'startDate' must not be after 'endDate'.");
+        }
+        Pageable page = journalPage(pageable);
+        // both days whole: [startDate 00:00, endDate + 1 day 00:00) (was BETWEEN ... endDate 23:59:59, which lost the
+        // entries of the last second's fractions)
         LocalDateTime start = dateRange.startDate().atStartOfDay();
-        LocalDateTime end = dateRange.endDate().atTime(23, 59, 59);
+        LocalDateTime end = dateRange.endDate().plusDays(1).atStartOfDay();
 
-        return journalEntryRepository.findAllByDateRange(start, end)
-                .stream()
-                .map(this::toJournalEntryResponse)
-                .toList();
+        Page<Long> ids = journalEntryRepository.findIdPageByDateRange(start, end, page);
+        Map<Long, JournalEntry> byId = ids.isEmpty() ? Map.of()
+                : journalEntryRepository.findWithLinesByIdIn(ids.getContent()).stream()
+                        .collect(Collectors.toMap(JournalEntry::getId, e -> e));
+        return PaginationUtil.createPageResponse(ids.map(id -> toJournalEntryResponse(byId.get(id))));
+    }
+
+    /**
+     * CAT-03: the admin order list's paging rules (OrderServiceImpl: MAX_PAGE, MAX_PAGE_SIZE, MAX_OFFSET), so the
+     * journal cannot be read in one unbounded response. The order is fixed (the query's newest first, id tie-break); a
+     * {@code sort} parameter is ignored, like the order audit-events list.
+     */
+    private static Pageable journalPage(Pageable pageable) {
+        if (pageable.getPageNumber() > OrderServiceImpl.MAX_PAGE) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "page must be <= " + OrderServiceImpl.MAX_PAGE + ".");
+        }
+        int size = Math.min(pageable.getPageSize(), OrderServiceImpl.MAX_PAGE_SIZE);
+        if ((long) pageable.getPageNumber() * size >= OrderServiceImpl.MAX_OFFSET) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_PAGE",
+                    "page * size must be below " + OrderServiceImpl.MAX_OFFSET + ": narrow the date range instead.",
+                    Map.of("maxOffset", OrderServiceImpl.MAX_OFFSET, "size", size));
+        }
+        return PageRequest.of(pageable.getPageNumber(), size);
     }
 
     @Override

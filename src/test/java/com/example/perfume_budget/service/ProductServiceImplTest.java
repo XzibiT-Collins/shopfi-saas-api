@@ -180,6 +180,31 @@ class ProductServiceImplTest {
     }
 
     @Test
+    void createProduct_NewFamily_DrawsAnotherSuffixWhenTheFamilyCodeIsTaken() {
+        // ORD-02b: the family code is <prefix>-<3 random digits>; a code already in use (unique family_code / sku) is
+        // redrawn instead of failing the create (ConcurrentTenantLoadTest flake: same prefix, same suffix -> 409)
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
+        when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
+        when(unitOfMeasureRepository.findByCode("EA")).thenReturn(Optional.of(eachUom));
+        List<String> checked = new java.util.ArrayList<>();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenAnswer(i -> {
+            checked.add(i.getArgument(0));
+            return checked.size() < 3; // the first two draws are taken
+        });
+        when(productFamilyRepository.save(any(ProductFamily.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(productRepository.save(any(Product.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        productService.createProduct(request);
+
+        ArgumentCaptor<Product> saved = ArgumentCaptor.forClass(Product.class);
+        verify(productRepository).save(saved.capture());
+        assertEquals(3, checked.size());
+        assertEquals(checked.get(2), saved.getValue().getFamily().getFamilyCode(), "the free code is the one used");
+        assertEquals(checked.get(2) + "-EA", saved.getValue().getSku());
+    }
+
+    @Test
     void createProduct_ExistingFamilyVariant_CalculatesSkuAndCostFromBaseUnit() {
         ProductRequest request = buildRequest(false, 5L, "BOX", 12, new BigDecimal("80.00"), false);
 

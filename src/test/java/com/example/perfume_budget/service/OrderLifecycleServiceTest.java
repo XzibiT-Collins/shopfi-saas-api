@@ -21,6 +21,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -291,6 +292,39 @@ class OrderLifecycleServiceTest {
         admin(OrderProcessingStatus.CANCELLED, null);
         verify(bookkeeping).recordSaleReversal(order, true, false, "boss@shop.test");
         verify(inventory, never()).restockConsumedOrderInventory(any());
+    }
+
+    // ------------------------------------------------------------------------------------------------------ ORD-02b
+
+    @Test
+    void paidCancelGivesTheCouponRedemptionBackAfterTheBooks() {
+        for (OrderProcessingStatus from : new OrderProcessingStatus[]{OrderProcessingStatus.PENDING,
+                OrderProcessingStatus.PACKING, OrderProcessingStatus.OUT_FOR_DELIVERY}) {
+            clearInvocations(bookkeeping, couponRedemptionService, orderRepository);
+            paid(from);
+            admin(OrderProcessingStatus.CANCELLED, null);
+            // coupon LAST (its UPDATE is deferred to commit anyway): after the stock and ledger writes, before the save
+            org.mockito.InOrder io = inOrder(bookkeeping, couponRedemptionService, orderRepository);
+            io.verify(bookkeeping).recordSaleReversal(eq(order), eq(true), anyBoolean(), eq("boss@shop.test"));
+            io.verify(couponRedemptionService).releaseForOrder(order);
+            io.verify(orderRepository).saveAndFlush(order);
+        }
+    }
+
+    @Test
+    void repeatedPaidCancelReleasesTheCouponOnce() {
+        paid(OrderProcessingStatus.PACKING);
+        admin(OrderProcessingStatus.CANCELLED, null);
+        admin(OrderProcessingStatus.CANCELLED, null); // same status: no-op
+        verify(couponRedemptionService, times(1)).releaseForOrder(any());
+    }
+
+    @Test
+    void aStatusChangeOfAPaidOrderKeepsTheCoupon() {
+        paid(OrderProcessingStatus.PENDING);
+        admin(OrderProcessingStatus.PACKING, null);
+        admin(OrderProcessingStatus.DELIVERED, null);
+        verifyNoInteractions(couponRedemptionService);
     }
 
     @Test

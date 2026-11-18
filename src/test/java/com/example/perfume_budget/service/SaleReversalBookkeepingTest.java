@@ -44,6 +44,8 @@ class SaleReversalBookkeepingTest {
 
     private final Map<AccountCategory, LedgerAccount> byCategory = new EnumMap<>(AccountCategory.class);
     private final Order order = Order.builder().orderNumber("PB-1").build();
+    /** The automatic entries that put money into Refunds Payable for an order (ORD-02b: also a late payment). */
+    private static final List<JournalEntryType> OWED_BY = List.of(JournalEntryType.SALE_REVERSAL, JournalEntryType.LATE_PAYMENT);
 
     private LedgerAccount account(long id, AccountCategory c, AccountType t, String balance) {
         LedgerAccount a = LedgerAccount.builder().id(id).code("C" + id).name(c.name()).category(c).type(t)
@@ -182,7 +184,7 @@ class SaleReversalBookkeepingTest {
     @Test
     void refundPaidSettlesWhatIsStillOwedOnce() {
         byCategory.get(AccountCategory.REFUND_PAYABLE).setBalance(new BigDecimal("205.00"));
-        when(journal.sumOrderLines("PB-1", JournalEntryType.SALE_REVERSAL, AccountCategory.REFUND_PAYABLE, EntryType.CREDIT))
+        when(journal.sumOrderLinesOfTypes("PB-1", OWED_BY, AccountCategory.REFUND_PAYABLE, EntryType.CREDIT))
                 .thenReturn(new BigDecimal("205.00"));
         when(journal.sumOrderLines("PB-1", JournalEntryType.REFUND, AccountCategory.REFUND_PAYABLE, EntryType.DEBIT))
                 .thenReturn(BigDecimal.ZERO);
@@ -196,7 +198,7 @@ class SaleReversalBookkeepingTest {
 
     @Test
     void refundPaidPostsNothingWhenNothingIsOwed() {
-        when(journal.sumOrderLines(eq("PB-1"), eq(JournalEntryType.SALE_REVERSAL), any(), any())).thenReturn(new BigDecimal("205.00"));
+        when(journal.sumOrderLinesOfTypes(eq("PB-1"), eq(OWED_BY), any(), any())).thenReturn(new BigDecimal("205.00"));
         when(journal.sumOrderLines(eq("PB-1"), eq(JournalEntryType.REFUND), any(), any())).thenReturn(new BigDecimal("205.00"));
         assertThat(service.recordRefundPaid(order, "x")).isFalse();
         verify(journal, never()).save(any());
@@ -226,7 +228,7 @@ class SaleReversalBookkeepingTest {
     void refundWithTooLittleCashIsA409InsufficientCashWithTheBalanceAndAmount() {
         byCategory.get(AccountCategory.CASH).setBalance(new BigDecimal("100.00"));
         byCategory.get(AccountCategory.REFUND_PAYABLE).setBalance(new BigDecimal("205.00"));
-        when(journal.sumOrderLines("PB-1", JournalEntryType.SALE_REVERSAL, AccountCategory.REFUND_PAYABLE, EntryType.CREDIT))
+        when(journal.sumOrderLinesOfTypes("PB-1", OWED_BY, AccountCategory.REFUND_PAYABLE, EntryType.CREDIT))
                 .thenReturn(new BigDecimal("205.00"));
         when(journal.sumOrderLines("PB-1", JournalEntryType.REFUND, AccountCategory.REFUND_PAYABLE, EntryType.DEBIT))
                 .thenReturn(BigDecimal.ZERO);
@@ -246,5 +248,70 @@ class SaleReversalBookkeepingTest {
         byCategory.get(AccountCategory.SALES_REVENUE).setBalance(new BigDecimal("50.00"));
         assertThat(service.recordSaleReversal(order, true, false, "x")).isTrue();
         assertThat(balance(AccountCategory.SALES_REVENUE)).isEqualByComparingTo("-150.00");
+    }
+
+    // ------------------------------------------------------------------ ORD-02b: late payment on a closed order
+
+    private com.example.perfume_budget.model.Payment latePayment() {
+        return com.example.perfume_budget.model.Payment.builder().amount(new BigDecimal("205.00"))
+                .paidAt(java.time.LocalDateTime.of(2026, 11, 18, 10, 0)).build();
+    }
+
+    @Test
+    void latePaymentBooksTheCashAgainstRefundsPayableWithoutASale() {
+        assertThat(service.recordLatePaymentReceived(order, latePayment())).isTrue();
+        JournalEntry e = posted();
+        assertThat(e.getType()).isEqualTo(JournalEntryType.LATE_PAYMENT);
+        assertThat(e.getReferenceType()).isEqualTo("ORDER");
+        assertThat(e.getReferenceId()).isEqualTo("PB-1");
+        assertThat(e.getIsManual()).isFalse();
+        assertThat(e.getTransactionDate()).isEqualTo(java.time.LocalDateTime.of(2026, 11, 18, 10, 0));
+        assertThat(e.getLines()).hasSize(2);
+        assertThat(e.getLines()).anySatisfy(l -> {
+            assertThat(l.getAccount().getCategory()).isEqualTo(AccountCategory.CASH);
+            assertThat(l.getEntryType()).isEqualTo(EntryType.DEBIT);
+            assertThat(l.getAmount()).isEqualByComparingTo("205.00");
+        });
+        assertThat(e.getLines()).anySatisfy(l -> {
+            assertThat(l.getAccount().getCategory()).isEqualTo(AccountCategory.REFUND_PAYABLE);
+            assertThat(l.getEntryType()).isEqualTo(EntryType.CREDIT);
+            assertThat(l.getAmount()).isEqualByComparingTo("205.00");
+        });
+        assertThat(balance(AccountCategory.CASH)).isEqualByComparingTo("410.00");
+        assertThat(balance(AccountCategory.REFUND_PAYABLE)).isEqualByComparingTo("205.00");
+        assertThat(balance(AccountCategory.SALES_REVENUE)).as("no revenue is recognised").isEqualByComparingTo("200.00");
+        verify(accounts, never()).applyBalanceDelta(eq(2L), any());
+    }
+
+    @Test
+    void aLatePaymentIsBookedAtMostOncePerOrder() {
+        when(journal.countOrderLines("PB-1", JournalEntryType.LATE_PAYMENT, AccountCategory.REFUND_PAYABLE)).thenReturn(1L);
+        assertThat(service.recordLatePaymentReceived(order, latePayment())).isFalse();
+        verify(journal, never()).save(any());
+        verify(accounts, never()).applyBalanceDelta(any(), any());
+    }
+
+    @Test
+    void aLatePaymentWithoutAnAmountBooksNothing() {
+        assertThat(service.recordLatePaymentReceived(order, com.example.perfume_budget.model.Payment.builder().build())).isFalse();
+        assertThat(service.recordLatePaymentReceived(order, com.example.perfume_budget.model.Payment.builder()
+                .amount(BigDecimal.ZERO).build())).isFalse();
+        verify(journal, never()).save(any());
+    }
+
+    @Test
+    void refundPaidSettlesWhatALatePaymentPutIntoRefundsPayable() {
+        byCategory.get(AccountCategory.REFUND_PAYABLE).setBalance(new BigDecimal("205.00"));
+        // the only owed money of this order comes from the LATE_PAYMENT entry (part of OWED_BY)
+        when(journal.sumOrderLinesOfTypes("PB-1", OWED_BY, AccountCategory.REFUND_PAYABLE, EntryType.CREDIT))
+                .thenReturn(new BigDecimal("205.00"));
+        when(journal.sumOrderLines("PB-1", JournalEntryType.REFUND, AccountCategory.REFUND_PAYABLE, EntryType.DEBIT))
+                .thenReturn(BigDecimal.ZERO);
+        assertThat(service.recordRefundPaid(order, "boss@shop.test")).isTrue();
+        JournalEntry e = posted();
+        assertThat(sum(e, EntryType.DEBIT)).isEqualByComparingTo("205.00");
+        assertThat(sum(e, EntryType.CREDIT)).isEqualByComparingTo("205.00");
+        assertThat(balance(AccountCategory.REFUND_PAYABLE)).isEqualByComparingTo("0");
+        assertThat(balance(AccountCategory.CASH)).isEqualByComparingTo("0");
     }
 }
