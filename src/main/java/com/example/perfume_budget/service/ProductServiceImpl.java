@@ -94,12 +94,33 @@ public class ProductServiceImpl implements ProductService {
         return createNewProduct(newProduct, request, size);
     }
 
+    /** ORD-02b: draws per new family before giving up (the unique constraint then reports the clash). */
+    static final int FAMILY_CODE_ATTEMPTS = 10;
+
+    /**
+     * ORD-02b: the family code is a 3-letter prefix plus 3 random digits, so families with the same prefix (same brand,
+     * or names like "X Item1", "X Item2") collide by chance; a taken code is redrawn instead of failing the create with
+     * the family_code / sku unique constraint. A concurrent create can still take the same code between the check and
+     * the insert: the constraint then refuses it as before.
+     */
+    private String unusedFamilyCode(ProductRequest request) {
+        String code = null;
+        for (int attempt = 0; attempt < FAMILY_CODE_ATTEMPTS; attempt++) {
+            code = ProductCodeGenerator.generateFamilyCode(request.productName(), request.brand(), request.size());
+            if (!productFamilyRepository.existsByFamilyCode(code)) {
+                return code;
+            }
+        }
+        log.warn("No free family code after {} draws for prefix of {}", FAMILY_CODE_ATTEMPTS, code);
+        return code;
+    }
+
     private ProductDetails createNewProduct(Product newProduct, ProductRequest request, String size) {
         ProductFamily family;
         UnitOfMeasure uom;
         if (Boolean.TRUE.equals(request.isNewProduct())) {
             // SCENARIO 1: New Product (Creates new family + base EA variant)
-            String familyCode = ProductCodeGenerator.generateFamilyCode(request.productName(), request.brand(), request.size());
+            String familyCode = unusedFamilyCode(request);
             family = ProductFamily.builder()
                     .familyCode(familyCode)
                     .name(request.productName() + size)

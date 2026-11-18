@@ -13,6 +13,8 @@ import java.util.Optional;
 public interface ProductFamilyRepository extends JpaRepository<ProductFamily, Long> {
     Optional<ProductFamily> findByFamilyCode(String familyCode);
 
+    boolean existsByFamilyCode(String familyCode);
+
     /*
      * CAT-02: open-in-view is off and ProductFamily.baseUnit is LAZY: the admin family reads map the base unit outside a
      * transaction, so load it in the same query (entity graph = one left join, no N+1).

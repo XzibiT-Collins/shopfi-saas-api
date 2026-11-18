@@ -115,7 +115,7 @@ public class BookkeepingService {
      * returned-goods part (COGS / inventory) are independent and each is posted at most once per order, so a repeated
      * call, a later "return received" or a retried transaction never reverses twice. Mirrors the SALE lines exactly
      * (same amounts), so the books net to zero for the order. Nothing is posted when no SALE entry exists (e.g. a
-     * payment that arrived after the order was closed is never booked as a sale).
+     * payment that arrived after the order was closed is never booked as a sale; ORD-02b books it as a LATE_PAYMENT).
      *
      * <p>The caller holds the order row lock; the ledger account rows are locked last, in ascending id order, by
      * {@link #updateAccountBalances}.
@@ -185,9 +185,10 @@ public class BookkeepingService {
     }
 
     /**
-     * ORD-02: the shop confirmed it refunded the customer by hand. Settles what {@link #recordSaleReversal} put into
-     * REFUND_PAYABLE for this order (debit refunds payable, credit cash), once: the amount is what is still owed, so a
-     * repeat posts nothing. Nothing is posted when no reversal was booked. 409 INSUFFICIENT_CASH (nothing posted, the
+     * ORD-02: the shop confirmed it refunded the customer by hand. Settles what {@link #recordSaleReversal} (paid cancel)
+     * or {@link #recordLatePaymentReceived} (ORD-02b, late payment on a closed order) put into REFUND_PAYABLE for this
+     * order (debit refunds payable, credit cash), once: the amount is what is still owed, so a repeat posts nothing.
+     * Nothing is posted when nothing was booked (e.g. a late payment settled before ORD-02b). 409 INSUFFICIENT_CASH (nothing posted, the
      * transaction rolls back) when Cash and Bank would go negative.
      *
      * @return true when an entry was posted
@@ -195,7 +196,7 @@ public class BookkeepingService {
     @Transactional
     public boolean recordRefundPaid(Order order, String recordedBy) {
         String orderNumber = order.getOrderNumber();
-        BigDecimal owed = journalEntryRepository.sumOrderLines(orderNumber, JournalEntryType.SALE_REVERSAL,
+        BigDecimal owed = journalEntryRepository.sumOrderLinesOfTypes(orderNumber, REFUND_OWED_BY,
                         AccountCategory.REFUND_PAYABLE, EntryType.CREDIT)
                 .subtract(journalEntryRepository.sumOrderLines(orderNumber, JournalEntryType.REFUND,
                         AccountCategory.REFUND_PAYABLE, EntryType.DEBIT));
@@ -238,6 +239,57 @@ public class BookkeepingService {
                     data);
         }
         log.info("Refund payment recorded for order {}", orderNumber);
+        return true;
+    }
+
+    /** ORD-02b: the automatic entries of an order that put money into Refunds Payable (what a refund ack settles). */
+    static final List<JournalEntryType> REFUND_OWED_BY = List.of(JournalEntryType.SALE_REVERSAL, JournalEntryType.LATE_PAYMENT);
+
+    /**
+     * ORD-02b (PO decision: book it): a payment collected for an order that was already closed and is not revived
+     * (merchant cancel, or no stock to re-reserve) is real money in the shop that is owed back. One LATE_PAYMENT entry,
+     * dated at the payment: debit Cash and Bank, credit Refunds Payable, for the amount the provider collected (the
+     * settlement only applies a success whose amount matches the payment). No revenue, tax, discount or COGS: there was
+     * no sale. {@link #recordRefundPaid} later clears both lines.
+     *
+     * <p>At most once per order: the settlement only gets here for a payment that was not COMPLETED yet (re-read under
+     * the order row lock, so duplicate webhooks / verify polls / retried attempts see COMPLETED and do nothing), and
+     * this method itself posts nothing when the order already has a LATE_PAYMENT line on Refunds Payable. A rolled back
+     * attempt (lock timeout, deadline) rolls the entry back with it. The ledger rows are locked last, in id order.
+     *
+     * @return true when an entry was posted
+     */
+    @Transactional
+    public boolean recordLatePaymentReceived(Order order, Payment payment) {
+        String orderNumber = order.getOrderNumber();
+        BigDecimal amount = payment.getAmount();
+        if (amount == null || amount.signum() <= 0) {
+            log.warn("Late payment of order {} has no amount: nothing booked", orderNumber);
+            return false;
+        }
+        if (journalEntryRepository.countOrderLines(orderNumber, JournalEntryType.LATE_PAYMENT, AccountCategory.REFUND_PAYABLE) > 0) {
+            return false;
+        }
+        LedgerAccount cash = getAccount(AccountCategory.CASH, false);
+        LedgerAccount refundPayable = getAccount(AccountCategory.REFUND_PAYABLE, false);
+        JournalEntry entry = JournalEntry.builder()
+                .entryNumber(entryNumberGenerator.generate())
+                .description("Late payment received for closed order: " + orderNumber)
+                .type(JournalEntryType.LATE_PAYMENT)
+                .referenceType("ORDER")
+                .referenceId(orderNumber)
+                .isManual(false)
+                .recordedBy("System")
+                .transactionDate(payment.getPaidAt() != null ? payment.getPaidAt() : LocalDateTime.now())
+                .build();
+        List<JournalEntryLine> lines = new ArrayList<>();
+        lines.add(buildLines(entry, cash, EntryType.DEBIT, amount, "Payment received after the order was closed: " + orderNumber));
+        lines.add(buildLines(entry, refundPayable, EntryType.CREDIT, amount, "Refund owed to the customer for order: " + orderNumber));
+        entry.setLines(lines);
+        validateEntry(lines, false);
+        journalEntryRepository.save(entry);
+        updateAccountBalances(lines, false);
+        log.info("Late payment of closed order {} booked as refund owed", orderNumber);
         return true;
     }
 
