@@ -359,6 +359,14 @@ lines they had loaded and the cart row last, the reverse of add-item: an add-ite
 deadlocked with them (`503 TRY_AGAIN` or a settlement retry), and a line added in between made the cart delete fail on
 `fk_cart_items_on_cart` (clear `409`, webhook `500` until Paystack redelivered). Now a clear / settlement racing an
 add-item waits for it and removes its line too; an add-item arriving after the cart was deleted starts a new cart.
+(Rework 1, F-A) A cart can also vanish while a request is creating it: the request found no cart, another request's
+cart won the race-free insert (`ON CONFLICT DO NOTHING` inserted nothing), and a clear / settlement deleted that cart
+before the re-read. Add-item, populate and get cart then insert again, at most 3 rounds (each round either inserts the
+request's own cart or saw a cart deleted in between), and only a cart that keeps vanishing answers `503 TRY_AGAIN`
+(`Retry-After: 1`, nothing changed), never the former `500`. Update quantity and remove line never create a cart: with
+no cart (never had one, or a clear / settlement just deleted it) the line does not exist, `404` "Cart item not found or
+does not belong to you", and no empty cart is left behind. (F-D) Payment success empties the cart of the order's own
+user (by id), not of whoever has the payment's checkout-time e-mail address; an order without a user touches no cart.
 Checkout only READS the cart (no cart lock: it would be held across the Paystack call) under its customer row lock.
 Global order, no path inverts it: customer row (checkout) -> order row (settlement, cancel, expiry) -> payment row ->
 cart row -> cart lines -> product rows by id -> location ledger -> ledger accounts by id -> coupon row last. No

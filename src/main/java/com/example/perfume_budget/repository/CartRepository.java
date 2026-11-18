@@ -11,7 +11,6 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -53,11 +52,6 @@ public interface CartRepository extends JpaRepository<Cart, Long> {
      */
     @Query(value = "SELECT id FROM carts WHERE user_id = :userId FOR UPDATE", nativeQuery = true)
     Optional<Long> lockIdForDeleteByUserId(@Param("userId") Long userId);
-
-    /** CAT-04: as {@link #lockIdForDeleteByUserId}, for the cart of the user with this e-mail (payment settlement). */
-    @Query(value = "SELECT c.id FROM carts c JOIN users u ON u.id = c.user_id WHERE u.email = :email "
-            + "ORDER BY c.id FOR UPDATE OF c", nativeQuery = true)
-    List<Long> lockIdsForDeleteByUserEmail(@Param("email") String email);
 
     /** CAT-04: deletes the cart row; its lines must be gone already ({@code fk_cart_items_on_cart}). Lock it first. */
     @Modifying

@@ -1,16 +1,24 @@
 package com.example.perfume_budget.checkout;
 
 import com.example.perfume_budget.model.Product;
+import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.service.EffectivePriceService;
 import com.example.perfume_budget.service.PaymentSettlementService;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.mockito.stubbing.Answer;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +29,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mockingDetails;
@@ -49,6 +59,8 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     @MockitoSpyBean EffectivePriceService effectivePriceService;
     @MockitoSpyBean PaymentSettlementService settlementService;
+    /** CAT-04 rework: parks a cart writer between its cart lookups (JDK-proxy spy: the default answer delegates). */
+    @MockitoSpyBean CartRepository cartRepository;
 
     static final String BLOCK_THREAD = "cat04-add-blocked";
     static volatile CountDownLatch entered;
@@ -71,7 +83,7 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         }).when(effectivePriceService).compute(any(Product.class));
     }
 
-    private record Answer(String what, int status, String body) {
+    private record Reply(String what, int status, String body) {
         @Override public String toString() {
             return what + "=" + status + (status >= 300 ? " " + body.substring(0, Math.min(200, body.length())) : "");
         }
@@ -143,12 +155,21 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
                 + "LEFT JOIN tenant_acme.cart_items ci ON ci.cart_id = ca.id WHERE ca.user_id = ?", c.id());
     }
 
-    /** Some backend waits on a row lock with a statement on {@code carts} (the clear / settlement reached the cart). */
+    /**
+     * Some backend waits on a row lock in CartRemoval's cart-row lock statement ({@code SELECT id FROM carts WHERE
+     * user_id = ? FOR UPDATE}): the clear / settlement queued on the cart row. Rework F-B: was {@code '%from carts%'},
+     * which the old {@code DELETE FROM carts} (lines first, cart last) matched as well.
+     */
     private boolean someoneParkedOnTheCart() throws InterruptedException {
+        return waitersOn("SELECT id FROM carts WHERE user_id%FOR UPDATE", 1);
+    }
+
+    /** At least {@code n} backends wait on a row lock in a statement matching {@code ILIKE '%<pattern>%'} (5 s max). */
+    private boolean waitersOn(String pattern, int n) throws InterruptedException {
         for (int i = 0; i < 50; i++) {
             Thread.sleep(100);
             if (jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
-                    + "AND query ILIKE '%from carts%'", Integer.class) > 0) {
+                    + "AND query ILIKE ?", Integer.class, "%" + pattern + "%") >= n) {
                 return true;
             }
         }
@@ -233,7 +254,7 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     // ---- mixed concurrent probe (reviewer probe P4) ----
 
-    private List<Answer> race(List<Map.Entry<String, Callable<MvcResult>>> calls) throws Exception {
+    private List<Reply> race(List<Map.Entry<String, Callable<MvcResult>>> calls) throws Exception {
         ExecutorService ex = Executors.newFixedThreadPool(calls.size());
         try {
             CountDownLatch ready = new CountDownLatch(calls.size());
@@ -248,10 +269,10 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             }
             assertThat(ready.await(30, TimeUnit.SECONDS)).isTrue();
             go.countDown();
-            List<Answer> out = new ArrayList<>();
+            List<Reply> out = new ArrayList<>();
             for (int i = 0; i < fs.size(); i++) {
                 MvcResult r = fs.get(i).get(90, TimeUnit.SECONDS);
-                out.add(new Answer(calls.get(i).getKey(), r.getResponse().getStatus(), r.getResponse().getContentAsString()));
+                out.add(new Reply(calls.get(i).getKey(), r.getResponse().getStatus(), r.getResponse().getContentAsString()));
             }
             return out;
         } finally {
@@ -260,7 +281,7 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
     }
 
     /** Only business answers: 200, 204 (clear / remove), a 404 for a line that is already gone, a 400 refusal, or OPEN_ORDER_EXISTS. */
-    private static boolean acceptable(Answer a) {
+    private static boolean acceptable(Reply a) {
         return switch (a.status()) {
             case 200 -> true;
             case 204 -> a.what().equals("clear") || a.what().equals("remove");
@@ -275,7 +296,7 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
     void mixedConcurrentCartWritesCheckoutAndSettlement_noDeadlock_no5xx() throws Exception {
         Gateway g = configureGateway(acme);
         List<String> report = new ArrayList<>();
-        List<Answer> bad = new ArrayList<>();
+        List<Reply> bad = new ArrayList<>();
         long d0 = deadlocks();
         for (int round = 0; round < 6; round++) {
             long p1 = product(acme, "CAT04 A" + round, "10.00", 500);
@@ -298,12 +319,12 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             calls.add(Map.entry("get-cart", () -> mvc.perform(as(get("/api/v1/cart"), c)).andReturn()));
             calls.add(Map.entry("clear", () -> clear(c)));
             calls.add(Map.entry("clear", () -> clear(c)));
-            List<Answer> as = race(calls);
+            List<Reply> as = race(calls);
             awaitBackgroundIdle();
             String pay = paymentStatus(o.orderNumber());
             report.add("round " + round + " payment=" + pay + " " + as);
-            for (Answer a : as) if (!acceptable(a)) bad.add(a);
-            if (!"COMPLETED".equals(pay)) bad.add(new Answer("payment-not-completed", 0, pay));
+            for (Reply a : as) if (!acceptable(a)) bad.add(a);
+            if (!"COMPLETED".equals(pay)) bad.add(new Reply("payment-not-completed", 0, pay));
         }
         // first-cart variant: no cart row yet; checkout (user row lock) races the cart creation of add / populate
         for (int round = 0; round < 4; round++) {
@@ -316,17 +337,245 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             calls.add(Map.entry("get-cart", () -> mvc.perform(as(get("/api/v1/cart"), c)).andReturn()));
             calls.add(Map.entry("clear", () -> clear(c)));
             calls.add(Map.entry("remove", () -> mvc.perform(as(delete("/api/v1/cart/items/remove/999999"), c)).andReturn()));
-            List<Answer> as = race(calls);
+            List<Reply> as = race(calls);
             awaitBackgroundIdle();
             int carts = jdbc.queryForObject("SELECT count(*) FROM tenant_acme.carts WHERE user_id = ?", Integer.class, c.id());
             report.add("first-cart round " + round + " carts=" + carts + " " + as);
-            for (Answer a : as) if (!acceptable(a)) bad.add(a);
-            if (carts > 1) bad.add(new Answer("carts>1", carts, ""));
+            for (Reply a : as) if (!acceptable(a)) bad.add(a);
+            if (carts > 1) bad.add(new Reply("carts>1", carts, ""));
         }
         long dl = deadlocksSince(d0);
         report.forEach(l -> System.out.println("CAT04 mixed " + l));
         System.out.println("CAT04 mixed pgDeadlocksDelta=" + dl + " bad=" + bad);
         assertThat(bad).as("no 5xx / 503 TRY_AGAIN / constraint 409 / unsettled payment").isEmpty();
         assertThat(dl).as("pg deadlocks during the mixed probe").isZero();
+    }
+
+    // ---- CAT-04 rework F-A: the cart vanishes between the no-op insert-if-absent and the re-read ----
+
+    static final String VANISH_THREAD = "cat04r1-vanish";
+
+    /** Calls the real repository (the spy of a JDK proxy delegates by default answer; there is no "real method"). */
+    private Object real(org.mockito.invocation.InvocationOnMock inv) throws Throwable {
+        return mockingDetails(cartRepository).getMockCreationSettings().getDefaultAnswer().answer(inv);
+    }
+
+    private static void park(CountDownLatch in, CountDownLatch out) throws InterruptedException {
+        in.countDown();
+        if (!out.await(20, TimeUnit.SECONDS)) throw new IllegalStateException("cat04r1 latch timed out");
+    }
+
+    /**
+     * QA F-A (suite b1, mixed first-cart round): request R on {@code VANISH_THREAD} finds no cart (park 1); another
+     * request's cart is created and committed meanwhile; R's insert-if-absent then inserts nothing (park 2); a clear /
+     * settlement deletes that cart; R's re-read finds no row. Before: IllegalStateException "The cart could not be
+     * created." (500) for add-item, populate, update and remove. Now add-item / populate insert again (bounded) and
+     * succeed; update / remove never create a cart and answer 404 (no cart, no such line).
+     */
+    @ParameterizedTest(name = "{0} while a {1} deletes the cart")
+    @CsvSource({"add,clear", "add,settle", "populate,clear", "populate,settle",
+            "update,clear", "update,settle", "remove,clear", "remove,settle"})
+    void cartDeletedBetweenTheNoOpInsertAndTheReRead_no5xx(String writer, String deleter) throws Exception {
+        boolean viaSettlement = deleter.equals("settle");
+        Gateway g = viaSettlement ? configureGateway(acme) : null;
+        String tag = writer + "-" + deleter;
+        long p = product(acme, "CAT04R1 " + tag, "10.00", 100);
+        Placed o = viaSettlement ? place("cat04r1-" + tag + "@acme.test", p, 1) : null;
+        Customer c = viaSettlement ? o.c() : customer(acme, "cat04r1-" + tag + "@acme.test");
+        // no cart at the start (checkout only reads the cart, so the placed order's cart is still there: drop it)
+        jdbc.update("DELETE FROM tenant_acme.cart_items WHERE cart_id IN (SELECT id FROM tenant_acme.carts WHERE user_id = ?)", c.id());
+        jdbc.update("DELETE FROM tenant_acme.carts WHERE user_id = ?", c.id());
+
+        CountDownLatch in1 = new CountDownLatch(1), out1 = new CountDownLatch(1);
+        CountDownLatch in2 = new CountDownLatch(1), out2 = new CountDownLatch(1);
+        AtomicBoolean parked1 = new AtomicBoolean(), parked2 = new AtomicBoolean();
+        Answer<Object> afterLock = inv -> {
+            Object r = real(inv);
+            if (Thread.currentThread().getName().equals(VANISH_THREAD) && ((java.util.Optional<?>) r).isEmpty()
+                    && parked1.compareAndSet(false, true)) {
+                park(in1, out1); // R saw no cart
+            }
+            return r;
+        };
+        Answer<Object> afterInsert = inv -> {
+            Object r = real(inv);
+            if (Thread.currentThread().getName().equals(VANISH_THREAD) && parked2.compareAndSet(false, true)) {
+                park(in2, out2); // R's insert-if-absent is done (inserted nothing), the re-read is next
+            }
+            return r;
+        };
+        doAnswer(afterLock).when(cartRepository).lockByUserId(anyLong());
+        doAnswer(afterInsert).when(cartRepository).insertIfAbsent(anyLong(), any());
+
+        ExecutorService ex = Executors.newSingleThreadExecutor(r -> new Thread(r, VANISH_THREAD));
+        ExecutorService other = Executors.newSingleThreadExecutor();
+        long[] line = new long[1];
+        try {
+            // update / remove target the line of the cart that is about to be created and deleted under them
+            Callable<MvcResult> request = switch (writer) {
+                case "add" -> () -> addItem(c, p, 1);
+                case "populate" -> () -> populate(c, p, 1);
+                case "update" -> () -> mvc.perform(as(put("/api/v1/cart/items/update/" + line[0])
+                        .contentType("application/json").content("{\"quantity\":2}"), c)).andReturn();
+                case "remove" -> () -> mvc.perform(as(delete("/api/v1/cart/items/remove/" + line[0]), c)).andReturn();
+                default -> throw new IllegalArgumentException(writer);
+            };
+            boolean lineWriter = writer.equals("update") || writer.equals("remove");
+            if (lineWriter) {
+                // the line id must be known before the request starts: reserve it from the sequence
+                line[0] = jdbc.queryForObject("SELECT nextval(pg_get_serial_sequence('tenant_acme.cart_items', 'id'))", Long.class);
+            }
+            Future<MvcResult> fut = ex.submit(request);
+            assertThat(in1.await(20, TimeUnit.SECONDS)).as("R parked after finding no cart").isTrue();
+
+            // another request of this customer wins the cart creation and commits (with a line)
+            long cartId = jdbc.queryForObject("INSERT INTO tenant_acme.carts (user_id, created_at) VALUES (?, now()) RETURNING id",
+                    Long.class, c.id());
+            jdbc.update("INSERT INTO tenant_acme.cart_items (id, cart_id, product_id, quantity, created_at, amount, currency_code) "
+                    + "VALUES (?, ?, ?, 1, now(), 0, 'GHS')", lineWriter ? line[0]
+                    : jdbc.queryForObject("SELECT nextval(pg_get_serial_sequence('tenant_acme.cart_items', 'id'))", Long.class), cartId, p);
+            out1.countDown();
+
+            // R's insert-if-absent conflicts with that committed cart and inserts nothing (park 2). Update / remove no
+            // longer create a cart at all: they never get to park 2 (they already answered)
+            for (int i = 0; i < 200 && in2.getCount() > 0 && !fut.isDone(); i++) Thread.sleep(100);
+            assertThat(in2.getCount() == 0 || fut.isDone()).as("R parked after its insert, or already answered").isTrue();
+
+            // the clear / settlement deletes that cart and commits
+            int del = viaSettlement
+                    ? webhookInBackground(g, event("charge.success", o.reference(), o.minor())).get(60, TimeUnit.SECONDS)
+                    : other.submit(() -> clear(c).getResponse().getStatus()).get(60, TimeUnit.SECONDS);
+            assertThat(del).as(deleter + " answer").isEqualTo(viaSettlement ? 200 : 204);
+            out2.countDown();
+
+            MvcResult r = fut.get(60, TimeUnit.SECONDS);
+            awaitBackgroundIdle();
+            int status = r.getResponse().getStatus();
+            String body = r.getResponse().getContentAsString();
+            assertThat(status).as(tag + " (was 500: IllegalStateException 'The cart could not be created.') " + body)
+                    .isLessThan(500);
+            int carts = jdbc.queryForObject("SELECT count(*) FROM tenant_acme.carts WHERE user_id = ?", Integer.class, c.id());
+            if (lineWriter) {
+                assertThat(status).as(tag + " " + body).isEqualTo(404);
+                assertThat(body).contains("Cart item not found");
+                assertThat(carts).as("update / remove of a line in a deleted cart creates no cart").isZero();
+            } else {
+                assertThat(status).as(tag + " " + body).isEqualTo(200);
+                assertThat(parked2.get()).as("R went through the no-op insert").isTrue();
+                assertThat(cartRows(c)).as("a fresh cart with only R's line").hasSize(1)
+                        .allSatisfy(row -> {
+                            assertThat(((Number) row.get("product_id")).longValue()).isEqualTo(p);
+                            assertThat(((Number) row.get("quantity")).intValue()).isEqualTo(1);
+                        });
+                assertThat(carts).isEqualTo(1);
+            }
+            if (viaSettlement) assertThat(paymentStatus(o.orderNumber())).isEqualTo("COMPLETED");
+        } finally {
+            out1.countDown();
+            out2.countDown();
+            ex.shutdownNow();
+            other.shutdownNow();
+        }
+    }
+
+    // ---- CAT-04 rework F-B: update and remove take the cart row lock (integration, catches QA mutant m5) ----
+
+    /**
+     * A clear holds the cart row ({@code FOR UPDATE}, taken by the test on its own connection, as CartRemoval does)
+     * when an update-quantity and a remove-line arrive: both must QUEUE on the cart row ({@code FOR NO KEY UPDATE})
+     * before touching the line, then, once the clear deleted the lines and the cart and committed, answer 404 and
+     * leave no cart behind. Without the cart lock (QA mutant m5: remove without transaction / cart lock) the remove
+     * deletes the line under the clear's feet straight away (204).
+     */
+    @Test
+    void updateAndRemoveQueueOnTheCartRowWhileAClearHoldsIt_thenAnswer404_noCartCreated() throws Exception {
+        long p = product(acme, "CAT04R1 queue", "10.00", 100);
+        Customer c = customer(acme, "cat04r1-queue@acme.test");
+        cart(c, p, 1);
+        long cartId = jdbc.queryForObject("SELECT id FROM tenant_acme.carts WHERE user_id = ?", Long.class, c.id());
+        long line = jdbc.queryForObject("SELECT id FROM tenant_acme.cart_items WHERE cart_id = ?", Long.class, cartId);
+
+        ExecutorService ex = Executors.newFixedThreadPool(2);
+        try (Connection holder = jdbc.getDataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            try (Statement st = holder.createStatement()) {
+                st.execute("SET LOCAL statement_timeout = '30s'");
+            }
+            try (PreparedStatement ps = holder.prepareStatement("SELECT id FROM tenant_acme.carts WHERE user_id = ? FOR UPDATE")) {
+                ps.setLong(1, c.id());
+                try (ResultSet rs = ps.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                }
+            }
+            try {
+                Future<MvcResult> update = ex.submit(() -> mvc.perform(as(put("/api/v1/cart/items/update/" + line)
+                        .contentType("application/json").content("{\"quantity\":2}"), c)).andReturn());
+                Future<MvcResult> remove = ex.submit(() -> mvc.perform(as(delete("/api/v1/cart/items/remove/" + line), c)).andReturn());
+
+                boolean queued = waitersOn("FROM carts WHERE user_id%FOR NO KEY UPDATE", 2);
+                boolean updateDone = update.isDone(), removeDone = remove.isDone();
+                // the clear goes on: every line, then the cart row, commit
+                try (PreparedStatement ps = holder.prepareStatement("DELETE FROM tenant_acme.cart_items WHERE cart_id = ?")) {
+                    ps.setLong(1, cartId);
+                    ps.executeUpdate();
+                }
+                try (PreparedStatement ps = holder.prepareStatement("DELETE FROM tenant_acme.carts WHERE id = ?")) {
+                    ps.setLong(1, cartId);
+                    ps.executeUpdate();
+                }
+                holder.commit();
+
+                MvcResult u = update.get(60, TimeUnit.SECONDS);
+                MvcResult rm = remove.get(60, TimeUnit.SECONDS);
+                assertThat(updateDone).as("update answered while the clear held the cart row: " + u.getResponse().getContentAsString()).isFalse();
+                assertThat(removeDone).as("remove answered while the clear held the cart row: " + rm.getResponse().getStatus()).isFalse();
+                assertThat(queued).as("update and remove both queued on the cart row lock").isTrue();
+                assertThat(u.getResponse().getStatus()).as(u.getResponse().getContentAsString()).isEqualTo(404);
+                assertThat(rm.getResponse().getStatus()).as(rm.getResponse().getContentAsString()).isEqualTo(404);
+                assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.carts WHERE user_id = ?", Integer.class, c.id()))
+                        .as("no cart re-created by update / remove").isZero();
+            } finally {
+                if (!holder.getAutoCommit()) holder.rollback();
+                holder.setAutoCommit(true);
+            }
+        } finally {
+            ex.shutdownNow();
+            ex.awaitTermination(30, TimeUnit.SECONDS);
+        }
+    }
+
+    // ---- CAT-04 rework F-D: the settlement empties the cart of the order's user (by id) ----
+
+    @Test
+    void settlementEmptiesTheCartOfTheOrdersUser_notOfWhoeverHasThePaymentEmailNow() throws Exception {
+        Gateway g = configureGateway(acme);
+        long p = product(acme, "CAT04R1 fd", "10.00", 100);
+        Placed o = place("cat04r1-fd-buyer@acme.test", p, 1);
+        Customer other = customer(acme, "cat04r1-fd-other@acme.test");
+        cart(other, p, 2);
+        // the payment's e-mail is the checkout-time snapshot; point it at someone else (e.g. the address changed hands)
+        jdbc.update("UPDATE tenant_acme.payments SET customer_email = ? WHERE order_id = "
+                + "(SELECT id FROM tenant_acme.orders WHERE order_number = ?)", other.email(), o.orderNumber());
+
+        assertThat(webhook(g, event("charge.success", o.reference(), o.minor()))).isEqualTo(200);
+        awaitBackgroundIdle();
+
+        assertThat(paymentStatus(o.orderNumber())).isEqualTo("COMPLETED");
+        assertThat(cartRows(o.c())).as("the buyer's cart is emptied").isEmpty();
+        assertThat(cartRows(other)).as("the cart of whoever has the payment e-mail is untouched").hasSize(1);
+    }
+
+    @Test
+    void settlementOfAnOrderWithoutAUser_completes_andTouchesNoCart() throws Exception {
+        Gateway g = configureGateway(acme);
+        long p = product(acme, "CAT04R1 nouser", "10.00", 100);
+        Placed o = place("cat04r1-nouser@acme.test", p, 1);
+        jdbc.update("UPDATE tenant_acme.orders SET user_id = NULL WHERE order_number = ?", o.orderNumber());
+
+        assertThat(webhook(g, event("charge.success", o.reference(), o.minor()))).isEqualTo(200);
+        awaitBackgroundIdle();
+
+        assertThat(paymentStatus(o.orderNumber())).isEqualTo("COMPLETED");
+        assertThat(cartRows(o.c())).as("no user on the order: no cart is touched").hasSize(1);
     }
 }

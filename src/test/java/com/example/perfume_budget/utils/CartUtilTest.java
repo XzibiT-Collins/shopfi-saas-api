@@ -1,13 +1,16 @@
 package com.example.perfume_budget.utils;
 
+import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.model.Cart;
 import com.example.perfume_budget.model.User;
 import com.example.perfume_budget.repository.CartRepository;
+import com.example.perfume_budget.service.DbLockTimeout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
 
 import java.util.Optional;
 
@@ -71,12 +74,66 @@ class CartUtilTest {
     }
 
     @Test
-    void getCurrentUserCart_NoRowEvenAfterTheInsert_IsAnIllegalState() {
+    void getCurrentUserCart_CartKeepsVanishing_Is503TryAgain_AfterThreeInsertRounds() {
+        // CAT-04 rework F-A: every insert lost to a cart that a concurrent clear / settlement deleted before the re-read
         User user = User.builder().id(1L).build();
         when(authUserUtil.getCurrentUser()).thenReturn(user);
         when(cartRepository.findByUser(user)).thenReturn(Optional.empty());
 
-        assertThrows(IllegalStateException.class, () -> cartUtil.getCurrentUserCart());
+        ApiCodeException e = assertThrows(ApiCodeException.class, () -> cartUtil.getCurrentUserCart());
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, e.getStatus());
+        assertEquals(DbLockTimeout.TRY_AGAIN, e.getCode());
+        verify(cartRepository, times(3)).insertIfAbsent(eq(1L), any());
+        verify(cartRepository, times(4)).findByUser(user);
+    }
+
+    @Test
+    void getCurrentUserCartForUpdate_CartDeletedBetweenTheNoOpInsertAndTheReRead_InsertsAgain() {
+        // CAT-04 rework F-A (QA suite b1): lock -> none; insert -> 0 rows (another request's cart won); a clear deleted
+        // that cart; re-read -> none. Used to be IllegalStateException (500); now one more insert round finds a cart.
+        User user = User.builder().id(1L).build();
+        Cart cart = Cart.builder().id(10L).user(user).build();
+        when(authUserUtil.getCurrentUser()).thenReturn(user);
+        when(cartRepository.lockByUserId(1L)).thenReturn(Optional.empty(), Optional.empty(), Optional.of(cart));
+        when(cartRepository.insertIfAbsent(eq(1L), any())).thenReturn(0, 1);
+
+        assertEquals(cart, cartUtil.getCurrentUserCartForUpdate());
+        verify(cartRepository, times(2)).insertIfAbsent(eq(1L), any());
+        verify(cartRepository, times(3)).lockByUserId(1L);
+    }
+
+    @Test
+    void getCurrentUserCartForUpdate_ThirdRoundStillFindsTheCart() {
+        User user = User.builder().id(1L).build();
+        Cart cart = Cart.builder().id(10L).user(user).build();
+        when(authUserUtil.getCurrentUser()).thenReturn(user);
+        when(cartRepository.lockByUserId(1L)).thenReturn(Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(cart));
+
+        assertEquals(cart, cartUtil.getCurrentUserCartForUpdate());
+        verify(cartRepository, times(3)).insertIfAbsent(eq(1L), any());
+    }
+
+    @Test
+    void getCurrentUserCartForUpdate_CartKeepsVanishing_Is503TryAgain() {
+        User user = User.builder().id(1L).build();
+        when(authUserUtil.getCurrentUser()).thenReturn(user);
+        when(cartRepository.lockByUserId(1L)).thenReturn(Optional.empty());
+
+        ApiCodeException e = assertThrows(ApiCodeException.class, () -> cartUtil.getCurrentUserCartForUpdate());
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, e.getStatus());
+        assertEquals(DbLockTimeout.TRY_AGAIN, e.getCode());
+        verify(cartRepository, times(3)).insertIfAbsent(eq(1L), any());
+    }
+
+    @Test
+    void findCurrentUserCartForUpdate_LockedRead_NeverCreates() {
+        User user = User.builder().id(1L).build();
+        when(authUserUtil.getCurrentUser()).thenReturn(user);
+        when(cartRepository.lockByUserId(1L)).thenReturn(Optional.empty());
+
+        assertTrue(cartUtil.findCurrentUserCartForUpdate().isEmpty());
+        verify(cartRepository, times(1)).lockByUserId(1L);
+        verify(cartRepository, never()).insertIfAbsent(any(), any());
     }
 
     @Test

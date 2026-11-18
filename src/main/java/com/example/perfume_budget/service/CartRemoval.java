@@ -20,8 +20,8 @@ import org.springframework.transaction.annotation.Transactional;
  * of add-item (cart row, then line): an add-item of a product already in the cart deadlocked with them, and a line
  * added concurrently made the cart row delete fail on {@code fk_cart_items_on_cart} (clear 409, webhook 500).
  *
- * <p>Global lock order (see docs/api/cart.md, "Lock order"): user → order → payment → cart → cart_items → products
- * → ledger accounts → coupon. Joins the caller's transaction; never starts one.
+ * <p>Global lock order (see docs/api/checkout.md, "Cart lock order"): user → order → payment → cart → cart_items →
+ * products → ledger accounts → coupon. Joins the caller's transaction; never starts one.
  */
 @Component
 @RequiredArgsConstructor
@@ -29,16 +29,10 @@ public class CartRemoval {
     private final CartRepository cartRepository;
     private final CartItemRepository cartItemRepository;
 
-    /** Deletes the user's cart and all its lines, if there is one. */
+    /** Deletes the user's cart and all its lines, if there is one (clear cart; payment settlement: the order's user). */
     @Transactional(propagation = Propagation.MANDATORY)
     public void deleteCartOfUser(Long userId) {
         cartRepository.lockIdForDeleteByUserId(userId).ifPresent(this::deleteLocked);
-    }
-
-    /** Deletes the cart (and all its lines) of the user with this e-mail, if there is one (payment settlement). */
-    @Transactional(propagation = Propagation.MANDATORY)
-    public void deleteCartOfUserEmail(String email) {
-        cartRepository.lockIdsForDeleteByUserEmail(email).forEach(this::deleteLocked);
     }
 
     private void deleteLocked(Long cartId) {

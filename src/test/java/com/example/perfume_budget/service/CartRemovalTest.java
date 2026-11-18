@@ -9,7 +9,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.List;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -34,18 +33,6 @@ class CartRemovalTest {
 
         InOrder order = inOrder(cartRepository, cartItemRepository);
         order.verify(cartRepository).lockIdForDeleteByUserId(7L);
-        order.verify(cartItemRepository).deleteAllByCartId(70L);
-        order.verify(cartRepository).deleteRowById(70L);
-    }
-
-    @Test
-    void deleteCartOfUserEmail_locksThenDeletesLinesThenRow() {
-        when(cartRepository.lockIdsForDeleteByUserEmail("c@example.com")).thenReturn(List.of(70L));
-
-        cartRemoval.deleteCartOfUserEmail("c@example.com");
-
-        InOrder order = inOrder(cartRepository, cartItemRepository);
-        order.verify(cartRepository).lockIdsForDeleteByUserEmail("c@example.com");
         order.verify(cartItemRepository).deleteAllByCartId(70L);
         order.verify(cartRepository).deleteRowById(70L);
     }

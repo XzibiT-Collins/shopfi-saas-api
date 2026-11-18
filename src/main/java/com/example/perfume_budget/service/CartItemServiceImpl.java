@@ -95,8 +95,11 @@ public class CartItemServiceImpl implements CartItemService {
             throw new BadRequestException(INVALID_QUANTITY);
         }
 
-        // CAT-04: cart row lock first, then the line (the lock order of every cart writer; see CartRemoval)
-        CartItem cartItem = cartItemRepository.findByIdAndCartId(cartItemId, cartUtil.getCurrentUserCartForUpdate().getId())
+        // CAT-04: cart row lock first, then the line (the lock order of every cart writer; see CartRemoval). Rework
+        // F-A: no cart (never had one, or a concurrent clear / settlement just deleted it) means no such line: 404,
+        // and no empty cart is created as a side effect
+        CartItem cartItem = cartUtil.findCurrentUserCartForUpdate()
+                .flatMap(cart -> cartItemRepository.findByIdAndCartId(cartItemId, cart.getId()))
                 .orElseThrow(() -> new ResourceNotFoundException(CART_ITEM_NOT_FOUND));
 
         if (!Boolean.TRUE.equals(cartItem.getProduct().getIsActive())) {
@@ -117,8 +120,11 @@ public class CartItemServiceImpl implements CartItemService {
     @Transactional
     @Override
     public void removeCartItem(Long cartItemId) {
-        // CAT-04: cart row lock first, then the line (the lock order of every cart writer; see CartRemoval)
-        int deleted = cartItemRepository.deleteByIdAndCart(cartItemId, cartUtil.getCurrentUserCartForUpdate());
+        // CAT-04: cart row lock first, then the line (the lock order of every cart writer; see CartRemoval). Rework
+        // F-A: no cart means no such line (404), as in updateCartItem; no empty cart is created
+        int deleted = cartUtil.findCurrentUserCartForUpdate()
+                .map(cart -> cartItemRepository.deleteByIdAndCart(cartItemId, cart))
+                .orElse(0);
         if(deleted==0) throw new ResourceNotFoundException(CART_ITEM_NOT_FOUND);
     }
 }
