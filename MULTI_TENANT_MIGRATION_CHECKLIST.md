@@ -18,6 +18,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ### 1b. Flyway split + boot ordering
 - [x] `db/migrations/master/V6__tenant_audit_log.sql` (PLAT-02) and `V7__tenant_audit_log_phase.sql` (PLAT-02b: `phase` INTENT/OUTCOME/RECLAIM/RECONCILE; the table stays append-only)
+- [x] `db/migrations/master/V8__custom_domain_verification.sql` (DOMAIN-02: custom-domain verification state on `tenants`, `uq_tenants_custom_domain_lower`, shape/state checks, append-only `tenant_domain_audit_log`; legacy custom domains become PENDING)
 - [x] `db/migrations/master/V1__create_master_schema.sql` (`tenants`, `platform_admins`, `payment_tenant_routes`)
 - [x] Move existing `db/migrations/V1..V6` → `db/migrations/tenant/` (preserve numbering, via `git mv`)
 - [x] `spring.flyway.enabled=false`
@@ -35,7 +36,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
   - Note: `mvn compile` passes.
 
 ### 1d. Tenant resolution filter + JWT binding
-- [x] `tenancy/TenantResolutionFilter` — **Origin/Referer-host** based (single API host); customDomain/subdomain match; dev `X-Tenant-ID`; platform path→PLATFORM; infra+webhook bypass; unknown origin→404; no signal→neutral; SUSPENDED→423; `try/finally clear()`; also `TenantResolutionProperties`
+- [x] `tenancy/TenantResolutionFilter` — **Origin/Referer-host** based (single API host); VERIFIED customDomain (DOMAIN-02, shared `TenantHostLookup`; hosts under the base domain by slug only)/subdomain match; dev `X-Tenant-ID`; platform path→PLATFORM; infra+webhook bypass; unknown origin→404; no signal→neutral; SUSPENDED→423; `try/finally clear()`; also `TenantResolutionProperties`
 - [x] `filter/JWTUtil` — `tenant` claim on access + refresh (all 4 generators); `extractTenant`
 - [x] `filter/JWTFilter` — token-tenant vs context mismatch → 401; skip for PLATFORM/neutral
 - [x] `SecurityConfig` — `tenantResolutionFilter` before `SiteVisitFilter` and `JWTFilter`
