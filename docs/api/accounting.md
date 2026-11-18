@@ -4,7 +4,7 @@ Routes under `/api/v1/admin/accounting` are tenant scoped and `ADMIN` only (anon
 [authorization-matrix.md](authorization-matrix.md)). Every response is `{ "description": string|null, "data": ... }`;
 errors carry a stable machine code in `data.code`, never parse `description`.
 
-This page documents only what CAT-03 changed. The other accounting routes (`/summary`, `/income-statement`,
+This page documents only what CAT-03 (and the CAT-04 date bound) changed. The other accounting routes (`/summary`, `/income-statement`,
 `/balance-sheet`, `/cash-flow`, `/journal-entries/reference`, `/journal-entries/manual`, `/metadata`) are unchanged.
 
 ## GET /api/v1/admin/accounting/journal-entries (ADMIN): now paged
@@ -16,7 +16,7 @@ client written against the old shape must read `data.content` and page.
 
 | Query | Meaning |
 |---|---|
-| `startDate`, `endDate` | required, ISO dates (`2026-11-01`). **Both days are included whole**: entries with `startDate 00:00 <= transactionDate < (endDate + 1 day) 00:00` (server-local time, like `transactionDate`). Before CAT-03 the end was `endDate 23:59:59`, which missed entries in the last second's fractions. `startDate` after `endDate`: 400 `INVALID_DATE_RANGE` (before: an empty list). A single day (`startDate == endDate`) is fine. |
+| `startDate`, `endDate` | required, ISO dates (`2026-11-01`). **Both days are included whole**: entries with `startDate 00:00 <= transactionDate < (endDate + 1 day) 00:00` (server-local time, like `transactionDate`). Before CAT-03 the end was `endDate 23:59:59`, which missed entries in the last second's fractions. `startDate` after `endDate`: 400 `INVALID_DATE_RANGE` (before: an empty list). A single day (`startDate == endDate`) is fine. **CAT-04:** both dates must lie in the years 1..9999 (`0001-01-01` .. `9999-12-31`, both allowed); anything outside, e.g. `endDate=+999999999-12-31` (was a 500) or `startDate=-999999999-01-01` (was a 409), is 400 `INVALID_DATE_RANGE`. |
 | `page`, `size` | `page` is 0-based. `size` defaults to **20** and is capped at **50** (larger values are clamped). A page may start at most at row 10,000: `page * size` (after the clamp) >= 10,000, or `page` > 1,000,000: 400 `INVALID_PAGE` (`data.maxOffset`, `data.size` on the offset error). Same rules and constants as the admin order list. Narrow the date range instead of paging deep. |
 | `sort` | ignored. The order is fixed and stable: `transactionDate` newest first, then the entry id (newest first) as the tie-break, so walking the pages returns every entry exactly once even when several share a timestamp. |
 
@@ -56,7 +56,7 @@ lines and accounts), independent of the page size.
 
 | Status | `data.code` | When |
 |---|---|---|
-| 400 | `INVALID_DATE_RANGE` | `startDate` after `endDate` |
+| 400 | `INVALID_DATE_RANGE` | `startDate` after `endDate`, or a date outside the years 1..9999 (CAT-04) |
 | 400 | `INVALID_PAGE` | `page` > 1,000,000, or `page * size` >= 10,000 (`data.maxOffset`, `data.size`) |
 | 400 | (no code) | `startDate` / `endDate` missing or not a date |
 

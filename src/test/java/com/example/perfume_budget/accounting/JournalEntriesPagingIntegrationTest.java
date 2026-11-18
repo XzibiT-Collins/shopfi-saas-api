@@ -167,4 +167,32 @@ class JournalEntriesPagingIntegrationTest extends AbstractCheckoutIntegrationTes
 
         assertThat(numbers(okPage(r))).containsExactly("JE-DAY");
     }
+    /**
+     * CAT-04 (CAT-03 review F3): ISO dates outside years 1..9999 are refused with 400 INVALID_DATE_RANGE. Before:
+     * {@code endDate=+999999999-12-31} was a 500 (LocalDate.MAX.plusDays) and {@code startDate=-999999999-01-01} a 409
+     * (Postgres could not bind the timestamp). The edges 0001-01-01 and 9999-12-31 still work.
+     */
+    @Test
+    void yearsOutside1To9999Are400InvalidDateRange() throws Exception {
+        entry("JE-EDGE", LocalDateTime.of(2033, 3, 31, 12, 0));
+        String[][] refused = {
+                {"endDate", "+999999999-12-31"}, {"startDate", "-999999999-01-01"}, {"endDate", "+10000-01-01"},
+                {"startDate", "0000-12-31"}, {"startDate", "-0001-01-01"}};
+        for (String[] q : refused) {
+            String start = q[0].equals("startDate") ? q[1] : FROM;
+            String end = q[0].equals("endDate") ? q[1] : TO;
+            MvcResult r = range(start, end);
+            assertThat(r.getResponse().getStatus()).as(q[0] + "=" + q[1] + " -> " + r.getResponse().getContentAsString()).isEqualTo(400);
+            assertThat(body(r).at("/data/code").asText()).as(q[0] + "=" + q[1]).isEqualTo("INVALID_DATE_RANGE");
+        }
+        assertThat(numbers(okPage(range("0001-01-01", "9999-12-31")))).containsExactly("JE-EDGE");
+    }
+
+    private MvcResult range(String start, String end) throws Exception {
+        Map<String, Object> a = jdbc.queryForMap("SELECT id, email, full_name FROM tenant_acme.users WHERE email = ?", acme.adminEmail());
+        String token = tenants.runAs(acme, () -> jwtUtil.generateAccessToken((String) a.get("email"), "ADMIN",
+                ((Number) a.get("id")).longValue(), (String) a.get("full_name")));
+        return mvc.perform(get("/api/v1/admin/accounting/journal-entries").param("startDate", start).param("endDate", end)
+                .header("X-Tenant-ID", "acme").cookie(new Cookie("accessToken", token))).andReturn();
+    }
 }

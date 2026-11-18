@@ -259,6 +259,26 @@ class AccountingReportServiceImplTest {
     }
 
     @Test
+    @DisplayName("Journal entries - CAT-04: years outside 1..9999 are 400 INVALID_DATE_RANGE, the edges are allowed")
+    void getJournalEntries_yearsOutside1To9999_invalidDateRange() {
+        java.time.LocalDate[][] refused = {
+                {java.time.LocalDate.of(2033, 1, 1), java.time.LocalDate.MAX},
+                {java.time.LocalDate.MIN, java.time.LocalDate.of(2033, 1, 1)},
+                {java.time.LocalDate.of(2033, 1, 1), java.time.LocalDate.of(10000, 1, 1)},
+                {java.time.LocalDate.of(0, 12, 31), java.time.LocalDate.of(2033, 1, 1)}};
+        for (java.time.LocalDate[] r : refused) {
+            com.example.perfume_budget.exception.ApiCodeException e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                    () -> accountingReportService.getJournalEntries(new DateRangeRequest(r[0], r[1]), PageRequest.of(0, 20)));
+            assertEquals("INVALID_DATE_RANGE", e.getCode(), r[0] + ".." + r[1]);
+            assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, e.getStatus());
+        }
+        org.mockito.Mockito.verifyNoInteractions(journalEntryRepository);
+        when(journalEntryRepository.findIdPageByDateRange(any(), any(), any())).thenReturn(org.springframework.data.domain.Page.empty());
+        assertDoesNotThrow(() -> accountingReportService.getJournalEntries(
+                new DateRangeRequest(java.time.LocalDate.of(1, 1, 1), java.time.LocalDate.of(9999, 12, 31)), PageRequest.of(0, 20)));
+    }
+
+    @Test
     @DisplayName("Get Manual Entries - Success")
     void getManualEntries_Success() {
         JournalEntry entry = JournalEntry.builder()

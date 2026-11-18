@@ -44,10 +44,17 @@ public interface CartRepository extends JpaRepository<Cart, Long> {
     @Query(value = "SELECT * FROM carts WHERE user_id = :userId FOR NO KEY UPDATE", nativeQuery = true)
     Optional<Cart> lockByUserId(@Param("userId") Long userId);
 
-    void deleteByUser(User user);
+    /**
+     * CAT-04: the id of the user's cart, row-locked {@code FOR UPDATE} (the row is about to be deleted) until the
+     * calling transaction ends. Taken BEFORE any line is touched, like every other cart writer (cart row, then lines):
+     * an add-item holding the cart lock is waited for here, never in the middle of the line deletes. See
+     * {@code CartRemoval}.
+     */
+    @Query(value = "SELECT id FROM carts WHERE user_id = :userId FOR UPDATE", nativeQuery = true)
+    Optional<Long> lockIdForDeleteByUserId(@Param("userId") Long userId);
 
-    void deleteAllByUser(User user);
+    /** CAT-04: deletes the cart row; its lines must be gone already ({@code fk_cart_items_on_cart}). Lock it first. */
     @Modifying
-    @Transactional
-    void deleteAllByUserEmail(String email);
+    @Query(value = "DELETE FROM carts WHERE id = :cartId", nativeQuery = true)
+    int deleteRowById(@Param("cartId") Long cartId);
 }

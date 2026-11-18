@@ -6,7 +6,6 @@ import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
-import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.repository.OrderRepository;
 import com.example.perfume_budget.repository.PaymentRepository;
 import com.example.perfume_budget.repository.ProductRepository;
@@ -53,7 +52,7 @@ public class PaymentSettlementService {
     private final PaymentRepository paymentRepository;
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
-    private final CartRepository cartRepository;
+    private final CartRemoval cartRemoval;
     private final OrderService orderService;
     private final OrderStockReservationService reservationService;
     private final BookkeepingService bookkeepingService;
@@ -170,7 +169,18 @@ public class PaymentSettlementService {
         order.setStatus(PaymentStatus.COMPLETED);
         orderRepository.save(order);
 
-        cartRepository.deleteAllByUserEmail(payment.getCustomerEmail());
+        // CAT-04: the customer's cart row lock (FOR UPDATE), then EVERY line of it, then the row (CartRemoval). Lock
+        // order here: order -> payment -> cart -> cart lines -> products -> ledger accounts -> coupon. Before, only the
+        // lines loaded were deleted (lines first, cart last): an add-item holding the cart lock deadlocked with this,
+        // and a line it added made the cart delete fail on fk_cart_items_on_cart (webhook 500, Paystack redelivered).
+        // Rework F-D: the cart of the order's OWN user (by id), not of whoever has the payment's e-mail address now
+        // (the snapshot taken at checkout: a changed address emptied the wrong cart, or none). An order without a user
+        // has no customer cart to empty.
+        if (order.getUser() != null) {
+            cartRemoval.deleteCartOfUser(order.getUser().getId());
+        } else {
+            log.info("Order {} has no customer user; no cart to empty", order.getOrderNumber());
+        }
         // API-05 rework: the stock finalisation takes the order's product rows first (ProductStockLocks, ascending id)
         // and only THEN the sold counts are bumped. The other way round the per-item UPDATEs locked the products in
         // order-item order, so a webhook for [high id, low id] and a checkout of the same products (low -> high)
