@@ -25,6 +25,7 @@ import com.example.perfume_budget.tenancy.ProvisioningRequest;
 import com.example.perfume_budget.tenancy.TenantAlreadyExistsException;
 import com.example.perfume_budget.tenancy.TenantProvisioningException;
 import com.example.perfume_budget.tenancy.TenantProvisioningService;
+import com.example.perfume_budget.tenancy.TenantSchemaMigrator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
@@ -45,7 +46,8 @@ import java.util.regex.Pattern;
 
 /**
  * Platform tenant management (PLAT-02). Runs in PLATFORM scope and touches only the master schema, plus the PROV-01
- * saga (which binds and restores its own tenant context) for approve/reprovision. Never reads a tenant schema.
+ * saga (which binds and restores its own tenant context) for approve/reprovision, and (EVT-01c) the tenant's Flyway
+ * migrations before a reactivation. Never reads tenant business data.
  *
  * <p>Concurrency model: every status write is a compare-and-set ({@code TenantRepository.transitionStatus}) so two
  * racing callers cannot both win; the loser re-reads and reports an idempotent no-op. The audit row of a
@@ -76,6 +78,7 @@ public class PlatformTenantService {
     private final TenantAuditLogRepository auditRepository;
     private final TenantProvisioningService provisioningService;
     private final TenantOriginPolicy originPolicy;
+    private final TenantSchemaMigrator schemaMigrator;
     private final TransactionTemplate masterTx;
     private final TokenBucketRateLimiter actionLimiter;
     private final Duration stuckAfter;
@@ -85,7 +88,7 @@ public class PlatformTenantService {
     public PlatformTenantService(TenantRepository tenantRepository, TenantSignupRepository signupRepository,
                                  TenantAuditLogRepository auditRepository,
                                  TenantProvisioningService provisioningService, TenantOriginPolicy originPolicy,
-                                 PlatformTransactionManager txManager,
+                                 TenantSchemaMigrator schemaMigrator, PlatformTransactionManager txManager,
                                  @Value("${platform.tenants.actions-per-minute:30}") int actionsPerMinute,
                                  @Value("${platform.tenants.stuck-provisioning-minutes:15}") long stuckMinutes,
                                  @Value("${platform.tenants.reconcile-grace-seconds:60}") long reconcileGraceSeconds) {
@@ -94,6 +97,7 @@ public class PlatformTenantService {
         this.auditRepository = auditRepository;
         this.provisioningService = provisioningService;
         this.originPolicy = originPolicy;
+        this.schemaMigrator = schemaMigrator;
         this.masterTx = new TransactionTemplate(txManager);
         this.actionLimiter = new TokenBucketRateLimiter(Math.max(1, actionsPerMinute), Duration.ofMinutes(1));
         this.stuckAfter = Duration.ofMinutes(Math.max(1, stuckMinutes));
@@ -252,6 +256,13 @@ public class PlatformTenantService {
         return flip(slug, actor, TenantAction.SUSPEND);
     }
 
+    /**
+     * EVT-01c (6): boot migrates only ACTIVE tenant schemas, so a tenant that was SUSPENDED across a deploy missed that
+     * deploy's tenant migrations (a missing V13 {@code side_effect_outbox} broke every checkout). Its schema is brought
+     * up to date BEFORE the status flips back to ACTIVE, so no request ever reaches an unmigrated schema; if the
+     * migration fails the tenant stays SUSPENDED (500, nothing audited) and the call can be repeated. Migrating is
+     * idempotent, so a reactivation that then loses the status race changes nothing.
+     */
     public TenantActionResponse reactivate(String slug, PlatformPrincipal actor) {
         return flip(slug, actor, TenantAction.REACTIVATE);
     }
@@ -259,6 +270,10 @@ public class PlatformTenantService {
     private TenantActionResponse flip(String slug, PlatformPrincipal actor, TenantAction action) {
         throttle(actor);
         Tenant initial = require(slug);
+        if (action == TenantAction.REACTIVATE
+                && TenantStateMachine.decide(action, initial.getStatus()) == Decision.TRANSITION) {
+            migrateBeforeReactivation(initial);
+        }
         try {
             TenantActionResponse r = masterTx.execute(s -> {
                 // Re-read inside the transaction; the compare-and-set below is the real guard.
@@ -290,6 +305,16 @@ public class PlatformTenantService {
             return r;
         } finally {
             originPolicy.invalidateAll(); // after commit (or after a rollback: harmless), never before
+        }
+    }
+
+    private void migrateBeforeReactivation(Tenant tenant) {
+        try {
+            schemaMigrator.migrateTenant(tenant.getSchemaName());
+        } catch (RuntimeException e) {
+            // class only: a Flyway / JDBC message can carry the JDBC URL or SQL text
+            log.error("Tenant {} not reactivated: its schema migration failed ({})", tenant.getSlug(), e.getClass().getName());
+            throw new TenantMigrationFailedException(tenant.getSlug());
         }
     }
 

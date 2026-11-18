@@ -360,4 +360,21 @@ class SuccessfulOrderHandlerAfterCommitTest {
         drain();
         verify(email, times(com.example.perfume_budget.outbox.OutboxStore.MAX_ATTEMPTS)).sendCustomerReceipt(p);
     }
+
+    /** EVT-01c (5): a receipt that cannot be rendered (no default address: NPE) goes FAILED at once, not after 8 tries. */
+    @Test
+    void aNonRetryableReceiptFailureIsFailedAtTheFirstAttempt_theOtherSideEffectsAreDone() {
+        Payment p = payment(7L, PaymentStatus.COMPLETED);
+        when(payments.findById(7L)).thenReturn(Optional.of(p));
+        doThrow(new com.example.perfume_budget.notification.MailNotSentException("Customer receipt", "payment 7",
+                new NullPointerException())).when(email).sendCustomerReceipt(any());
+        tx.executeWithoutResult(st -> ctx.publishEvent(p));
+        InMemoryOutboxStore.Entry receipt = outbox.get(com.example.perfume_budget.outbox.OutboxKind.PAYMENT_RECEIPT, 7L);
+        assertThat(receipt.status).isEqualTo("FAILED");
+        assertThat(receipt.attempts).isEqualTo(1);
+        assertThat(outbox.get(com.example.perfume_budget.outbox.OutboxKind.PAYMENT_ADMIN_MAIL, 7L).status).isEqualTo("DONE");
+        outbox.makeDue();
+        drain();
+        verify(email, times(1)).sendCustomerReceipt(p);
+    }
 }

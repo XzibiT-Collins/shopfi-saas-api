@@ -63,6 +63,9 @@ class NotificationPushAfterCommitTest {
             n.setId(10L);
             return n;
         });
+        when(notifications.insertPaymentSuccessOnce(any(), any(), any(), any())).thenReturn(List.of(10L));
+        when(notifications.findById(10L)).thenReturn(java.util.Optional.of(Notification.builder().id(10L).type("PAYMENT_SUCCESS")
+                .title("Payment received").message("m").referenceType("ORDER").referenceId("PB-1").build()));
         when(recipients.saveAll(any())).thenAnswer(i -> i.getArgument(0));
         when(recipients.existsByNotificationTypeAndNotificationReferenceIdAndIsReadFalse(any(), any())).thenReturn(false);
         when(sessions.getConnectedAdmins("acme")).thenReturn(Set.of("admin@shop.test"));

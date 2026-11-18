@@ -239,7 +239,7 @@ public class TenantOriginPolicy {
         try {
             active = lookup.get().map(t -> t.getStatus() == TenantStatus.ACTIVE).orElse(false);
         } catch (RuntimeException e) {
-            log.warn("CORS tenant lookup failed: {}", e.toString());
+            log.warn("CORS tenant lookup failed: {}", e.getClass().getName());
             return stale; // a known-allowed key stays allowed within the grace window; unknown keys fail closed
         }
         if (generation.get() == gen) { // invalidateAll() during the lookup: do not store a possibly stale answer

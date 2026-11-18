@@ -2,6 +2,7 @@ package com.example.perfume_budget.platform.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.platform.service.IllegalTenantTransitionException;
+import com.example.perfume_budget.platform.service.TenantMigrationFailedException;
 import com.example.perfume_budget.platform.service.TenantProvisioningFailedException;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -22,6 +23,11 @@ public class PlatformTenantExceptionHandler {
 
     @ExceptionHandler(TenantProvisioningFailedException.class)
     public ResponseEntity<CustomApiResponse<String>> provisioningFailed(TenantProvisioningFailedException ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(CustomApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(TenantMigrationFailedException.class)
+    public ResponseEntity<CustomApiResponse<String>> migrationFailed(TenantMigrationFailedException ex) {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(CustomApiResponse.error(ex.getMessage()));
     }
 }

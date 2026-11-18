@@ -45,8 +45,9 @@ public class WebhookController {
         Tenant t = tenant.get();
         try {
             TenantContext.set(TenantIdentity.tenant(t.getSlug(), t.getSchemaName()));
-            // Signature verification + async dispatch happen here; the async task captures the
-            // tenant context via the TaskDecorator before this finally clears it.
+            // Signature verification and (EVT-01c) the settlement itself happen here, on this thread, so the answer
+            // is 200 only for an event that committed (or can never be applied); after-commit work hands off to the
+            // mail / notification executors, which capture the tenant context before this finally clears it.
             return webhookService.checkWebhookSignature(rawBody, signature);
         } finally {
             TenantContext.clear();

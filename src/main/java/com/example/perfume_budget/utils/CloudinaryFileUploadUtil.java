@@ -29,7 +29,7 @@ public class CloudinaryFileUploadUtil {
             log.info("Uploaded image to cloudinary, Storage key: {}", storageKey);
             return (String) results.get("secure_url");
         }catch (IOException e){
-            log.error("An error occurred during image upload to cloudinary: {}", e.getMessage());
+            log.error("An error occurred during image upload to cloudinary: {}", e.getClass().getName());
             return "";
         }
     }

@@ -55,7 +55,7 @@ public class ReservedProductCleanupService {
                 }
             } catch (RuntimeException e) {
                 // one bad order must not stop the rest of this tenant's cleanup
-                log.error("Expiry failed for order {}: {}", orderNumber, e.getMessage());
+                log.error("Expiry failed for order {}: {}", orderNumber, e.getClass().getName());
             }
         }
 

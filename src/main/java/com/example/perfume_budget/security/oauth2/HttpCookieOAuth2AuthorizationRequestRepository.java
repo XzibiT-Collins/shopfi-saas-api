@@ -133,7 +133,7 @@ public class HttpCookieOAuth2AuthorizationRequestRepository
                 return (OAuth2AuthorizationRequest) ois.readObject();
             }
         } catch (Exception e) {
-            log.warn("Failed to deserialize OAuth2 authorization request cookie: {}", e.getMessage());
+            log.warn("Failed to deserialize OAuth2 authorization request cookie: {}", e.getClass().getName());
             return null;
         }
     }

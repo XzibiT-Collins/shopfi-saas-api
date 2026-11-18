@@ -263,7 +263,7 @@ public class OrderServiceImpl implements OrderService {
             newPayment.setFailureReason(exception.getMessage());
             paymentRepository.save(newPayment);
 
-            log.error("Payment initiation failed for order {}: {}", newOrder.getOrderNumber(), exception.getMessage());
+            log.error("Payment initiation failed for order {}: {}", newOrder.getOrderNumber(), exception.getClass().getName());
             throw exception;
         }
 

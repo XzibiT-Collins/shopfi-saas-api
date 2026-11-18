@@ -209,6 +209,7 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
 
         assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
         long payment = paymentId(order);
+        String requestThread = Thread.currentThread().getName(); // MockMvc runs the request on this thread
 
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
             assertThat(notifications(order)).as("notification rows committed").isEqualTo(1);
@@ -219,7 +220,9 @@ class MailSaturationIntegrationTest extends AbstractCheckoutIntegrationTest {
         await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> assertThat(deferred("payment " + payment)).hasSize(2)
                 .allSatisfy(e -> {
                     assertThat(e.getFormattedMessage()).contains("queue full").contains("outbox retries");
-                    assertThat(e.getThreadName()).as("refused at once on the webhook worker").startsWith("webhook-");
+                    // EVT-01c: the webhook settles on the request thread (answered only after the commit)
+                    assertThat(e.getThreadName()).as("refused at once on the webhook's request thread")
+                            .isEqualTo(requestThread);
                 }));
         assertThat(notSent("payment " + payment)).as("not a loss any more").isEmpty();
         assertThat(outboxStatus("PAYMENT_RECEIPT", payment)).isEqualTo("PENDING/0");

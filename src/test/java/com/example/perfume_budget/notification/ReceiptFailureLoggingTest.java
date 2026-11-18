@@ -119,6 +119,17 @@ class ReceiptFailureLoggingTest {
         assertNotSentNaming(() -> service.sendCustomerReceipt(payment()), "receipt", "PB-9", "payment 42");
     }
 
+    /** EVT-01c (5): a missing default address (NPE) fails the same way every time: not retryable; a transport error is. */
+    @Test
+    void aMissingDeliveryAddressIsNotRetryable_aTransportFailureIs() {
+        when(addresses.findByUserAndIsDefaultTrue(any())).thenReturn(Optional.empty());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.sendCustomerReceipt(payment()))
+                .isInstanceOfSatisfying(MailNotSentException.class, e -> assertThat(e.retryable()).isFalse());
+        when(addresses.findByUserAndIsDefaultTrue(any())).thenReturn(Optional.of(new DeliveryDetail()));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.sendCustomerReceipt(payment()))
+                .isInstanceOfSatisfying(MailNotSentException.class, e -> assertThat(e.retryable()).isTrue());
+    }
+
     @Test
     void adminPaymentMailFailureThrowsTheReference() {
         assertNotSentNaming(() -> service.sendAdminOrderNotification(payment()), "PB-9", "payment 42", "MailDeliveryException");

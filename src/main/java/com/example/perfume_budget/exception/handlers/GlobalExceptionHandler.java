@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 @Slf4j
 @RestControllerAdvice
@@ -176,7 +177,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ServiceCommunicationException.class)
     public ResponseEntity<CustomApiResponse<String>> handleServiceCommunicationException(ServiceCommunicationException ex){
-        log.error("interservice communication failed: {}", ex.getMessage());
+        log.error("interservice communication failed: {}", ex.getClass().getName());
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(CustomApiResponse.error("Interservice communication failed"));
     }
 
@@ -202,7 +203,7 @@ public class GlobalExceptionHandler {
     // Accounting Exception
     @ExceptionHandler(AccountingException.class)
     public void handleAccountingException(AccountingException ex){
-        log.error("Accounting Exception: {}", ex.getMessage());
+        log.error("Accounting Exception: {}", ex.getClass().getName());
     }
 
 
@@ -305,7 +306,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(UnsupportedOperationException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMethodNotSupported(UnsupportedOperationException ex){
-        log.error(String.valueOf(ex));
+        log.error("Unsupported operation: {}", ex.getClass().getName());
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(CustomApiResponse.error(ex.getMessage()));
     }
 
@@ -370,7 +371,8 @@ public class GlobalExceptionHandler {
             return tryAgain(ex);
         }
         Throwable cause = ex.getRootCause();
-        log.error("Transaction failed: {}", cause != null ? cause.getMessage() : ex.getMessage());
+        // EVT-01c: class only; a constraint message quotes row values (Postgres "Key (email)=(...) already exists")
+        log.error("Transaction failed: {}", SafeStackTrace.of(ex)); // EVT-01c rework 1: classes + frames, no messages
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(CustomApiResponse.error(cause != null ? cause.getMessage() : "Transaction failed", null));
     }
@@ -381,8 +383,11 @@ public class GlobalExceptionHandler {
         if (com.example.perfume_budget.service.DbLockTimeout.isTransient(ex)) {
             return tryAgain(ex); // however it was wrapped (commit-time failure, JpaSystemException, ...)
         }
-        log.error("Unexpected error occurred: {}", ex.getMessage());
-        log.error(String.valueOf(ex));
+        // EVT-01c (overlaps SEC-01d): class only at ERROR; a database message can quote row values (Postgres
+        // "Key (email)=(...) already exists"), a JDBC URL or credentials. Rework 1: the stack trace (class names and
+        // frames, no messages) is back at ERROR; the full detail only at DEBUG.
+        log.error("Unexpected error occurred: {}", SafeStackTrace.of(ex)); // classes + frames of the cause chain, no messages
+        log.debug("Unexpected error detail", ex);
         return ResponseEntity.internalServerError().body(CustomApiResponse.error("Unexpected error occurred"));
     }
 }

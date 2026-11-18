@@ -57,7 +57,7 @@ class PlatformTenantReadServiceTest {
     void setUp() {
         service = new PlatformTenantService(tenants, mock(TenantSignupRepository.class), audits,
                 mock(TenantProvisioningService.class), mock(TenantOriginPolicy.class),
-                mock(PlatformTransactionManager.class), 1000, 15, 60);
+                mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class), mock(PlatformTransactionManager.class), 1000, 15, 60);
     }
 
     private static Tenant tenant(String slug) {

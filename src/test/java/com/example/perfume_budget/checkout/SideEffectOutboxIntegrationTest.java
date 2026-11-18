@@ -51,6 +51,8 @@ class SideEffectOutboxIntegrationTest extends AbstractCheckoutIntegrationTest {
     @Autowired private OutboxDrainer drainer;
     @Autowired private PlatformTransactionManager txManager;
     @Autowired @Qualifier(AsyncConfig.MAIL_EXECUTOR) private TaskExecutor mailBean;
+    @Autowired private com.example.perfume_budget.config.ws.NotificationService notificationService;
+    @Autowired private javax.sql.DataSource dataSource;
 
     private final CountDownLatch release = new CountDownLatch(1);
     private ListAppender<ILoggingEvent> processorLog;
@@ -302,5 +304,264 @@ class SideEffectOutboxIntegrationTest extends AbstractCheckoutIntegrationTest {
         drainer.drainCurrentTenant();
         assertThat(jdbc.queryForList("SELECT reference FROM tenant_acme.side_effect_outbox WHERE reference LIKE '9100%' ORDER BY reference",
                 String.class)).containsExactly("910002", "910003");
+    }
+
+    // ---- EVT-01c ----------------------------------------------------------------------------------------------
+
+    private boolean nextAttemptAfter(long id, String interval) {
+        return jdbc.queryForObject("SELECT next_attempt_at > now() + interval '" + interval + "' FROM tenant_acme.side_effect_outbox"
+                + " WHERE kind = 'NEW_ORDER_ADMIN_MAIL' AND reference = ?", Boolean.class, String.valueOf(id));
+    }
+
+    /** Makes the first send of order {@code order}'s new-order e-mail block (until {@code go}) once it entered. */
+    private void blockFirstNewOrderMail(String order, CountDownLatch entered, CountDownLatch go, RuntimeException thenThrow) {
+        java.util.concurrent.atomic.AtomicBoolean first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Mockito.doAnswer(inv -> {
+            MailMessage m = inv.getArgument(0);
+            if (m != null && m.subject() != null && m.subject().contains("New Order Received - " + order) && first.getAndSet(false)) {
+                entered.countDown();
+                go.await(30, TimeUnit.SECONDS);
+                if (thenThrow != null) {
+                    throw thenThrow;
+                }
+            }
+            return null;
+        }).when(mailTransport).send(Mockito.any());
+    }
+
+    private Thread inAcme(Runnable r) {
+        Thread t = new Thread(() -> {
+            asAcme();
+            try {
+                r.run();
+            } finally {
+                TenantContext.clear();
+            }
+        });
+        t.start();
+        return t;
+    }
+
+    /** A row that is due now, never attempted (its immediate hand-off was refused). */
+    private long refusedOrderRow(String email, String sku) throws Exception {
+        saturateMail();
+        String order = placeOrder(email, sku);
+        long id = orderId(order);
+        release.countDown();
+        awaitBackgroundIdle();
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("PENDING/0");
+        makeDue();
+        return id;
+    }
+
+    private String orderNumberOf(long orderId) {
+        return jdbc.queryForObject("SELECT order_number FROM tenant_acme.orders WHERE id = ?", String.class, orderId);
+    }
+
+    /**
+     * O1 probe: drain A reserved the row; a late immediate hand-off claimed it and is still sending; then drain A's
+     * hand-off is refused and it releases its reservation. The release must not make the claimed row due, or drain
+     * B claims it and the e-mail goes out twice.
+     */
+    @Test
+    void o1_aReleaseOfAStaleReservationNeverMakesAClaimedRowDue_noDoubleSend() throws Exception {
+        long id = refusedOrderRow("o1@acme.test", "P-O1");
+        String order = orderNumberOf(id);
+        asAcme();
+        List<OutboxStore.Row> drainA = store.reserveDue(10);
+        assertThat(drainA).singleElement().satisfies(r -> assertThat(r.attempts()).isZero());
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch go = new CountDownLatch(1);
+        blockFirstNewOrderMail(order, entered, go, null);
+        Thread worker = inAcme(() -> processor.runFresh(OutboxKind.NEW_ORDER_ADMIN_MAIL, String.valueOf(id)));
+        try {
+            assertThat(entered.await(10, TimeUnit.SECONDS)).as("the late hand-off is sending").isTrue();
+            assertThat(store.release(drainA)).as("drain A's refused reservation is stale").isZero();
+            assertThat(nextAttemptAfter(id, "5 minutes")).as("the sending worker's lease is intact").isTrue();
+            assertThat(drainer.drainCurrentTenant()).as("drain B finds nothing due").isZero();
+        } finally {
+            go.countDown();
+            worker.join(30_000);
+        }
+        awaitBackgroundIdle();
+        assertThat(newOrderMails(order)).as("sent once").isEqualTo(1);
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("DONE/1");
+    }
+
+    /**
+     * O2 probe: worker 1 claimed the row and hangs in the send past its lease; worker 2 re-claims it. When worker 1's
+     * send finally fails, its stale fail() must not touch worker 2's claim (back-off would cut worker 2's lease short
+     * and let a third worker send while worker 2 still is), and its complete() must not settle worker 2's attempt.
+     */
+    @Test
+    void o2_aStaleWorkerNeitherFailsNorCompletesARowSomebodyReClaimed() throws Exception {
+        long id = refusedOrderRow("o2@acme.test", "P-O2");
+        String order = orderNumberOf(id);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch go = new CountDownLatch(1);
+        blockFirstNewOrderMail(order, entered, go, new IllegalStateException("smtp timeout"));
+        Thread worker1 = inAcme(() -> processor.runFresh(OutboxKind.NEW_ORDER_ADMIN_MAIL, String.valueOf(id)));
+        OutboxStore.Row worker2;
+        try {
+            assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
+            makeDue(); // worker 1's lease ran out
+            asAcme();
+            worker2 = store.claim(store.reserveDue(10).getFirst()).orElseThrow();
+            assertThat(worker2.attempts()).isEqualTo(2);
+        } finally {
+            go.countDown();
+            worker1.join(30_000);
+        }
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).as("worker 1's failure was not recorded").isEqualTo("PENDING/2");
+        assertThat(nextAttemptAfter(id, "5 minutes")).as("worker 2's lease is intact").isTrue();
+        assertThat(jdbc.queryForObject("SELECT last_error FROM tenant_acme.side_effect_outbox WHERE kind = 'NEW_ORDER_ADMIN_MAIL'"
+                + " AND reference = ?", String.class, String.valueOf(id))).isNull();
+        assertThat(processorLog.list).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("went stale"));
+
+        OutboxStore.Row worker1Claim = new OutboxStore.Row(worker2.id(), worker2.kind(), worker2.reference(), 1);
+        assertThat(store.complete(worker1Claim)).as("stale complete").isFalse();
+        assertThat(store.fail(worker1Claim, "x", true)).isEqualTo(OutboxStore.FailOutcome.STALE);
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("PENDING/2");
+        assertThat(store.complete(worker2)).isTrue();
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("DONE/2");
+        assertThat(store.fail(worker2, "late", true)).as("a DONE row is never put back").isEqualTo(OutboxStore.FailOutcome.STALE);
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("DONE/2");
+    }
+
+    /** R02 + R10: the reservation pushes the row out by the lease; release (real SQL) makes exactly the fenced rows due. */
+    @Test
+    void reserveLeasesTheRow_releaseMakesOnlyTheRowsStillAtTheirReservedAttemptsDue() {
+        asAcme();
+        jdbc.update("INSERT INTO tenant_acme.side_effect_outbox (kind, reference, attempts, next_attempt_at) VALUES "
+                + "('NEW_ORDER_ADMIN_MAIL', '920001', 0, now() - interval '1 minute'),"
+                + "('NEW_ORDER_ADMIN_MAIL', '920002', 3, now() - interval '1 minute'),"
+                + "('NEW_ORDER_ADMIN_MAIL', '920003', 1, now() - interval '1 minute')");
+        List<OutboxStore.Row> reserved = store.reserveDue(10);
+        assertThat(reserved).extracting(OutboxStore.Row::reference).containsExactly("920001", "920002", "920003");
+        assertThat(jdbc.queryForObject("SELECT bool_and(next_attempt_at BETWEEN now() + interval '9 minutes' AND now() + interval '11 minutes')"
+                + " FROM tenant_acme.side_effect_outbox WHERE reference LIKE '9200%'", Boolean.class)).as("leased 10 min").isTrue();
+        assertThat(store.reserveDue(10)).as("leased rows are not reserved twice").isEmpty();
+        // somebody claims 920003 meanwhile (attempts 1 -> 2)
+        assertThat(store.claim(reserved.get(2))).isPresent();
+        assertThat(store.release(reserved)).isEqualTo(2);
+        assertThat(jdbc.queryForList("SELECT reference FROM tenant_acme.side_effect_outbox WHERE reference LIKE '9200%'"
+                + " AND next_attempt_at <= now() ORDER BY reference", String.class)).containsExactly("920001", "920002");
+        assertThat(store.release(List.of())).isZero();
+    }
+
+    /** R22 with literals: the 8th failed attempt is the last; the 7th still backs off (capped at 1 h, R05 in SQL). */
+    @Test
+    void theEighthFailedAttemptMarksTheRowFailed_theSeventhBacksOffOneHour() {
+        asAcme();
+        jdbc.update("INSERT INTO tenant_acme.side_effect_outbox (kind, reference, attempts, next_attempt_at) VALUES "
+                + "('NEW_ORDER_ADMIN_MAIL', '930007', 7, now()), ('NEW_ORDER_ADMIN_MAIL', '930008', 8, now())");
+        long id7 = jdbc.queryForObject("SELECT id FROM tenant_acme.side_effect_outbox WHERE reference = '930007'", Long.class);
+        long id8 = jdbc.queryForObject("SELECT id FROM tenant_acme.side_effect_outbox WHERE reference = '930008'", Long.class);
+        assertThat(store.fail(new OutboxStore.Row(id7, OutboxKind.NEW_ORDER_ADMIN_MAIL, "930007", 7), "e", true))
+                .isEqualTo(OutboxStore.FailOutcome.RETRY);
+        assertThat(jdbc.queryForObject("SELECT next_attempt_at BETWEEN now() + interval '59 minutes' AND now() + interval '61 minutes'"
+                + " FROM tenant_acme.side_effect_outbox WHERE id = ?", Boolean.class, id7)).isTrue();
+        assertThat(store.fail(new OutboxStore.Row(id8, OutboxKind.NEW_ORDER_ADMIN_MAIL, "930008", 8), "e", true))
+                .isEqualTo(OutboxStore.FailOutcome.FAILED);
+    }
+
+    /** EVT-01c (5): a non-retryable failure goes FAILED at its first attempt, with one ERROR naming it. */
+    @Test
+    void aNonRetryableFailureIsFailedAtOnce_notRetriedEightTimes() throws Exception {
+        doThrow(new NullPointerException()).when(mailTransport)
+                .send(argThat(m -> m != null && m.subject() != null && m.subject().startsWith("New Order Received")));
+        String order = placeOrder("ob-np@acme.test", "P-OB-NP");
+        long id = orderId(order);
+        awaitBackgroundIdle();
+        assertThat(row(OutboxKind.NEW_ORDER_ADMIN_MAIL, id)).isEqualTo("FAILED/1");
+        assertThat(processorLog.list).filteredOn(e -> e.getLevel() == Level.ERROR).singleElement().satisfies(e ->
+                assertThat(e.getFormattedMessage()).contains("not retryable").contains("order " + id));
+        asAcme();
+        makeDue();
+        assertThat(drainer.drainCurrentTenant()).isZero();
+    }
+
+    /** O5: concurrent runs of the admin payment notification write one notification, race-free (V15 unique index). */
+    @Test
+    void o5_concurrentPaymentNotificationsForOneOrderWriteOneRow() throws Exception {
+        com.example.perfume_budget.model.Order o = new com.example.perfume_budget.model.Order();
+        o.setOrderNumber("EVT01C-RACE-1");
+        com.example.perfume_budget.model.Payment p = new com.example.perfume_budget.model.Payment();
+        p.setOrder(o);
+        int racers = 8;
+        CyclicBarrier start = new CyclicBarrier(racers);
+        List<Throwable> errors = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<Thread> threads = new ArrayList<>();
+        for (int i = 0; i < racers; i++) {
+            threads.add(inAcme(() -> {
+                try {
+                    start.await(10, TimeUnit.SECONDS);
+                    notificationService.notifyAdminsOfSuccessfulPayment(p);
+                } catch (Throwable t) {
+                    errors.add(t);
+                }
+            }));
+        }
+        for (Thread t : threads) {
+            t.join(30_000);
+        }
+        assertThat(errors).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.notifications WHERE type = 'PAYMENT_SUCCESS'"
+                + " AND reference_id = 'EVT01C-RACE-1'", Integer.class)).isEqualTo(1);
+        int admins = jdbc.queryForObject("SELECT count(*) FROM tenant_acme.users WHERE roles IN ('ADMIN', 'FRONT_DESK')", Integer.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.notification_recipients r JOIN tenant_acme.notifications n"
+                + " ON n.id = r.notification_id WHERE n.reference_id = 'EVT01C-RACE-1'", Integer.class)).isEqualTo(admins);
+        jdbc.update("DELETE FROM tenant_acme.notification_recipients WHERE notification_id IN"
+                + " (SELECT id FROM tenant_acme.notifications WHERE reference_id = 'EVT01C-RACE-1')");
+        jdbc.update("DELETE FROM tenant_acme.notifications WHERE reference_id = 'EVT01C-RACE-1'");
+    }
+
+    /** V15 on a schema that already has duplicate payment notifications: merged into the oldest, read state kept. */
+    @Test
+    void v15MergesExistingDuplicatePaymentNotificationsSafely() {
+        String schema = "tenant_evt01c_v15";
+        jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        try {
+            org.flywaydb.core.Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                    .locations("classpath:db/migrations/tenant").target("13").load().migrate();
+            String user = "INSERT INTO " + schema + ".users (full_name, email, password, roles, created_at) VALUES (?, ?, 'x', 'ADMIN', now())";
+            jdbc.update(user, "A", "a@v15.test");
+            jdbc.update(user, "B", "b@v15.test");
+            jdbc.update(user, "C", "c@v15.test");
+            String n = "INSERT INTO " + schema + ".notifications (type, title, message, reference_type, reference_id, created_at)"
+                    + " VALUES (?, 't', 'm', 'ORDER', ?, now())";
+            jdbc.update(n, "PAYMENT_SUCCESS", "PB-1");      // 1 kept
+            jdbc.update(n, "PAYMENT_SUCCESS", "PB-1");      // 2 duplicate
+            jdbc.update(n, "PAYMENT_SUCCESS", "PB-1");      // 3 duplicate
+            jdbc.update(n, "PAYMENT_SUCCESS", "PB-2");      // 4 single
+            jdbc.update(n, "SHOP_FLOOR_RESTOCK", "77");     // 5 other type, repeats allowed
+            jdbc.update(n, "SHOP_FLOOR_RESTOCK", "77");     // 6
+            String r = "INSERT INTO " + schema + ".notification_recipients (notification_id, user_id, is_read, read_at, created_at)"
+                    + " VALUES (?, ?, ?, ?, now())";
+            jdbc.update(r, 1, 1, false, null);                       // A on kept, unread
+            jdbc.update(r, 2, 1, true, java.sql.Timestamp.valueOf("2026-11-01 10:00:00")); // A read the duplicate
+            jdbc.update(r, 2, 2, false, null);                       // B only on duplicates (read on one)
+            jdbc.update(r, 3, 2, true, java.sql.Timestamp.valueOf("2026-11-02 10:00:00"));
+            jdbc.update(r, 3, 3, false, null);                       // C only on a duplicate
+            jdbc.update(r, 5, 1, false, null);
+            jdbc.update(r, 6, 1, false, null);
+
+            org.flywaydb.core.Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema)
+                    .locations("classpath:db/migrations/tenant").load().migrate();
+
+            assertThat(jdbc.queryForList("SELECT id FROM " + schema + ".notifications ORDER BY id", Long.class))
+                    .containsExactly(1L, 4L, 5L, 6L);
+            List<String> recipients = jdbc.queryForList("SELECT notification_id || ':' || user_id || ':' || is_read || ':' || coalesce(read_at::text, '-')"
+                    + " FROM " + schema + ".notification_recipients ORDER BY notification_id, user_id", String.class);
+            assertThat(recipients).containsExactly(
+                    "1:1:true:2026-11-01 10:00:00", "1:2:true:2026-11-02 10:00:00", "1:3:false:-", "5:1:false:-", "6:1:false:-");
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_indexes WHERE schemaname = ? AND indexname = "
+                    + "'uk_notifications_payment_success_reference'", Integer.class, schema)).isEqualTo(1);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(n, "PAYMENT_SUCCESS", "PB-2"))
+                    .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            jdbc.update(n, "SHOP_FLOOR_RESTOCK", "77"); // still allowed
+        } finally {
+            jdbc.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        }
     }
 }

@@ -436,6 +436,54 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         assertThat(auditRows("plat-b")).isZero();
     }
 
+    // ---- EVT-01c (6): reactivation brings the tenant schema up to date (boot migrates ACTIVE schemas only) ---------
+
+    private static String latestMigration(String schema) {
+        return jdbc(c -> {
+            try (var ps = c.prepareStatement("SELECT version FROM " + schema + ".flyway_schema_history WHERE success"
+                    + " AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1");
+                 ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        });
+    }
+
+    @Test
+    void reactivate_migratesASchemaThatMissedADeployWhileSuspended_failureKeepsItSuspended() throws Exception {
+        tenants.ensureTenant("plat-r");
+        setStatus("plat-r", TenantStatus.ACTIVE);
+        String latest = latestMigration("tenant_template");
+        assertThat(latestMigration("tenant_plat_r")).isEqualTo(latest);
+        assertThat(act("plat-r", "suspend").getStatus()).isEqualTo(200);
+        // a deploy while it was suspended: boot migrated only ACTIVE schemas, so this one lacks the newest migration
+        jdbc(c -> {
+            try (var st = c.createStatement()) {
+                st.execute("DROP INDEX tenant_plat_r.uk_notifications_payment_success_reference");
+                st.execute("DELETE FROM tenant_plat_r.flyway_schema_history WHERE version = '15'");
+            }
+            return null;
+        });
+        assertThat(latestMigration("tenant_plat_r")).isNotEqualTo(latest);
+
+        // the migration fails: 500 without internals, still SUSPENDED, no audit row
+        long audited = auditRows("plat-r");
+        doThrow(new IllegalStateException("jdbc:postgresql://db.internal password=hunter2")).when(migrator).migrateTenant("tenant_plat_r");
+        MockHttpServletResponse failed = act("plat-r", "reactivate");
+        assertThat(failed.getStatus()).isEqualTo(500);
+        assertThat(failed.getContentAsString()).doesNotContain("hunter2").doesNotContain("jdbc").contains("SUSPENDED");
+        assertThat(status("plat-r")).isEqualTo("SUSPENDED");
+        assertThat(auditRows("plat-r")).isEqualTo(audited);
+        Mockito.reset(migrator);
+
+        MockHttpServletResponse ok = act("plat-r", "reactivate");
+        assertThat(ok.getStatus()).as(ok.getContentAsString()).isEqualTo(200);
+        assertThat(status("plat-r")).isEqualTo("ACTIVE");
+        assertThat(latestMigration("tenant_plat_r")).as("migrated before going ACTIVE").isEqualTo(latest);
+        assertThat(scalar("SELECT count(*) FROM pg_indexes WHERE schemaname = 'tenant_plat_r'"
+                + " AND indexname = 'uk_notifications_payment_success_reference'")).isEqualTo(1);
+        assertThat(auditRows("plat-r")).isEqualTo(audited + 1);
+    }
+
     @Test
     void idempotentRepeats_writeNoExtraAuditRows_andIllegalOrUnknownWriteNone() throws Exception {
         assertThat(act("plat-b", "suspend").getStatus()).isEqualTo(200);
@@ -657,7 +705,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     /** A service instance with no reconcile grace (the HTTP one keeps the 60 s default so it never races a live winner). */
     private PlatformTenantService noGraceService() {
         return new PlatformTenantService(tenantRepository, signupRepository, audits, provisioningService, originPolicy,
-                txManager, 1000, 15, 0);
+                migrator, txManager, 1000, 15, 0);
     }
 
     private PlatformPrincipal principal() {

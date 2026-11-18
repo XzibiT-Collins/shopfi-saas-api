@@ -322,6 +322,83 @@ class PaymentLifecycleIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(movements("SALE", o.orderNumber())).isEqualTo(1);
     }
 
+    /**
+     * EVT-01c rework 1 (reviewer probe P3): a settlement failure whose database message quotes personal data
+     * ({@code Key (email)=(..)}) answers 500 with a body that does not carry that message, and the ERROR log line has
+     * the stack trace (class names and frames) but not the message either.
+     */
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void aSettlementFailureQuotingPersonalDataAnswers500WithoutTheMessage_andLogsATraceWithoutIt(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("p3@acme.test", 1);
+        String body = event("charge.success", o.reference(), totalMinor(o.orderNumber()));
+        jdbc.execute("CREATE OR REPLACE FUNCTION tenant_acme.evt01cr1_pii_down() RETURNS trigger LANGUAGE plpgsql AS"
+                + " $$ BEGIN RAISE EXCEPTION 'duplicate key value violates unique constraint \"users_email_key\"'"
+                + " USING DETAIL = 'Key (email)=(p3-leak@acme.test) already exists.', ERRCODE = '23505'; END $$");
+        jdbc.execute("CREATE TRIGGER evt01cr1_pii_down BEFORE INSERT ON tenant_acme.side_effect_outbox"
+                + " FOR EACH ROW EXECUTE FUNCTION tenant_acme.evt01cr1_pii_down()");
+        MvcResult r;
+        try {
+            r = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/webhook/" + g.token())
+                    .contentType("application/json").header("X-Paystack-Signature", hmac512(body, g.secret())).content(body)).andReturn();
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS evt01cr1_pii_down ON tenant_acme.side_effect_outbox");
+            jdbc.execute("DROP FUNCTION IF EXISTS tenant_acme.evt01cr1_pii_down()");
+        }
+        String answer = r.getResponse().getContentAsString();
+        assertThat(r.getResponse().getStatus()).isEqualTo(500);
+        assertThat(answer).doesNotContain("p3-leak").doesNotContain("Key (email)").doesNotContain("users_email_key")
+                .doesNotContain("Exception");
+        assertThat(orderStatus(acme, o.orderNumber())).isEqualTo("INITIATED");
+        // our ERROR entry: from its message to the next log line (Hibernate's own SqlExceptionHelper line is not ours)
+        String all = output.getAll();
+        int at = all.indexOf("Webhook event not applied");
+        assertThat(at).as("the processor logged the failure").isNotNegative();
+        java.util.regex.Matcher next = java.util.regex.Pattern.compile("\n\\d{4}-\\d{2}-\\d{2}[T ]").matcher(all);
+        String logged = next.find(at) ? all.substring(at, next.start()) : all.substring(at);
+        assertThat(logged).as("the ERROR entry carries the stack trace again").contains("\tat com.example.perfume_budget.")
+                .contains("Caused by: ");
+        assertThat(logged).doesNotContain("p3-leak").doesNotContain("Key (email)").doesNotContain("users_email_key");
+        assertThat(webhook(g, body)).as("the redelivery").isEqualTo(200);
+    }
+
+    /**
+     * EVT-01c (6): the webhook is answered only after the settlement committed. Here the side-effect outbox insert (a
+     * before-commit step of the settlement) fails, which rolls the payment change back: the webhook must not be
+     * acknowledged (Paystack then redelivers it), and the redelivery applies it once with its outbox rows.
+     */
+    @Test
+    void aWebhookWhoseSettlementDidNotCommitIsNotAcknowledged_andTheRedeliveryAppliesIt() throws Exception {
+        Gateway g = configureGateway(acme);
+        Placed o = place("w9@acme.test", 1);
+        String body = event("charge.success", o.reference(), totalMinor(o.orderNumber()));
+        long paymentId = jdbc.queryForObject("SELECT p.id FROM tenant_acme.payments p JOIN tenant_acme.orders o ON o.id = p.order_id"
+                + " WHERE o.order_number = ?", Long.class, o.orderNumber());
+        jdbc.execute("CREATE OR REPLACE FUNCTION tenant_acme.evt01c_outbox_down() RETURNS trigger LANGUAGE plpgsql AS"
+                + " $$ BEGIN RAISE EXCEPTION 'outbox insert refused'; END $$");
+        jdbc.execute("CREATE TRIGGER evt01c_outbox_down BEFORE INSERT ON tenant_acme.side_effect_outbox"
+                + " FOR EACH ROW EXECUTE FUNCTION tenant_acme.evt01c_outbox_down()");
+        int refused;
+        try {
+            refused = webhook(g, body);
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS evt01c_outbox_down ON tenant_acme.side_effect_outbox");
+            jdbc.execute("DROP FUNCTION IF EXISTS tenant_acme.evt01c_outbox_down()");
+        }
+        assertThat(refused).as("not acknowledged: the provider redelivers").isGreaterThanOrEqualTo(500);
+        assertThat(orderStatus(acme, o.orderNumber())).as("the payment change rolled back with the outbox insert").isEqualTo("INITIATED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.side_effect_outbox WHERE kind LIKE 'PAYMENT_%' AND reference = ?",
+                Integer.class, String.valueOf(paymentId))).isZero();
+
+        assertThat(webhook(g, body)).as("the redelivery").isEqualTo(200);
+        assertThat(orderStatus(acme, o.orderNumber())).as("applied before the answer").isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.side_effect_outbox WHERE kind LIKE 'PAYMENT_%' AND reference = ?",
+                Integer.class, String.valueOf(paymentId))).isEqualTo(3);
+        assertThat(movements("SALE", o.orderNumber())).isEqualTo(1);
+    }
+
     @Test
     void webhookAmountMismatchIsNotApplied() throws Exception {
         Gateway g = configureGateway(acme);

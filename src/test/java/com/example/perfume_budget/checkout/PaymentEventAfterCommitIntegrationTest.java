@@ -190,12 +190,13 @@ class PaymentEventAfterCommitIntegrationTest extends AbstractCheckoutIntegration
         String order = cancelledCouponOrder("AFTERC1", "ac1@acme.test");
         String ref = reference(order);
         Gateway g = configureGateway(acme);
+        Future<Integer> answer;
         try (PublishedPaymentEvents published = new PublishedPaymentEvents();
              Connection conn = jdbc.getDataSource().getConnection()) {
             conn.setAutoCommit(false);
             try (var st = conn.createStatement()) {
                 st.execute("SELECT id FROM tenant_acme.coupons WHERE code = 'AFTERC1' FOR NO KEY UPDATE");
-                assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
+                answer = webhookInBackground(g, event("charge.success", ref, totalMinor(order)));
                 // attempt 1 published, then its deferred coupon UPDATE timed out at commit (COUPON_BUSY, rolled back);
                 // attempt 2 published and is now waiting for the coupon row
                 await().atMost(Duration.ofSeconds(15)).until(() -> published.of(ref) >= 2);
@@ -204,6 +205,7 @@ class PaymentEventAfterCommitIntegrationTest extends AbstractCheckoutIntegration
             } finally {
                 conn.rollback();
             }
+            assertThat(answer.get(60, TimeUnit.SECONDS)).as("answered once attempt 2 committed").isEqualTo(200);
             await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(orderStatus(acme, order)).isEqualTo("COMPLETED"));
             await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertSideEffects(order, 1));
             Thread.sleep(1_500); // nothing else is still on its way
@@ -223,10 +225,11 @@ class PaymentEventAfterCommitIntegrationTest extends AbstractCheckoutIntegration
             conn.setAutoCommit(false);
             try (var st = conn.createStatement()) {
                 st.execute("SELECT id FROM tenant_acme.coupons WHERE code = 'AFTERC2' FOR NO KEY UPDATE");
-                assertThat(webhook(g, event("charge.success", ref, totalMinor(order)))).isEqualTo(200);
+                Future<Integer> answer = webhookInBackground(g, event("charge.success", ref, totalMinor(order)));
+                // EVT-01c: every attempt fails, nothing committed: the webhook is NOT acknowledged
+                assertThat(answer.get(60, TimeUnit.SECONDS)).as("not acknowledged, Paystack redelivers").isEqualTo(500);
                 await().atMost(Duration.ofSeconds(20)).until(() -> published.of(ref) >= 3);
-                await().atMost(Duration.ofSeconds(10)).until(() -> blockedLocks() >= 1);  // attempt 3 waits ...
-                await().atMost(Duration.ofSeconds(10)).until(() -> blockedLocks() == 0);  // ... and gives up
+                assertThat(blockedLocks()).as("all attempts gave up").isZero();
                 Thread.sleep(1_500); // let any (wrongly) queued handler run
                 assertThat(published.of(ref)).as("all attempts published and none committed").isEqualTo(3);
                 assertThat(orderStatus(acme, order)).isEqualTo("CANCELLED");
