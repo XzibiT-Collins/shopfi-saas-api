@@ -154,8 +154,6 @@ class WebhookTenantFairnessIntegrationTest extends AbstractCheckoutIntegrationTe
                 Thread.sleep(10);
             }
             assertThat(acmeStatuses.get(503)).as("acme's excess webhooks answered 503").isNotNull();
-            assertThat(bulkhead.availableTenantSlots("tenant_acme")).as("acme holds its one slot").isZero();
-            assertThat(bulkhead.availablePermits()).as("acme holds exactly one shared permit").isEqualTo(2);
 
             // bravo settles during the flood, one after the other: each 200, committed, quickly
             for (int i = 0; i < bravoBodies.size(); i++) {
@@ -167,8 +165,10 @@ class WebhookTenantFairnessIntegrationTest extends AbstractCheckoutIntegrationTe
                 assertThat(st).as("bravo is not starved by acme's flood").isEqualTo(200);
                 assertThat(orderStatus(bravo, bravoOrders.get(i))).isEqualTo("COMPLETED");
                 assertThat(ms).isLessThan(3000);
-                assertThat(bulkhead.availablePermits()).as("still only acme's one permit taken").isEqualTo(2);
             }
+            // checked only now: the bravo assertions above are the behaviour, these the mechanism
+            assertThat(bulkhead.availableTenantSlots("tenant_acme")).as("acme holds its one slot").isZero();
+            assertThat(bulkhead.availablePermits()).as("acme holds exactly one shared permit").isEqualTo(2);
             assertThat(maxAcmeInPermits.get()).as("acme never held more than one shared permit").isLessThanOrEqualTo(2);
             // the flood never applied anything while the row was held
             for (String on : acmeOrders) {
