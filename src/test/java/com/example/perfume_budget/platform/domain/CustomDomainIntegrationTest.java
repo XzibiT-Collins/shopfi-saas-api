@@ -528,7 +528,8 @@ class CustomDomainIntegrationTest extends AbstractTenantWebTest {
         JsonNode d = data(claim(acme, acmeAdmin, "shop.squat-brand.com"));
         dns.put(d.get("txtRecordName").asText(), d.get("txtRecordValue").asText());
         assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("VERIFIED");
-        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '1000 hours' WHERE slug = 'acme'");
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '1000 hours', "
+                + "custom_domain_last_verified_at = now() - interval '900 hours' WHERE slug = 'acme'");
         assertThat(claim(bravo, bravoAdmin, "shop.squat-brand.com").getStatus()).isEqualTo(409);
         assertThat(row("acme").get("custom_domain_status")).isEqualTo("VERIFIED");
     }
