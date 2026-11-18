@@ -1,11 +1,13 @@
 package com.example.perfume_budget.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
+import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.accounts.request.DateRangeRequest;
 import com.example.perfume_budget.dto.accounts.response.*;
 import com.example.perfume_budget.service.interfaces.AccountingReportService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -58,14 +60,19 @@ public class AccountingController {
                         new DateRangeRequest(startDate, endDate))));
     }
 
-    // full journal entry audit trail
+    /**
+     * Journal entry audit trail for a date range. CAT-03: paged like {@code GET /order/all} ({@code page}, {@code size}
+     * capped at 50, page start below row 10,000, newest first); the data is a {@code PageResponse}, no longer a bare
+     * list. See docs/api/accounting.md.
+     */
     @GetMapping("/journal-entries")
-    public ResponseEntity<CustomApiResponse<List<JournalEntryResponse>>> getJournalEntries(
+    public ResponseEntity<CustomApiResponse<PageResponse<JournalEntryResponse>>> getJournalEntries(
             @RequestParam LocalDate startDate,
-            @RequestParam LocalDate endDate) {
+            @RequestParam LocalDate endDate,
+            Pageable pageable) {
         return ResponseEntity.ok(CustomApiResponse.success(
                 accountingReportService.getJournalEntries(
-                        new DateRangeRequest(startDate, endDate))));
+                        new DateRangeRequest(startDate, endDate), pageable)));
     }
 
     // trace all entries for a specific order or payment

@@ -7,6 +7,8 @@ import com.example.perfume_budget.model.JournalEntry;
 import com.example.perfume_budget.projection.DailyCashFlowProjection;
 import com.example.perfume_budget.projection.RevenueAndCOGSBucketProjection;
 import com.example.perfume_budget.projection.ExpenseBucketProjection;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -15,24 +17,38 @@ import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 
 @Repository
 /*
  * CAT-02: the journal-entry report reads map every line and its account outside a transaction (open-in-view is off), so
- * those three reads load lines + accounts in the same query (entity graph; one row per entry, no N+1).
+ * those reads load lines + accounts in the same query (entity graph; one row per entry, no N+1).
  */
 public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long> {
-    // entries within a date range
-    @Query("""
-            SELECT j FROM JournalEntry j
-            WHERE j.transactionDate BETWEEN :start AND :end
-            ORDER BY j.transactionDate DESC
+    /**
+     * CAT-03: one page of the ids of the entries with {@code start <= transactionDate < end}, newest first with the id as
+     * the tie-break (stable across pages). Ids only: paging a fetch join of the lines collection would make Hibernate
+     * page in memory; the page's entries are loaded with {@link #findWithLinesByIdIn}.
+     */
+    @Query(value = """
+            SELECT j.id FROM JournalEntry j
+            WHERE j.transactionDate >= :start AND j.transactionDate < :end
+            ORDER BY j.transactionDate DESC, j.id DESC
+            """,
+            countQuery = """
+            SELECT count(j) FROM JournalEntry j
+            WHERE j.transactionDate >= :start AND j.transactionDate < :end
             """)
-    @EntityGraph(attributePaths = {"lines", "lines.account"})
-    List<JournalEntry> findAllByDateRange(
+    Page<Long> findIdPageByDateRange(
             @Param("start") LocalDateTime start,
-            @Param("end") LocalDateTime end);
+            @Param("end") LocalDateTime end,
+            Pageable pageable);
+
+    /** CAT-03: the given entries with their lines and accounts (one query, unordered: the caller orders by its id page). */
+    @EntityGraph(attributePaths = {"lines", "lines.account"})
+    @Query("SELECT DISTINCT j FROM JournalEntry j WHERE j.id IN :ids")
+    List<JournalEntry> findWithLinesByIdIn(@Param("ids") Collection<Long> ids);
 
     // entries by type within a date range
     @Query("""

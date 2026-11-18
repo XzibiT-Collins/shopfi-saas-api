@@ -81,7 +81,7 @@ class CartItemServiceImplTest {
     void addItemToCart_Success_NewItem() {
         CartItemRequest request = new CartItemRequest(1L, 1);
         when(productRepository.findById(1L)).thenReturn(Optional.of(testProduct));
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByProductIdAndCartId(1L, 1L)).thenReturn(Optional.empty());
         when(cartItemRepository.save(any(CartItem.class))).thenReturn(testCartItem);
 
@@ -96,7 +96,7 @@ class CartItemServiceImplTest {
     void addItemToCart_Success_ExistingItem() {
         CartItemRequest request = new CartItemRequest(1L, 1);
         when(productRepository.findById(1L)).thenReturn(Optional.of(testProduct));
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByProductIdAndCartId(1L, 1L)).thenReturn(Optional.of(testCartItem));
         when(cartItemRepository.save(any(CartItem.class))).thenReturn(testCartItem);
 
@@ -139,7 +139,7 @@ class CartItemServiceImplTest {
     void addItemToCart_Failure_StockExceeded() {
         CartItemRequest request = new CartItemRequest(1L, 11);
         when(productRepository.findById(1L)).thenReturn(Optional.of(testProduct));
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByProductIdAndCartId(1L, 1L)).thenReturn(Optional.empty());
 
         assertThrows(BadRequestException.class, () -> cartItemService.addItemToCart(request));
