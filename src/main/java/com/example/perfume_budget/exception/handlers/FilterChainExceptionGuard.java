@@ -9,6 +9,7 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.catalina.core.StandardWrapper;
 import org.apache.coyote.BadRequestException;
 import org.apache.coyote.CloseNowException;
 
@@ -24,9 +25,14 @@ import java.io.IOException;
  * JSON, which never carries a message). Note: that {@code /error} dispatch is anonymous, so today it answers 401, with
  * or without this filter.
  *
- * <p>Left to Tomcat unchanged: what it logs only at DEBUG (a client abort, a bad request, close-now, also as the root
- * cause of a {@code ServletException}), and {@link Error}s (out of memory, stack overflow) which must not be swallowed.
- * On an ERROR dispatch the status is set without another error page; a committed response is left as it is.
+ * <p>Left to Tomcat unchanged: what it logs only at DEBUG (a client abort, a bad request, close-now, or a
+ * {@code ServletException} whose root cause is a bad request / client abort), and {@link Error}s (out of memory, stack
+ * overflow) which must not be swallowed. On an ERROR dispatch the status is set without another error page.
+ *
+ * <p>SEC-01e rework 1 (F-1): when the response is already committed (part of the body is on the wire) the failure must
+ * still reach the client. Swallowing it would let Tomcat end the chunked body normally, so a truncated answer would look
+ * complete. After logging, a {@link CloseNowException} without any text or cause is thrown instead: Tomcat logs that
+ * only at DEBUG and closes the connection without the closing chunk, as it did before this filter existed.
  */
 @Slf4j
 public class FilterChainExceptionGuard implements Filter {
@@ -42,7 +48,10 @@ public class FilterChainExceptionGuard implements Filter {
             }
             log.error("Request failed outside the controllers: {}", SafeStackTrace.of(e));
             log.debug("Request failure detail", e);
-            if (!response.isCommitted() && response instanceof HttpServletResponse http) {
+            if (response.isCommitted()) {
+                throw new CloseNowException("Request failed after the response was committed");
+            }
+            if (response instanceof HttpServletResponse http) {
                 if (request.getDispatcherType() == DispatcherType.ERROR) {
                     http.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
                 } else {
@@ -52,13 +61,19 @@ public class FilterChainExceptionGuard implements Filter {
         }
     }
 
-    /** Tomcat's StandardWrapperValve logs these at DEBUG only (ClientAbortException is a BadRequestException). */
+    /**
+     * Exactly what Tomcat 10.1's {@code StandardWrapperValve} logs at DEBUG only: a {@link BadRequestException}
+     * (a {@code ClientAbortException} is one) or a {@link CloseNowException} thrown as such, or a
+     * {@link ServletException} whose root cause (its deepest cause, Tomcat's own {@link StandardWrapper#getRootCause})
+     * is a {@link BadRequestException}. Anything else, such as an {@code IOException} or a {@code RuntimeException}
+     * wrapping a client abort, Tomcat logs at ERROR with its message, so the guard handles it.
+     */
     static boolean tomcatLogsOnlyAtDebug(Exception e) {
-        Throwable t = e;
-        for (int depth = 0; t != null && depth < 16; depth++, t = t.getCause()) {
-            if (t instanceof BadRequestException || t instanceof CloseNowException) {
-                return true;
-            }
+        if (e instanceof BadRequestException || e instanceof CloseNowException) {
+            return true;
+        }
+        if (e instanceof ServletException se) {
+            return StandardWrapper.getRootCause(se) instanceof BadRequestException;
         }
         return false;
     }

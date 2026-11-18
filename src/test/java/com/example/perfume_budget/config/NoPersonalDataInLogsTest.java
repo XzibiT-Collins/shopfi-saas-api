@@ -712,7 +712,19 @@ class NoPersonalDataInLogsTest {
                 Arguments.of("var local from exchange(..)",
                         "var reply = restTemplate.exchange(url, HttpMethod.POST, request, Map.class);\nlog.error(\"x {}\", reply);"),
                 Arguments.of("var local from postForEntity(..)",
-                        "var reply = rest.postForEntity(url, request, Foo.class);\nlog.error(\"x \" + reply);"));
+                        "var reply = rest.postForEntity(url, request, Foo.class);\nlog.error(\"x \" + reply);"),
+                // rework 1 (F-5): reviewer mutants S04 / S06 / S07
+                Arguments.of("readTree(..).toPrettyString()",
+                        "log.warn(\"x {}\", MAPPER.readTree(e.getResponseBodyAsString()).toPrettyString());"),
+                Arguments.of("tree local .toPrettyString()",
+                        "var tree = mapper.readTree(e.getResponseBodyAsByteArray());\nlog.warn(\"x {}\", tree.toPrettyString());"),
+                Arguments.of("whole ClientHttpResponse local",
+                        "ClientHttpResponse res = request.execute();\nlog.error(\"x {}\", res);"),
+                Arguments.of("ClientHttpResponse in a concat",
+                        "final ClientHttpResponse failed = request.execute();\nlog.error(\"x \" + failed);"),
+                Arguments.of("Arrays.asList(body)", "log.error(\"x {}\", Arrays.asList(e.getResponseBodyAsString()));"),
+                Arguments.of("Arrays.deepToString(body array)",
+                        "log.error(\"x {}\", Arrays.deepToString(new Object[]{e.getResponseBodyAsByteArray()}));"));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -739,6 +751,11 @@ class NoPersonalDataInLogsTest {
                 Arguments.of("local holding only the status of an exchange",
                         "var status = rest.exchange(url, HttpMethod.GET, null, Map.class).getStatusCode();\nlog.info(\"s {}\", status);"),
                 Arguments.of("new String of a non-body second argument", "log.info(\"x {}\", new String(chars, 0, 4));"),
+                Arguments.of("ClientHttpResponse status only",
+                        "ClientHttpResponse res = request.execute();\nlog.error(\"x {}\", res.getStatusCode());"),
+                Arguments.of("Arrays.asList of ids", "log.info(\"x {}\", Arrays.asList(ids));"),
+                Arguments.of("one field of a pretty tree",
+                        "log.warn(\"x {}\", MAPPER.readTree(e.getResponseBodyAsString()).path(\"code\").toPrettyString());"),
                 Arguments.of("exchange status only",
                         "var reply = restTemplate.exchange(url, HttpMethod.POST, request, Map.class);\nlog.info(\"s {}\", reply.getStatusCode());"));
     }
