@@ -459,6 +459,8 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
                 assertThat(status).as(tag + " " + body).isEqualTo(404);
                 assertThat(body).contains("Cart item not found");
                 assertThat(carts).as("update / remove of a line in a deleted cart creates no cart").isZero();
+                // the 404 would roll an inserted cart back anyway, so check the decision itself: never even tried
+                assertThat(parked2.get()).as("update / remove never call insert-if-absent").isFalse();
             } else {
                 assertThat(status).as(tag + " " + body).isEqualTo(200);
                 assertThat(parked2.get()).as("R went through the no-op insert").isTrue();
