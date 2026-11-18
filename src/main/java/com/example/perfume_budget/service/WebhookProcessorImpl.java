@@ -116,17 +116,21 @@ public class WebhookProcessorImpl implements WebhookProcessor {
      */
     private <T> T settle(String what, Supplier<T> settlement) {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(lockTimeout.deadlineMillis());
-        return bulkhead.call(() -> retry.callIncludingLockTimeouts(what, () -> {
-            long left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-            if (left < WebhookLockTimeout.MIN_ATTEMPT_MILLIS) {
-                throw new WebhookDeadlineExceededException();
-            }
-            return lockTimeout.call(Math.min(lockTimeout.timeoutMillis(), left), settlement);
-        }));
+        // EVT-01d: the deadline is bound to this thread, so every later lock wait of the settlement (cart, products,
+        // ledger, coupon) is limited to the budget left as well, not only the attempt's first one (SettlementDeadline)
+        return SettlementDeadline.run(deadline, lockTimeout.timeoutMillis(), () ->
+                bulkhead.call(() -> retry.callIncludingLockTimeouts(what, () -> {
+                    long left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                    if (left < WebhookLockTimeout.MIN_ATTEMPT_MILLIS) {
+                        throw new WebhookDeadlineExceededException();
+                    }
+                    return lockTimeout.call(Math.min(lockTimeout.timeoutMillis(), left), settlement);
+                })));
     }
 
     /** The delivery's settlement budget ran out before an attempt committed; not retried, answered 500. */
     public static class WebhookDeadlineExceededException extends RuntimeException {
+        // package-private: also thrown by SettlementDeadline at a lock point once the budget is gone
         WebhookDeadlineExceededException() {
             super("Webhook settlement deadline exceeded", null, false, false);
         }

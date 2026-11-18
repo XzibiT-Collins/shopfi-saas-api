@@ -50,6 +50,8 @@ public class ProductStockLocks {
         }
         // write pending changes first: the refresh below must not throw away anything this transaction changed
         flush();
+        // EVT-01d: in a webhook settlement every wait of this one statement is limited to the budget left
+        SettlementDeadline.beforeLockWait(entityManager);
         productRepository.lockForStockUpdate(ids);
         for (Long id : ids) {
             Product product = entityManager.find(Product.class, id);
