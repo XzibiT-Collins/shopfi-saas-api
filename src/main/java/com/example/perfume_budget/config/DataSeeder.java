@@ -50,7 +50,8 @@ public class DataSeeder {
                             .isActive(true)
                             .emailVerified(true)
                             .build();
-                    log.info("Seeded admin user {}", userRepository.save(admin).getId());
+                    User saved = userRepository.save(admin);
+                    log.info("Seeded admin user {}", saved.getId());
                 }
         );
     }

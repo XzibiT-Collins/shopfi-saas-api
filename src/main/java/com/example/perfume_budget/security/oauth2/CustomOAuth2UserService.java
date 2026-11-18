@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.Optional;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 /**
  * Custom OAuth2 User Service that handles user authentication via OAuth2
@@ -41,7 +42,8 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         try {
             return processOAuth2User(userRequest, oAuth2User);
         } catch (Exception ex) {
-            log.error("Error processing OAuth2 user", ex);
+            log.error("Error processing OAuth2 user: {}", SafeStackTrace.of(ex));
+            log.debug("OAuth2 user processing failure detail", ex);
             throw new OAuth2AuthenticationException(ex.getMessage());
         }
     }

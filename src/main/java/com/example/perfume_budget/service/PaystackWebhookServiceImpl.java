@@ -34,12 +34,18 @@ public class PaystackWebhookServiceImpl implements WebhookService {
             }
             log.info("Webhook signature verified");
 
-            // Publish to async queue for further processing
+            // EVT-01c: applied synchronously; 200 only once it committed (or could never be applied), so a failure
+            // (WebhookNotAppliedException) answers 500 below and Paystack redelivers the event; all settlement
+            // permits taken (WebhookBusyException) answers 503, also redelivered
             webhookProcessor.processWebhook(body);
 
             return ResponseEntity.ok("Processed");
+        } catch (WebhookSettlementBulkhead.WebhookBusyException e) {
+            // EVT-01c rework 1: every settlement permit is taken; nothing was applied and no connection was held.
+            // 503 so Paystack redelivers later; generic body, no internals.
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body("Busy");
         } catch (Exception e) {
-            log.error("Error processing webhook: {}", e.getMessage());
+            log.error("Error processing webhook: {}", e.getClass().getName());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error");
         }
     }

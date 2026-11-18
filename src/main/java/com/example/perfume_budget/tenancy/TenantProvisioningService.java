@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
+import com.example.perfume_budget.utils.SafeStackTrace;
 
 /**
  * Provisioning saga. PostgreSQL DDL (CREATE SCHEMA, Flyway) auto-commits outside any JPA transaction, so
@@ -126,14 +127,16 @@ public class TenantProvisioningService {
             migrator.dropTenantSchema(v.schemaName());
         } catch (Exception dropFailure) {
             dropped = false;
-            log.error("Compensation DROP SCHEMA failed for tenant {}", v.slug(), dropFailure);
+            log.error("Compensation DROP SCHEMA failed for tenant {}: {}", v.slug(), SafeStackTrace.of(dropFailure));
+            log.debug("Compensation DROP SCHEMA failure detail for tenant {}", v.slug(), dropFailure);
         }
         try {
             masterTx.executeWithoutResult(s ->
                     tenantRepository.transitionStatus(tenantId,
                             List.of(TenantStatus.PROVISIONING, TenantStatus.ACTIVE), TenantStatus.FAILED));
         } catch (Exception statusFailure) {
-            log.error("Could not mark tenant {} FAILED; row stays PROVISIONING", v.slug(), statusFailure);
+            log.error("Could not mark tenant {} FAILED; row stays PROVISIONING: {}", v.slug(), SafeStackTrace.of(statusFailure));
+            log.debug("Status write failure detail for tenant {}", v.slug(), statusFailure);
         }
         return new TenantProvisioningException(v.slug(), dropped, cause);
     }

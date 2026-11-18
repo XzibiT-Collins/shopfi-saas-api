@@ -138,13 +138,14 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             // transaction (a checkout's reservation step, a merchant restock) by holding the product row here.
             holder.setAutoCommit(false);
             holder.createStatement().execute("SELECT id FROM tenant_acme.products WHERE id = " + shared + " FOR NO KEY UPDATE");
-            assertThat(webhook(g, event("charge.failed", ref, totalMinor(oa)))).isEqualTo(200);
+            Future<Integer> answer = webhookInBackground(g, event("charge.failed", ref, totalMinor(oa)));
             awaitBlocked(1, 5_000);
             assertThat(blockedLocks()).as("the failure webhook waits for the product row").isPositive();
 
             couponIsNotHeld(ex, "HOLD", cid, "y1");
 
             holder.commit();
+            assertThat(answer.get(60, TimeUnit.SECONDS)).isEqualTo(200);
         } finally {
             ex.shutdownNow();
         }
@@ -173,13 +174,14 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             // transaction (a checkout's reservation step, a merchant restock) by holding the product row here.
             holder.setAutoCommit(false);
             holder.createStatement().execute("SELECT id FROM tenant_acme.products WHERE id = " + shared + " FOR NO KEY UPDATE");
-            assertThat(webhook(g, event("charge.success", ref, totalMinor(oa)))).isEqualTo(200);
+            Future<Integer> answer = webhookInBackground(g, event("charge.success", ref, totalMinor(oa)));
             awaitBlocked(1, 5_000);
             assertThat(blockedLocks()).as("the revival waits for the product row").isPositive();
 
             couponIsNotHeld(ex, "REVIVE", cid, "y2");
 
             holder.commit();
+            assertThat(answer.get(60, TimeUnit.SECONDS)).isEqualTo(200);
         } finally {
             ex.shutdownNow();
         }
@@ -212,12 +214,13 @@ class CouponLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             try (var st = conn.createStatement()) {
                 // hold the coupon row so both transactions line up behind it with their other locks taken
                 st.execute("SELECT id FROM tenant_acme.coupons WHERE code = 'DLK' FOR NO KEY UPDATE");
-                webhook(g, event("charge.failed", reference(ob), totalMinor(ob)));
+                Future<Integer> answer = webhookInBackground(g, event("charge.failed", reference(ob), totalMinor(ob)));
                 awaitBlocked(1, 3_000);
                 Future<MvcResult> c = ex.submit(() -> cancel(a, oa));
                 awaitBlocked(2, 3_000);
                 conn.rollback();
                 cancelled = c.get(30, TimeUnit.SECONDS);
+                assertThat(answer.get(60, TimeUnit.SECONDS)).isEqualTo(200);
             }
         } finally {
             ex.shutdownNow();
