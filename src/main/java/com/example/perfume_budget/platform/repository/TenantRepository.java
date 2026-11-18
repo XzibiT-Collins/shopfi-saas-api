@@ -25,7 +25,34 @@ public interface TenantRepository extends JpaRepository<Tenant, Long>,
     @Query("select t from Tenant t where t.slug = :slug")
     Optional<Tenant> lockBySlug(@Param("slug") String slug);
 
-    Optional<Tenant> findByCustomDomain(String customDomain);
+    /**
+     * DOMAIN-02: THE lookup that honours custom domains. Only a VERIFIED domain matches; PENDING/FAILED claims never
+     * resolve a tenant. {@code host} must already be lower case (it hits the {@code lower(custom_domain)} unique index).
+     */
+    @Query("select t from Tenant t where lower(t.customDomain) = :host "
+            + "and t.customDomainStatus = com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED")
+    Optional<Tenant> findByVerifiedCustomDomain(@Param("host") String host);
+
+    /** DOMAIN-02 write path only (conflict check before a claim): the owner of a domain in ANY status. */
+    @Query("select t from Tenant t where lower(t.customDomain) = :host")
+    Optional<Tenant> findCustomDomainClaim(@Param("host") String host);
+
+    /**
+     * DOMAIN-02 anti-squatting: clears another tenant's PENDING/FAILED claim that is older than {@code cutoff}. A
+     * VERIFIED domain never matches. Returns 1 when released.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Tenant t set t.customDomain = null, t.customDomainStatus = null, t.customDomainToken = null, "
+            + "t.customDomainRequestedAt = null, t.customDomainCheckedAt = null, t.customDomainVerifiedAt = null, "
+            + "t.customDomainFailure = null, t.updatedAt = CURRENT_TIMESTAMP "
+            + "where t.id = :id and lower(t.customDomain) = :host "
+            + "and t.customDomainStatus <> com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED "
+            + "and t.customDomainRequestedAt < :cutoff")
+    int releaseStaleClaim(@Param("id") Long id, @Param("host") String host, @Param("cutoff") java.time.Instant cutoff);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select t from Tenant t where t.id = :id")
+    Optional<Tenant> lockById(@Param("id") Long id);
 
     Optional<Tenant> findBySchemaName(String schemaName);
 

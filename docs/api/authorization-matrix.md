@@ -141,6 +141,10 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | PaymentSettingsController | GET | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | PaymentSettingsController | PUT | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | PaymentSettingsController | POST | `/api/v1/payment-settings/rotate-webhook-token` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (API-04: old webhook URL dies at once) |
+| TenantCustomDomainController | GET | `/api/v1/admin/custom-domain` | authenticated (anyRequest) | `hasRole('ADMIN')` (class) | reads the shop's own custom domain (DOMAIN-02) |
+| TenantCustomDomainController | PUT | `/api/v1/admin/custom-domain` | authenticated (anyRequest) | `hasRole('ADMIN')` (class) | mutates master.tenants (claim, PENDING) |
+| TenantCustomDomainController | POST | `/api/v1/admin/custom-domain/verify` | authenticated (anyRequest) | `hasRole('ADMIN')` (class) | mutates (DNS TXT check, rate limited) |
+| TenantCustomDomainController | DELETE | `/api/v1/admin/custom-domain` | authenticated (anyRequest) | `hasRole('ADMIN')` (class) | mutates (removes the domain) |
 | ProductController | POST | `/api/v1/product/add-product` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | PUT | `/api/v1/product/update/{productId}` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | GET | `/api/v1/product/featured` | permitAll (GET) | - | reads tenant data (public storefront data) |
@@ -196,6 +200,9 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | PlatformTenantController | POST | `/api/v1/platform/tenants/{slug}/suspend` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates |
 | PlatformTenantController | POST | `/api/v1/platform/tenants/{slug}/reactivate` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates |
 | PlatformTenantController | POST | `/api/v1/platform/tenants/{slug}/reprovision` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates |
+| PlatformTenantDomainController | GET | `/api/v1/platform/tenants/{slug}/custom-domain` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data (DOMAIN-02) |
+| PlatformTenantDomainController | POST | `/api/v1/platform/tenants/{slug}/custom-domain/verify` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates (re-verification) |
+| PlatformTenantDomainController | DELETE | `/api/v1/platform/tenants/{slug}/custom-domain` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates (removal) |
 | TenantOnboardingController | POST | `/api/v1/platform/onboarding/signup` | permitAll (explicit) | - | mutates |
 | TenantOnboardingController | POST | `/api/v1/platform/onboarding/verify` | permitAll (explicit) | - | mutates |
 | TenantOnboardingController | GET | `/api/v1/platform/onboarding/status` | permitAll (explicit) | - | reads tenant data |

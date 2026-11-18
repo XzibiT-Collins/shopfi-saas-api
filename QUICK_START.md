@@ -304,11 +304,41 @@ Required (no default):
 | URLs | `FRONTEND_CHANGE_PASSWORD_URL` |
 | CORS | `PLATFORM_CORS_ALLOWED_ORIGINS` (platform-admin console origin(s); empty = the platform API is unreachable from browsers), optional `CORS_ALLOWED_ORIGINS` (non-tenant origins only: tenant subdomains and custom domains are allowed automatically from the tenant registry). See `docs/api/cors.md`. |
 | Tenancy | `TENANT_BASE_DOMAIN` (e.g. `shopfi.app`, tenants are `<slug>.TENANT_BASE_DOMAIN`), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts) |
+| Custom domains (DOMAIN-02) | `TENANT_CUSTOM_DOMAIN_CNAME_TARGET` (the host tenants point their own domain at, e.g. `stores.shopfi.app`; shown to tenant admins). Not strictly required (empty = no CNAME hint), but set it before tenants onboard domains. See "Custom domains: DNS and TLS" below and `docs/api/custom-domains.md`. |
 
-Optional (safe defaults): `CORS_TENANT_CACHE_TTL_SECONDS` (30), `CORS_TENANT_CACHE_NEGATIVE_TTL_SECONDS` (10), `PORT`/`SERVER_PORT`, `PAYSTACK_URL`, `NOTIFICATION_EMAIL_PROVIDER`,
+Optional (safe defaults): `TENANT_CUSTOM_DOMAIN_DNS_SERVERS` (empty = system resolver), `TENANT_CUSTOM_DOMAIN_DNS_TIMEOUT_MILLIS` (2000),
+`TENANT_CUSTOM_DOMAIN_DNS_RETRIES` (1), `TENANT_CUSTOM_DOMAIN_VERIFY_PER_TENANT_PER_HOUR` (10), `TENANT_CUSTOM_DOMAIN_VERIFY_GLOBAL_PER_MINUTE` (60),
+`TENANT_CUSTOM_DOMAIN_CHANGES_PER_TENANT_PER_HOUR` (20), `TENANT_CUSTOM_DOMAIN_UNVERIFIED_CLAIM_TTL_HOURS` (72),
+`TENANT_CUSTOM_DOMAIN_RESERVED_SUFFIXES`, `TENANT_CUSTOM_DOMAIN_TXT_LABEL` (`_shopfi-verification`),
+`CORS_TENANT_CACHE_TTL_SECONDS` (30), `CORS_TENANT_CACHE_NEGATIVE_TTL_SECONDS` (10), `PORT`/`SERVER_PORT`, `PAYSTACK_URL`, `NOTIFICATION_EMAIL_PROVIDER`,
 `NOTIFICATION_EMAIL_FROM_ADDRESS`, `NOTIFICATION_EMAIL_FROM_NAME`, `RESEND_API_KEY`, `RESEND_BASE_URL`,
 `MANAGEMENT_HEALTH_MAIL_ENABLED`, `REDIS_CACHE_TTL_MINUTES`, `INVENTORY_RESERVATION_EXPIRY_HOURS`,
 `INVENTORY_RESERVATION_CLEANUP_INTERVAL_MS`, `DISCOUNT_CACHE_EVICT_INTERVAL_MS`.
+
+### Custom domains: DNS and TLS (DOMAIN-02)
+
+The API stays on one host (`TENANT_PLATFORM_DOMAINS`); only the storefront/admin frontends live on tenant hosts.
+
+1. **Wildcard for subdomain tenants.** DNS: `*.TENANT_BASE_DOMAIN` (CNAME or A/AAAA) to the frontend host. TLS: one
+   wildcard certificate for `*.TENANT_BASE_DOMAIN` (DNS-01 challenge; the apex needs its own name on the cert if it
+   serves anything). A wildcard covers exactly one label, which matches the backend rule (`a.b.base` is refused).
+2. **Custom domains.** The tenant admin claims the domain (`PUT /api/v1/admin/custom-domain`), then publishes BOTH:
+   * `TXT  _shopfi-verification.<domain>  "shopfi-verification=<token>"` (ownership proof, values from the API), and
+   * `CNAME <domain>  TENANT_CUSTOM_DOMAIN_CNAME_TARGET` (traffic; an apex domain needs ALIAS/ANAME or A records
+     from the frontend host instead).
+   After `POST /api/v1/admin/custom-domain/verify` answers `VERIFIED`, the backend honours the domain (CORS, tenant
+   resolution, OAuth2 redirect URIs, emailed links). Until then nothing changes.
+3. **Certificates for custom domains** are issued by the FRONTEND host, never by this API: add the domain on the
+   hosting provider (Vercel/Render "custom domain", or a proxy with on-demand ACME such as Caddy) only after it is
+   VERIFIED here, and remove it there when the domain is removed here. The HTTP-01 challenge only works once the
+   CNAME points at the frontend host. A follow-up can expose a read-only "is this host VERIFIED?" endpoint for
+   on-demand TLS (`ask`) so the proxy never issues certificates for unverified names.
+4. **Google OAuth2.** Tenants' `redirect_uri` hosts are checked by the backend against the registry (VERIFIED custom
+   domain or `<slug>.TENANT_BASE_DOMAIN`), so no per-tenant entry in the Google console is needed:
+   Google only sees the backend callback `OAUTH2_CALLBACK_BASE_URL/oauth2/callback/google`.
+5. Removing or failing a domain takes effect at once on the instance that handled it and within
+   `CORS_TENANT_CACHE_TTL_SECONDS` (+ stale grace under load) on other instances; resolution reads the registry per
+   request.
 
 ### Reverse proxy and client IP (required for per-IP rate limits)
 

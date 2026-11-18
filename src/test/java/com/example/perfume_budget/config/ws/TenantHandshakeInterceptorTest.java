@@ -40,12 +40,12 @@ class TenantHandshakeInterceptorTest {
     @BeforeEach
     void setUp() {
         registry = mock(TenantRegistryService.class);
-        when(registry.findByCustomDomain(anyString())).thenReturn(Optional.empty());
+        when(registry.findByVerifiedCustomDomain(anyString())).thenReturn(Optional.empty());
         when(registry.findBySlug(anyString())).thenReturn(Optional.empty());
         when(registry.findBySlug("acme")).thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE)));
         when(registry.findBySlug("sleepy")).thenReturn(Optional.of(tenant("sleepy", TenantStatus.SUSPENDED)));
         when(registry.findBySlug("fresh")).thenReturn(Optional.of(tenant("fresh", TenantStatus.PROVISIONING)));
-        when(registry.findByCustomDomain("shop.acme.example")).thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE)));
+        when(registry.findByVerifiedCustomDomain("shop.acme.example")).thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE)));
         props = new TenantResolutionProperties();
         props.setBaseDomain("shopfi.test");
         props.getHeaderResolution().setEnabled(true);

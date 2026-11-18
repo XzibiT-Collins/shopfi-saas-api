@@ -102,6 +102,13 @@ public abstract class AbstractPostgresIntegrationTest {
             };
         }
 
+        /** DOMAIN-02: DNS is always faked in Postgres tests (no network); tests program it through this bean. */
+        @Bean
+        @org.springframework.context.annotation.Primary
+        FakeDnsTxtResolver fakeDnsTxtResolver() {
+            return new FakeDnsTxtResolver();
+        }
+
         @Bean
         TestTenants testTenants(TenantRepository repo, TenantSchemaMigrator migrator, TenantSeeder seeder) {
             return new TestTenants(repo, migrator, seeder);

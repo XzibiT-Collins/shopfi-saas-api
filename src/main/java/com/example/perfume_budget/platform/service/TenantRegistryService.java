@@ -14,7 +14,11 @@ public interface TenantRegistryService {
 
     Optional<Tenant> findBySlug(String slug);
 
-    Optional<Tenant> findByCustomDomain(String customDomain);
+    /**
+     * DOMAIN-02: the tenant owning {@code host} as a VERIFIED custom domain. PENDING/FAILED claims are ignored. Callers
+     * normally go through {@code TenantHostLookup}, which also keeps hosts under the base domain away from this lookup.
+     */
+    Optional<Tenant> findByVerifiedCustomDomain(String host);
 
     Optional<Tenant> findByWebhookToken(String webhookToken);
 

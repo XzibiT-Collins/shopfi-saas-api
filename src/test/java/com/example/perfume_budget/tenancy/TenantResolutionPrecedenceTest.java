@@ -50,12 +50,16 @@ class TenantResolutionPrecedenceTest extends AbstractPostgresIntegrationTest {
         tenants.ensureTenant("pend");
         Tenant cdom = tenantRepository.findBySlug("cdom").orElseThrow();
         cdom.setCustomDomain(CUSTOM_DOMAIN);
+        cdom.setCustomDomainStatus(com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED);
+        cdom.setCustomDomainToken("fixture-token");
         tenantRepository.save(cdom);
         // second tenant owning a custom domain equal to bravo's subdomain host
         tenants.ensureTenant("zeta");
         tenants.ensureTenant("collide");
         Tenant collide = tenantRepository.findBySlug("collide").orElseThrow();
         collide.setCustomDomain(COLLIDING_HOST);
+        collide.setCustomDomainStatus(com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED);
+        collide.setCustomDomainToken("fixture-token-2");
         tenantRepository.save(collide);
         setStatus("susp", TenantStatus.SUSPENDED);
         setStatus("pend", TenantStatus.PROVISIONING);
@@ -96,10 +100,11 @@ class TenantResolutionPrecedenceTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void ac1_customDomain_beatsSubdomain_whenOriginMatchesBoth() throws Exception {
-        // zeta.shopfi.test is zeta's subdomain AND tenant "collide"'s custom domain -> custom domain wins.
+    void domain02_subdomainWins_aCustomDomainUnderTheBaseDomainIsNeverHonoured() throws Exception {
+        // zeta.shopfi.test is zeta's subdomain AND (by a direct DB edit, even VERIFIED) tenant "collide"'s custom domain.
+        // DOMAIN-02: a host under the base domain is resolved by slug only, so it can never be captured (was: collide).
         Outcome o = run(TENANT_PATH, "https://" + COLLIDING_HOST, null, null);
-        assertThat(o.slug()).isEqualTo("collide");
+        assertThat(o.slug()).isEqualTo("zeta");
     }
 
     @Test

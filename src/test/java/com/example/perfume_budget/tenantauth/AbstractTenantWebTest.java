@@ -63,8 +63,11 @@ public abstract class AbstractTenantWebTest extends AbstractPostgresIntegrationT
         FakeRedisTemplate.STORE.clear();
         acme = tenants.acme();
         bravo = tenants.bravo();
-        jdbc.update("UPDATE master.tenants SET custom_domain = ? WHERE slug = 'acme'", ACME_DOMAIN);
-        jdbc.update("UPDATE master.tenants SET custom_domain = ? WHERE slug = 'bravo'", BRAVO_DOMAIN);
+        // DOMAIN-02: only VERIFIED custom domains are honoured; the fixtures model verified domains
+        jdbc.update("UPDATE master.tenants SET custom_domain = ?, custom_domain_status = 'VERIFIED', "
+                + "custom_domain_token = 'fixture-acme' WHERE slug = 'acme'", ACME_DOMAIN);
+        jdbc.update("UPDATE master.tenants SET custom_domain = ?, custom_domain_status = 'VERIFIED', "
+                + "custom_domain_token = 'fixture-bravo' WHERE slug = 'bravo'", BRAVO_DOMAIN);
     }
 
     /** RedisTemplate whose value operations and delete are backed by an in-memory map. */
@@ -105,7 +108,9 @@ public abstract class AbstractTenantWebTest extends AbstractPostgresIntegrationT
 
     @AfterEach
     void resetCustomDomains() {
-        jdbc.update("UPDATE master.tenants SET custom_domain = NULL, webhook_token = NULL WHERE slug IN ('acme','bravo')");
+        jdbc.update("UPDATE master.tenants SET custom_domain = NULL, custom_domain_status = NULL, custom_domain_token = NULL, "
+                + "custom_domain_requested_at = NULL, custom_domain_checked_at = NULL, custom_domain_verified_at = NULL, "
+                + "custom_domain_failure = NULL, webhook_token = NULL WHERE slug IN ('acme','bravo')");
         // leave the shared acme/bravo fixtures pristine for other test classes (e.g. PostgresBootTest)
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
             resetOrders(schema);

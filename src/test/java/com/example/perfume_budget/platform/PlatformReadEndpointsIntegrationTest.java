@@ -85,7 +85,7 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
     static final AtomicInteger SEQ = new AtomicInteger();
     static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
     static final Set<String> TENANT_KEYS = Set.of("id", "slug", "displayName", "status", "plan", "ownerEmail", "customDomain",
-            "createdAt", "updatedAt");
+            "customDomainStatus", "createdAt", "updatedAt");
     static final Set<String> AUDIT_KEYS = Set.of("id", "tenantSlug", "action", "phase", "actorEmail", "previousStatus",
             "newStatus", "occurredAt");
     static final Set<String> PAGE_KEYS = Set.of("items", "page", "size", "totalElements", "totalPages", "sort", "direction");
@@ -254,6 +254,8 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
         Tenant t = mk("p4-detail", "Detail & Co", "owner@p4-detail.test", TenantStatus.ACTIVE, true);
         t.setWebhookToken("WEBHOOK-SECRET-TOKEN-777");
         t.setCustomDomain("shop.p4-detail.example");
+        t.setCustomDomainStatus(com.example.perfume_budget.platform.enums.CustomDomainStatus.PENDING);
+        t.setCustomDomainToken("p4-detail-domain-token");
         tenantRepository.saveAndFlush(t);
         MockHttpServletResponse r = read(BASE + "/p4-detail");
         assertThat(r.getStatus()).isEqualTo(200);
