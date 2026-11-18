@@ -31,6 +31,7 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
 
     @Override
     public PaystackInitiateTransactionResponse initiatePaystackTransaction(PaystackInitiatePaymentRequest paystackRequest) {
+        String order = paystackRequest.orderReference();
         try {
             HttpEntity<Object> httpEntity = paystackRequestObject(paystackRequest);
             ResponseEntity<PaystackInitiateTransactionResponse> response = restTemplate.postForEntity(
@@ -40,34 +41,36 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
             );
 
             if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                log.error("Paystack returned unsuccessful response: {}", response.getStatusCode());
+                log.error("Paystack returned unsuccessful response {} for order {}", response.getStatusCode().value(), order);
                 throw new PaymentException("Payment provider returned an unsuccessful response");
             }
 
             if (!response.getBody().status()) {
-                log.error("Paystack transaction initialization failed: {}", response.getBody().message());
-                throw new PaymentException("Payment initialization failed: " + response.getBody().message());
+                // SEC-01d: Paystack's message only, redacted; the client and the stored failure reason get fixed text
+                log.error("Paystack transaction initialization failed for order {}: status=false message={}", order,
+                        PaystackErrorSummary.redact(response.getBody().message()));
+                throw new PaymentException("Payment initialization failed");
             }
 
             log.info("Paystack transaction initialized successfully");
-//            log.info("Response: {}, Body: {}", response, response.getBody());
             return response.getBody();
 
         } catch (HttpClientErrorException e) {
-            // 4xx errors - bad request, unauthorized, etc.
-            log.error("Paystack client error {}: {}", e.getStatusCode(), e.getResponseBodyAsString());
+            // 4xx errors - bad request, unauthorized, etc. SEC-01d: never the raw body (it can carry the customer's
+            // e-mail, authorization / access codes and card metadata): status code, Paystack's own fields, our order
+            log.error("Paystack client error {} for order {}: {}", e.getStatusCode().value(), order, PaystackErrorSummary.of(e));
             handleHttpClientError(e);
         } catch (HttpServerErrorException e) {
             // 5xx errors - paystack server issues
-            log.error("Paystack server error {}: {}", e.getStatusCode(), e.getResponseBodyAsString());
+            log.error("Paystack server error {} for order {}: {}", e.getStatusCode().value(), order, PaystackErrorSummary.of(e));
             throw new PaymentException("Payment provider is currently unavailable, please try again later");
         } catch (ResourceAccessException e) {
             // network issues, timeouts
-            log.error("Could not reach Paystack: {}", e.getClass().getName());
+            log.error("Could not reach Paystack for order {}: {}", order, e.getClass().getName());
             throw new PaymentException("Could not reach payment provider, please check your connection and try again");
         } catch (RestClientException e) {
             // any other REST errors
-            log.error("Unexpected error communicating with Paystack: {}", e.getClass().getName());
+            log.error("Unexpected error communicating with Paystack for order {}: {}", order, e.getClass().getName());
             throw new PaymentException("An unexpected error occurred while processing your payment");
         }
         throw new PaymentException("Payment initialization failed due to an unexpected error");
@@ -96,11 +99,12 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
 
     private void handleHttpClientError(HttpClientErrorException e) {
         switch (e.getStatusCode().value()) {
-            case 400 -> throw new PaymentException("Invalid payment request: " + e.getResponseBodyAsString());
+            // SEC-01d: fixed texts: this message is answered to the client and stored as the payment's failure reason
+            case 400 -> throw new PaymentException("Invalid payment request");
             case 401 -> throw new PaymentException("Payment provider authentication failed");
             case 404 -> throw new PaymentException("Payment provider endpoint not found");
             case 429 -> throw new PaymentException("Too many payment requests, please try again later");
-            default -> throw new PaymentException("Payment request failed: " + e.getResponseBodyAsString());
+            default -> throw new PaymentException("Payment request failed");
         }
     }
 

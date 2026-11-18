@@ -23,13 +23,13 @@ class SafeStackTraceTest {
         String trace = SafeStackTrace.of(failure()).toString();
         assertThat(trace).startsWith(RuntimeException.class.getName() + "\n");
         assertThat(trace).contains("Caused by: " + IllegalStateException.class.getName() + "\n");
-        assertThat(trace).contains("Caused by: " + SQLException.class.getName() + "\n");
+        // SEC-01d: the SQL exception's line carries its SQLState (safe), still no message
+        assertThat(trace).contains("Caused by: " + SQLException.class.getName() + " [SQLState 23505]\n");
         assertThat(trace).contains("Suppressed: " + IllegalArgumentException.class.getName() + "\n");
         assertThat(trace).contains("\tat " + SafeStackTraceTest.class.getName() + ".failure(SafeStackTraceTest.java:");
         assertThat(trace).contains("\tat " + SafeStackTraceTest.class.getName()
                 + ".theTraceHasEveryClassOfTheChainAndItsFrames_butNoMessage(SafeStackTraceTest.java:");
-        assertThat(trace).doesNotContain("leak@x.test").doesNotContain("Key (email)").doesNotContain("could not save")
-                .doesNotContain("23505");
+        assertThat(trace).doesNotContain("leak@x.test").doesNotContain("Key (email)").doesNotContain("could not save");
     }
 
     @Test

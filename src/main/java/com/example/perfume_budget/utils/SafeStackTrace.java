@@ -12,6 +12,10 @@ import java.util.Set;
  * stack frames, frames in common with the enclosing trace elided) but with exception CLASS NAMES only: never
  * {@code getMessage()}, {@code getLocalizedMessage()} or {@code toString()} of a throwable.
  *
+ * <p>SEC-01d: a database exception's line also carries its SQLState and violated constraint name
+ * ({@code org.postgresql.util.PSQLException [SQLState 23505, constraint uc_users_email]}, see {@link DbErrorDetails});
+ * both are checked against a strict character set and never carry the message or its {@code Detail}.
+ *
  * <p>Usage: {@code log.error("Something failed: {}", SafeStackTrace.of(e));} The text is built only when the line is
  * actually written ({@link #toString()}).
  */
@@ -51,7 +55,7 @@ public final class SafeStackTrace {
             out.append(prefix).append(caption).append(t.getClass().getName()).append(" (deeper causes omitted)\n");
             return;
         }
-        out.append(prefix).append(caption).append(t.getClass().getName()).append('\n');
+        out.append(prefix).append(caption).append(t.getClass().getName()).append(DbErrorDetails.annotationOf(t)).append('\n');
         StackTraceElement[] trace = t.getStackTrace();
         int m = trace.length - 1;
         int n = enclosing.length - 1;

@@ -35,11 +35,32 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.example.perfume_budget.utils.DbErrorDetails;
 import com.example.perfume_budget.utils.SafeStackTrace;
 
+/**
+ * SEC-01d: no response carries an exception's inner text. A framework, driver or library message can quote row values
+ * (Postgres {@code Key (email)=(..) already exists}), a JDBC URL, credentials or the request itself, so those
+ * handlers answer a FIXED description (constants below, listed in docs/api/errors.md). Messages of our own exception
+ * types ({@link ApiCodeException}, {@link BadRequestException}, ...) are deliberate user-facing business text and are
+ * kept. Status codes and {@code data.code}s are unchanged.
+ */
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    public static final String UNEXPECTED_ERROR = "Unexpected error occurred";
+    public static final String TRANSACTION_FAILED = "Transaction failed";
+    public static final String CONSTRAINT_VIOLATION = "A constraint violation occurred";
+    public static final String OPERATION_NOT_SUPPORTED = "Operation not supported";
+    public static final String METHOD_NOT_SUPPORTED = "Request method not supported";
+    public static final String RESOURCE_NOT_FOUND = "Resource not found";
+    public static final String INVALID_REQUEST = "Invalid request";
+    public static final String TOKEN_EXPIRED = "Token has expired";
+    public static final String ACCESS_DENIED = "Access Denied";
+    public static final String FILE_PROCESSING_FAILED = "File processing failed";
+    public static final String INVALID_VALUE = "Invalid value";
+    private static final String OUR_PACKAGE = "com.example.perfume_budget.";
 
     @org.springframework.beans.factory.annotation.Value("${spring.servlet.multipart.max-request-size:12MB}")
     private String maxRequestSize = "12MB";
@@ -172,7 +193,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(InputOutputException.class)
     public ResponseEntity<CustomApiResponse<String>> handleInputOutputException(InputOutputException ex){
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(CustomApiResponse.error(ex.getMessage()));
+        // SEC-01d: a 500 never echoes its message (an I/O failure's text can name paths or hosts)
+        log.error("File processing failed: {}", SafeStackTrace.of(ex));
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(CustomApiResponse.error(FILE_PROCESSING_FAILED));
     }
 
     @ExceptionHandler(ServiceCommunicationException.class)
@@ -188,7 +211,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<CustomApiResponse<Object>> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
-        String message = "A constraint violation occurred";
+        // SEC-01d: SQLState and constraint name only (DbErrorDetails); the message / Detail quote the row's values
+        log.warn("Constraint violation answered 409: {}", DbErrorDetails.of(ex));
+        String message = CONSTRAINT_VIOLATION;
         return ResponseEntity
                 .status(HttpStatus.CONFLICT)
                 .body(CustomApiResponse.error(message));
@@ -224,7 +249,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ExpiredJwtException.class)
     public ResponseEntity<CustomApiResponse<String>> handleExpiredJwtException(ExpiredJwtException ex){
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(CustomApiResponse.error(ex.getMessage()));
+        // SEC-01d: the library message carries the token's expiry and the server clock
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(CustomApiResponse.error(TOKEN_EXPIRED));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
@@ -246,8 +272,10 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BindException.class)
     public ResponseEntity<CustomApiResponse<Map<String,String>>> handleBindException(BindException ex) {
         Map<String, String> errors = new HashMap<>();
+        // SEC-01d: a conversion failure's default message quotes the submitted value and Java types; a validation
+        // message is author-written user-facing text and is kept
         ex.getBindingResult().getFieldErrors().forEach(error ->
-                errors.put(error.getField(), error.getDefaultMessage())
+                errors.put(error.getField(), error.isBindingFailure() ? INVALID_VALUE : error.getDefaultMessage())
         );
         return ResponseEntity.badRequest().body(
                 CustomApiResponse.error("Validation failed", errors)
@@ -280,12 +308,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MissingServletRequestPartException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMissingServletException(MissingServletRequestPartException ex){
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Missing required part: " + ex.getRequestPartName() + "."));
     }
 
     @ExceptionHandler(AuthorizationDeniedException.class)
     public ResponseEntity<CustomApiResponse<String>> handleAuthorizationDeniedException(AuthorizationDeniedException ex){
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(CustomApiResponse.error(ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(CustomApiResponse.error(ACCESS_DENIED));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -301,31 +329,42 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex){
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(CustomApiResponse.error(ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(CustomApiResponse.error(METHOD_NOT_SUPPORTED));
     }
 
     @ExceptionHandler(UnsupportedOperationException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMethodNotSupported(UnsupportedOperationException ex){
-        log.error("Unsupported operation: {}", ex.getClass().getName());
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(CustomApiResponse.error(ex.getMessage()));
+        log.error("Unsupported operation: {}", SafeStackTrace.of(ex));
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(CustomApiResponse.error(OPERATION_NOT_SUPPORTED));
     }
 
     @ExceptionHandler(MissingRequestCookieException.class)
     public ResponseEntity<CustomApiResponse<String>> handleMissingRequestCookie(MissingRequestCookieException ex){
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Missing required cookie: " + ex.getCookieName() + "."));
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<CustomApiResponse<String>> handleNoResourceFoundException(NoResourceFoundException ex){
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(CustomApiResponse.error(ex.getMessage()));
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(CustomApiResponse.error(RESOURCE_NOT_FOUND));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<CustomApiResponse<Object>> handleIllegalArgumentException(IllegalArgumentException ex, WebRequest request) {
         return new ResponseEntity<>(
-                CustomApiResponse.error(ex.getMessage()),
+                CustomApiResponse.error(ownBusinessMessage(ex) ? ex.getMessage() : INVALID_REQUEST),
                 HttpStatus.BAD_REQUEST
         );
+    }
+
+    /**
+     * SEC-01d: an IllegalArgumentException we threw ourselves (top frame in our code, no cause) carries a fixed,
+     * author-written message ("Invalid or expired token", "Malformed ETag"); one from a library or the JDK
+     * ({@code UUID.fromString}, {@code Enum.valueOf}, Hibernate, Spring) can quote the input or internals.
+     */
+    static boolean ownBusinessMessage(Throwable ex) {
+        StackTraceElement[] frames = ex.getStackTrace();
+        return ex.getCause() == null && ex.getMessage() != null && frames.length > 0
+                && frames[0].getClassName().startsWith(OUR_PACKAGE);
     }
 
     @ExceptionHandler(OptimisticLockException.class)
@@ -370,11 +409,11 @@ public class GlobalExceptionHandler {
         if (com.example.perfume_budget.service.DbLockTimeout.isTransient(ex)) {
             return tryAgain(ex);
         }
-        Throwable cause = ex.getRootCause();
         // EVT-01c: class only; a constraint message quotes row values (Postgres "Key (email)=(...) already exists")
         log.error("Transaction failed: {}", SafeStackTrace.of(ex)); // EVT-01c rework 1: classes + frames, no messages
+        // SEC-01d: the body used to carry the root cause's message; now the fixed text
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(CustomApiResponse.error(cause != null ? cause.getMessage() : "Transaction failed", null));
+                .body(CustomApiResponse.error(TRANSACTION_FAILED, null));
     }
 
     // General Exceptions
@@ -388,6 +427,6 @@ public class GlobalExceptionHandler {
         // frames, no messages) is back at ERROR; the full detail only at DEBUG.
         log.error("Unexpected error occurred: {}", SafeStackTrace.of(ex)); // classes + frames of the cause chain, no messages
         log.debug("Unexpected error detail", ex);
-        return ResponseEntity.internalServerError().body(CustomApiResponse.error("Unexpected error occurred"));
+        return ResponseEntity.internalServerError().body(CustomApiResponse.error(UNEXPECTED_ERROR));
     }
 }
