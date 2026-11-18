@@ -8,6 +8,7 @@ import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.enums.CancelSource;
 import com.example.perfume_budget.enums.OrderAuditEventType;
 import com.example.perfume_budget.events.OrderStatusChangeEvent;
+import com.example.perfume_budget.mapper.OrderMapper;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.OrderAuditEvent;
 import com.example.perfume_budget.model.Payment;
@@ -53,6 +54,7 @@ public class OrderLifecycleService {
     private final ApplicationEventPublisher eventPublisher;
     private final CouponRedemptionService couponRedemptionService;
     private final BookkeepingService bookkeepingService;
+    private final OrderReturnPolicy returnPolicy;
 
     /**
      * Owner cancel. Same 404 for "no such order", "someone else's order" and "other tenant's order".
@@ -177,6 +179,10 @@ public class OrderLifecycleService {
             throw new ApiCodeException(HttpStatus.BAD_REQUEST, "ORDER_FINAL_STATE",
                     "Order is already cancelled and can not be updated.");
         }
+        if (from == OrderProcessingStatus.RETURNED) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "ORDER_FINAL_STATE",
+                    "Order is already returned and can not be updated.");
+        }
         if (!OrderTransitionRules.isAllowed(from, target)) {
             throw new ApiCodeException(HttpStatus.BAD_REQUEST, "ORDER_TRANSITION_NOT_ALLOWED",
                     "Order can not move from " + from + " to " + target + ".",
@@ -193,6 +199,9 @@ public class OrderLifecycleService {
             refundRequired = cancelByAdminLocked(order, payment, from, actorEmail);
         } else {
             order.setDeliveryStatus(target);
+            if (target == OrderProcessingStatus.DELIVERED) {
+                order.setDeliveredAt(LocalDateTime.now()); // ORD-07: start of the optional return window
+            }
         }
         Order saved = orderRepository.saveAndFlush(order); // flush: the response carries the bumped version
         // X20 (ORD-02): a cancel records the order's real refund state after the cancel, not only whether THIS cancel
@@ -332,6 +341,74 @@ public class OrderLifecycleService {
                 .createdAt(now)
                 .build());
         log.info("Return received for order {}: {} unit(s) restocked", saved.getOrderNumber(), units);
+        return new AdminUpdate(saved, payment);
+    }
+
+    /**
+     * ORD-07: records the return of a whole DELIVERED order (the customer sent the goods back). One transaction, order
+     * row lock first, everything decided from what is read AFTER the lock:
+     * <ol>
+     *   <li>already RETURNED: 200 no-op (a retry or the loser of two simultaneous calls; nothing is written twice);</li>
+     *   <li>not DELIVERED (or not paid): 409 ORDER_NOT_RETURNABLE; past the optional return window: 409 RETURN_WINDOW_EXPIRED;</li>
+     *   <li>restock the consumed units to the location they were deducted from, reverse the sale in the books (revenue,
+     *       tax, discounts, cash -> refunds payable, COGS / inventory when the goods came back), mark the payment
+     *       {@code refundRequired}, give the coupon redemption back (ORD-02b rule), delivery status -> RETURNED, audit row.</li>
+     * </ol>
+     * Lock order (docs/api/checkout.md): order -> products / inventory layers -> location ledger -> ledger accounts
+     * (deferred to the end of the posting) -> coupon (counter UPDATE deferred to commit), as the paid cancel.
+     */
+    @Transactional
+    public AdminUpdate returnDelivered(String orderNumber, String actorEmail) {
+        Order order = lockByNumber(orderNumber);
+        Payment payment = paymentRepository.findByOrder_OrderNumber(order.getOrderNumber()).orElse(null);
+        if (order.getDeliveryStatus() == OrderProcessingStatus.RETURNED) {
+            return new AdminUpdate(order, payment);
+        }
+        if (order.getDeliveryStatus() != OrderProcessingStatus.DELIVERED || order.getStatus() != PaymentStatus.COMPLETED) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, "ORDER_NOT_RETURNABLE",
+                    "Only a paid order that was delivered can be returned.",
+                    Map.of("orderNumber", order.getOrderNumber(), "deliveryStatus", String.valueOf(order.getDeliveryStatus()),
+                            "paymentStatus", String.valueOf(order.getStatus())));
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (returnPolicy.isExpired(order.getDeliveredAt(), now)) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, "RETURN_WINDOW_EXPIRED",
+                    "The return window of this order has closed.",
+                    Map.of("orderNumber", order.getOrderNumber(),
+                            "returnWindowDays", returnPolicy.windowDays(),
+                            "deliveredAt", String.valueOf(OrderMapper.toUtc(order.getDeliveredAt())),
+                            "deadline", String.valueOf(OrderMapper.toUtc(returnPolicy.deadline(order.getDeliveredAt())))));
+        }
+        boolean goodsBack = inventoryManagementService.hasConsumedOrderInventory(order.getOrderNumber());
+        int units = goodsBack
+                ? inventoryManagementService.restockConsumedOrderInventory(order,
+                        "Returned to stock: order " + order.getOrderNumber() + " returned after delivery")
+                : 0;
+        bookkeepingService.recordReturnReversal(order, goodsBack, actorEmail);
+        if (payment != null) {
+            payment.setRefundRequired(true);
+            paymentRepository.save(payment);
+        }
+        couponRedemptionService.releaseForOrder(order);
+        order.setDeliveryStatus(OrderProcessingStatus.RETURNED);
+        order.setReturnedAt(now);
+        order.setReturnedBy(actorEmail);
+        Order saved = orderRepository.saveAndFlush(order);
+        auditRepository.save(OrderAuditEvent.builder()
+                .orderId(saved.getId())
+                .eventType(OrderAuditEventType.RETURNED)
+                .fromStatus(OrderProcessingStatus.DELIVERED)
+                .toStatus(OrderProcessingStatus.RETURNED)
+                .refundRequired(true)
+                .actorEmail(actorEmail)
+                .createdAt(now)
+                .build());
+        log.info("Delivered order {} returned: {} unit(s) restocked", saved.getOrderNumber(), units);
+        eventPublisher.publishEvent(OrderStatusChangeEvent.builder()
+                .orderNumber(saved.getOrderNumber())
+                .customerEmail(saved.getUser().getEmail())
+                .status(OrderProcessingStatus.RETURNED)
+                .build());
         return new AdminUpdate(saved, payment);
     }
 

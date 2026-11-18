@@ -50,6 +50,7 @@ tenant is a 404 `ORDER_NOT_FOUND` exactly like a non-existent one (see [authoriz
     "version": 4,
     "cancelledAt": "2026-01-02T09:30:00Z",
     "cancelSource": "ADMIN",
+    "returnedAt": null,
     "account": { "id": 7, "fullName": "Ama Mensah", "email": "ama@example.com" }
   }
 }
@@ -101,7 +102,7 @@ PENDING -> PACKING -> OUT_FOR_DELIVERY -> DELIVERED          (forward only; skip
 | `PENDING` | `PACKING`, `OUT_FOR_DELIVERY`, `DELIVERED`, `CANCELLED` |
 | `PACKING` | `OUT_FOR_DELIVERY`, `DELIVERED`, `CANCELLED` |
 | `OUT_FOR_DELIVERY` | `DELIVERED`, `CANCELLED` |
-| `DELIVERED`, `CANCELLED` | nothing (final) |
+| `DELIVERED`, `CANCELLED`, `RETURNED` | nothing (final); `RETURNED` is reached only through `POST .../return` from `DELIVERED` |
 
 Rules, evaluated in this order after the order row is locked:
 
@@ -144,19 +145,22 @@ counts towards the customer's `perUserUsageLimit`, so the customer can use the c
 ORD-02b a paid cancel kept the redemption.)* The books need nothing extra: the `SALE_REVERSAL` already takes the coupon
 discount back. Paid orders cancelled before this release were released by tenant migration V16.
 
-### Returns of `DELIVERED` orders (not supported yet: ORD-07)
+### Returns of `DELIVERED` orders (ORD-07)
 
-A delivered order is final. What the routes answer for a `DELIVERED` order today (nothing is changed by any of them):
+A delivered order can be **returned** with its own route, `POST /api/v1/order/{orderNumber}/return` (below). It is not a
+status change: `PUT .../update-order-status/{n}` still answers 400 `ORDER_FINAL_STATE` for a `DELIVERED` order (also with
+`RETURNED` as target), and `RETURNED` is only reachable through the return route. What the other routes answer for a
+`DELIVERED` order (nothing is changed by any of them):
 
 | Call | Answer |
 |---|---|
 | `PUT .../update-order-status/{n}` with `CANCELLED` (or any other status) | 400 `ORDER_FINAL_STATE` ("Order is already delivered and can not be updated.") |
-| `POST .../{n}/return-received` | 409 `RETURN_NOT_APPLICABLE` (`data.deliveryStatus: "DELIVERED"`, `data.paymentStatus: "COMPLETED"`) |
-| `POST .../{n}/refund-acknowledgement` | 409 `REFUND_NOT_REQUIRED` |
+| `POST .../{n}/return-received` | 409 `RETURN_NOT_APPLICABLE` (`data.deliveryStatus: "DELIVERED"`, `data.paymentStatus: "COMPLETED"`; a returned order restocks itself, this route is only for paid cancels from `OUT_FOR_DELIVERY`) |
+| `POST .../{n}/refund-acknowledgement` | 409 `REFUND_NOT_REQUIRED` (until the order is returned) |
 | customer `POST /order/{n}/cancel` | 409 `ORDER_NOT_CANCELLABLE` (paid) |
 
-The sale stays booked and the coupon redemption stays used. A merchant who takes goods back after delivery records the
-refund and stock by hand (manual journal entry, stock receive) until ORD-07 adds a return flow.
+A `RETURNED` order is final: every status request answers 400 `ORDER_FINAL_STATE`, a customer cancel 409
+`ORDER_NOT_CANCELLABLE`, `return-received` 409 `RETURN_NOT_APPLICABLE`.
 
 ### Paid cancel: books and reports (ORD-02)
 
@@ -295,10 +299,47 @@ Response: the `OrderResponse` with `ETag`. Exactly once (row lock):
 * The order is not `CANCELLED` or was never paid: **409 `RETURN_NOT_APPLICABLE`** (`data.deliveryStatus`, `data.paymentStatus`).
 * Unknown / other tenant's order: 404 `ORDER_NOT_FOUND`.
 
+## POST /api/v1/order/{orderNumber}/return (ADMIN, ORD-07)
+
+No body. Records that the customer sent a **whole `DELIVERED` order** back. Response: the admin `OrderResponse` with `ETag`
+(`deliveryStatus: "RETURNED"`, `refundRequired: true`, `returnedAt`, new `version`). In one transaction, exactly once:
+
+| Effect | Detail |
+|---|---|
+| Stock | every consumed unit goes back to the shelf: inventory layers, a `RETURN` movement, location ledger `SALE_RETURN` **at the location the units were deducted from** (V14 `fulfilment_location_id`), `soldCount` reduced |
+| Books | one `SALE_REVERSAL` entry ("Sale reversed for returned order"), same lines as the cancel reversal: revenue, tax and discounts taken back, the cash line becomes a credit to **Refunds Payable** (2100), COGS and inventory reversed (the goods are back) |
+| Reports | the order drops out of the order-based reports and the items-sold report exactly like a paid cancel (`deliveryStatus` `RETURNED` is excluded next to `CANCELLED`); sales analytics (journal based) net the reversal **on the return date** |
+| Coupon | the redemption is given back once, as for a paid cancel (ORD-02b rule, PO decision to confirm for returns) |
+| Refund | `payment.refundRequired` -> true; the shop refunds outside Shopfi and calls `POST .../refund-acknowledgement`, which posts the usual `REFUND` entry (same `INSUFFICIENT_CASH` rule). There is no payment-provider refund call. |
+| Audit | one `RETURNED` row (`DELIVERED` -> `RETURNED`, `refundRequired: true`, actor e-mail) |
+| Customer | the usual status e-mail ("Order Returned"), once, after commit |
+
+The payment stays `COMPLETED` (as after a paid cancel); the refund state is `refundRequired` (true = refund owed,
+false after the acknowledgement on a `RETURNED` order = refunded; `GET .../order/{n}` of the owner shows both `deliveryStatus`
+and `refundRequired`, plus `returnedAt`).
+
+**Full order only.** Partial (per-line) returns are not supported in this release: the sale journal entry, the consumed
+allocations, the coupon redemption and the tax rows are all per order, a per-line return would need a pro-rated journal,
+a coupon re-evaluation and partial refund amounts. Tracked as a follow-up.
+
+**Return window (optional).** `shopfi.orders.return-window-days` (env `SHOPFI_ORDER_RETURN_WINDOW_DAYS`) is empty or `0`
+by default = no window. A positive number of days means the return must be recorded before `delivered_at + days`
+(`orders.delivered_at` is set when the order is marked `DELIVERED`; tenant migration V17 back-filled older orders from the
+audit trail). A negative or non-numeric value stops the application from starting.
+
+* Already `RETURNED` (a retry, or the loser of two simultaneous calls): **200 no-op**, nothing written twice.
+* Not `DELIVERED` or not paid: **409 `ORDER_NOT_RETURNABLE`** (`data.deliveryStatus`, `data.paymentStatus`). A `CANCELLED`
+  order is not returnable here (use `return-received`).
+* Past the window: **409 `RETURN_WINDOW_EXPIRED`** (`data.returnWindowDays`, `deliveredAt`, `deadline`).
+* Unknown / other tenant's order: 404 `ORDER_NOT_FOUND`; non-ADMIN 403.
+* Concurrency: the order row lock is taken first, then products / inventory layers, location ledger, ledger accounts and
+  the coupon last (the global lock order of [checkout.md](checkout.md)), so a return racing a refund acknowledgement, a
+  status change or a payment webhook serialises and nothing is applied twice.
+
 ## Audit trail
 
 `order_audit_events` (tenant schema, V11) is append-only: one row per admin status change (`STATUS_CHANGED`), per cancel
-(`CANCELLED`), per return received (`RETURN_RECEIVED`) and per refund acknowledgement (`REFUND_ACKNOWLEDGED`), each with
+(`CANCELLED`), per return received (`RETURN_RECEIVED`), per returned delivered order (`RETURNED`) and per refund acknowledgement (`REFUND_ACKNOWLEDGED`), each with
 the actor's e-mail and a timestamp. `refund_required` on a `CANCELLED` row is the order's refund state right after the
 cancel: true for a paid cancel, and also for a failed/cancelled-payment order whose late payment still owes a refund
 (ORD-02, X20); always false on `STATUS_CHANGED` rows.
@@ -327,7 +368,7 @@ capped at 50, as everywhere under the prod pageable limit; `page` > 1,000,000: 4
 }
 ```
 
-`eventType`: `STATUS_CHANGED`, `CANCELLED`, `RETURN_RECEIVED`, `REFUND_ACKNOWLEDGED`. `fromStatus`/`toStatus` are null on
+`eventType`: `STATUS_CHANGED`, `CANCELLED`, `RETURN_RECEIVED`, `RETURNED`, `REFUND_ACKNOWLEDGED`. `fromStatus`/`toStatus` are null on
 `REFUND_ACKNOWLEDGED`. `createdAt` is a UTC instant.
 
 ## Order numbers
@@ -345,7 +386,7 @@ tenants' numbers return the same 404.
 
 | HTTP | `data.code` | Meaning |
 |---|---|---|
-| 400 | `ORDER_FINAL_STATE` | order is DELIVERED/CANCELLED and another status was requested |
+| 400 | `ORDER_FINAL_STATE` | order is DELIVERED/CANCELLED/RETURNED and another status was requested |
 | 400 | `ORDER_TRANSITION_NOT_ALLOWED` | backwards or otherwise disallowed move (`from`, `to`) |
 | 400 | `ORDER_NOT_PAID` | DELIVERED requested for an order whose payment is not COMPLETED |
 | 400 | `VERSION_MISMATCH` / `INVALID_IF_MATCH` | body `version` and `If-Match` differ / malformed |
@@ -355,6 +396,8 @@ tenants' numbers return the same 404.
 | 409 | `ORDER_VERSION_CONFLICT` | stale `version` (`currentVersion`, `deliveryStatus`) |
 | 409 | `REFUND_NOT_REQUIRED` | nothing to acknowledge |
 | 409 | `RETURN_NOT_APPLICABLE` | return-received on an order that is not a cancelled paid order |
+| 409 | `ORDER_NOT_RETURNABLE` | return of an order that is not a paid `DELIVERED` order (`orderNumber`, `deliveryStatus`, `paymentStatus`) |
+| 409 | `RETURN_WINDOW_EXPIRED` | return after the configured window (`returnWindowDays`, `deliveredAt`, `deadline`) |
 | 409 | `NOTHING_TO_RESTOCK` | return-received when no consumed units are left |
 | 409 | `INSUFFICIENT_CASH` | refund acknowledgement when Cash and Bank is lower than the refund (`orderNumber`, `currentBalance`, `attemptedAmount`) |
 
@@ -370,3 +413,6 @@ tenants' numbers return the same 404.
    date range / search instead of deep paging.
 7. (ORD-02) For an order cancelled while out for delivery, offer "Return received" (`POST .../return-received`); show the
    audit trail from `GET .../audit-events`.
+8. (ORD-07) On a `DELIVERED` order offer "Record return" (`POST .../return`) with a confirmation; afterwards the order is
+   `RETURNED` with `refundRequired: true`: offer the refund acknowledgement. Handle 409 `ORDER_NOT_RETURNABLE` /
+   `RETURN_WINDOW_EXPIRED`; a repeat is a 200. Show `returnedAt` and the `RETURNED` status to the customer too.

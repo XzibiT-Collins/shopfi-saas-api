@@ -129,6 +129,20 @@ public class BookkeepingService {
      */
     @Transactional
     public boolean recordSaleReversal(Order order, boolean revenuePart, boolean goodsPart, String recordedBy) {
+        return recordSaleReversal(order, revenuePart, goodsPart, recordedBy, "Sale reversed for cancelled order: ");
+    }
+
+    /**
+     * ORD-07: the same reversal for a returned DELIVERED order (both parts at once when its goods came back). Only the
+     * entry description differs; the once-per-part guards are shared, so a cancel and a return can never both reverse.
+     */
+    @Transactional
+    public boolean recordReturnReversal(Order order, boolean goodsPart, String recordedBy) {
+        return recordSaleReversal(order, true, goodsPart, recordedBy, "Sale reversed for returned order: ");
+    }
+
+    private boolean recordSaleReversal(Order order, boolean revenuePart, boolean goodsPart, String recordedBy,
+                                       String descriptionPrefix) {
         String orderNumber = order.getOrderNumber();
         List<JournalEntry> sales = journalEntryRepository.findByReferenceTypeAndReferenceIdAndTypeOrderByIdAsc(
                 "ORDER", orderNumber, JournalEntryType.SALE);
@@ -147,7 +161,7 @@ public class BookkeepingService {
 
         JournalEntry entry = JournalEntry.builder()
                 .entryNumber(entryNumberGenerator.generate())
-                .description("Sale reversed for cancelled order: " + orderNumber)
+                .description(descriptionPrefix + orderNumber)
                 .type(JournalEntryType.SALE_REVERSAL)
                 .referenceType("ORDER")
                 .referenceId(orderNumber)
@@ -210,7 +224,7 @@ public class BookkeepingService {
         LedgerAccount refundPayable = getAccount(AccountCategory.REFUND_PAYABLE, false);
         JournalEntry entry = JournalEntry.builder()
                 .entryNumber(entryNumberGenerator.generate())
-                .description("Refund paid for cancelled order: " + orderNumber)
+                .description("Refund paid for order: " + orderNumber)
                 .type(JournalEntryType.REFUND)
                 .referenceType("ORDER")
                 .referenceId(orderNumber)

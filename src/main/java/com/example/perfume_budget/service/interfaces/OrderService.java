@@ -43,6 +43,9 @@ public interface OrderService {
     /** ORD-02: restock the goods of a paid order cancelled while OUT_FOR_DELIVERY once they are back (ADMIN). */
     OrderResponse receiveReturn(String orderNumber);
 
+    /** ORD-07: records the return of a whole DELIVERED order (restock, reverse the sale, refund required). */
+    OrderResponse returnDeliveredOrder(String orderNumber);
+
     /** ORD-02: the order's audit trail, oldest first, paged (ADMIN). */
     PageResponse<com.example.perfume_budget.dto.order.OrderAuditEventResponse> getAuditEvents(String orderNumber,
                                                                                             org.springframework.data.domain.Pageable pageable);

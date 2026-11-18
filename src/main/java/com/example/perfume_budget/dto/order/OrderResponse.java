@@ -41,5 +41,6 @@ public record OrderResponse(
         Long version,                 // optimistic-concurrency token for PUT /order/update-order-status (also the ETag)
         OffsetDateTime cancelledAt,   // UTC instant the order was cancelled, null while it is not
         String cancelSource,          // CUSTOMER | ADMIN | EXPIRY, null while not cancelled (and for legacy cancels)
+        OffsetDateTime returnedAt,    // ORD-07: UTC instant the delivered order was returned, null while it is not
         @JsonInclude(JsonInclude.Include.NON_NULL) OrderAccountResponse account // ADMIN responses only: owner identity; the key is absent for customers
 ) {}

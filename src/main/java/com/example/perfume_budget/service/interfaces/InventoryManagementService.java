@@ -33,6 +33,9 @@ public interface InventoryManagementService {
      */
     int restockConsumedOrderInventory(Order order);
 
+    /** ORD-07: same as {@link #restockConsumedOrderInventory(Order)} with the note stored on the RETURN movements. */
+    int restockConsumedOrderInventory(Order order, String movementNote);
+
     /** ORD-02: true while consumed (sold, not returned) stock of the order exists. */
     boolean hasConsumedOrderInventory(String orderNumber);
     void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items);

@@ -655,6 +655,15 @@ public class OrderServiceImpl implements OrderService {
         return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
     }
 
+    @Override
+    public OrderResponse returnDeliveredOrder(String orderNumber) {
+        return transientRetry.call("admin order return", () -> new TransactionTemplate(transactionManager).execute(status -> {
+            OrderLifecycleService.AdminUpdate result = lifecycleService.returnDelivered(
+                    orderNumber, authUserUtil.getCurrentUser().getEmail());
+            return OrderMapper.toAdminOrderResponse(result.order(), result.payment());
+        }));
+    }
+
     public static final int MAX_AUDIT_PAGE_SIZE = 50;
 
     @Override

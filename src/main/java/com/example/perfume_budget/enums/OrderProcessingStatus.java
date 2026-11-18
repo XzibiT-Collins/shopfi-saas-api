@@ -5,5 +5,7 @@ public enum OrderProcessingStatus {
     PACKING,
     OUT_FOR_DELIVERY,
     DELIVERED,
-    CANCELLED
+    CANCELLED,
+    /** ORD-07: a DELIVERED, paid order whose goods came back (whole order). Final; the refund is acknowledged by hand. */
+    RETURNED
 }

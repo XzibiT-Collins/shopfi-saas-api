@@ -136,6 +136,7 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | OrderController | PUT | `/api/v1/order/update-order-status/{orderNumber}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | OrderController | POST | `/api/v1/order/{orderNumber}/refund-acknowledgement` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (ORD-01: clears refundRequired, audit row; see [orders.md](orders.md)) |
 | OrderController | POST | `/api/v1/order/{orderNumber}/return-received` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (ORD-02: restocks a paid order cancelled while out for delivery, audit row; see [orders.md](orders.md)) |
+| OrderController | POST | `/api/v1/order/{orderNumber}/return` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates (ORD-07: returns a whole DELIVERED order: restock, sale reversed, refund required, coupon released, audit row; see [orders.md](orders.md)) |
 | OrderController | GET | `/api/v1/order/{orderNumber}/audit-events` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data (ORD-02: the order's audit trail, paged) |
 | PaymentController | GET | `/api/v1/payment/verify` | authenticated (anyRequest) | `hasRole('CUSTOMER')` | reads tenant data |
 | PaymentSettingsController | GET | `/api/v1/payment-settings` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |

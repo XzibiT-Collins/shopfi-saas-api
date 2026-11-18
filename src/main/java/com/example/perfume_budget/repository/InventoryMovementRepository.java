@@ -33,7 +33,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               and m.createdAt between :start and :end
               and not exists (select 1 from Order o where m.referenceType = com.example.perfume_budget.enums.InventoryReferenceType.ORDER
                               and o.orderNumber = m.referenceId
-                              and o.deliveryStatus = com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
+                              and o.deliveryStatus in (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))
             group by p.id, p.name, p.sku, p.imageUrl, p.stockQuantity
             order by sum(m.quantity * m.unitSellingPrice) desc""",
             countQuery = """
@@ -44,7 +44,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               and m.createdAt between :start and :end
               and not exists (select 1 from Order o where m.referenceType = com.example.perfume_budget.enums.InventoryReferenceType.ORDER
                               and o.orderNumber = m.referenceId
-                              and o.deliveryStatus = com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)""")
+                              and o.deliveryStatus in (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))""")
     Page<SoldProductAggregate> findSoldProductAggregates(@Param("refTypes") List<InventoryReferenceType> refTypes,
                                                          @Param("start") LocalDateTime start,
                                                          @Param("end") LocalDateTime end,
@@ -59,7 +59,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               and m.createdAt between :start and :end
               and not exists (select 1 from Order o where m.referenceType = com.example.perfume_budget.enums.InventoryReferenceType.ORDER
                               and o.orderNumber = m.referenceId
-                              and o.deliveryStatus = com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)""")
+                              and o.deliveryStatus in (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))""")
     SalesTotals sumSales(@Param("refTypes") List<InventoryReferenceType> refTypes,
                          @Param("start") LocalDateTime start,
                          @Param("end") LocalDateTime end);
@@ -74,7 +74,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               and m.createdAt between :start and :end
               and not exists (select 1 from Order o where m.referenceType = com.example.perfume_budget.enums.InventoryReferenceType.ORDER
                               and o.orderNumber = m.referenceId
-                              and o.deliveryStatus = com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)""")
+                              and o.deliveryStatus in (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))""")
     SalesTotals sumSalesForProduct(@Param("productId") Long productId,
                                    @Param("refTypes") List<InventoryReferenceType> refTypes,
                                    @Param("start") LocalDateTime start,
@@ -90,7 +90,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               and m.createdAt between :start and :end
               and not exists (select 1 from Order o where m.referenceType = com.example.perfume_budget.enums.InventoryReferenceType.ORDER
                               and o.orderNumber = m.referenceId
-                              and o.deliveryStatus = com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
+                              and o.deliveryStatus in (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))
             group by m.referenceType, m.referenceId""")
     List<SaleReferenceAmount> sumSaleAmountsByReference(@Param("productId") Long productId,
                                                         @Param("refTypes") List<InventoryReferenceType> refTypes,
@@ -105,7 +105,7 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               and m.createdAt between :start and :end
               and not exists (select 1 from Order o where m.referenceType = com.example.perfume_budget.enums.InventoryReferenceType.ORDER
                               and o.orderNumber = m.referenceId
-                              and o.deliveryStatus = com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)""")
+                              and o.deliveryStatus in (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))""")
     List<CurrencyCode> findSaleCurrencies(@Param("refTypes") List<InventoryReferenceType> refTypes,
                                           @Param("start") LocalDateTime start,
                                           @Param("end") LocalDateTime end);
