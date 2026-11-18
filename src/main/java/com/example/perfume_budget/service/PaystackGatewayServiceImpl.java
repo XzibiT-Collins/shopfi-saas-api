@@ -53,7 +53,6 @@ public class PaystackGatewayServiceImpl implements PaymentGatewayAPIService {
             }
 
             log.info("Paystack transaction initialized successfully");
-//            log.info("Response: {}, Body: {}", response, response.getBody());
             return response.getBody();
 
         } catch (HttpClientErrorException e) {
