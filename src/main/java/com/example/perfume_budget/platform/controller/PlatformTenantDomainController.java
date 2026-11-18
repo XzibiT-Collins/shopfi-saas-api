@@ -28,18 +28,18 @@ public class PlatformTenantDomainController {
     private final CustomDomainService service;
 
     @GetMapping
-    public ResponseEntity<CustomApiResponse<PlatformCustomDomainView>> get(@PathVariable String slug) {
+    public ResponseEntity<CustomApiResponse<PlatformCustomDomainView>> getTenantCustomDomain(@PathVariable String slug) {
         return ResponseEntity.ok(CustomApiResponse.success(service.platformView(slug)));
     }
 
     @PostMapping("/verify")
-    public ResponseEntity<CustomApiResponse<CustomDomainView>> verify(
+    public ResponseEntity<CustomApiResponse<CustomDomainView>> verifyTenantCustomDomain(
             @PathVariable String slug, @AuthenticationPrincipal PlatformPrincipal actor) {
         return ResponseEntity.ok(CustomApiResponse.success(service.verify(slug, actor(actor))));
     }
 
     @DeleteMapping
-    public ResponseEntity<CustomApiResponse<CustomDomainView>> remove(
+    public ResponseEntity<CustomApiResponse<CustomDomainView>> removeTenantCustomDomain(
             @PathVariable String slug, @AuthenticationPrincipal PlatformPrincipal actor) {
         return ResponseEntity.ok(CustomApiResponse.success(service.remove(slug, actor(actor))));
     }

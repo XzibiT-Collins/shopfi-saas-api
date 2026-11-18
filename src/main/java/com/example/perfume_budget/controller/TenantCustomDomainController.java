@@ -21,7 +21,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * DOMAIN-02: the tenant admin manages its OWN shop's custom domain (the tenant is the request's resolved tenant, never
- * a parameter). Contract: docs/api/custom-domains.md.
+ * a parameter). Contract: docs/api/custom-domains.md. Handler names are unique on purpose: springdoc derives
+ * operationIds from them and a clash renames another controller's pinned operation (OnboardingContractTest).
  */
 @RestController
 @PreAuthorize("hasRole('ADMIN')")
@@ -33,25 +34,25 @@ public class TenantCustomDomainController {
     private final AuthUserUtil authUserUtil;
 
     @GetMapping
-    public ResponseEntity<CustomApiResponse<CustomDomainView>> get() {
+    public ResponseEntity<CustomApiResponse<CustomDomainView>> getCustomDomain() {
         return ResponseEntity.ok(CustomApiResponse.success(service.get(TenantContext.getSlug())));
     }
 
     /** Claims (or replaces) the custom domain; it starts PENDING and is not honoured until verified. */
     @PutMapping
-    public ResponseEntity<CustomApiResponse<CustomDomainView>> request(@RequestBody CustomDomainRequest body) {
+    public ResponseEntity<CustomApiResponse<CustomDomainView>> requestCustomDomain(@RequestBody CustomDomainRequest body) {
         return ResponseEntity.ok(CustomApiResponse.success(
                 service.request(TenantContext.getSlug(), body == null ? null : body.domain(), actor())));
     }
 
     /** Checks the DNS TXT proof now (rate limited); VERIFIED or FAILED. */
     @PostMapping("/verify")
-    public ResponseEntity<CustomApiResponse<CustomDomainView>> verify() {
+    public ResponseEntity<CustomApiResponse<CustomDomainView>> verifyCustomDomain() {
         return ResponseEntity.ok(CustomApiResponse.success(service.verify(TenantContext.getSlug(), actor())));
     }
 
     @DeleteMapping
-    public ResponseEntity<CustomApiResponse<CustomDomainView>> remove() {
+    public ResponseEntity<CustomApiResponse<CustomDomainView>> removeCustomDomain() {
         return ResponseEntity.ok(CustomApiResponse.success(service.remove(TenantContext.getSlug(), actor())));
     }
 
