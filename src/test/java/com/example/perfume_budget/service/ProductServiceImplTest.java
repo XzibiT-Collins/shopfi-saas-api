@@ -73,6 +73,8 @@ class ProductServiceImplTest {
     private ProductCatalogCacheService productCatalogCacheService;
     @Mock
     private EffectivePriceService effectivePriceService;
+    @Mock
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @InjectMocks
     private ProductServiceImpl productService;
@@ -202,6 +204,181 @@ class ProductServiceImplTest {
         assertEquals(3, checked.size());
         assertEquals(checked.get(2), saved.getValue().getFamily().getFamilyCode(), "the free code is the one used");
         assertEquals(checked.get(2) + "-EA", saved.getValue().getSku());
+    }
+
+    // ---------------------------------------------------------------- ORD-02c: family code allocation
+
+    private static final java.util.regex.Pattern THREE_DIGITS = java.util.regex.Pattern.compile("VES-\\d{3}-50ML");
+    private static final java.util.regex.Pattern FOUR_DIGITS = java.util.regex.Pattern.compile("VES-\\d{4}-50ML");
+
+    private void stubNewFamilyCreate() {
+        when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
+        lenient().when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
+        lenient().when(unitOfMeasureRepository.findByCode("EA")).thenReturn(Optional.of(eachUom));
+        lenient().when(productFamilyRepository.save(any(ProductFamily.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(productRepository.save(any(Product.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    private static org.springframework.dao.DataIntegrityViolationException uniqueViolation(String constraint) {
+        return new org.springframework.dao.DataIntegrityViolationException("could not execute statement",
+                new org.hibernate.exception.ConstraintViolationException("duplicate key",
+                        new java.sql.SQLException("duplicate key value violates unique constraint", "23505"), constraint));
+    }
+
+    private static void assertFamilyCodeUnavailable(Throwable thrown) {
+        com.example.perfume_budget.exception.ApiCodeException e =
+                assertInstanceOf(com.example.perfume_budget.exception.ApiCodeException.class, thrown);
+        assertEquals(org.springframework.http.HttpStatus.CONFLICT, e.getStatus());
+        assertEquals("FAMILY_CODE_UNAVAILABLE", e.getCode());
+        assertEquals("Could not allocate a product code for this name/brand; try again or change the name", e.getMessage());
+    }
+
+    @Test
+    void createProduct_NewFamily_FallsBackToAFourDigitSuffixAfterTenTakenThreeDigitDraws() {
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        List<String> checked = new java.util.ArrayList<>();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenAnswer(i -> {
+            checked.add(i.getArgument(0));
+            return THREE_DIGITS.matcher(i.getArgument(0)).matches(); // every 3-digit code is taken
+        });
+
+        productService.createProduct(request);
+
+        assertEquals(11, checked.size());
+        assertTrue(checked.subList(0, 10).stream().allMatch(c -> THREE_DIGITS.matcher(c).matches()), checked.toString());
+        assertTrue(FOUR_DIGITS.matcher(checked.get(10)).matches(), checked.toString());
+        ArgumentCaptor<Product> saved = ArgumentCaptor.forClass(Product.class);
+        verify(productRepository).save(saved.capture());
+        assertEquals(checked.get(10), saved.getValue().getFamily().getFamilyCode());
+        assertEquals(checked.get(10) + "-EA", saved.getValue().getSku());
+    }
+
+    @Test
+    void createProduct_NewFamily_TwentyTakenDrawsAnswer409FamilyCodeUnavailableAndWriteNothing() {
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        List<String> checked = new java.util.ArrayList<>();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenAnswer(i -> checked.add(i.getArgument(0)));
+
+        Throwable thrown = assertThrows(RuntimeException.class, () -> productService.createProduct(request));
+
+        assertFamilyCodeUnavailable(thrown);
+        assertEquals(20, checked.size());
+        assertEquals(10, checked.stream().filter(c -> THREE_DIGITS.matcher(c).matches()).count());
+        assertEquals(10, checked.stream().filter(c -> FOUR_DIGITS.matcher(c).matches()).count());
+        verify(productFamilyRepository, never()).save(any());
+        verify(productRepository, never()).save(any());
+    }
+
+    @Test
+    void createProduct_NewFamily_ACodeWhoseBaseSkuIsAlreadyUsedIsRedrawn() {
+        // a customised / legacy SKU <code>-EA on a product of another family would hit uc_products_sku
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenReturn(false);
+        List<String> skus = new java.util.ArrayList<>();
+        when(productRepository.existsBySku(any())).thenAnswer(i -> {
+            skus.add(i.getArgument(0));
+            return skus.size() < 3;
+        });
+
+        productService.createProduct(request);
+
+        assertEquals(3, skus.size());
+        assertTrue(skus.stream().allMatch(s -> s.endsWith("-50ML-EA")), skus.toString());
+        ArgumentCaptor<Product> saved = ArgumentCaptor.forClass(Product.class);
+        verify(productRepository).save(saved.capture());
+        assertEquals(skus.get(2), saved.getValue().getSku());
+    }
+
+    @Test
+    void createProduct_NewFamily_AConcurrentFamilyCodeClashIsRetriedOnceInAFreshTransaction() {
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenReturn(false);
+        List<String> inserted = new java.util.ArrayList<>();
+        when(productFamilyRepository.save(any(ProductFamily.class))).thenAnswer(invocation -> {
+            ProductFamily f = invocation.getArgument(0);
+            if (f.getId() == null && inserted.isEmpty()) {
+                inserted.add(f.getFamilyCode());
+                throw uniqueViolation("uc_product_families_family_code");
+            }
+            f.setId(9L);
+            return f;
+        });
+
+        ProductDetails result = productService.createProduct(request);
+
+        assertEquals("Perfume A", result.productName());
+        verify(transactionManager, times(2)).getTransaction(any());
+        verify(transactionManager, times(1)).rollback(any());
+        verify(transactionManager, times(1)).commit(any());
+        verify(cloudinaryFileUploadUtil, times(1)).uploadProductImage(productImage);
+        verify(productRepository, times(1)).save(any(Product.class));
+    }
+
+    @Test
+    void createProduct_NewFamily_AConcurrentBaseSkuClashIsRetriedOnce() {
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenReturn(false);
+        java.util.concurrent.atomic.AtomicInteger saves = new java.util.concurrent.atomic.AtomicInteger();
+        when(productRepository.save(any(Product.class))).thenAnswer(invocation -> {
+            if (saves.incrementAndGet() == 1) throw uniqueViolation("uc_products_sku");
+            return invocation.getArgument(0);
+        });
+
+        productService.createProduct(request);
+
+        assertEquals(2, saves.get());
+        verify(transactionManager, times(2)).getTransaction(any());
+        verify(transactionManager, times(1)).commit(any());
+    }
+
+    @Test
+    void createProduct_NewFamily_ASecondConcurrentClashAnswers409FamilyCodeUnavailable() {
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenReturn(false);
+        when(productFamilyRepository.save(any(ProductFamily.class))).thenThrow(uniqueViolation("uc_product_families_family_code"));
+
+        Throwable thrown = assertThrows(RuntimeException.class, () -> productService.createProduct(request));
+
+        assertFamilyCodeUnavailable(thrown);
+        verify(productFamilyRepository, times(2)).save(any(ProductFamily.class));
+        verify(transactionManager, times(2)).rollback(any());
+        verify(transactionManager, never()).commit(any());
+    }
+
+    @Test
+    void createProduct_NewFamily_AnyOtherConstraintViolationIsNotRetriedAndKeepsItsGeneric409() {
+        ProductRequest request = buildRequest(true, null, null, null, new BigDecimal("80.00"), false);
+        stubNewFamilyCreate();
+        when(productFamilyRepository.existsByFamilyCode(any())).thenReturn(false);
+        org.springframework.dao.DataIntegrityViolationException other = uniqueViolation("uc_products_slug");
+        when(productRepository.save(any(Product.class))).thenThrow(other);
+
+        Throwable thrown = assertThrows(RuntimeException.class, () -> productService.createProduct(request));
+
+        assertSame(other, thrown);
+        verify(productRepository, times(1)).save(any(Product.class));
+    }
+
+    @Test
+    void createProduct_Variant_ASkuClashIsNotRetried() {
+        ProductRequest request = buildRequest(false, 5L, "BOX", 6, null, false);
+        when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
+        when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
+        when(productFamilyRepository.findById(5L)).thenReturn(Optional.of(family));
+        when(unitOfMeasureRepository.findByCode("BOX")).thenReturn(Optional.of(boxUom));
+        org.springframework.dao.DataIntegrityViolationException clash = uniqueViolation("uc_products_sku");
+        when(productRepository.save(any(Product.class))).thenThrow(clash);
+
+        Throwable thrown = assertThrows(RuntimeException.class, () -> productService.createProduct(request));
+
+        assertSame(clash, thrown);
+        verify(productRepository, times(1)).save(any(Product.class));
     }
 
     @Test

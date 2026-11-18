@@ -50,6 +50,7 @@ The refactor also changed the endpoint boundary so controllers no longer return 
 
 - Creating a new product with `isNewProduct=true` creates a new product family and assigns the new product as the base `EA` unit.
 - The base unit always uses conversion factor `1` and SKU format `<familyCode>-EA`.
+- Family code format is `<PREFIX>-<3 or 4 random digits>[-<SIZE>]` (ORD-02c: 10 draws with 3 digits, then 10 with 4 digits, then 409 `FAMILY_CODE_UNAVAILABLE`; a code whose `<code>-EA` SKU is already used is skipped; a concurrent clash is retried once). See `docs/api/catalog.md`.
 - Creating a new variant for an existing family requires a `familyId` and a UOM code.
 - Variant SKU format is `<familyCode>-<uomCode>`.
 - Duplicate SKUs for the same family are rejected.
@@ -115,5 +116,5 @@ Behavior verified by tests includes:
 
 ## Known Gaps
 
-- Family code generation still uses a random numeric suffix, so codes are unique by probability rather than by an explicit persisted sequence.
+- Family code generation still uses a random numeric suffix (3 digits, 4-digit fallback since ORD-02c) checked against existing families and base SKUs, not an explicit persisted sequence; when no free code is found the create answers 409 `FAMILY_CODE_UNAVAILABLE` (docs/api/catalog.md).
 - Reverse-conversion request validation is service-owned because the same request DTO is reused for both forward and reverse flows.
