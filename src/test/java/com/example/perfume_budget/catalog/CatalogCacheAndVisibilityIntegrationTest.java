@@ -124,6 +124,25 @@ class CatalogCacheAndVisibilityIntegrationTest extends AbstractCheckoutIntegrati
         assertSentinelsEvicted();
     }
 
+    /**
+     * CAT-03 (CAT-02 review low 1): a category that products still point at cannot be deleted (FK
+     * FK_PRODUCTS_ON_CATEGORY): 409, nothing changes, and since nothing changed the catalog caches are kept.
+     */
+    @Test
+    void deletingACategoryThatStillHasProductsIs409AndKeepsTheCaches() throws Exception {
+        long id = category("HELD-" + tag);
+        long p = product(acme, "Cat03 Held " + tag, "9.00", 3);
+        jdbc.update("UPDATE tenant_acme.products SET category_id = ? WHERE id = ?", id, p);
+        putSentinels();
+
+        MvcResult r = asAdmin(delete("/api/v1/category/delete/" + id));
+
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(409);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.categories WHERE id = ?", Integer.class, id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT category_id FROM tenant_acme.products WHERE id = ?", Long.class, p)).isEqualTo(id);
+        assertSentinelsKept();
+    }
+
     @Test
     void aFailedCategoryUpdateDoesNotEvict() throws Exception {
         putSentinels();

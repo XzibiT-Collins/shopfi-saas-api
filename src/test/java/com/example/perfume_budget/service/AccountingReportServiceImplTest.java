@@ -1,5 +1,6 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.accounts.request.DateRangeRequest;
 import com.example.perfume_budget.dto.accounts.response.*;
 import com.example.perfume_budget.enums.AccountCategory;
@@ -13,6 +14,8 @@ import com.example.perfume_budget.projection.DailyCashFlowProjection;
 import com.example.perfume_budget.repository.JournalEntryRepository;
 import com.example.perfume_budget.repository.LedgerAccountRepository;
 import org.junit.jupiter.api.BeforeEach;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -210,14 +213,49 @@ class AccountingReportServiceImplTest {
                 .build();
         entry.getLines().add(line);
 
-        when(journalEntryRepository.findAllByDateRange(any(), any())).thenReturn(List.of(entry));
+        entry.setId(7L);
+        LocalDateTime from = request.startDate().atStartOfDay();
+        LocalDateTime toExclusive = request.endDate().plusDays(1).atStartOfDay();
+        when(journalEntryRepository.findIdPageByDateRange(eq(from), eq(toExclusive), any()))
+                .thenAnswer(inv -> new PageImpl<>(List.of(7L), inv.getArgument(2), 1));
+        when(journalEntryRepository.findWithLinesByIdIn(List.of(7L))).thenReturn(List.of(entry));
 
-        List<JournalEntryResponse> result = accountingReportService.getJournalEntries(request);
+        PageResponse<JournalEntryResponse> result = accountingReportService.getJournalEntries(request, PageRequest.of(0, 20));
 
         assertNotNull(result);
-        assertEquals(1, result.size());
-        assertEquals("JE-001", result.get(0).entryNumber());
-        assertEquals(1, result.get(0).lines().size());
+        assertEquals(1, result.content().size());
+        assertEquals(1, result.totalElements());
+        assertEquals("JE-001", result.content().get(0).entryNumber());
+        assertEquals(1, result.content().get(0).lines().size());
+    }
+
+    @Test
+    @DisplayName("CAT-03: journal page keeps the id page's order, clamps size, enforces the offset and date-range rules")
+    void getJournalEntries_PagingRules() {
+        DateRangeRequest range = new DateRangeRequest(LocalDate.of(2033, 3, 1), LocalDate.of(2033, 3, 31));
+        JournalEntry a = JournalEntry.builder().id(1L).entryNumber("A").lines(new ArrayList<>()).build();
+        JournalEntry b = JournalEntry.builder().id(2L).entryNumber("B").lines(new ArrayList<>()).build();
+        org.mockito.ArgumentCaptor<org.springframework.data.domain.Pageable> asked =
+                org.mockito.ArgumentCaptor.forClass(org.springframework.data.domain.Pageable.class);
+        when(journalEntryRepository.findIdPageByDateRange(any(), any(), asked.capture()))
+                .thenAnswer(inv -> new PageImpl<>(List.of(2L, 1L), inv.getArgument(2), 2));
+        when(journalEntryRepository.findWithLinesByIdIn(List.of(2L, 1L))).thenReturn(List.of(a, b)); // unordered
+
+        PageResponse<JournalEntryResponse> page = accountingReportService.getJournalEntries(range, PageRequest.of(3, 500));
+
+        assertEquals(List.of("B", "A"), page.content().stream().map(JournalEntryResponse::entryNumber).toList());
+        assertEquals(50, asked.getValue().getPageSize());
+        assertEquals(3, asked.getValue().getPageNumber());
+
+        com.example.perfume_budget.exception.ApiCodeException deep = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> accountingReportService.getJournalEntries(range, PageRequest.of(200, 50)));
+        assertEquals("INVALID_PAGE", deep.getCode());
+        assertDoesNotThrow(() -> accountingReportService.getJournalEntries(range, PageRequest.of(199, 50)));
+        assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> accountingReportService.getJournalEntries(range, PageRequest.of(1_000_001, 1)));
+        com.example.perfume_budget.exception.ApiCodeException reversed = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> accountingReportService.getJournalEntries(new DateRangeRequest(range.endDate(), range.startDate()), PageRequest.of(0, 20)));
+        assertEquals("INVALID_DATE_RANGE", reversed.getCode());
     }
 
     @Test

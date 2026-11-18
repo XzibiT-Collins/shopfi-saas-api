@@ -6,12 +6,15 @@ import com.example.perfume_budget.repository.CartRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
+import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 @Component
 @RequiredArgsConstructor
 public class CartUtil {
+    private static final String CART_NOT_CREATED = "The cart could not be created.";
+
     private final AuthUserUtil authUserUtil;
     private final CartRepository cartRepository;
 
@@ -26,23 +29,33 @@ public class CartUtil {
      */
     public Cart getCurrentUserCartWithItems() {
         User currentUser = authUserUtil.getCurrentUser();
-        return cartRepository.findWithItemsByUser(currentUser)
-                .orElseGet(() -> cartRepository.save(
-                        Cart.builder()
-                                .user(currentUser)
-                                .items(new ArrayList<>())
-                                .build()
-                ));
+        return findOrCreate(currentUser, () -> cartRepository.findWithItemsByUser(currentUser));
     }
 
     public Cart getCurrentUserCart() {
         User currentUser = authUserUtil.getCurrentUser();
-        return cartRepository.findByUser(currentUser)
-                .orElseGet(() -> cartRepository.save(
-                        Cart.builder()
-                                .user(currentUser)
-                                .items(new ArrayList<>())
-                                .build()
-                ));
+        return findOrCreate(currentUser, () -> cartRepository.findByUser(currentUser));
+    }
+
+    /**
+     * CAT-03: the current user's cart (created if missing), row-locked until the caller's transaction ends. For cart
+     * writes that read-then-modify lines (add-item): concurrent writes of one customer queue on the cart row.
+     * Must run inside a transaction.
+     */
+    public Cart getCurrentUserCartForUpdate() {
+        User currentUser = authUserUtil.getCurrentUser();
+        return findOrCreate(currentUser, () -> cartRepository.lockByUserId(currentUser.getId()));
+    }
+
+    /**
+     * CAT-03: find, else create race-free ({@code INSERT ... ON CONFLICT DO NOTHING}) and find again. Concurrent first
+     * requests of one customer all end up with the same single cart row instead of a 409 on {@code uc_carts_user}.
+     * The first find avoids the insert (and an identity value) on the common path where the cart already exists.
+     */
+    private Cart findOrCreate(User user, Supplier<Optional<Cart>> find) {
+        return find.get().orElseGet(() -> {
+            cartRepository.insertIfAbsent(user.getId(), LocalDateTime.now());
+            return find.get().orElseThrow(() -> new IllegalStateException(CART_NOT_CREATED));
+        });
     }
 }
