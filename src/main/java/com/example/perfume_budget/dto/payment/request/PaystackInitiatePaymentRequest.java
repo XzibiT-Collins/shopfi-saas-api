@@ -14,5 +14,7 @@ public record PaystackInitiatePaymentRequest(
         BigDecimal amount,
         CurrencyCode currency,
         /** Per-tenant return URL (tenant storefront origin + callback path); omitted when it cannot be derived. */
-        @JsonProperty("callback_url") String callbackUrl
+        @JsonProperty("callback_url") String callbackUrl,
+        /** SEC-01d: our order number, for OUR log lines only; never sent to Paystack. */
+        @com.fasterxml.jackson.annotation.JsonIgnore String orderReference
 ) {}

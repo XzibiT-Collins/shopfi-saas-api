@@ -250,6 +250,7 @@ public class OrderServiceImpl implements OrderService {
                     .amount(convertAmountToSend(newOrder.getTotalAmount().getAmount()))
                     .currency(newOrder.getTotalAmount().getCurrencyCode())
                     .callbackUrl(callbackUrlProvider.callbackUrl().orElse(null))
+                    .orderReference(newOrder.getOrderNumber())
                     .build();
 
             response = gatewayAPIService.initiatePaystackTransaction(request);

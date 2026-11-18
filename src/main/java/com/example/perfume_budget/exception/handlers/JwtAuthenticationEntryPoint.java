@@ -18,6 +18,9 @@ import java.io.IOException;
 @Component
 public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
+    /** Spring Security's own text for the usual case (an anonymous call to a protected route), now always. */
+    public static final String AUTHENTICATION_REQUIRED = "Full authentication is required to access this resource";
+
     private final ObjectMapper objectMapper;
 
     public JwtAuthenticationEntryPoint(ObjectMapper objectMapper) {
@@ -33,7 +36,8 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
 
-        CustomApiResponse<?> errorResponse = CustomApiResponse.error(authException.getMessage());
+        // SEC-01d: fixed text; an AuthenticationException's message can quote the presented credential or a provider's answer
+        CustomApiResponse<?> errorResponse = CustomApiResponse.error(AUTHENTICATION_REQUIRED);
 
         objectMapper.writeValue(response.getOutputStream(), errorResponse);
     }
