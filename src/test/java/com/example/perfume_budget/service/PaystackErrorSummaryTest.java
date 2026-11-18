@@ -102,5 +102,7 @@ class PaystackErrorSummaryTest {
     @Test
     void textWithoutAnAddressIsLeftAlone() {
         assertThat(PaystackErrorSummary.redact("Discount of 40% applied; 100%")).isEqualTo("Discount of 40% applied; 100%");
+        // other percent-encodings are not an address (%20 is a space, %2B a plus)
+        assertThat(PaystackErrorSummary.redact("Rate%20limited for key%2Bx")).isEqualTo("Rate%20limited for key%2Bx");
     }
 }
