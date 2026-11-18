@@ -271,7 +271,8 @@ public class CustomDomainService {
             return dns.lookupTxt(txtName(domain)).stream()
                     .anyMatch(v -> v != null && v.strip().equals(expected));
         } catch (DnsTxtResolver.DnsLookupException e) {
-            log.warn("Custom domain TXT lookup gave no definitive answer ({})", e.getMessage());
+            // no exception text in the log (SEC-01d/e): the resolver's cause is a fixed class name anyway
+            log.warn("Custom domain TXT lookup gave no definitive answer");
             throw new RetryAfterApiCodeException(HttpStatus.SERVICE_UNAVAILABLE, DNS_UNAVAILABLE,
                     "DNS did not answer. Try again shortly.", DNS_RETRY_AFTER_SECONDS);
         }
