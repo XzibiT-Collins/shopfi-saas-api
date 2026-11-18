@@ -233,7 +233,7 @@ The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 
 
 * `charge.success`: completes the payment. Amount and currency are required and must match the order; an event without them is ignored (fail closed) and the customer's verify poll settles it from the provider's own data. Idempotent.
   A late success for an order that is FAILED or CANCELLED/expired re-reserves the stock and completes it; if the stock
-  is gone the payment is recorded COMPLETED with `refundRequired` and the order stays closed. Any other failure while re-reserving (database/pool timeout) is not treated as out of stock: nothing is changed and the next webhook or verify poll retries.
+  is gone the payment is recorded COMPLETED with `refundRequired` and the order stays closed; the cash is booked once as a `LATE_PAYMENT` journal entry (Cash and Bank / Refunds Payable, no sale, ORD-02b, see orders.md). Any other failure while re-reserving (database/pool timeout) is not treated as out of stock: nothing is changed and the next webhook or verify poll retries.
 * `charge.failed`: the only event that marks the payment/order FAILED and releases the stock. Never overrides COMPLETED.
 * any other event type: ignored.
 
@@ -329,7 +329,7 @@ product rows only after the call, for the short stock reservation before commit)
 reservation is given back when the checkout does not create an order with it (rejection, Paystack failure). Refusals
 that do not need the usage counter (address, empty cart, unavailable items, idempotent replays, sale items, unknown
 code, per-user limit, minimum amount) are decided before reserving (rework 2), so they never hold a redemption. An
-order that becomes CANCELLED (customer, unpaid admin cancel, expiry) or FAILED (`charge.failed`) gives its redemption
+order that becomes CANCELLED (customer, admin cancel paid or unpaid (ORD-02b), expiry) or FAILED (`charge.failed`) gives its redemption
 back exactly once; a late payment that revives it takes it again. The per-user limit counts the customer's orders that
 still hold a redemption. See `DISCOUNTS_FRONTEND_INTEGRATION.md` section 8.
 

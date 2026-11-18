@@ -37,7 +37,14 @@ public class LedgerAccount {
     @Column(nullable = false)
     private Boolean isActive = true;
 
+    /**
+     * ORD-02b: written once, at INSERT (a new account's opening balance), and afterwards ONLY by the atomic
+     * {@code LedgerAccountRepository#applyBalanceDelta} UPDATE. Not updatable through the entity: an entity loaded before
+     * that UPDATE in the same transaction holds the old value, and a later dirty flush (any other field changed) would
+     * otherwise write the stale balance back over the delta. Re-read the account (or use the value the UPDATE returned)
+     * for the current balance.
+     */
     @Builder.Default
-    @Column(nullable = false, precision = 19, scale = 2)
+    @Column(nullable = false, precision = 19, scale = 2, updatable = false)
     private BigDecimal balance = BigDecimal.ZERO;
 }

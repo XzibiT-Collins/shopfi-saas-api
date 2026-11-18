@@ -222,9 +222,9 @@ public class OrderLifecycleService {
      * <ul>
      *   <li>unpaid (PENDING/INITIATED): release the reservation, cancel the open payment, order -> CANCELLED;</li>
      *   <li>payment already FAILED/CANCELLED: release any straggling reservation, delivery -> CANCELLED;</li>
-     *   <li>paid (COMPLETED): delivery -> CANCELLED, payment.refundRequired = true, and the consumed stock goes back
+     *   <li>paid (COMPLETED): delivery -> CANCELLED, payment.refundRequired = true, the consumed stock goes back
      *       to the shelf only when nothing left the shop yet (from PENDING/PACKING; OUT_FOR_DELIVERY goods are with
-     *       the courier and are restocked by hand on return).</li>
+     *       the courier and are restocked by hand on return), and the coupon redemption is given back (ORD-02b).</li>
      * </ul>
      * @return true when a manual refund is now required
      */
@@ -255,6 +255,12 @@ public class OrderLifecycleService {
             payment.setRefundRequired(true);
             paymentRepository.save(payment);
         }
+        // ORD-02b (PO decision): the cancelled sale gives its coupon redemption back (global usage count and the
+        // customer's per-user count), exactly once: we hold the order row lock, a repeated or concurrent cancel is the
+        // same-status no-op, and the order's coupon_redemption_released flag makes the release itself idempotent. Lock
+        // order order -> stock -> ledger -> coupon: the counter UPDATE is deferred to commit (coupon row LAST). The books
+        // need nothing more: the SALE_REVERSAL above already took the coupon discount back.
+        couponRedemptionService.releaseForOrder(order);
         return true;
     }
 

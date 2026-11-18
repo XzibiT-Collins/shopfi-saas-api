@@ -134,7 +134,10 @@ class PaymentSettlementServiceTest {
         assertEquals(PaymentStatus.CANCELLED, order.getStatus());
         assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
         assertTrue(payment.isRefundRequired());
-        verifyNoInteractions(orderService, bookkeepingService);
+        verifyNoInteractions(orderService);
+        // ORD-02b: the cash is booked against Refunds Payable (no sale), once, with the saved payment
+        verify(bookkeepingService, times(1)).recordLatePaymentReceived(order, payment);
+        verifyNoMoreInteractions(bookkeepingService);
     }
 
     @Test
@@ -149,9 +152,16 @@ class PaymentSettlementServiceTest {
         assertTrue(payment.isRefundRequired());
         assertEquals(PaymentStatus.CANCELLED, order.getStatus());
         assertEquals(OrderProcessingStatus.CANCELLED, order.getDeliveryStatus());
-        verifyNoInteractions(reservationService, orderService, bookkeepingService);
+        verifyNoInteractions(reservationService, orderService);
         verify(inventoryManagementService).releaseOrderInventory("ORD-1");
         verify(cartRepository, never()).deleteAllByUserEmail(any());
+        // ORD-02b: booked as cash in + refund owed after the payment is COMPLETED and the stock released
+        org.mockito.InOrder io = inOrder(inventoryManagementService, paymentRepository, bookkeepingService, couponRedemptionService);
+        io.verify(inventoryManagementService).releaseOrderInventory("ORD-1");
+        io.verify(paymentRepository).save(payment);
+        io.verify(bookkeepingService).recordLatePaymentReceived(order, payment);
+        io.verify(couponRedemptionService).releaseForOrder(order);
+        verifyNoMoreInteractions(bookkeepingService);
     }
 
     @Test
@@ -163,8 +173,10 @@ class PaymentSettlementServiceTest {
         assertTrue(payment.isRefundRequired());
         assertEquals(PaymentStatus.CANCELLED, order.getStatus(), "normalised to the refund-required state");
         assertEquals(OrderProcessingStatus.CANCELLED, order.getDeliveryStatus());
-        verifyNoInteractions(orderService, bookkeepingService);
+        verifyNoInteractions(orderService);
         verify(inventoryManagementService).releaseOrderInventory("ORD-1");
+        verify(bookkeepingService).recordLatePaymentReceived(order, payment);
+        verifyNoMoreInteractions(bookkeepingService);
     }
 
     @Test
@@ -176,6 +188,29 @@ class PaymentSettlementServiceTest {
         service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}");
         assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
         verify(inventoryManagementService, times(1)).releaseOrderInventory("ORD-1");
+        verify(bookkeepingService, times(1)).recordLatePaymentReceived(order, payment); // redelivery books nothing more
+    }
+
+    @Test
+    void repeatedLateSuccessWithoutStockBooksOnce() {
+        order.setStatus(PaymentStatus.FAILED);
+        payment.setStatus(PaymentStatus.FAILED);
+        when(reservationService.reserveForLatePayment(any(), any())).thenReturn(false);
+        assertEquals(Outcome.COMPLETED_REFUND_REQUIRED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        verify(bookkeepingService, times(1)).recordLatePaymentReceived(order, payment);
+        verify(bookkeepingService, never()).recordSale(any(), any());
+    }
+
+    @Test
+    void anOrdinaryOrRevivedPaymentIsNeverBookedAsALatePayment() {
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        order.setStatus(PaymentStatus.CANCELLED);
+        payment.setStatus(PaymentStatus.CANCELLED);
+        when(reservationService.reserveForLatePayment(any(), any())).thenReturn(true);
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        verify(bookkeepingService, times(2)).recordSale(order, payment);
+        verify(bookkeepingService, never()).recordLatePaymentReceived(any(), any());
     }
 
     @Test

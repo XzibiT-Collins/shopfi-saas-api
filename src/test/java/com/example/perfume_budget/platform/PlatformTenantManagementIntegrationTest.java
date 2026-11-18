@@ -459,7 +459,9 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         jdbc(c -> {
             try (var st = c.createStatement()) {
                 st.execute("DROP INDEX tenant_plat_r.uk_notifications_payment_success_reference");
-                st.execute("DELETE FROM tenant_plat_r.flyway_schema_history WHERE version = '15'");
+                // V15 and every later migration (ORD-02b: V16 is a re-runnable data fix), so the newest one is missing
+                // whatever was added after V15
+                st.execute("DELETE FROM tenant_plat_r.flyway_schema_history WHERE version IS NOT NULL AND CAST(version AS INTEGER) >= 15");
             }
             return null;
         });

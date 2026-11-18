@@ -187,4 +187,20 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
                              @Param("type") JournalEntryType type,
                              @Param("category") AccountCategory category,
                              @Param("entryType") EntryType entryType);
+
+    /** ORD-02b: like {@link #sumOrderLines} over several entry types (e.g. everything that put money into Refunds Payable). */
+    @Query("""
+            SELECT COALESCE(SUM(l.amount), 0)
+            FROM JournalEntryLine l
+            JOIN l.journalEntry j
+            WHERE j.referenceType = 'ORDER'
+            AND j.referenceId = :orderNumber
+            AND j.type IN :types
+            AND l.account.category = :category
+            AND l.entryType = :entryType
+            """)
+    BigDecimal sumOrderLinesOfTypes(@Param("orderNumber") String orderNumber,
+                                    @Param("types") java.util.Collection<JournalEntryType> types,
+                                    @Param("category") AccountCategory category,
+                                    @Param("entryType") EntryType entryType);
 }

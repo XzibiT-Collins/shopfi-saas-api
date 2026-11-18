@@ -25,9 +25,13 @@ class ConcurrentTenantLoadTest extends AbstractTenantIsolationTest {
     void ac6_parallelAlternatingRequestsNeverLeakRowsAcrossTenants() throws Exception {
         TestTenant acme = tenants.acme();
         TestTenant bravo = tenants.bravo();
-        for (int i = 0; i < 3; i++) {
-            createProductViaApi(acme, "LoadAcme Item" + i);
-            createProductViaApi(bravo, "LoadBravo Item" + i);
+        // ORD-02b: the family code is <first letter of word 1 + two letters of word 2>-<3 random digits>. "Item0..2" all
+        // gave the prefix LIT, so two products of a tenant could draw the same code (unique family_code -> 409). Each
+        // product now has its own prefix (LAL, LBR, LCH), so the test data can never collide whatever the random digits.
+        String[] second = {"Alpha", "Bravo", "Charlie"};
+        for (String word : second) {
+            createProductViaApi(acme, "LoadAcme " + word);
+            createProductViaApi(bravo, "LoadBravo " + word);
         }
         Cookie acmeCookie = adminCookie(acme);
         Cookie bravoCookie = adminCookie(bravo);

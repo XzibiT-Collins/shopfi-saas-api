@@ -131,10 +131,32 @@ A real cancel, atomic and exactly-once, whatever the payment state:
 |---|---|
 | unpaid (`paymentStatus` `PENDING`/`INITIATED`) | stock reservation released, open payment `CANCELLED`, `paymentStatus` -> `CANCELLED`, `deliveryStatus` -> `CANCELLED`. `refundRequired` stays false. |
 | payment already `FAILED`/`CANCELLED` | `deliveryStatus` -> `CANCELLED`, any straggling reservation released. `refundRequired` false. |
-| paid (`COMPLETED`) | `deliveryStatus` -> `CANCELLED`, **`refundRequired` -> true**, the sale is reversed in the books and dropped from the sales reports (see *Paid cancel: books and reports*). If the order had not left the shop (from `PENDING` or `PACKING`) the consumed stock is returned to the shelf (inventory layers, a `RETURN` movement, the location ledger `SALE_RETURN` **at the location the units were deducted from**, `soldCount` reduced). From `OUT_FOR_DELIVERY` see *Restock policy* below. The payment itself stays `COMPLETED` until you refund it outside Shopfi. |
+| paid (`COMPLETED`) | `deliveryStatus` -> `CANCELLED`, **`refundRequired` -> true**, the sale is reversed in the books and dropped from the sales reports (see *Paid cancel: books and reports*), and **the coupon redemption is given back** (ORD-02b, see below). If the order had not left the shop (from `PENDING` or `PACKING`) the consumed stock is returned to the shelf (inventory layers, a `RETURN` movement, the location ledger `SALE_RETURN` **at the location the units were deducted from**, `soldCount` reduced). From `OUT_FOR_DELIVERY` see *Restock policy* below. The payment itself stays `COMPLETED` until you refund it outside Shopfi. |
 
 The customer gets the usual status e-mail once, after the transaction commits. Stock is never released or returned twice
 (a repeat cancel is the no-op of rule 1; the inventory calls only touch `RESERVED` / `CONSUMED` rows).
+
+**Coupon of a cancelled order (ORD-02b, PO decision 2026-11-18).** Every admin cancel, paid or unpaid, gives the order's
+coupon redemption back, like the owner cancel, expiry and `charge.failed` always did: the coupon's `usageCount` goes down
+by one (a coupon that was switched off only because it hit its usage limit is switched on again) and the order no longer
+counts towards the customer's `perUserUsageLimit`, so the customer can use the coupon again. Exactly once per order
+(`orders.coupon_redemption_released`, under the order row lock), also for repeated or simultaneous cancels. *(Before
+ORD-02b a paid cancel kept the redemption.)* The books need nothing extra: the `SALE_REVERSAL` already takes the coupon
+discount back. Paid orders cancelled before this release were released by tenant migration V16.
+
+### Returns of `DELIVERED` orders (not supported yet: ORD-07)
+
+A delivered order is final. What the routes answer for a `DELIVERED` order today (nothing is changed by any of them):
+
+| Call | Answer |
+|---|---|
+| `PUT .../update-order-status/{n}` with `CANCELLED` (or any other status) | 400 `ORDER_FINAL_STATE` ("Order is already delivered and can not be updated.") |
+| `POST .../{n}/return-received` | 409 `RETURN_NOT_APPLICABLE` (`data.deliveryStatus: "DELIVERED"`, `data.paymentStatus: "COMPLETED"`) |
+| `POST .../{n}/refund-acknowledgement` | 409 `REFUND_NOT_REQUIRED` |
+| customer `POST /order/{n}/cancel` | 409 `ORDER_NOT_CANCELLABLE` (paid) |
+
+The sale stays booked and the coupon redemption stays used. A merchant who takes goods back after delivery records the
+refund and stock by hand (manual journal entry, stock receive) until ORD-07 adds a return flow.
 
 ### Paid cancel: books and reports (ORD-02)
 
@@ -143,15 +165,25 @@ The customer gets the usual status e-mail once, after the transaction commits. S
   **Refunds Payable** (2100): the money is still in the shop until you refund it. COGS / inventory are reversed only
   when the goods are back on the shelf (at the cancel from `PENDING`/`PACKING`, or later via `return-received`). Closed
   periods are never rewritten. Each part is posted at most once per order (a repeated or concurrent cancel never
-  doubles it). An order that was never booked as a sale (e.g. a payment that arrived after a merchant cancel) has
-  nothing to reverse.
+  doubles it). An order that was never booked as a sale (e.g. a payment that arrived after a merchant cancel, booked
+  as a `LATE_PAYMENT` since ORD-02b, see below) has nothing to reverse.
 * **Refund acknowledgement** posts a `REFUND` entry: debit Refunds Payable, credit Cash and Bank, for what the order
-  still owes (once). Cash and Bank may not go negative; if the books show less cash than the refund the acknowledgement
+  still owes (once): the Refunds Payable credits of its `SALE_REVERSAL` and `LATE_PAYMENT` entries minus earlier `REFUND`s. Cash and Bank may not go negative; if the books show less cash than the refund the acknowledgement
   is refused with **409 `INSUFFICIENT_CASH`** and nothing is written (see the refund acknowledgement below).
 * **Ledger balances are concurrency-safe** (ORD-02 rework). Every posting (sale, paid cancel, refund, walk-in sale,
   manual entry, ...) moves each account with one atomic `UPDATE ... SET balance = balance + delta`, in ascending account
   id order, as the last lock of its transaction. Simultaneous cancels, acknowledgements and payment webhooks therefore
   never lose a balance update, and the negative-balance guard sees the true balance.
+* **The negative-balance guard checks the net per account** (ORD-02 rework). The lines of one entry are first netted per
+  account (debits minus credits, or the reverse for liability / equity / revenue accounts) and the account moves once by
+  that net; the guard looks at the balance after the net move. A **manual entry** is refused (400) when any account it
+  touches would end below zero; an automatic posting is refused only for Cash and Bank, Mobile Money and Inventory (the
+  refund acknowledgement turns that into 409 `INSUFFICIENT_CASH`), other accounts only log an alert. Consequence for
+  manual entries: a debit and a credit to the same account in one entry offset each other, so e.g. crediting Cash 500 and
+  debiting Cash 400 in one entry needs only 100 in Cash, not 500; lines are no longer checked one by one.
+* **Ledger balances are only moved by that UPDATE** (ORD-02b). `ledger_accounts.balance` is written by the entity only
+  when an account is created (its opening balance); any other save of a `LedgerAccount` leaves the stored balance
+  alone, so an account object loaded before a posting can never write a stale balance back.
 * **Sales analytics** (`GET /admin/metrics/sales-analytics`): revenue and COGS are net (credits minus debits / debits
   minus credits) and `ONLINE`/`ALL` include `SALE_REVERSAL`, so the cancel takes the sale back out **in the bucket of the
   cancel date**. Operating expenses are net too (a discount credited back no longer counts; this also nets manual
@@ -186,7 +218,24 @@ added to any location.
 
 **Late payment of a cancelled order.** (It also moves the order's `version`, so an admin holding the old version gets a 409 and reloads to see `refundRequired`.) A `charge.success` (webhook or verify poll) for an order the **merchant** cancelled
 never revives the order: the payment is recorded `COMPLETED` with `refundRequired: true`, the order stays `CANCELLED`, and any
-straggling reservation is released. Orders cancelled by the customer or by expiry keep the checkout.md behaviour (a late
+straggling reservation is released. The coupon redemption stays given back.
+
+**Late payment on a closed order is booked (ORD-02b, PO decision 2026-11-18).** Whenever a late `charge.success` leaves an
+order closed with `refundRequired: true` (a merchant-cancelled order, or a customer-cancelled / expired / failed order whose
+stock is gone), the money the shop received is booked once, dated at the payment, as a `LATE_PAYMENT` journal entry
+(reference type `ORDER`, the order number):
+
+| Account | Debit | Credit |
+|---|---|---|
+| 1000 Cash and Bank | payment amount | |
+| 2100 Refunds Payable | | payment amount |
+
+No revenue, tax, discount or COGS: there was no sale, so the analytics and order reports do not change. The refund
+acknowledgement then posts the usual `REFUND` entry (debit 2100 Refunds Payable, credit 1000 Cash and Bank, same amount),
+which clears both, with the same 409 `INSUFFICIENT_CASH` rule. Exactly once per order: duplicate or redelivered webhooks,
+verify polls and retried settlement attempts find the payment already `COMPLETED` (re-read under the order row lock)
+and post nothing, and the posting itself refuses a second `LATE_PAYMENT` for the order. Late payments settled before
+ORD-02b were not booked; their acknowledgement posts nothing (as before), the books stay balanced. Orders cancelled by the customer or by expiry keep the checkout.md behaviour (a late
 payment re-reserves the stock when it can; the revived order is live again, so `cancelledAt` and `cancelSource` go back to `null`). `deliveryStatus = CANCELLED` now counts as closed in the settlement.
 
 ## POST /api/v1/order/{orderNumber}/refund-acknowledgement (ADMIN)

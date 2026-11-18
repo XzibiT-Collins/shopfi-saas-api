@@ -37,7 +37,10 @@ public class PaymentSettlementService {
 
     public enum Outcome {
         COMPLETED,
-        /** Paid after the order was cancelled/failed and stock could not be re-reserved: payment kept, refund flagged. */
+        /**
+         * Paid after the order was cancelled/failed and stock could not be re-reserved (or the merchant cancelled it):
+         * payment kept, refund flagged, the cash booked once as a LATE_PAYMENT (cash in, Refunds Payable; ORD-02b).
+         */
         COMPLETED_REFUND_REQUIRED,
         FAILED,
         /** Nothing to do: already settled, closed, or the event does not change anything. */
@@ -108,10 +111,13 @@ public class PaymentSettlementService {
             payment.setPaidAt(LocalDateTime.now());
             payment.setRefundRequired(true);
             payment.setFailureReason("Paid after the merchant cancelled the order: refund required");
-            paymentRepository.save(payment);
+            Payment saved = paymentRepository.save(payment);
             if (order.getStatus() != PaymentStatus.CANCELLED) {
                 order.setStatus(PaymentStatus.CANCELLED);
             }
+            // ORD-02b: the money is in the shop but owed back: cash in, Refunds Payable (no sale). After the stock
+            // release; ledger rows are the last locks before the coupon UPDATE at commit.
+            bookkeepingService.recordLatePaymentReceived(order, saved);
             couponRedemptionService.releaseForOrder(order); // stays cancelled (idempotent); UPDATE runs at commit, last
             // Always dirty the row so the version moves: an admin holding the old version sees refundRequired changed.
             order.setUpdatedAt(LocalDateTime.now());
@@ -136,7 +142,9 @@ public class PaymentSettlementService {
                 payment.setPaidAt(LocalDateTime.now());
                 payment.setRefundRequired(true);
                 payment.setFailureReason("Paid after the order was closed and stock was unavailable: refund required");
-                paymentRepository.save(payment);
+                Payment saved = paymentRepository.save(payment);
+                // ORD-02b: book the received cash against Refunds Payable (no sale), so the refund ack can clear it
+                bookkeepingService.recordLatePaymentReceived(order, saved);
                 log.warn("Late payment for closed order {} could not be fulfilled; flagged for refund", order.getOrderNumber());
                 return Outcome.COMPLETED_REFUND_REQUIRED;
             }
