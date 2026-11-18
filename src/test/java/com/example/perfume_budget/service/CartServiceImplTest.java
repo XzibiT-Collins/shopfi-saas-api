@@ -9,7 +9,6 @@ import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.exception.PartialSuccessException;
 import com.example.perfume_budget.model.*;
 import com.example.perfume_budget.pricing.EffectivePrice;
-import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.repository.ProductRepository;
 import com.example.perfume_budget.service.interfaces.CartItemService;
 import com.example.perfume_budget.utils.AuthUserUtil;
@@ -35,7 +34,7 @@ import static org.mockito.Mockito.*;
 class CartServiceImplTest {
 
     @Mock
-    private CartRepository cartRepository;
+    private CartRemoval cartRemoval;
     @Mock
     private AuthUserUtil authUserUtil;
     @Mock
@@ -103,7 +102,8 @@ class CartServiceImplTest {
 
         cartService.clearCart();
 
-        verify(cartRepository).deleteAllByUser(testUser);
+        // CAT-04: cart row lock, then every line, then the row (CartRemoval)
+        verify(cartRemoval).deleteCartOfUser(testUser.getId());
     }
 
     @Test

@@ -6,7 +6,6 @@ import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.OrderItem;
 import com.example.perfume_budget.model.Payment;
-import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.repository.OrderRepository;
 import com.example.perfume_budget.repository.PaymentRepository;
 import com.example.perfume_budget.repository.ProductRepository;
@@ -34,7 +33,7 @@ class PaymentSettlementServiceTest {
     @Mock PaymentRepository paymentRepository;
     @Mock OrderRepository orderRepository;
     @Mock ProductRepository productRepository;
-    @Mock CartRepository cartRepository;
+    @Mock CartRemoval cartRemoval;
     @Mock OrderService orderService;
     @Mock OrderStockReservationService reservationService;
     @Mock BookkeepingService bookkeepingService;
@@ -49,6 +48,7 @@ class PaymentSettlementServiceTest {
     @BeforeEach
     void setUp() {
         order = Order.builder().id(1L).orderNumber("ORD-1").status(PaymentStatus.INITIATED)
+                .user(com.example.perfume_budget.model.User.builder().id(42L).email("c@example.com").build())
                 .deliveryStatus(OrderProcessingStatus.PENDING)
                 .items(new ArrayList<>(java.util.List.of(OrderItem.builder().productId(5L).quantity(2).build()))).build();
         payment = Payment.builder().id(2L).order(order).providerPaymentReference("REF123456").systemReference("SYS")
@@ -66,11 +66,33 @@ class PaymentSettlementServiceTest {
         assertEquals(PaymentStatus.COMPLETED, order.getStatus());
         assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
         assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
-        verify(cartRepository, times(1)).deleteAllByUserEmail("c@example.com");
+        verify(cartRemoval, times(1)).deleteCartOfUser(42L);
+        verifyNoMoreInteractions(cartRemoval);
         verify(eventPublisher, times(1)).publishEvent(payment);
         verify(orderService, times(1)).finalizeReservedStock(order);
         verify(bookkeepingService, times(1)).recordSale(order, payment);
         verify(productRepository, times(1)).incrementSoldCount(5L, 2);
+    }
+
+    @Test
+    void successEmptiesTheCartOfTheOrdersUser_notOfTheCurrentHolderOfThePaymentEmail() {
+        // CAT-04 rework F-D: payment.customerEmail is the checkout-time snapshot; the cart is the order user's (by id)
+        payment.setCustomerEmail("someone-else@example.com");
+
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        verify(cartRemoval).deleteCartOfUser(42L);
+        verifyNoMoreInteractions(cartRemoval);
+    }
+
+    @Test
+    void successOfAnOrderWithoutAUser_completes_andTouchesNoCart() {
+        order.setUser(null);
+
+        assertEquals(Outcome.COMPLETED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
+        assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
+        verifyNoInteractions(cartRemoval);
+        verify(orderService).finalizeReservedStock(order);
+        verify(bookkeepingService).recordSale(order, payment);
     }
 
     @Test
@@ -154,7 +176,7 @@ class PaymentSettlementServiceTest {
         assertEquals(OrderProcessingStatus.CANCELLED, order.getDeliveryStatus());
         verifyNoInteractions(reservationService, orderService);
         verify(inventoryManagementService).releaseOrderInventory("ORD-1");
-        verify(cartRepository, never()).deleteAllByUserEmail(any());
+        verify(cartRemoval, never()).deleteCartOfUser(any());
         // ORD-02b: booked as cash in + refund owed after the payment is COMPLETED and the stock released
         org.mockito.InOrder io = inOrder(inventoryManagementService, paymentRepository, bookkeepingService, couponRedemptionService);
         io.verify(inventoryManagementService).releaseOrderInventory("ORD-1");
@@ -285,7 +307,7 @@ class PaymentSettlementServiceTest {
         assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), null, "{}"));
         assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), " ", "{}"));
         assertEquals(PaymentStatus.INITIATED, order.getStatus());
-        verifyNoInteractions(orderService, bookkeepingService, cartRepository, eventPublisher);
+        verifyNoInteractions(orderService, bookkeepingService, cartRemoval, eventPublisher);
     }
 
     @Test
