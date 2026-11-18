@@ -351,6 +351,20 @@ transaction under the order lock and takes the product locks there. Admin edit /
 (`FOR NO KEY UPDATE`, which does not conflict with the FK lock a checkout's new order holds); delete locks the coupon's
 orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`).
 
+**Cart lock order (CAT-04): cart row, then its lines.** Every cart writer locks the customer's cart row before it reads
+or writes a line: add-item (also each item of populate), update quantity and remove line take it `FOR NO KEY UPDATE`;
+clear cart and payment success (webhook / verify) take it `FOR UPDATE`, then delete EVERY line of that cart in one
+statement (`DELETE FROM cart_items WHERE cart_id = ?`), then the cart row. Before, clear and settlement deleted only the
+lines they had loaded and the cart row last, the reverse of add-item: an add-item of a product already in the cart
+deadlocked with them (`503 TRY_AGAIN` or a settlement retry), and a line added in between made the cart delete fail on
+`fk_cart_items_on_cart` (clear `409`, webhook `500` until Paystack redelivered). Now a clear / settlement racing an
+add-item waits for it and removes its line too; an add-item arriving after the cart was deleted starts a new cart.
+Checkout only READS the cart (no cart lock: it would be held across the Paystack call) under its customer row lock.
+Global order, no path inverts it: customer row (checkout) -> order row (settlement, cancel, expiry) -> payment row ->
+cart row -> cart lines -> product rows by id -> location ledger -> ledger accounts by id -> coupon row last. No
+transaction that holds a cart row lock takes a customer, order or payment lock afterwards (add-item's first-cart insert
+needs the customer row's FK share lock, but it takes it before it holds any lock).
+
 ## Coupon limits (`POST /api/v1/coupon/add-coupon`, `PUT /api/v1/coupon/{id}`)
 
 | Field | Rule | 400 message (`data.<field>`) |

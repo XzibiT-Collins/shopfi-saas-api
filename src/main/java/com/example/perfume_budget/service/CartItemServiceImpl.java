@@ -95,7 +95,8 @@ public class CartItemServiceImpl implements CartItemService {
             throw new BadRequestException(INVALID_QUANTITY);
         }
 
-        CartItem cartItem = cartItemRepository.findByIdAndCartId(cartItemId,cartUtil.getCurrentUserCart().getId())
+        // CAT-04: cart row lock first, then the line (the lock order of every cart writer; see CartRemoval)
+        CartItem cartItem = cartItemRepository.findByIdAndCartId(cartItemId, cartUtil.getCurrentUserCartForUpdate().getId())
                 .orElseThrow(() -> new ResourceNotFoundException(CART_ITEM_NOT_FOUND));
 
         if (!Boolean.TRUE.equals(cartItem.getProduct().getIsActive())) {
@@ -113,9 +114,11 @@ public class CartItemServiceImpl implements CartItemService {
         return CartItemMapper.toCartItemResponse(cartItem, effectivePriceService.compute(cartItem.getProduct()));
     }
 
+    @Transactional
     @Override
     public void removeCartItem(Long cartItemId) {
-        int deleted = cartItemRepository.deleteByIdAndCart(cartItemId, cartUtil.getCurrentUserCart());
+        // CAT-04: cart row lock first, then the line (the lock order of every cart writer; see CartRemoval)
+        int deleted = cartItemRepository.deleteByIdAndCart(cartItemId, cartUtil.getCurrentUserCartForUpdate());
         if(deleted==0) throw new ResourceNotFoundException(CART_ITEM_NOT_FOUND);
     }
 }

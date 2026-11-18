@@ -157,7 +157,7 @@ class CartItemServiceImplTest {
     @Test
     void updateCartItem_Success() {
         CartItemUpdateRequest request = new CartItemUpdateRequest(5);
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByIdAndCartId(1L, 1L)).thenReturn(Optional.of(testCartItem));
         when(cartItemRepository.save(any(CartItem.class))).thenReturn(testCartItem);
 
@@ -165,6 +165,8 @@ class CartItemServiceImplTest {
 
         assertNotNull(result);
         assertEquals(5, testCartItem.getQuantity());
+        // CAT-04: the cart row lock is taken before the line is read or written
+        verify(cartUtil, never()).getCurrentUserCart();
     }
 
     @Test
@@ -176,7 +178,7 @@ class CartItemServiceImplTest {
     @Test
     void updateCartItem_Failure_NotFound() {
         CartItemUpdateRequest request = new CartItemUpdateRequest(5);
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByIdAndCartId(1L, 1L)).thenReturn(Optional.empty());
 
         assertThrows(ResourceNotFoundException.class, () -> cartItemService.updateCartItem(1L, request));
@@ -185,7 +187,7 @@ class CartItemServiceImplTest {
     @Test
     void updateCartItem_Failure_StockExceeded() {
         CartItemUpdateRequest request = new CartItemUpdateRequest(15);
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByIdAndCartId(1L, 1L)).thenReturn(Optional.of(testCartItem));
 
         assertThrows(BadRequestException.class, () -> cartItemService.updateCartItem(1L, request));
@@ -195,7 +197,7 @@ class CartItemServiceImplTest {
     void updateCartItem_Failure_ProductNotEnlisted() {
         testProduct.setIsEnlisted(false);
         CartItemUpdateRequest request = new CartItemUpdateRequest(5);
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.findByIdAndCartId(1L, 1L)).thenReturn(Optional.of(testCartItem));
 
         assertThrows(BadRequestException.class, () -> cartItemService.updateCartItem(1L, request));
@@ -203,17 +205,19 @@ class CartItemServiceImplTest {
 
     @Test
     void removeCartItem_Success() {
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.deleteByIdAndCart(1L, testCart)).thenReturn(1);
 
         cartItemService.removeCartItem(1L);
 
         verify(cartItemRepository).deleteByIdAndCart(1L, testCart);
+        // CAT-04: the cart row lock is taken before the line is deleted
+        verify(cartUtil, never()).getCurrentUserCart();
     }
 
     @Test
     void removeCartItem_Failure_NotFound() {
-        when(cartUtil.getCurrentUserCart()).thenReturn(testCart);
+        when(cartUtil.getCurrentUserCartForUpdate()).thenReturn(testCart);
         when(cartItemRepository.deleteByIdAndCart(1L, testCart)).thenReturn(0);
 
         assertThrows(ResourceNotFoundException.class, () -> cartItemService.removeCartItem(1L));

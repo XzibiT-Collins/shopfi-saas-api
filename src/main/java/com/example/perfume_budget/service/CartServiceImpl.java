@@ -10,7 +10,6 @@ import com.example.perfume_budget.mapper.CartMapper;
 import com.example.perfume_budget.model.Cart;
 import com.example.perfume_budget.model.Product;
 import com.example.perfume_budget.model.User;
-import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.repository.ProductRepository;
 import com.example.perfume_budget.service.interfaces.CartItemService;
 import com.example.perfume_budget.service.interfaces.CartService;
@@ -29,7 +28,7 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class CartServiceImpl implements CartService {
-    private final CartRepository cartRepository;
+    private final CartRemoval cartRemoval;
     private final AuthUserUtil authUserUtil;
     private final CartItemService cartItemService;
     private final CartUtil cartUtil;
@@ -48,8 +47,8 @@ public class CartServiceImpl implements CartService {
     @Override
     public void clearCart() {
         User currentUser = authUserUtil.getCurrentUser();
-        // Delete old cart
-        cartRepository.deleteAllByUser(currentUser);
+        // CAT-04: cart row lock first, then every line, then the row (CartRemoval): the lock order of every cart writer
+        cartRemoval.deleteCartOfUser(currentUser.getId());
         log.info("User: {} cleared their cart", currentUser.getFullName());
     }
 

@@ -6,7 +6,6 @@ import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.OrderItem;
 import com.example.perfume_budget.model.Payment;
-import com.example.perfume_budget.repository.CartRepository;
 import com.example.perfume_budget.repository.OrderRepository;
 import com.example.perfume_budget.repository.PaymentRepository;
 import com.example.perfume_budget.repository.ProductRepository;
@@ -34,7 +33,7 @@ class PaymentSettlementServiceTest {
     @Mock PaymentRepository paymentRepository;
     @Mock OrderRepository orderRepository;
     @Mock ProductRepository productRepository;
-    @Mock CartRepository cartRepository;
+    @Mock CartRemoval cartRemoval;
     @Mock OrderService orderService;
     @Mock OrderStockReservationService reservationService;
     @Mock BookkeepingService bookkeepingService;
@@ -66,7 +65,7 @@ class PaymentSettlementServiceTest {
         assertEquals(PaymentStatus.COMPLETED, order.getStatus());
         assertEquals(PaymentStatus.COMPLETED, payment.getStatus());
         assertEquals(Outcome.UNCHANGED, service.applySuccess("REF123456", "card", new BigDecimal("1250"), "GHS", "{}"));
-        verify(cartRepository, times(1)).deleteAllByUserEmail("c@example.com");
+        verify(cartRemoval, times(1)).deleteCartOfUserEmail("c@example.com");
         verify(eventPublisher, times(1)).publishEvent(payment);
         verify(orderService, times(1)).finalizeReservedStock(order);
         verify(bookkeepingService, times(1)).recordSale(order, payment);
@@ -154,7 +153,7 @@ class PaymentSettlementServiceTest {
         assertEquals(OrderProcessingStatus.CANCELLED, order.getDeliveryStatus());
         verifyNoInteractions(reservationService, orderService);
         verify(inventoryManagementService).releaseOrderInventory("ORD-1");
-        verify(cartRepository, never()).deleteAllByUserEmail(any());
+        verify(cartRemoval, never()).deleteCartOfUserEmail(any());
         // ORD-02b: booked as cash in + refund owed after the payment is COMPLETED and the stock released
         org.mockito.InOrder io = inOrder(inventoryManagementService, paymentRepository, bookkeepingService, couponRedemptionService);
         io.verify(inventoryManagementService).releaseOrderInventory("ORD-1");
@@ -285,7 +284,7 @@ class PaymentSettlementServiceTest {
         assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), null, "{}"));
         assertEquals(Outcome.MISMATCH, service.applySuccess("REF123456", "card", new BigDecimal("1250"), " ", "{}"));
         assertEquals(PaymentStatus.INITIATED, order.getStatus());
-        verifyNoInteractions(orderService, bookkeepingService, cartRepository, eventPublisher);
+        verifyNoInteractions(orderService, bookkeepingService, cartRemoval, eventPublisher);
     }
 
     @Test
