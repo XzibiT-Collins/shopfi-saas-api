@@ -142,6 +142,29 @@ class JndiDnsTxtResolverTest {
     }
 
     @Test
+    void urlShapedOrMalformedNamesAreRefusedBeforeJndiSeesThem() throws Exception {
+        String dns = start(q -> answer(q, 0, List.of(List.of("x"))));
+        JndiDnsTxtResolver r = new JndiDnsTxtResolver(List.of(dns), 300, 1);
+        for (String bad : java.util.Arrays.asList(null, "", "ldap://127.0.0.1:1389/x", "dns://" + dns + "/example.com",
+                "rmi://127.0.0.1/x", "a/b.example.com", "a b.example.com", "user@example.com", "example.com:53",
+                "a..b.com", ".a.com", "a.com.", "-a.com", "a-.com", "a".repeat(64) + ".com", "x\u0000.com", "b\u00fccher.de")) {
+            assertThatThrownBy(() -> r.lookupTxt(bad)).as(String.valueOf(bad)).isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(queries.get()).as("nothing was sent").isZero();
+        assertThat(JndiDnsTxtResolver.isPlainName("_shopfi-verification.shop.acme-brand.com")).isTrue();
+        assertThat(JndiDnsTxtResolver.isPlainName("xn--bcher-kva.de")).isTrue();
+        assertThat(r.lookupTxt("_shopfi-verification.shop.acme-brand.com")).containsExactly("x");
+    }
+
+    @Test
+    void zeroRetriesStillSendsOneQuery_neverAnAutomaticFailure() throws Exception {
+        String dns = start(q -> answer(q, 0, List.of(List.of("shopfi-verification=one"))));
+        assertThat(new JndiDnsTxtResolver(List.of(dns), 500, 0).lookupTxt("_x.shop.acme-brand.com"))
+                .containsExactly("shopfi-verification=one");
+        assertThat(queries.get()).isEqualTo(1);
+    }
+
+    @Test
     void unquote_handlesJndiRenderings() {
         assertThat(JndiDnsTxtResolver.unquote("plain")).isEqualTo("plain");
         assertThat(JndiDnsTxtResolver.unquote("\"a b\" \"c\"")).isEqualTo("a bc");

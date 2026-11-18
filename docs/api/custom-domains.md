@@ -30,16 +30,19 @@ The value is trimmed, lower-cased, ONE trailing dot is removed and an internatio
 | `DOMAIN_REQUIRED` | missing, null or blank `domain` |
 | `DOMAIN_IP_LITERAL` | IPv4 in any notation a resolver accepts (`10.0.0.1`, `3232235786`, `0x7f000001`, `0177.0.0.1`, `127.1`, full-width digits) and IPv6 (`::1`, `[::1]`, `fe80::1%eth0`) |
 | `DOMAIN_INVALID` | not a syntactically valid FQDN: scheme, path, port, userinfo, wildcard, underscore or any character outside `[a-z0-9.-]` after IDN conversion; empty label, label over 63 or name over 253 characters; label starting/ending with `-`; `--` in positions 3-4 of a non-IDN label; `xn--` label that is not valid punycode; a single label; a top-level label not starting with a letter |
-| `DOMAIN_PLATFORM` | equal to, under or a parent of `tenant.base-domain`, any `tenant.platform-domains` host, or any host of `cors.allowed-origins` / `platform.cors.allowed-origins`. Example: tenant `ydom` claiming `acme.shopfi.test` (the DOMAIN-01 collision) |
+| `DOMAIN_PLATFORM` | equal to, under or a parent of `tenant.base-domain`, any `tenant.platform-domains` host, or any host of `cors.allowed-origins` / `platform.cors.allowed-origins`, or the CNAME target `tenant.custom-domain.cname-target`. Example: tenant `ydom` claiming `acme.shopfi.test` (the DOMAIN-01 collision) |
 | `DOMAIN_CONFUSABLE` | visually confusable with one of those platform names (NFKD with marks removed, Cyrillic/Greek/Armenian look-alikes and `0`/`1`/`rn`/`vv` folded to Latin), e.g. `xn--shpfi-kye.app` (Cyrillic "о") or `sh0pfi.app` when the base domain is `shopfi.app` |
 | `DOMAIN_RESERVED` | `localhost` and reserved/internal names and everything under them: `localhost`, `localdomain`, `local`, `internal`, `intranet`, `lan`, `home`, `corp`, `private`, `test`, `example`, `invalid`, `onion`, `arpa`, `alt`, `home.arpa`, `example.com`, `example.net`, `example.org`, plus `tenant.custom-domain.reserved-suffixes` |
 
 Uniqueness: one domain belongs to at most one tenant, compared case-insensitively. Enforced by the service and by the
 master database (`uq_tenants_custom_domain_lower` on `lower(custom_domain)`, plus check constraints for the stored
 shape and for a consistent domain/status/token triple). Two tenants claiming the same domain at the same time: exactly
-one wins, the other gets `409 DOMAIN_TAKEN`. A claim that is still `PENDING`/`FAILED` after
-`tenant.custom-domain.unverified-claim-ttl-hours` (72) may be taken by another tenant's claim (anti-squatting; the old
-claim is cleared and audited as `RELEASE` by `SYSTEM`). A `VERIFIED` domain is never taken over.
+one wins, the other gets `409 DOMAIN_TAKEN`. A `PENDING`/`FAILED` claim may be taken by another tenant's claim once
+BOTH its claim time and the last time it was `VERIFIED` (`custom_domain_last_verified_at`, kept when a re-verification
+fails) are older than `tenant.custom-domain.unverified-claim-ttl-hours` (72) (anti-squatting; the old claim is cleared
+and audited as `RELEASE` by `SYSTEM`). A `VERIFIED` domain is never taken over, and a domain that was `VERIFIED` until a
+failed re-verification keeps that protection for the full 72 h, so the owner can restore the record and verify again.
+Refreshing a claim with verify calls does not extend it (only a successful verification does).
 
 ## Statuses
 
@@ -60,10 +63,15 @@ Publish `TXT <txtRecordName> "<txtRecordValue>"`, i.e. `_shopfi-verification.<do
 `shopfi-verification=<token>` (both returned by every endpoint; the token is random per claim and not a secret).
 The record must match exactly (other TXT records on the name are ignored; a multi-string record is joined).
 The lookup runs through `DnsTxtResolver` (`JndiDnsTxtResolver`: the JDK's built-in JNDI DNS client, no extra
-dependency) with `tenant.custom-domain.dns-timeout-millis` (2000) and `dns-retries` (1), against
+dependency) with `tenant.custom-domain.dns-timeout-millis` (2000) and `dns-retries` (1 query round; see Configuration), against
 `tenant.custom-domain.dns-servers` or the system resolver. NXDOMAIN or no matching record is a definitive `FAILED`;
 a timeout/SERVFAIL changes nothing and answers `503 DOMAIN_DNS_UNAVAILABLE`. An HTTP challenge is not implemented
-(optional in the ticket).
+(optional in the ticket). The resolver itself refuses anything that is not a plain dotted host name (no URL-shaped
+names reach JNDI).
+
+**Keep the TXT record published.** Every verify, including a re-verification by a platform admin, checks it again: if
+it is gone the domain becomes `FAILED` and stops being honoured at once. (A periodic automatic re-verification is a
+separate ticket, DOMAIN-03.)
 
 The CNAME (`cnameTarget`, from `TENANT_CUSTOM_DOMAIN_CNAME_TARGET`) routes traffic; it is shown for convenience and
 not checked by the backend.
@@ -194,10 +202,10 @@ limits are per instance too.
 | `tenant.custom-domain.txt-value-prefix` | `shopfi-verification=` | TXT value prefix |
 | `tenant.custom-domain.reserved-suffixes` (`TENANT_CUSTOM_DOMAIN_RESERVED_SUFFIXES`) | empty | extra names nobody may claim |
 | `tenant.custom-domain.dns-servers` (`TENANT_CUSTOM_DOMAIN_DNS_SERVERS`) | system resolver | `host[:port]` list |
-| `tenant.custom-domain.dns-timeout-millis` / `dns-retries` | 2000 / 1 | JNDI doubles the timeout per retry: worst case 6 s per server |
+| `tenant.custom-domain.dns-timeout-millis` / `dns-retries` | 2000 / 1 | `dns-retries` is the number of JNDI query rounds (clamped to 1..4); round i waits `timeout * 2^i` per server, so the worst case is `timeout * (2^rounds - 1) * servers`: 2 s per server with the defaults (measured 6.1 s for 3 silent servers) |
 | `tenant.custom-domain.verify-per-tenant-per-hour` / `verify-global-per-minute` | 10 / 60 | verification rate limits |
 | `tenant.custom-domain.changes-per-tenant-per-hour` | 20 | claim/remove rate limit (tenant admin) |
-| `tenant.custom-domain.unverified-claim-ttl-hours` | 72 | after this an unverified claim can be taken by another tenant |
+| `tenant.custom-domain.unverified-claim-ttl-hours` | 72 | an unverified claim can be taken by another tenant once its claim time and its last VERIFIED time are both older than this |
 
 ## Frontend follow-up (not in this ticket)
 

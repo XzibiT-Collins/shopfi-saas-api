@@ -8,7 +8,8 @@
 -- 3) An append-only audit trail of every domain change (tenant_domain_audit_log).
 --
 -- Existing values (only ever set by direct DB edits; no code path wrote custom_domain before DOMAIN-02) are normalised
--- (trimmed, lower-cased, one trailing dot removed). A value that is still not a plain ASCII host, or that collides with
+-- (trimmed, lower-cased, one trailing dot removed). A value that is still not a plain ASCII host (including one that
+-- still ends in a dot, e.g. 'shop.com..'), or that collides with
 -- an older tenant's value after normalisation, is cleared. Every surviving legacy value becomes PENDING with a fresh
 -- token: it stops being honoured until its owner proves control through the verify endpoint (fail safe).
 
@@ -20,6 +21,9 @@ ALTER TABLE tenants
     ADD COLUMN custom_domain_requested_at TIMESTAMP WITH TIME ZONE,
     ADD COLUMN custom_domain_checked_at   TIMESTAMP WITH TIME ZONE,
     ADD COLUMN custom_domain_verified_at  TIMESTAMP WITH TIME ZONE,
+    -- last time THIS claim was seen VERIFIED; kept when a re-verification fails (verified_at is cleared then), so a
+    -- recently verified domain is never treated as a stale unverified claim (anti-squatting release, D6)
+    ADD COLUMN custom_domain_last_verified_at TIMESTAMP WITH TIME ZONE,
     ADD COLUMN custom_domain_failure      VARCHAR(40);
 
 UPDATE tenants
@@ -29,7 +33,8 @@ WHERE custom_domain IS NOT NULL;
 UPDATE tenants
 SET custom_domain = NULL
 WHERE custom_domain IS NOT NULL
-  AND (custom_domain !~ '^[a-z0-9.-]{1,253}$' OR custom_domain LIKE '.%' OR custom_domain LIKE '%..%');
+  AND (custom_domain !~ '^[a-z0-9.-]{1,253}$' OR custom_domain LIKE '.%' OR custom_domain LIKE '%..%'
+       OR custom_domain LIKE '%.');
 
 UPDATE tenants t
 SET custom_domain = NULL

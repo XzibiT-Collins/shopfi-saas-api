@@ -86,6 +86,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "cors.tenant-cache.max-lookups-per-second=1000",
         "cors.tenant-cache.max-lookups-per-ip-per-second=1000",
         "tenant.custom-domain.verify-per-tenant-per-hour=3",
+        // low global DNS budget so the global limiter is observable (rework L7/R10); no test needs more than 5 checks
+        "tenant.custom-domain.verify-global-per-minute=5",
         "tenant.custom-domain.cname-target=stores.shopfi.app",
         "spring.datasource.hikari.maximum-pool-size=6",
         "spring.datasource.hikari.minimum-idle=0"
@@ -148,7 +150,7 @@ class CustomDomainIntegrationTest extends AbstractTenantWebTest {
     private void clearDomains() {
         jdbc.update("UPDATE master.tenants SET custom_domain = NULL, custom_domain_status = NULL, custom_domain_token = NULL, "
                 + "custom_domain_requested_at = NULL, custom_domain_checked_at = NULL, custom_domain_verified_at = NULL, "
-                + "custom_domain_failure = NULL WHERE slug IN ('acme', 'bravo')");
+                + "custom_domain_last_verified_at = NULL, custom_domain_failure = NULL WHERE slug IN ('acme', 'bravo')");
     }
 
     // ---- helpers ----------------------------------------------------------------------------------------------------
@@ -728,5 +730,239 @@ class CustomDomainIntegrationTest extends AbstractTenantWebTest {
         String acmeEmail2 = "dom02-reset-" + SEQ.incrementAndGet() + "@x.test";
         shopper(acme, acmeEmail2);
         assertThat(resetLink(acme, acmeEmail2)).isEqualTo("https://acme.shopfi.test");
+    }
+
+    // ---- rework round 1 ------------------------------------------------------------------------------------------
+
+    private static final CustomDomainService.Actor SERVICE_ACTOR =
+            new CustomDomainService.Actor(CustomDomainService.ActorType.TENANT_ADMIN, 1L, "rework@acme.test");
+
+    /** F1 (review probe p3): a domain VERIFIED until a moment ago is not a stale claim, however old the claim is. */
+    @Test
+    void f1_aLongVerifiedDomainThatJustFailedReverification_cannotBeTakenOver_andTheOwnerRecovers() throws Exception {
+        String domain = "shop.long-verified.com";
+        JsonNode v = claimAndVerify(acme, acmeAdmin, domain);
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '2000 hours', "
+                + "custom_domain_verified_at = now() - interval '1999 hours' WHERE slug = 'acme'");
+        dns.remove(v.get("txtRecordName").asText());
+        assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT custom_domain_last_verified_at IS NOT NULL FROM master.tenants WHERE slug = 'acme'",
+                Boolean.class)).as("last VERIFIED time survives the failure").isTrue();
+
+        MockHttpServletResponse squat = claim(bravo, bravoAdmin, domain);
+        assertThat(squat.getStatus()).as(squat.getContentAsString()).isEqualTo(409);
+        assertThat(code(squat)).isEqualTo("DOMAIN_TAKEN");
+        assertThat(row("bravo").get("custom_domain")).isNull();
+
+        dns.put(v.get("txtRecordName").asText(), v.get("txtRecordValue").asText());
+        assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("VERIFIED");
+        assertThat(row("acme").get("custom_domain")).isEqualTo(domain);
+    }
+
+    /** F1 boundary: once the last VERIFIED time is past the TTL as well, the FAILED claim is releasable again. */
+    @Test
+    void f1_aFailedClaimWhoseLastVerificationIsOlderThanTheTtl_isReleasable() throws Exception {
+        String domain = "shop.lapsed-brand.com";
+        JsonNode v = claimAndVerify(acme, acmeAdmin, domain);
+        dns.remove(v.get("txtRecordName").asText());
+        assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("FAILED");
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '200 hours', "
+                + "custom_domain_last_verified_at = now() - interval '71 hours' WHERE slug = 'acme'");
+        assertThat(claim(bravo, bravoAdmin, domain).getStatus()).as("verified 71 h ago: still protected").isEqualTo(409);
+        jdbc.update("UPDATE master.tenants SET custom_domain_last_verified_at = now() - interval '73 hours' WHERE slug = 'acme'");
+        MockHttpServletResponse taken = claim(bravo, bravoAdmin, domain);
+        assertThat(taken.getStatus()).as(taken.getContentAsString()).isEqualTo(200);
+        assertThat(row("acme").get("custom_domain")).isNull();
+        assertThat(jdbc.queryForObject("SELECT custom_domain_last_verified_at IS NULL FROM master.tenants WHERE slug = 'acme'",
+                Boolean.class)).isTrue();
+    }
+
+    /** F1: replacing a VERIFIED domain starts a new claim; the old domain's verification does not protect the new one. */
+    @Test
+    void f1_aReplacementClaimDoesNotInheritTheOldDomainsVerification() throws Exception {
+        claimAndVerify(acme, acmeAdmin, "shop.first-brand.com");
+        assertThat(claim(acme, acmeAdmin, "shop.second-brand.com").getStatus()).isEqualTo(200);
+        assertThat(jdbc.queryForObject("SELECT custom_domain_last_verified_at IS NULL FROM master.tenants WHERE slug = 'acme'",
+                Boolean.class)).isTrue();
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '100 hours' WHERE slug = 'acme'");
+        assertThat(claim(bravo, bravoAdmin, "shop.second-brand.com").getStatus()).isEqualTo(200);
+    }
+
+    /** F1: a squatter cannot keep its own unverified claim fresh with (failing) verify calls. */
+    @Test
+    void f1_failingVerifyCallsDoNotRefreshAnUnverifiedClaim() throws Exception {
+        String domain = "shop.refresh-squat.com";
+        assertThat(claim(bravo, bravoAdmin, domain).getStatus()).isEqualTo(200);
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '100 hours' WHERE slug = 'bravo'");
+        assertThat(data(verifyNow(bravo, bravoAdmin)).get("status").asText()).isEqualTo("FAILED");
+        assertThat(claim(acme, acmeAdmin, domain).getStatus()).isEqualTo(200);
+        assertThat(row("bravo").get("custom_domain")).isNull();
+    }
+
+    /** L2 (review probe p8): the platform's own CNAME target is a platform name. */
+    @Test
+    void l2_theConfiguredCnameTargetAndItsParentAreNotClaimable() throws Exception {
+        for (String d : List.of("stores.shopfi.app", "STORES.shopfi.app.", "x.stores.shopfi.app", "shopfi.app")) {
+            MockHttpServletResponse r = claim(acme, acmeAdmin, d);
+            assertThat(r.getStatus()).as(d).isEqualTo(400);
+            assertThat(code(r)).as(d).isEqualTo("DOMAIN_PLATFORM");
+        }
+    }
+
+    /** L7 / R01 (review probe p1): a re-claim with a new token while DNS is in flight is not verified by the old proof. */
+    @Test
+    void toctou_claimReplacedDuringTheDnsLookup_theOldProofNeverVerifiesTheNewClaim() throws Exception {
+        String domain = "shop.toctou-one.com";
+        JsonNode first = data(claim(acme, acmeAdmin, domain));
+        String oldValue = first.get("txtRecordValue").asText();
+        dns.put(first.get("txtRecordName").asText(), oldValue);
+        String[] newValue = new String[1];
+        dns.duringNextLookup(fqdn -> {
+            service.remove("acme", SERVICE_ACTOR);
+            newValue[0] = service.request("acme", domain, SERVICE_ACTOR).txtRecordValue();
+        });
+        MockHttpServletResponse v = verifyNow(acme, acmeAdmin);
+        assertThat(v.getStatus()).isEqualTo(200);
+        assertThat(newValue[0]).isNotEqualTo(oldValue);
+        assertThat(data(v).get("status").asText()).isEqualTo("PENDING");
+        assertThat(row("acme").get("custom_domain_status")).isEqualTo("PENDING");
+        assertThat(preflight("https://" + domain)).isNull();
+        assertThat(resolvedSlug("https://" + domain)).isEqualTo("UNKNOWN");
+    }
+
+    /** L7 / R02 (review probe p2): a stale claim released to another tenant during the lookup verifies nobody. */
+    @Test
+    void toctou_staleClaimReleasedToAnotherTenantDuringTheLookup_noTenantEndsUpVerified() throws Exception {
+        String domain = "shop.toctou-two.com";
+        JsonNode b = data(claim(bravo, bravoAdmin, domain));
+        dns.put(b.get("txtRecordName").asText(), b.get("txtRecordValue").asText());
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '100 hours' WHERE slug = 'bravo'");
+        dns.duringNextLookup(fqdn -> service.request("acme", domain, SERVICE_ACTOR));
+        MockHttpServletResponse r = verifyNow(bravo, bravoAdmin);
+        assertThat(r.getStatus()).isEqualTo(200);
+        assertThat(data(r).get("domain").isNull()).isTrue();
+        assertThat(row("bravo").get("custom_domain")).isNull();
+        assertThat(row("acme").get("custom_domain_status")).isEqualTo("PENDING");
+        assertThat(resolvedSlug("https://" + domain)).isEqualTo("UNKNOWN");
+    }
+
+    /** L7 / R05 (review probe p10): base-domain matching needs a dot boundary; platform domains never resolve. */
+    @Test
+    void hostRule_dotBoundaryAndPlatformDomains_evenForDirectDbRows() throws Exception {
+        jdbc.update("UPDATE master.tenants SET custom_domain = 'evilshopfi.test', custom_domain_status = 'VERIFIED', "
+                + "custom_domain_token = 'x' WHERE slug = 'acme'");
+        jdbc.update("UPDATE master.tenants SET custom_domain = 'api.shopfi.example', custom_domain_status = 'VERIFIED', "
+                + "custom_domain_token = 'y' WHERE slug = 'bravo'");
+        originPolicy.invalidateAll();
+        assertThat(resolvedSlug("https://evilshopfi.test")).as("not under shopfi.test: a separate domain").isEqualTo("acme");
+        assertThat(preflight("https://evilshopfi.test")).isEqualTo("https://evilshopfi.test");
+        assertThat(resolvedSlug("https://api.shopfi.example")).isEqualTo("UNKNOWN");
+        assertThat(preflight("https://api.shopfi.example")).isNull();
+    }
+
+    /** L7 / R11 (review probe p11): claims and tenant-admin removals share one change budget; platform removal does not. */
+    @Test
+    void claimsAndTenantRemovalsShareTheChangeBudget_platformRemovalIsNotLimited() throws Exception {
+        int first429 = -1;
+        for (int i = 1; i <= 25 && first429 < 0; i++) {
+            MockHttpServletResponse r = (i % 2 == 1) ? claim(acme, acmeAdmin, "shop.churn-brand.com") : removeNow(acme, acmeAdmin);
+            if (r.getStatus() == 429) {
+                first429 = i;
+                assertThat(code(r)).isEqualTo("DOMAIN_CHANGE_RATE_LIMITED");
+                assertThat(r.getHeader("Retry-After")).isNotBlank();
+            }
+        }
+        // 10 claims + 10 removals = 20 changes; without the removals counting, the 21st call would still pass
+        assertThat(first429).as("20 changes per hour shared by claims and removals").isEqualTo(21);
+        assertThat(row("acme").get("custom_domain")).as("the refused claim changed nothing").isNull();
+        jdbc.update("UPDATE master.tenants SET custom_domain = 'shop.churn-brand.com', custom_domain_status = 'PENDING', "
+                + "custom_domain_token = 't', custom_domain_requested_at = now() WHERE slug = 'acme'");
+        assertThat(removeNow(acme, acmeAdmin).getStatus()).as("tenant removal is limited too").isEqualTo(429);
+        assertThat(row("acme").get("custom_domain")).isEqualTo("shop.churn-brand.com");
+        service.remove("acme", new CustomDomainService.Actor(CustomDomainService.ActorType.PLATFORM_ADMIN, 1L, "root@x"));
+        assertThat(row("acme").get("custom_domain")).as("platform removal is not limited").isNull();
+    }
+
+    /** L7 / R10: the global DNS budget (5/min in this context) applies across tenants and actors. */
+    @Test
+    void globalDnsBudgetIsSharedAcrossTenants() throws Exception {
+        claim(acme, acmeAdmin, "shop.global-one.com");
+        claim(bravo, bravoAdmin, "shop.global-two.com");
+        Cookie platform = platformLogin();
+        for (int i = 0; i < 3; i++) {
+            assertThat(verifyNow(acme, acmeAdmin).getStatus()).isEqualTo(200);
+        }
+        assertThat(verifyNow(bravo, bravoAdmin).getStatus()).isEqualTo(200);
+        assertThat(call(post("/api/v1/platform/tenants/bravo/custom-domain/verify").cookie(platform)).getStatus()).isEqualTo(200);
+        MockHttpServletResponse limited = verifyNow(bravo, bravoAdmin); // bravo's own budget (3/h) still has room
+        assertThat(limited.getStatus()).isEqualTo(429);
+        assertThat(code(limited)).isEqualTo("DOMAIN_VERIFY_RATE_LIMITED");
+        assertThat(Long.parseLong(limited.getHeader("Retry-After"))).isPositive();
+        assertThat(dns.lookups()).isEqualTo(5);
+    }
+
+    // ---- L1 + review probes p9a/p9b: master V8 on legacy data (run inside a rolled-back transaction) -------------
+
+    private String runV8(String schema, List<String> legacyValues) {
+        String v8;
+        try {
+            v8 = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/resources/db/migrations/master/V8__custom_domain_verification.sql"));
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException(e);
+        }
+        return jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<String>) c -> {
+            boolean auto = c.getAutoCommit();
+            c.setAutoCommit(false);
+            try (Statement s = c.createStatement()) {
+                s.execute("SET LOCAL lock_timeout = '5s'");
+                s.execute("CREATE SCHEMA " + schema);
+                s.execute("SET LOCAL search_path TO " + schema);
+                s.execute("CREATE TABLE tenants (id BIGINT PRIMARY KEY, slug VARCHAR(40) NOT NULL, custom_domain VARCHAR(255), "
+                        + "updated_at TIMESTAMP, CONSTRAINT uq_tenants_custom_domain UNIQUE (custom_domain))");
+                long id = 1;
+                for (String v : legacyValues) {
+                    try (PreparedStatement ps = c.prepareStatement("INSERT INTO tenants (id, slug, custom_domain) VALUES (?, ?, ?)")) {
+                        ps.setLong(1, id);
+                        ps.setString(2, "t" + id);
+                        ps.setString(3, v);
+                        ps.executeUpdate();
+                    }
+                    id++;
+                }
+                try {
+                    s.execute(v8);
+                } catch (java.sql.SQLException e) {
+                    return "MIGRATION_FAILED: " + e.getMessage().lines().findFirst().orElse("");
+                }
+                StringBuilder out = new StringBuilder();
+                try (java.sql.ResultSet rs = s.executeQuery("SELECT id, custom_domain, custom_domain_status, "
+                        + "(custom_domain_token IS NOT NULL) FROM tenants ORDER BY id")) {
+                    while (rs.next()) {
+                        out.append(rs.getLong(1)).append('=').append(rs.getString(2)).append('/').append(rs.getString(3))
+                                .append('/').append(rs.getBoolean(4)).append(' ');
+                    }
+                }
+                return out.toString().strip();
+            } finally {
+                c.rollback(); // nothing persists (schema, table, function, triggers)
+                c.setAutoCommit(auto);
+            }
+        });
+    }
+
+    @Test
+    void v8_onLegacyData_normalisesClearsInvalidAndCaseClashes_andMarksTheRestPending() {
+        String out = runV8("dom02_v8_a", java.util.Arrays.asList("Shop.Brand.COM", "shop.brand.com ", " Other.com. ",
+                "acme.shopfi.test", "bücher.de", "\tTab.com", "a", null, "SHOP.BRAND.COM.", ".lead.com", "two..dots.com"));
+        assertThat(out).isEqualTo("1=shop.brand.com/PENDING/true 2=null/null/false 3=other.com/PENDING/true "
+                + "4=acme.shopfi.test/PENDING/true 5=null/null/false 6=null/null/false 7=a/PENDING/true 8=null/null/false "
+                + "9=null/null/false 10=null/null/false 11=null/null/false");
+    }
+
+    @Test
+    void v8_legacyValuesEndingInSeveralDots_areClearedAndDoNotBreakTheMigration() {
+        String out = runV8("dom02_v8_b", List.of("ok-shop.com", "broken-shop.com..", "worse-shop.com...", "fine.com."));
+        assertThat(out).isEqualTo("1=ok-shop.com/PENDING/true 2=null/null/false 3=null/null/false 4=fine.com/PENDING/true");
     }
 }

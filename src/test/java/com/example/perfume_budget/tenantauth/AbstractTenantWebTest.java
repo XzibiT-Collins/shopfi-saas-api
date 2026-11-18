@@ -110,7 +110,7 @@ public abstract class AbstractTenantWebTest extends AbstractPostgresIntegrationT
     void resetCustomDomains() {
         jdbc.update("UPDATE master.tenants SET custom_domain = NULL, custom_domain_status = NULL, custom_domain_token = NULL, "
                 + "custom_domain_requested_at = NULL, custom_domain_checked_at = NULL, custom_domain_verified_at = NULL, "
-                + "custom_domain_failure = NULL, webhook_token = NULL WHERE slug IN ('acme','bravo')");
+                + "custom_domain_last_verified_at = NULL, custom_domain_failure = NULL, webhook_token = NULL WHERE slug IN ('acme','bravo')");
         // leave the shared acme/bravo fixtures pristine for other test classes (e.g. PostgresBootTest)
         for (String schema : new String[]{"tenant_acme", "tenant_bravo"}) {
             resetOrders(schema);

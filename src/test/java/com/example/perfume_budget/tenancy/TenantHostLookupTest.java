@@ -65,6 +65,15 @@ class TenantHostLookupTest {
     }
 
     @Test
+    void baseDomainMatchNeedsADotBoundary_aSiblingNameIsAnOrdinaryCustomDomain() {
+        Tenant evil = tenant("evil", "evilshopfi.test", CustomDomainStatus.VERIFIED);
+        when(registry.findByVerifiedCustomDomain("evilshopfi.test")).thenReturn(Optional.of(evil));
+        assertThat(lookup.findByHost("evilshopfi.test")).contains(evil);
+        assertThat(lookup.findByHost("xshopfi.test")).isEmpty();
+        verify(registry, never()).findBySlug(anyString());
+    }
+
+    @Test
     void platformDomainsAndBlankHostsResolveNothing() {
         assertThat(lookup.findByHost("api.shopfi.example")).isEmpty();
         assertThat(lookup.findByHost(null)).isEmpty();

@@ -17,11 +17,22 @@ import java.util.stream.Collectors;
 
 /**
  * Production TXT lookup through the JDK's built-in JNDI DNS provider ({@code jdk.naming.dns}): no new dependency.
- * Bounded by {@code tenant.custom-domain.dns-timeout-millis} and {@code dns-retries} per server (JNDI doubles the
- * timeout on each retry, so the worst case per server is {@code timeout * (2^(retries+1) - 1)}).
+ *
+ * <p>Time bound: JNDI's {@code com.sun.jndi.dns.timeout.retries} is the number of query ROUNDS (not extra retries);
+ * round {@code i} (0-based) waits {@code timeout * 2^i} on each configured server in turn. So the worst case is
+ * {@code timeout * (2^rounds - 1) * servers}; with the defaults (2000 ms, 1 round) that is 2 s per server
+ * (measured: 6.1 s for 3 silent servers). {@code dns-retries} is clamped to 1..4 (0 would send no query at all).
+ *
+ * <p>Only plain host names are looked up: {@link InitialDirContext} would treat a URL-shaped name ({@code ldap://..},
+ * {@code dns://..}) as a URL and contact that server, so anything outside {@code [A-Za-z0-9._-]} labels is refused
+ * before JNDI sees it (defence in depth: the service already passes validated names only).
  */
 @Component
 public class JndiDnsTxtResolver implements DnsTxtResolver {
+
+    /** LDH labels (plus '_' for labels such as {@code _shopfi-verification}), 1-63 chars, dot separated, max 253. */
+    private static final java.util.regex.Pattern PLAIN_NAME = java.util.regex.Pattern.compile(
+            "^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(?:\\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*$");
 
     private final List<String> servers;
     private final int timeoutMillis;
@@ -35,11 +46,14 @@ public class JndiDnsTxtResolver implements DnsTxtResolver {
     JndiDnsTxtResolver(List<String> servers, int timeoutMillis, int retries) {
         this.servers = servers == null ? List.of() : servers.stream().map(String::strip).filter(s -> !s.isEmpty()).toList();
         this.timeoutMillis = Math.max(100, timeoutMillis);
-        this.retries = Math.max(0, Math.min(retries, 4));
+        this.retries = Math.max(1, Math.min(retries, 4));
     }
 
     @Override
     public List<String> lookupTxt(String fqdn) throws DnsLookupException {
+        if (!isPlainName(fqdn)) {
+            throw new IllegalArgumentException("Refusing a DNS name that is not a plain host name");
+        }
         Hashtable<String, String> env = new Hashtable<>();
         env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.dns.DnsContextFactory");
         env.put(Context.PROVIDER_URL, servers.isEmpty() ? "dns:"
@@ -75,6 +89,11 @@ public class JndiDnsTxtResolver implements DnsTxtResolver {
                 }
             }
         }
+    }
+
+    /** True only for a plain dotted host name (no scheme, slash, colon, '@', blank, empty label or trailing dot). */
+    static boolean isPlainName(String name) {
+        return name != null && PLAIN_NAME.matcher(name).matches();
     }
 
     /**

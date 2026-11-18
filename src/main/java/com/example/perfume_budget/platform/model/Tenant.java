@@ -84,6 +84,13 @@ public class Tenant {
     @Column(name = "custom_domain_verified_at")
     private Instant customDomainVerifiedAt;
 
+    /**
+     * Last time this claim was VERIFIED. Unlike {@link #customDomainVerifiedAt} it survives a failed re-verification,
+     * so the anti-squatting release ({@code unverified-claim-ttl-hours}) counts from it (DOMAIN-02 rework F1).
+     */
+    @Column(name = "custom_domain_last_verified_at")
+    private Instant customDomainLastVerifiedAt;
+
     /** Machine-readable reason of the last failed check (e.g. {@code TXT_RECORD_NOT_FOUND}); null otherwise. */
     @Column(name = "custom_domain_failure", length = 40)
     private String customDomainFailure;
@@ -116,6 +123,7 @@ public class Tenant {
         customDomainRequestedAt = null;
         customDomainCheckedAt = null;
         customDomainVerifiedAt = null;
+        customDomainLastVerifiedAt = null;
         customDomainFailure = null;
     }
 }

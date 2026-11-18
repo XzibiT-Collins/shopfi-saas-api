@@ -17,10 +17,17 @@ public class FakeDnsTxtResolver implements DnsTxtResolver {
     private final Map<String, List<String>> records = new ConcurrentHashMap<>();
     private final Set<String> failing = ConcurrentHashMap.newKeySet();
     private final AtomicInteger lookups = new AtomicInteger();
+    /** Runs inside a lookup, before the answer is returned (simulates changes while DNS is in flight). */
+    private volatile java.util.function.Consumer<String> duringLookup;
 
     @Override
     public List<String> lookupTxt(String fqdn) throws DnsLookupException {
         lookups.incrementAndGet();
+        java.util.function.Consumer<String> hook = duringLookup;
+        if (hook != null) {
+            duringLookup = null; // once
+            hook.accept(fqdn);
+        }
         if (failing.contains(fqdn)) {
             throw new DnsLookupException("fake timeout", null);
         }
@@ -39,6 +46,11 @@ public class FakeDnsTxtResolver implements DnsTxtResolver {
         failing.add(fqdn);
     }
 
+    /** One-shot action run while the next lookup is in flight (before it answers). */
+    public void duringNextLookup(java.util.function.Consumer<String> action) {
+        duringLookup = action;
+    }
+
     public int lookups() {
         return lookups.get();
     }
@@ -47,5 +59,6 @@ public class FakeDnsTxtResolver implements DnsTxtResolver {
         records.clear();
         failing.clear();
         lookups.set(0);
+        duringLookup = null;
     }
 }

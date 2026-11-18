@@ -40,8 +40,9 @@ import java.util.regex.Pattern;
  *   <li><b>request</b> (tenant admin): validate + normalise ({@link CustomDomains}), claim it as PENDING with a fresh
  *       random token. Unique across tenants case-insensitively; the database index {@value #UNIQUE_INDEX} is the final
  *       judge, so two tenants racing for one domain get one winner and one clean {@code 409 DOMAIN_TAKEN}. Another
- *       tenant's PENDING/FAILED claim older than {@code unverified-claim-ttl-hours} is released first (anti-squatting,
- *       audited as RELEASE by SYSTEM); a VERIFIED domain is never taken over.</li>
+ *       tenant's PENDING/FAILED claim is released first when both its claim time and the last time it was VERIFIED are older
+ *       than {@code unverified-claim-ttl-hours} (anti-squatting, audited as RELEASE by SYSTEM); a VERIFIED domain is
+ *       never taken over, and one that just failed a re-verification keeps its protection for the full TTL.</li>
  *   <li><b>verify</b> (tenant admin or platform admin): DNS TXT lookup of {@code <txt-label>.<domain>} OUTSIDE any
  *       transaction (no row lock is held across network I/O), then the result is applied under the row lock only if the
  *       claim (domain + token) is still the one that was checked. Found: VERIFIED; definitively absent: FAILED (also a
@@ -108,6 +109,11 @@ public class CustomDomainService {
         List<String> staticHosts = new ArrayList<>();
         addHosts(staticHosts, corsProps.getAllowedOrigins());
         addHosts(staticHosts, platformCorsProps.getAllowedOrigins());
+        // rework L2: the platform's own CNAME target is a platform name too (never claimable by a tenant)
+        String cname = props.getCnameTarget() == null ? "" : props.getCnameTarget().strip();
+        if (!cname.isEmpty()) {
+            staticHosts.add(cname);
+        }
         this.policy = CustomDomains.Policy.of(tenantProps.getBaseDomain(), tenantProps.getPlatformDomains(), staticHosts,
                 props.getReservedSuffixes());
         this.masterTx = new TransactionTemplate(txManager);
@@ -192,6 +198,7 @@ public class CustomDomainService {
                 t.setCustomDomainRequestedAt(now);
                 t.setCustomDomainCheckedAt(null);
                 t.setCustomDomainVerifiedAt(null);
+                t.setCustomDomainLastVerifiedAt(null); // a new claim starts its own history
                 t.setCustomDomainFailure(null);
                 tenantRepository.saveAndFlush(t);
                 audit(actor, t.getId(), t.getSlug(), "REQUEST", domain, previousDomain, previousStatus,
@@ -242,8 +249,9 @@ public class CustomDomainService {
                 t.setCustomDomainFailure(outcome);
                 if (next == CustomDomainStatus.VERIFIED) {
                     t.setCustomDomainVerifiedAt(now);
+                    t.setCustomDomainLastVerifiedAt(now);
                 } else {
-                    t.setCustomDomainVerifiedAt(null);
+                    t.setCustomDomainVerifiedAt(null); // last_verified_at is kept: see releaseStaleClaim (F1)
                 }
                 tenantRepository.saveAndFlush(t);
                 audit(actor, t.getId(), t.getSlug(), "VERIFY", domain, null, previous, next.name(),
