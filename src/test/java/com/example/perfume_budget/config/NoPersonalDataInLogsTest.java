@@ -1,6 +1,9 @@
 package com.example.perfume_budget.config;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -47,6 +50,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code getResponseBodyAs(..)}, a variable named {@code body}, {@code responseBody}, {@code rawBody}, ... or a
  *       local assigned from one. A provider's error body can carry the customer's e-mail, authorization / access
  *       codes or card metadata. Reading ONE field of a parsed body ({@code response.getBody().message()}) is fine.</li>
+ *   <li><b>SEC-01e (F2):</b> a body decoded, printed or parsed whole is still the body ({@code new String(bytes, UTF_8)},
+ *       {@code Arrays.toString(bytes)}, {@code MAPPER.readTree(bytes)} / {@code readValue(..)}, and locals assigned from
+ *       them); so is a whole HTTP entity ({@code ResponseEntity} / {@code HttpEntity} / ... variables, or locals from
+ *       {@code exchange(..)} / {@code postForEntity(..)}), whose {@code toString()} prints its body.</li>
  * </ul>
  */
 class NoPersonalDataInLogsTest {
@@ -76,7 +83,28 @@ class NoPersonalDataInLogsTest {
     private static final Pattern BODY_VARIABLE = Pattern.compile("(?i)\\b\\w*body\\b");
     /** What may follow a body and still be the whole body ({@code .toString()}, {@code .strip()}, ...). */
     private static final Pattern STILL_THE_BODY = Pattern.compile(
-            "^\\s*\\.\\s*(?:toString|strip|trim|stripLeading|stripTrailing|toLowerCase|toUpperCase|substring|lines|getBytes)\\s*\\(");
+            "^\\s*\\.\\s*(?:toString|toPrettyString|strip|trim|stripLeading|stripTrailing|toLowerCase|toUpperCase|substring|lines|getBytes)\\s*\\(");
+    /**
+     * SEC-01e (F2): calls whose result is still the whole body when an argument is: decoding ({@code new String(bytes)}),
+     * printing ({@code Arrays.toString(bytes)}), parsing ({@code MAPPER.readTree(..)} / {@code readValue(..)}) and the
+     * pass-through wrappers. Such a call is collapsed into {@link #WRAPPED_BODY} before the body checks run, so one
+     * field of its result ({@code readTree(body).path("code")}) is still fine.
+     */
+    private static final Pattern BODY_WRAPPER = Pattern.compile(
+            "\\bnew\\s+String\\s*\\(|\\b(?:Arrays\\s*\\.\\s*(?:toString|deepToString|asList)|(?:\\w+\\s*\\.\\s*)?(?:readTree|readValue)"
+                    + "|String\\s*\\.\\s*(?:valueOf|format|join)|Objects\\s*\\.\\s*(?:toString|requireNonNull)"
+                    + "|Optional\\s*\\.\\s*(?:of|ofNullable))\\s*\\(");
+    /** The identifier a collapsed body wrapper becomes; counts as a body even after a qualifier ({@code this.x}). */
+    private static final String WRAPPED_BODY = "wrappedRawBody";
+    /**
+     * SEC-01e (F2): a whole HTTP entity, declared by type ({@code ResponseEntity<Foo> response}, {@code HttpEntity},
+     * {@code RequestEntity}, {@code ClientHttpResponse}, {@code HttpResponse<..>}) ...
+     */
+    private static final Pattern ENTITY_DECLARATION = Pattern.compile(
+            "\\b(?:ResponseEntity|HttpEntity|RequestEntity|ClientHttpResponse|HttpResponse)\\s*(?:<[^;=(){}]*?>)?\\s+(\\w+)\\s*[,)=;:]");
+    /** ... or assigned from a call that answers one ({@code var reply = rest.exchange(..)}). */
+    private static final Pattern ENTITY_CALL = Pattern.compile(
+            "\\.\\s*(?:exchange|postForEntity|getForEntity|toEntity)\\s*\\(");
     private static final Pattern ASSIGNMENT = Pattern.compile("\\b(\\w+)\\s*=(?!=)");
     private static final Pattern IDENTIFIER = Pattern.compile("\\b[A-Za-z_]\\w*\\b");
     /** Wrappers whose argument IS the value: {@code String.valueOf(email)} is the e-mail address. */
@@ -333,7 +361,7 @@ class NoPersonalDataInLogsTest {
      * {@code e.getResponseBodyAsString()}, {@code "x" + body}, {@code body.toString()} are the whole body).
      */
     static boolean rawBody(String fullExpression, Set<String> bodyLocals) {
-        String expression = topLevel(fullExpression); // readValue(body, X.class) is not the body
+        String expression = topLevel(collapseBodyWrappers(fullExpression, bodyLocals));
         Matcher call = RAW_BODY_CALL.matcher(expression);
         while (call.find()) {
             if (wholeValue(expression, closeOf(expression, call.end()))) {
@@ -342,7 +370,8 @@ class NoPersonalDataInLogsTest {
         }
         Matcher id = IDENTIFIER.matcher(expression);
         while (id.find()) {
-            boolean declaredOrMember = id.start() > 0 && expression.charAt(id.start() - 1) == '.';
+            boolean declaredOrMember = id.start() > 0 && expression.charAt(id.start() - 1) == '.'
+                    && !id.group().equals(WRAPPED_BODY);
             boolean variable = BODY_VARIABLE.matcher(id.group()).matches() || bodyLocals.contains(id.group());
             String rest = expression.substring(id.end());
             if (variable && !declaredOrMember && !rest.stripLeading().startsWith("(") && wholeValue(expression, id.end())) {
@@ -350,6 +379,29 @@ class NoPersonalDataInLogsTest {
             }
         }
         return false;
+    }
+
+    /**
+     * SEC-01e (F2): every {@link #BODY_WRAPPER} call with a whole body among its arguments replaced by
+     * {@link #WRAPPED_BODY}: {@code new String(e.getResponseBodyAsByteArray(), UTF_8)} becomes one body value.
+     */
+    static String collapseBodyWrappers(String expression, Set<String> bodyLocals) {
+        String out = expression;
+        int from = 0;
+        Matcher m = BODY_WRAPPER.matcher(out);
+        while (m.find(from)) {
+            int close = closeOf(out, m.end());
+            String inner = out.substring(m.end(), Math.max(m.end(), close - 1));
+            boolean wraps = splitArguments(inner).stream().anyMatch(arg -> rawBody(arg, bodyLocals));
+            if (wraps) {
+                out = out.substring(0, m.start()) + WRAPPED_BODY + out.substring(close);
+                m = BODY_WRAPPER.matcher(out);
+                from = 0;
+            } else {
+                from = m.end();
+            }
+        }
+        return out;
     }
 
     /** {@code expression} with the arguments of every call blanked, except pass-through wrappers' arguments. */
@@ -389,7 +441,7 @@ class NoPersonalDataInLogsTest {
 
     /** SEC-01d: locals assigned a raw body ({@code String raw = e.getResponseBodyAsString();}), transitively. */
     static Set<String> rawBodyLocals(String code) {
-        Set<String> locals = new HashSet<>();
+        Set<String> locals = new HashSet<>(entityNames(code));
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -403,6 +455,28 @@ class NoPersonalDataInLogsTest {
             }
         }
         return locals;
+    }
+
+    /**
+     * SEC-01e (F2): variables holding a whole HTTP entity, whose {@code toString()} prints the body: declared with an
+     * entity type, or assigned from {@code exchange(..)} / {@code postForEntity(..)} / {@code getForEntity(..)} /
+     * {@code toEntity(..)}.
+     */
+    static Set<String> entityNames(String code) {
+        Set<String> names = new HashSet<>();
+        Matcher d = ENTITY_DECLARATION.matcher(code);
+        while (d.find()) {
+            names.add(d.group(1));
+        }
+        Matcher a = ASSIGNMENT.matcher(code);
+        while (a.find()) {
+            String rhs = rightHandSide(code, a.end());
+            Matcher call = ENTITY_CALL.matcher(rhs);
+            if (call.find() && wholeValue(rhs, closeOf(rhs, call.end()))) {
+                names.add(a.group(1));
+            }
+        }
+        return names;
     }
 
     /** Every reason {@code call} may write personal data or exception text, or has a side effect; empty if none. */
@@ -597,6 +671,82 @@ class NoPersonalDataInLogsTest {
         assertThat(bodies).noneSatisfy(p -> assertThat(p).contains("orderNumber"));
         assertThat(bodies).noneSatisfy(p -> assertThat(p).contains("bodySize"));
         assertThat(bodies).noneSatisfy(p -> assertThat(p).contains("getStatusCode().value()"));
+    }
+
+    /** SEC-01e (F2): a statement placed inside a method with an HTTP exception {@code e}, an entity and plain arrays. */
+    private static List<String> bodyProblemsOf(String statements) {
+        String src = """
+                class X {
+                    void a(HttpClientErrorException e, ResponseEntity<Map<String, Object>> response, byte[] ids, char[] chars) {
+                """ + statements + """
+
+                    }
+                }
+                """;
+        return problemsIn(src).stream().filter(p -> p.contains("raw http body")).toList();
+    }
+
+    static Stream<Arguments> decodedParsedOrWholeEntityBodies() {
+        return Stream.of(
+                Arguments.of("new String(bytes)", "log.error(\"x {}\", new String(e.getResponseBodyAsByteArray()));"),
+                Arguments.of("new String(bytes, charset)",
+                        "log.error(\"x {}\", new String(e.getResponseBodyAsByteArray(), StandardCharsets.UTF_8));"),
+                Arguments.of("concat of new String", "log.warn(\"x \" + new String(e.getResponseBodyAsByteArray()).strip());"),
+                Arguments.of("local from new String",
+                        "String s = new String(e.getResponseBodyAsByteArray());\nlog.error(\"x {}\", s);"),
+                Arguments.of("new String of a body-bytes local",
+                        "byte[] raw = e.getResponseBodyAsByteArray();\nlog.error(\"x {}\", new String(raw, UTF_8));"),
+                Arguments.of("readTree(body bytes)", "log.error(\"x {}\", MAPPER.readTree(e.getResponseBodyAsByteArray()));"),
+                Arguments.of("readTree(..).toString()",
+                        "log.error(\"x {}\", objectMapper.readTree(e.getResponseBodyAsString()).toString());"),
+                Arguments.of("local tree via this.mapper",
+                        "JsonNode tree = this.mapper.readTree(e.getResponseBodyAsByteArray());\nlog.warn(\"x {}\", tree);"),
+                Arguments.of("readValue(body, Map)",
+                        "log.error(\"x {}\", MAPPER.readValue(e.getResponseBodyAsByteArray(), Map.class));"),
+                Arguments.of("Arrays.toString(bytes)",
+                        "log.error(\"x {}\", java.util.Arrays.toString(e.getResponseBodyAsByteArray()));"),
+                Arguments.of("whole ResponseEntity parameter", "log.info(\"resp {}\", response);"),
+                Arguments.of("ResponseEntity.toString() in a concat", "log.info(\"resp \" + response.toString());"),
+                Arguments.of("String.valueOf(entity)", "log.warn(\"resp {}\", String.valueOf(response));"),
+                Arguments.of("typed ResponseEntity local", "ResponseEntity<String> r = client.call();\nlog.warn(\"x {}\", r);"),
+                Arguments.of("var local from exchange(..)",
+                        "var reply = restTemplate.exchange(url, HttpMethod.POST, request, Map.class);\nlog.error(\"x {}\", reply);"),
+                Arguments.of("var local from postForEntity(..)",
+                        "var reply = rest.postForEntity(url, request, Foo.class);\nlog.error(\"x \" + reply);"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("decodedParsedOrWholeEntityBodies")
+    void theScannerFlagsDecodedParsedAndWholeEntityBodies(String name, String statements) {
+        assertThat(bodyProblemsOf(statements)).as(name).hasSize(1);
+    }
+
+    static Stream<Arguments> notABody() {
+        return Stream.of(
+                Arguments.of("new String of other chars", "log.info(\"x {}\", new String(chars));"),
+                Arguments.of("Arrays.toString of ids", "log.info(\"ids {}\", Arrays.toString(ids));"),
+                Arguments.of("one field of a parsed tree",
+                        "log.error(\"x {}\", MAPPER.readTree(e.getResponseBodyAsByteArray()).path(\"code\").asText());"),
+                Arguments.of("one field of a tree local",
+                        "JsonNode tree = MAPPER.readTree(e.getResponseBodyAsByteArray());\nlog.warn(\"code {}\", tree.path(\"code\").asText());"),
+                Arguments.of("length of a decoded body", "log.error(\"x {}\", new String(e.getResponseBodyAsByteArray()).length());"),
+                Arguments.of("readTree of something else", "log.info(\"x {}\", MAPPER.readTree(config));"),
+                Arguments.of("entity status", "log.info(\"status {}\", response.getStatusCode());"),
+                Arguments.of("entity status value", "log.info(\"status {}\", response.getStatusCode().value());"),
+                Arguments.of("one field of the entity body", "log.info(\"m {}\", response.getBody().get(\"message\"));"),
+                Arguments.of("whole entity at DEBUG", "log.debug(\"resp {}\", response);"),
+                Arguments.of("decoded body at TRACE", "log.trace(\"x {}\", new String(e.getResponseBodyAsByteArray()));"),
+                Arguments.of("local holding only the status of an exchange",
+                        "var status = rest.exchange(url, HttpMethod.GET, null, Map.class).getStatusCode();\nlog.info(\"s {}\", status);"),
+                Arguments.of("new String of a non-body second argument", "log.info(\"x {}\", new String(chars, 0, 4));"),
+                Arguments.of("exchange status only",
+                        "var reply = restTemplate.exchange(url, HttpMethod.POST, request, Map.class);\nlog.info(\"s {}\", reply.getStatusCode());"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("notABody")
+    void theScannerLeavesFieldsStatusesAndOtherValuesAlone(String name, String statements) {
+        assertThat(bodyProblemsOf(statements)).as(name).isEmpty();
     }
 
     @Test

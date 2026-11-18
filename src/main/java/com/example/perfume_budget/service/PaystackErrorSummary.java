@@ -9,16 +9,22 @@ import java.util.regex.Pattern;
 /**
  * SEC-01d: what of a Paystack error answer may go into a log line. Never the raw body: besides {@code status} and
  * {@code message} it can carry the customer's e-mail, authorization / access codes and card metadata (bin, last4).
- * Only Paystack's top-level {@code status} (boolean), {@code message} (redacted: e-mail addresses and digit runs of
- * four or more removed, control characters flattened, length capped) and {@code type} / {@code code} (only when they
- * are plain lower-case identifiers) are kept. A body that is not such JSON yields nothing but its absence.
+ * Only Paystack's top-level {@code status} (boolean), {@code message} (redacted: e-mail addresses, also URL-encoded,
+ * and digit runs of four or more removed, every control character and Unicode line break flattened, length capped)
+ * and {@code type} / {@code code} (only when they are plain lower-case identifiers) are kept. A body that is not such
+ * JSON yields nothing but its absence.
  */
 final class PaystackErrorSummary {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final Pattern EMAIL = Pattern.compile("[^\\s@\"'<>(),;:]+@[^\\s@\"'<>(),;:]+");
+    /** SEC-01e: also a URL-encoded {@code @} ({@code %40}, or {@code %2540} when encoded twice). */
+    private static final Pattern EMAIL = Pattern.compile("[^\\s@\"'<>(),;:]+(?:@|%(?:25)*40)[^\\s@\"'<>(),;:]+");
     private static final Pattern DIGITS = Pattern.compile("\\d[\\d\\s-]{2,}\\d");
-    private static final Pattern CONTROL = Pattern.compile("[\\p{Cntrl}\\u2028\\u2029]+");
+    /**
+     * SEC-01e: every control character, C0 and C1 ({@code \p{Cc}}: CR, LF, VT, FF, NEL U+0085, ...), and the Unicode
+     * line / paragraph separators (U+2028, U+2029). {@code \p{Cntrl}} alone is ASCII-only and let NEL through.
+     */
+    private static final Pattern CONTROL = Pattern.compile("[\\p{Cc}\\p{Zl}\\p{Zp}]+");
     private static final Pattern CODE = Pattern.compile("[a-z_]{1,64}");
     private static final int MAX_MESSAGE = 160;
 
