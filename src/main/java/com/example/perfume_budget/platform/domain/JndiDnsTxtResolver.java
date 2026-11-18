@@ -52,7 +52,7 @@ public class JndiDnsTxtResolver implements DnsTxtResolver {
     @Override
     public List<String> lookupTxt(String fqdn) throws DnsLookupException {
         if (!isPlainName(fqdn)) {
-            throw new IllegalArgumentException("Refusing a DNS name that is not a plain host name");
+            throw new DnsLookupException("Refusing a DNS name that is not a plain host name", null);
         }
         Hashtable<String, String> env = new Hashtable<>();
         env.put(Context.INITIAL_CONTEXT_FACTORY, "com.sun.jndi.dns.DnsContextFactory");

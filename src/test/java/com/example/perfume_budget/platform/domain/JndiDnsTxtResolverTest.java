@@ -148,7 +148,7 @@ class JndiDnsTxtResolverTest {
         for (String bad : java.util.Arrays.asList(null, "", "ldap://127.0.0.1:1389/x", "dns://" + dns + "/example.com",
                 "rmi://127.0.0.1/x", "a/b.example.com", "a b.example.com", "user@example.com", "example.com:53",
                 "a..b.com", ".a.com", "a.com.", "-a.com", "a-.com", "a".repeat(64) + ".com", "x\u0000.com", "b\u00fccher.de")) {
-            assertThatThrownBy(() -> r.lookupTxt(bad)).as(String.valueOf(bad)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> r.lookupTxt(bad)).as(String.valueOf(bad)).isInstanceOf(DnsTxtResolver.DnsLookupException.class);
         }
         assertThat(queries.get()).as("nothing was sent").isZero();
         assertThat(JndiDnsTxtResolver.isPlainName("_shopfi-verification.shop.acme-brand.com")).isTrue();
