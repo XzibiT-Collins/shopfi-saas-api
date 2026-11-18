@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
  * <p>Time bound: JNDI's {@code com.sun.jndi.dns.timeout.retries} is the number of query ROUNDS (not extra retries);
  * round {@code i} (0-based) waits {@code timeout * 2^i} on each configured server in turn. So the worst case is
  * {@code timeout * (2^rounds - 1) * servers}; with the defaults (2000 ms, 1 round) that is 2 s per server
- * (measured: 6.1 s for 3 silent servers). {@code dns-retries} is clamped to 1..4 (0 would send no query at all).
+ * (measured: 6.1 s for 3 silent servers). {@code dns-retries} is clamped to 1..4 (JNDI itself also sends one round for 0).
  *
  * <p>Only plain host names are looked up: {@link InitialDirContext} would treat a URL-shaped name ({@code ldap://..},
  * {@code dns://..}) as a URL and contact that server, so anything outside {@code [A-Za-z0-9._-]} labels is refused
