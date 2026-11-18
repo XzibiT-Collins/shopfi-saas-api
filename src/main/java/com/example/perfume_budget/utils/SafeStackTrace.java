@@ -16,6 +16,10 @@ import java.util.Set;
  * ({@code org.postgresql.util.PSQLException [SQLState 23505, constraint uc_users_email]}, see {@link DbErrorDetails});
  * both are checked against a strict character set and never carry the message or its {@code Detail}.
  *
+ * <p>EVT-01d: bounded output however wide the tree is: at most {@value #MAX_SUPPRESSED} suppressed exceptions per
+ * throwable (the rest counted), causes / suppressed at most {@value #MAX_DEPTH} levels deep, at most {@value #MAX_FRAMES}
+ * frames each, and the whole text cut at {@value #MAX_LENGTH} characters with a marker line.
+ *
  * <p>Usage: {@code log.error("Something failed: {}", SafeStackTrace.of(e));} The text is built only when the line is
  * actually written ({@link #toString()}).
  */
@@ -23,6 +27,11 @@ public final class SafeStackTrace {
 
     static final int MAX_FRAMES = 64;
     static final int MAX_DEPTH = 16;
+    /** EVT-01d: suppressed exceptions rendered per throwable; the rest are counted, not rendered. */
+    static final int MAX_SUPPRESSED = 8;
+    /** EVT-01d: the whole rendered trace is cut at this many characters (one log line must stay bounded). */
+    static final int MAX_LENGTH = 16_384;
+    static final String TRUNCATED = "\t... trace truncated at " + MAX_LENGTH + " characters\n";
 
     private final Throwable throwable;
 
@@ -42,11 +51,18 @@ public final class SafeStackTrace {
         StringBuilder out = new StringBuilder();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         append(out, throwable, new StackTraceElement[0], "", "", seen, 0);
+        if (out.length() > MAX_LENGTH) {
+            out.setLength(MAX_LENGTH);
+            out.append('\n').append(TRUNCATED);
+        }
         return out.toString();
     }
 
     private static void append(StringBuilder out, Throwable t, StackTraceElement[] enclosing, String caption,
                                String prefix, Set<Throwable> seen, int depth) {
+        if (out.length() > MAX_LENGTH) {
+            return; // already over the cap: render nothing more (bounded work however wide the tree is)
+        }
         if (!seen.add(t)) {
             out.append(prefix).append(caption).append("[CIRCULAR REFERENCE: ").append(t.getClass().getName()).append("]\n");
             return;
@@ -74,8 +90,13 @@ public final class SafeStackTrace {
         if (inCommon != 0) {
             out.append(prefix).append("\t... ").append(inCommon).append(" more\n");
         }
-        for (Throwable s : t.getSuppressed()) {
-            append(out, s, trace, "Suppressed: ", prefix + "\t", seen, depth + 1);
+        Throwable[] suppressed = t.getSuppressed();
+        int rendered = Math.min(suppressed.length, MAX_SUPPRESSED);
+        for (int i = 0; i < rendered; i++) {
+            append(out, suppressed[i], trace, "Suppressed: ", prefix + "\t", seen, depth + 1);
+        }
+        if (suppressed.length > rendered && out.length() <= MAX_LENGTH) {
+            out.append(prefix).append("\t... ").append(suppressed.length - rendered).append(" more suppressed omitted\n");
         }
         Throwable cause = t.getCause();
         if (cause != null) {

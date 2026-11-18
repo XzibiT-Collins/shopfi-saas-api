@@ -17,6 +17,9 @@ import java.util.function.Supplier;
  * transaction only ({@code set_config(..., true)} = {@code SET LOCAL}) and puts the previous value back afterwards, so
  * the rest of the caller's transaction keeps its own setting. A lock wait that hits the timeout (SQLSTATE 55P03)
  * becomes a clean {@code 503} with a stable {@code data.code} instead of a 500 or an unbounded wait.
+ *
+ * <p>EVT-01d: inside a webhook settlement ({@link SettlementDeadline} bound) the limit is never more than the
+ * settlement's budget left, instead of a fixed 5 s.
  */
 @Component
 public class DbLockTimeout {
@@ -36,20 +39,31 @@ public class DbLockTimeout {
     /** Must run inside the caller's transaction (SET LOCAL needs one). */
     @Transactional(propagation = Propagation.MANDATORY)
     public <T> T run(String busyCode, String busyMessage, Supplier<T> action) {
+        if (SettlementDeadline.active()) {
+            // EVT-01d: inside a webhook settlement the wait is min(5 s, budget left), and afterwards the settlement's
+            // own derived limit (min(per-wait cap, budget left) at that moment) is put back, not a stale value
+            set(SettlementDeadline.limit(timeoutMillis) + "ms");
+            T result = SettlementDeadline.withCap(timeoutMillis, () -> guarded(busyCode, busyMessage, action));
+            SettlementDeadline.beforeLockWait(entityManager);
+            return result;
+        }
         String previous = (String) entityManager.createNativeQuery("SELECT current_setting('lock_timeout')")
                 .getSingleResult();
         set(timeoutMillis + "ms");
-        T result;
+        T result = guarded(busyCode, busyMessage, action);
+        set(previous);
+        return result;
+    }
+
+    private static <T> T guarded(String busyCode, String busyMessage, Supplier<T> action) {
         try {
-            result = action.get();
+            return action.get();
         } catch (RuntimeException e) {
             if (isLockTimeout(e)) {
                 throw new ApiCodeException(HttpStatus.SERVICE_UNAVAILABLE, busyCode, busyMessage);
             }
             throw e;
         }
-        set(previous);
-        return result;
     }
 
     private void set(String value) {

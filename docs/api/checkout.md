@@ -251,12 +251,39 @@ delivery share one budget (`shopfi.webhook.settlement-deadline-ms`, 20 s, under 
 starts with less than 250 ms left, and each attempt's lock timeout is capped to what is left. Past the budget the
 answer is `500` (redelivered; the settlement is idempotent).
 
+EVT-01d, **every lock wait is limited to the budget left.** Before, only an attempt's first lock wait was capped to
+the budget: each later one (cart row, product rows, ledger accounts) could again wait the attempt's whole limit, and the
+coupon sections always waited their fixed 5 s, so a delivery could end well past the 20 s. Now the deadline is bound to
+the settling thread, and right before each lock-taking statement of the settlement (cart row, the product lock
+statement, each ledger account `UPDATE`, each coupon section, and the late-payment re-reservation's product lock) the
+transaction's `lock_timeout` is set to `min(per-wait cap, time left)` (cap 8 s, 5 s in a coupon section) and its
+`statement_timeout` to the time left (one statement can wait for several product rows), both `SET LOCAL` (this
+transaction only; pooled connections keep the defaults). With nothing left the settlement stops (`500`, redelivered),
+so a delivery ends at the budget plus at most the time of one non-waiting statement. Outside a webhook settlement
+(checkout, cancel, verify poll, jobs) nothing changes. Postgres `transaction_timeout` was not used: it exists only from
+PostgreSQL 17 (the compose file runs 16) and it terminates the whole session instead of failing the statement.
+`shopfi.webhook.settlement-deadline-ms` is checked at startup: it must be more than 250 ms (no attempt starts with less,
+so every settlement webhook would answer `500`) and less than 30000 ms (Paystack's delivery timeout), and
+`shopfi.webhook.lock-timeout-ms` at least 1 ms; otherwise the application refuses to start with a message naming the
+property.
+
 EVT-01c rework 1, **`503` when busy.** At most `shopfi.payments.webhook.max-concurrent-settlements` (default 3)
 settlements run at once, so a burst of webhooks waiting for the same locked rows cannot take the whole connection pool.
 A signed webhook that needs a settlement (`charge.success` / `charge.failed`) and finds no free slot within 50 ms
 (`shopfi.payments.webhook.permit-wait-ms`, at most 100 ms) is answered `503` with the plain body `Busy` and no details;
 nothing was applied and Paystack redelivers it. The signature is checked first (a bad one is still `403`), and an event
 that can never be applied is still acknowledged `200` without needing a slot.
+
+EVT-01d, **per-tenant fairness.** The slots are shared by all tenants, and a tenant knows its own Paystack secret, so it
+could flood signed webhooks (for example for orders stuck behind a held row) and keep every slot busy, delaying every
+other tenant's settlements. So one tenant holds at most `shopfi.payments.webhook.max-concurrent-settlements-per-tenant`
+(default 1) of the slots at a time. A settlement webhook first takes its tenant's slot, then a shared one, both within the
+same short wait; a webhook whose tenant slot is taken answers the same `503 Busy` without competing for a shared slot.
+With the defaults a flooding tenant holds 1 of the 3 slots and the other tenants keep 2; a tenant's own second
+concurrent settlement waits up to the 50 ms for its slot and otherwise is redelivered by Paystack (the customer's verify
+poll does not use the slots). Several tenants flooding at once can still fill the shared slots between them (each holds
+at most one); that needs that many tenants' secrets. Order of acquisition: tenant slot, shared slot, pooled connection,
+then the row locks in the lock order below; released in reverse.
 
 | webhook status | meaning |
 |---|---|
@@ -349,7 +376,8 @@ product that already has a layer is read without any lock). Full order: customer
 webhook / expiry) -> product rows by id -> coupon row last. A late payment's re-reservation runs in its own short
 transaction under the order lock and takes the product locks there. Admin edit / deactivate lock only the coupon
 (`FOR NO KEY UPDATE`, which does not conflict with the FK lock a checkout's new order holds); delete locks the coupon's
-orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`).
+orders first, then the coupon. Every coupon wait is bounded (5 s, `503 COUPON_BUSY`; inside a webhook settlement
+at most the settlement's budget left, EVT-01d).
 
 **Cart lock order (CAT-04): cart row, then its lines.** Every cart writer locks the customer's cart row before it reads
 or writes a line: add-item (also each item of populate), update quantity and remove line take it `FOR NO KEY UPDATE`;

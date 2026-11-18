@@ -41,6 +41,9 @@ public class BookkeepingService {
     private final AuthUserUtil authUserUtil;
     private final ProductRepository productRepository;
 
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
     @Transactional
     public void recordSale(Order order, Payment payment){
         LedgerAccount cash = getAccount(AccountCategory.CASH, false);
@@ -617,6 +620,9 @@ public class BookkeepingService {
             if (delta.signum() == 0) {
                 return;
             }
+            // EVT-01d: the UPDATE can wait for another posting's ledger row lock; in a webhook settlement that wait is
+            // limited to the settlement's budget left
+            SettlementDeadline.beforeLockWait(entityManager);
             BigDecimal balance = ledgerAccountRepository.applyBalanceDelta(accountId, delta);
             if (balance == null) {
                 throw isManual ? new BadRequestException(account.getCode() + " Account not found")

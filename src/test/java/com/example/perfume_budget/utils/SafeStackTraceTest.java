@@ -60,6 +60,117 @@ class SafeStackTraceTest {
         assertThat(trace).contains("more frames omitted");
     }
 
+    // ---- EVT-01d (6): bounded fan-out
+
+    /** 2,000 suppressed exceptions used to render as one ~363 KB log line. */
+    @Test
+    void twoThousandSuppressed_onlyTheFirstFewAreRendered_theRestCounted_andTheLineIsBounded() {
+        RuntimeException top = new RuntimeException(PII);
+        for (int i = 0; i < 2000; i++) {
+            top.addSuppressed(new IllegalArgumentException("s" + i + " " + PII));
+        }
+        String trace = SafeStackTrace.of(top).toString();
+        assertThat(trace.lines().filter(l -> l.startsWith("\tSuppressed: ")).count())
+                .isEqualTo(SafeStackTrace.MAX_SUPPRESSED);
+        assertThat(trace).contains("\t... " + (2000 - SafeStackTrace.MAX_SUPPRESSED) + " more suppressed omitted\n");
+        assertThat(trace.length()).isLessThanOrEqualTo(SafeStackTrace.MAX_LENGTH + SafeStackTrace.TRUNCATED.length() + 1);
+        assertThat(trace).doesNotContain("leak@x.test");
+    }
+
+    @Test
+    void fewSuppressed_areAllRendered_withoutAnOmittedLine() {
+        RuntimeException top = new RuntimeException(PII);
+        for (int i = 0; i < SafeStackTrace.MAX_SUPPRESSED; i++) {
+            top.addSuppressed(new IllegalArgumentException(PII));
+        }
+        String trace = SafeStackTrace.of(top).toString();
+        assertThat(trace.lines().filter(l -> l.startsWith("\tSuppressed: ")).count())
+                .isEqualTo(SafeStackTrace.MAX_SUPPRESSED);
+        assertThat(trace).doesNotContain("more suppressed omitted").doesNotContain("trace truncated");
+    }
+
+    /** A wide tree: 8 suppressed per level, 4 levels (4,681 distinct throwables, far over the length cap). */
+    @Test
+    void aWideTreeIsCutAtTheLengthCap_quickly() {
+        RuntimeException root = wide(0);
+        long t0 = System.nanoTime();
+        String trace = SafeStackTrace.of(root).toString();
+        long ms = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+        assertThat(trace.length()).isLessThanOrEqualTo(SafeStackTrace.MAX_LENGTH + SafeStackTrace.TRUNCATED.length() + 1);
+        assertThat(trace).endsWith(SafeStackTrace.TRUNCATED);
+        assertThat(trace).startsWith(RuntimeException.class.getName() + "\n");
+        assertThat(trace).doesNotContain("leak@x.test");
+        assertThat(ms).as("rendering time").isLessThan(2000);
+    }
+
+    private static RuntimeException wide(int level) {
+        RuntimeException e = new RuntimeException(PII);
+        if (level < 4) {
+            for (int i = 0; i < 8; i++) {
+                e.addSuppressed(wide(level + 1));
+            }
+        }
+        return e;
+    }
+
+    @Test
+    void manyFramesInEveryCause_areCutAtTheLengthCap() {
+        RuntimeException e = null;
+        StackTraceElement[] frames = new StackTraceElement[SafeStackTrace.MAX_FRAMES];
+        for (int i = 0; i < frames.length; i++) {
+            frames[i] = new StackTraceElement("a.very.long.package.name.for.the.Clazz" + i, "method" + i, "Clazz.java", i);
+        }
+        for (int i = 0; i < SafeStackTrace.MAX_DEPTH; i++) {
+            e = new RuntimeException(PII, e);
+            e.setStackTrace(frames.clone());
+            frames = java.util.Arrays.copyOf(frames, frames.length); // same frames: nothing elided per level...
+            frames[frames.length - 1] = new StackTraceElement("x.Distinct" + i, "m", "D.java", i); // ...but the last
+        }
+        String trace = SafeStackTrace.of(e).toString();
+        assertThat(trace.length()).isLessThanOrEqualTo(SafeStackTrace.MAX_LENGTH + SafeStackTrace.TRUNCATED.length() + 1);
+        assertThat(trace).endsWith(SafeStackTrace.TRUNCATED).doesNotContain("leak@x.test");
+    }
+
+    @Test
+    void aTraceUnderTheCapIsNotMarkedTruncated() {
+        assertThat(SafeStackTrace.of(failure()).toString()).doesNotContain("trace truncated");
+    }
+
+    /** Counts how many throwables the renderer actually walks (it reads each one's frames once). */
+    static final class Counting extends RuntimeException {
+        static final java.util.concurrent.atomic.AtomicInteger VISITED = new java.util.concurrent.atomic.AtomicInteger();
+
+        Counting() {
+            super(PII, null, true, false); // suppression on, no stack trace filled: cheap to build many
+        }
+
+        @Override
+        public StackTraceElement[] getStackTrace() {
+            VISITED.incrementAndGet();
+            return super.getStackTrace();
+        }
+    }
+
+    private static Counting counting(int level, int levels) {
+        Counting e = new Counting();
+        if (level < levels) {
+            for (int i = 0; i < 8; i++) {
+                e.addSuppressed(counting(level + 1, levels));
+            }
+        }
+        return e;
+    }
+
+    /** 37,449 throwables: once the text is over the cap, the rest of the tree is not walked at all. */
+    @Test
+    void onceOverTheCap_theRestOfTheTreeIsNotWalked() {
+        Counting root = counting(0, 5);
+        Counting.VISITED.set(0);
+        String trace = SafeStackTrace.of(root).toString();
+        assertThat(trace).endsWith(SafeStackTrace.TRUNCATED);
+        assertThat(Counting.VISITED.get()).as("throwables walked").isLessThan(1000);
+    }
+
     @Test
     void nullIsRendered() {
         assertThat(SafeStackTrace.of(null)).hasToString("null");
