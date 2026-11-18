@@ -370,7 +370,8 @@ public class OrderLifecycleService {
                     Map.of("orderNumber", order.getOrderNumber(), "deliveryStatus", String.valueOf(order.getDeliveryStatus()),
                             "paymentStatus", String.valueOf(order.getStatus())));
         }
-        LocalDateTime now = LocalDateTime.now();
+        // microseconds: what Postgres stores, so the first answer and a later read show the same returnedAt
+        LocalDateTime now = LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         if (returnPolicy.isExpired(order.getDeliveredAt(), now)) {
             throw new ApiCodeException(HttpStatus.CONFLICT, "RETURN_WINDOW_EXPIRED",
                     "The return window of this order has closed.",
