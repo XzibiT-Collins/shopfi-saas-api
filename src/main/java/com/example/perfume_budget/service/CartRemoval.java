@@ -2,6 +2,8 @@ package com.example.perfume_budget.service;
 
 import com.example.perfume_budget.repository.CartItemRepository;
 import com.example.perfume_budget.repository.CartRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
@@ -29,9 +31,13 @@ public class CartRemoval {
     private final CartRepository cartRepository;
     private final CartItemRepository cartItemRepository;
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
     /** Deletes the user's cart and all its lines, if there is one (clear cart; payment settlement: the order's user). */
     @Transactional(propagation = Propagation.MANDATORY)
     public void deleteCartOfUser(Long userId) {
+        SettlementDeadline.beforeLockWait(entityManager); // EVT-01d: a settlement's wait is limited to its budget left
         cartRepository.lockIdForDeleteByUserId(userId).ifPresent(this::deleteLocked);
     }
 
