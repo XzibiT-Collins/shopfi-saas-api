@@ -396,6 +396,11 @@ class DeliveredOrderReturnIntegrationTest extends AbstractCheckoutIntegrationTes
         return mvc.perform(as(get("/api/v1/order/" + o.orderNumber()), o.c())).andReturn();
     }
 
+    private void moveFulfilmentSource(long to) {
+        jdbc.update("UPDATE tenant_acme.storage_locations SET is_ecommerce_fulfilment_source = false WHERE is_ecommerce_fulfilment_source");
+        jdbc.update("UPDATE tenant_acme.storage_locations SET is_ecommerce_fulfilment_source = true WHERE id = ?", to);
+    }
+
     private int soldCount(long productId) {
         return jdbc.queryForObject("SELECT coalesce(sold_count, 0) FROM tenant_acme.products WHERE id = ?", Integer.class, productId);
     }
