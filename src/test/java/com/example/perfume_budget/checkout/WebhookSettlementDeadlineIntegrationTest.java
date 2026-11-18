@@ -36,17 +36,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * each later wait (cart, products, ledger accounts) could take that whole limit again, and the coupon sections always
  * took their fixed 5 s, so one delivery could outlast settlement-deadline-ms (and Paystack's 30 s).
  *
- * <p>Timeline (budget 3 s, per-wait cap 8 s): the order row is held until ~1.8 s, then a second row the settlement
- * needs (cart / products / ledger) until ~4.5 s. Before: the second wait was allowed the attempt's ~3 s, so it got the
- * row at ~4.5 s and answered 200 a good 1.5 s past the budget. Now it may wait only the ~1.2 s left: 500 (redelivered)
- * at ~3 s, nothing committed. Every held row is released by the test with a bound; the request runs on its own thread
- * and is awaited with a timeout.
+ * <p>Timeline (budget 3 s, per-wait cap 8 s): the lock points before the target (order row, then cart, then products)
+ * are held and released one by one by ~1.8 s; the target (cart / products / ledger) is held until ~4.5 s. Before, the
+ * target's wait was allowed the limit set when the attempt started (~3 s), so it got the row at ~4.5 s and answered 200
+ * a good 1.5 s past the budget; and if only an EARLIER lock point set the limit, the target could still wait past 3.4 s.
+ * Now each lock point sets it from the time left, so the target waits only the ~1.2 s left: 500 (redelivered) at ~3 s,
+ * nothing committed. Every held row is released by the test with a bound; the request runs on its own thread and is
+ * awaited with a timeout.
  */
 class WebhookSettlementDeadlineIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     private static final long BUDGET_MS = 3000;
-    private static final long ORDER_RELEASED_AT_MS = 1800;
-    private static final long SECOND_RELEASED_AT_MS = 4500;
+    private static final long EARLIER_RELEASED_BY_MS = 1800;
+    private static final long TARGET_RELEASED_AT_MS = 4500;
 
     @Autowired WebhookLockTimeout webhookLockTimeout;
     @Autowired DbLockTimeout dbLockTimeout;
@@ -126,50 +128,72 @@ class WebhookSettlementDeadlineIntegrationTest extends AbstractCheckoutIntegrati
         }
     }
 
-    @ParameterizedTest(name = "second wait on {0}")
+    /**
+     * The lock points in settlement order: order row, cart row, product rows, ledger accounts. Each one BEFORE the
+     * target is held and released in turn (so the target's own lock point must set its limit again: the limit an
+     * earlier lock point set was computed when more budget was left); the target is held past the deadline.
+     */
+    private static final String[] POINTS = {"order", "cart", "products", "ledger"};
+
+    private static String lockSql(String point, String on, Customer c, long p) {
+        return switch (point) {
+            case "order" -> "SELECT id FROM tenant_acme.orders WHERE order_number = '" + on + "' FOR UPDATE";
+            case "cart" -> "SELECT id FROM tenant_acme.carts WHERE user_id = " + c.id() + " FOR UPDATE";
+            case "products" -> "SELECT id FROM tenant_acme.products WHERE id = " + p + " FOR NO KEY UPDATE";
+            // what a concurrent posting holds: its balance UPDATE's row lock (NO KEY UPDATE), which does not block
+            // the foreign-key check of this settlement's journal lines, only its own balance UPDATE
+            default -> "SELECT id FROM tenant_acme.ledger_accounts ORDER BY id FOR NO KEY UPDATE";
+        };
+    }
+
+    @ParameterizedTest(name = "last wait on {0}")
     @ValueSource(strings = {"cart", "products", "ledger"})
-    void aSecondLockWaitInTheSameAttempt_isLimitedToTheBudgetLeft_soTheDeliveryEndsAtTheDeadline(String second)
+    void aLaterLockWaitInTheSameAttempt_isLimitedToTheBudgetLeft_soTheDeliveryEndsAtTheDeadline(String target)
             throws Exception {
         Gateway g = configureGateway(acme);
-        long p = product(acme, "Dl" + second, "50.00", 10);
-        Customer c = customer(acme, "dl-" + second + "@acme.test");
+        long p = product(acme, "Dl" + target, "50.00", 10);
+        Customer c = customer(acme, "dl-" + target + "@acme.test");
         cart(c, p, 1);
         String on = placeOrder(c);
         // the checkout keeps the cart; the payment settlement empties it (CAT-04 cart lock)
         assertThat(count(acme, "carts")).as("the customer's cart is still there").isPositive();
         String body = event("charge.success", reference(on), totalMinor(on));
         awaitBackgroundIdle();
-        String secondSql = switch (second) {
-            case "cart" -> "SELECT id FROM tenant_acme.carts WHERE user_id = " + c.id() + " FOR UPDATE";
-            case "products" -> "SELECT id FROM tenant_acme.products WHERE id = " + p + " FOR NO KEY UPDATE";
-            default -> "SELECT id FROM tenant_acme.ledger_accounts ORDER BY id FOR UPDATE";
-        };
         ReflectionTestUtils.setField(webhookLockTimeout, "deadlineMillis", BUDGET_MS);
         assertThat(webhookLockTimeout.timeoutMillis()).as("per-wait cap well above the budget").isEqualTo(8000L);
 
+        int last = java.util.Arrays.asList(POINTS).indexOf(target);
+        List<Holder> holders = new ArrayList<>();
         long[] answer;
-        try (Holder orderRow = new Holder("SELECT id FROM tenant_acme.orders WHERE order_number = '" + on + "' FOR UPDATE");
-             Holder secondRow = new Holder(secondSql)) {
+        try {
+            for (int i = 0; i <= last; i++) {
+                holders.add(new Holder(lockSql(POINTS[i], on, c, p)));
+            }
             long t0 = System.nanoTime();
             Future<long[]> f = pool.submit(() -> {
                 int status = webhook(g, body);
                 return new long[]{status, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0)};
             });
             long end = System.currentTimeMillis() + 10_000;
-            while (!someoneWaitsFor(orderRow) && System.currentTimeMillis() < end) {
+            while (!someoneWaitsFor(holders.get(0)) && System.currentTimeMillis() < end) {
                 Thread.sleep(10);
             }
-            assertThat(someoneWaitsFor(orderRow)).as("the settlement waits for the order row").isTrue();
-            sleepUntil(t0, ORDER_RELEASED_AT_MS);
-            orderRow.conn.rollback();
-            sleepUntil(t0, SECOND_RELEASED_AT_MS);
-            secondRow.conn.rollback();
+            assertThat(someoneWaitsFor(holders.get(0))).as("the settlement waits for the order row").isTrue();
+            // the rows before the target are released one by one, the last of them at EARLIER_RELEASED_BY_MS
+            for (int i = 0; i < last; i++) {
+                sleepUntil(t0, EARLIER_RELEASED_BY_MS * (i + 1) / last);
+                holders.get(i).conn.rollback();
+            }
+            sleepUntil(t0, TARGET_RELEASED_AT_MS);
+            holders.get(last).conn.rollback();
             answer = f.get(30, TimeUnit.SECONDS);
+        } finally {
+            for (Holder h : holders) h.close();
         }
-        System.out.println("EVT01D deadline " + second + ": status=" + answer[0] + " after " + answer[1] + " ms");
+        System.out.println("EVT01D deadline " + target + ": status=" + answer[0] + " after " + answer[1] + " ms");
         assertThat(answer[0]).as("not applied within the budget: answered 500, redelivered").isEqualTo(500);
-        assertThat(answer[1]).as("ended at the deadline (%d ms), not when the second row was released", BUDGET_MS)
-                .isBetween(BUDGET_MS - 300, BUDGET_MS + 700);
+        assertThat(answer[1]).as("ended at the deadline (%d ms), not when an earlier lock point's limit ran out", BUDGET_MS)
+                .isBetween(BUDGET_MS - 300, BUDGET_MS + 400);
         assertThat(orderStatus(acme, on)).isNotEqualTo("COMPLETED");
 
         ReflectionTestUtils.setField(webhookLockTimeout, "deadlineMillis", savedDeadline);

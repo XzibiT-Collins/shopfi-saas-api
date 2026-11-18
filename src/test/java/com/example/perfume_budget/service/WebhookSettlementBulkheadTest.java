@@ -315,4 +315,51 @@ class WebhookSettlementBulkheadTest {
             pool.shutdownNow();
         }
     }
+
+    /** Counts every attempt to take a shared permit. */
+    static final class CountingSemaphore extends java.util.concurrent.Semaphore {
+        final AtomicInteger attempts = new AtomicInteger();
+
+        CountingSemaphore(int permits) {
+            super(permits);
+        }
+
+        @Override
+        public boolean tryAcquire(long timeout, TimeUnit unit) throws InterruptedException {
+            attempts.incrementAndGet();
+            return super.tryAcquire(timeout, unit);
+        }
+    }
+
+    @Test
+    void aWebhookRefusedAtItsTenantSlot_neverEvenTriesForASharedPermit() throws Exception {
+        WebhookSettlementBulkhead b = new WebhookSettlementBulkhead(3, 1, 20);
+        CountingSemaphore shared = new CountingSemaphore(3);
+        org.springframework.test.util.ReflectionTestUtils.setField(b, "permits", shared);
+        CountDownLatch inside = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            pool.submit(asTenant("tenant_acme", () -> b.call(() -> {
+                inside.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return null;
+            })));
+            assertThat(inside.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(shared.attempts).hasValue(1);
+            AtomicInteger ran = new AtomicInteger();
+            for (int i = 0; i < 5; i++) {
+                assertThat(pool.submit(asTenant("tenant_acme", () -> attempt(b, ran))).get(2, TimeUnit.SECONDS))
+                        .isInstanceOf(WebhookBusyException.class);
+            }
+            assertThat(shared.attempts).as("refused at the tenant slot: no shared permit contended").hasValue(1);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
 }

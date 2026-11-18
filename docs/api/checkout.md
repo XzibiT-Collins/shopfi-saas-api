@@ -259,7 +259,9 @@ statement, each ledger account `UPDATE`, each coupon section, and the late-payme
 transaction's `lock_timeout` is set to `min(per-wait cap, time left)` (cap 8 s, 5 s in a coupon section) and its
 `statement_timeout` to the time left (one statement can wait for several product rows), both `SET LOCAL` (this
 transaction only; pooled connections keep the defaults). With nothing left the settlement stops (`500`, redelivered),
-so a delivery ends at the budget plus at most the time of one non-waiting statement. Outside a webhook settlement
+so a delivery ends at the budget. A wait in a statement that is not a lock point (a flush, a foreign-key check) is
+still bounded by the limit the previous lock point set, so it can end past the budget by at most the time since that
+lock point (in the settlement path those statements only touch rows already locked in the lock order). Outside a webhook settlement
 (checkout, cancel, verify poll, jobs) nothing changes. Postgres `transaction_timeout` was not used: it exists only from
 PostgreSQL 17 (the compose file runs 16) and it terminates the whole session instead of failing the statement.
 `shopfi.webhook.settlement-deadline-ms` is checked at startup: it must be more than 250 ms (no attempt starts with less,
