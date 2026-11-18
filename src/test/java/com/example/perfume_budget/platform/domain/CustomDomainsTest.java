@@ -106,6 +106,9 @@ class CustomDomainsTest {
         assertThat(name253).hasSize(253);
         assertThat(CustomDomains.normalize(name253, POLICY)).isEqualTo(name253);
         rejected("e" + name253, POLICY, CustomDomains.INVALID);
+        String name254 = String.join(".", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(58), "com");
+        assertThat(name254).hasSize(254);
+        rejected(name254, POLICY, CustomDomains.INVALID); // every label valid: only the 253 limit rejects it
         rejected("x".repeat(400) + ".com", POLICY, CustomDomains.INVALID);
     }
 
