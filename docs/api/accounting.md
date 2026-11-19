@@ -4,8 +4,23 @@ Routes under `/api/v1/admin/accounting` are tenant scoped and `ADMIN` only (anon
 [authorization-matrix.md](authorization-matrix.md)). Every response is `{ "description": string|null, "data": ... }`;
 errors carry a stable machine code in `data.code`, never parse `description`.
 
-This page documents only what CAT-03 (and the CAT-04 date bound) changed. The other accounting routes (`/summary`, `/income-statement`,
-`/balance-sheet`, `/cash-flow`, `/journal-entries/reference`, `/journal-entries/manual`, `/metadata`) are unchanged.
+This page documents only what CAT-03 (and the CAT-04 / CAT-06 date rules) changed. The other accounting routes
+(`/summary`, `/balance-sheet`, `/journal-entries/reference`, `/journal-entries/manual`, `/metadata`) are unchanged.
+
+## Date rules of the ranged routes (CAT-04, CAT-06)
+
+`/journal-entries`, `/income-statement` and `/cash-flow` take required `startDate` and `endDate` (ISO `yyyy-MM-dd`) and share
+one rule set:
+
+| Input | Answer |
+|---|---|
+| a date that does not exist (`2026-02-30`, `2026-13-01`, `2026-04-31`) or is not ISO | `400` (strict parsing, before the handler runs) |
+| a year outside 1..9999 (`+999999999-12-31`, `-0001-01-01`, `0000-12-31`, `+10000-01-01`) | `400`, `data.code = INVALID_DATE_RANGE` (was `409` on `/income-statement` and `/cash-flow`) |
+| `startDate` after `endDate` | `400`, `data.code = INVALID_DATE_RANGE` (was `200` with an empty report on `/income-statement` and `/cash-flow`) |
+| `0001-01-01` .. `9999-12-31`, or a single day (`startDate = endDate`) | accepted |
+
+`/summary` and `/balance-sheet` are point-in-time snapshots and take **no dates**. Any query parameter, valid or not
+(`?startDate=2026-02-30`), is ignored and the answer stays `200`: there is nothing to validate.
 
 ## GET /api/v1/admin/accounting/journal-entries (ADMIN): now paged
 

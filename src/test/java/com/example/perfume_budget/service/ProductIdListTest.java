@@ -38,6 +38,22 @@ class ProductIdListTest {
     }
 
     @Test
+    void repeatedParamEntriesCountTogether_inOccurrenceOrder_acrossTheLimit() {
+        assertThat(ok("1,2,3,4,5,6", "7,8,9,10,11,12")).as("12 over two occurrences").hasSize(12);
+        rejects("At most 12 ids are allowed", "1,2,3,4,5,6", "7,8,9,10,11,12", "13");
+        assertThat(ok("9", "3,9", "5")).as("a repeat across occurrences appears once, first position").containsExactly(9L, 3L, 5L);
+        assertThat(ok(new String[]{null, "5"})).as("a null occurrence is skipped").containsExactly(5L);
+    }
+
+    @Test
+    void aBadEntryInAnyOccurrenceRejectsTheWholeRequest() {
+        rejects("ids must be positive integers", "1", "x");
+        rejects("ids must be positive integers", "1,2", "3,0");
+        rejects("ids must be positive integers", "", "5");
+        rejects("ids must be positive integers", "5", "");
+    }
+
+    @Test
     void missingOrEmptyIsRequired() {
         rejects("ids is required", (String[]) null);
         rejects("ids is required");

@@ -344,6 +344,25 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
+    public List<PublicProductListing> getFeaturedProducts(boolean inStockOnly) {
+        if (!inStockOnly) {
+            return getFeaturedProducts();
+        }
+        List<PublicProductListing> shelf = productCatalogCacheService.getInStockFeaturedProducts();
+        if (!allPublic(shelf)) {
+            log.warn("Ignoring a non-public cached in-stock featured list under {}", PUBLIC_FEATURED_CACHE);
+            if (cacheManager != null && cacheManager.getCache(PUBLIC_FEATURED_CACHE) != null) {
+                cacheManager.getCache(PUBLIC_FEATURED_CACHE).clear();
+            }
+            shelf = productCatalogCacheService.getInStockFeaturedProducts();
+            if (!allPublic(shelf)) {
+                throw new IllegalStateException("featured cache returned a non-public shape");
+            }
+        }
+        return shelf;
+    }
+
+    @Override
     public List<PublicProductListing> getFeaturedProducts() {
         List<?> cached = productCatalogCacheService.getFeaturedProducts();
         if (!allPublic(cached)) {
@@ -668,7 +687,35 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
+    @Transactional
     public void deleteProduct(Long productId) {
-        productRepository.deleteById(productId);
+        Product product = productRepository.findById(productId).orElse(null);
+        if (product == null) {
+            return; // idempotent: an unknown id is a no-op (204), as deleteById always was
+        }
+        ProductFamily family = product.getFamily();
+        boolean isFamilyBase = family != null && family.getBaseUnit() != null && productId.equals(family.getBaseUnit().getId());
+        if (!isFamilyBase) {
+            productRepository.delete(product);
+            productRepository.flush();
+            return;
+        }
+        // API-03: every product created with isNewProduct=true is the base unit of its own family
+        // (product_families.base_unit_id -> products, no cascade), so a plain delete always hit
+        // FK_PRODUCT_FAMILIES_ON_BASE_UNIT. A family whose base unit is the only member goes with it; a family that
+        // still has variants must lose them first (deleting the base would leave variants without a base unit).
+        if (productRepository.countByFamilyAndIdNot(family, productId) > 0) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, FAMILY_HAS_VARIANTS, FAMILY_HAS_VARIANTS_MESSAGE);
+        }
+        family.setBaseUnit(null);
+        productFamilyRepository.saveAndFlush(family);
+        productRepository.delete(product);
+        productRepository.flush();
+        productFamilyRepository.delete(family);
+        productFamilyRepository.flush();
     }
+
+    public static final String FAMILY_HAS_VARIANTS = "FAMILY_HAS_VARIANTS";
+    public static final String FAMILY_HAS_VARIANTS_MESSAGE =
+            "This product is the base unit of a family that still has other units; delete those first";
 }

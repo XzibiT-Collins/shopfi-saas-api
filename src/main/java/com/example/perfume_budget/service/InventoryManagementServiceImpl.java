@@ -9,6 +9,9 @@ import com.example.perfume_budget.enums.*;
 import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.model.*;
+import com.example.perfume_budget.dto.inventory.response.LegacyBalanceRepairResponse;
+import com.example.perfume_budget.dto.inventory.response.LegacyBalanceReportResponse;
+import com.example.perfume_budget.projection.LegacyBalanceCandidate;
 import com.example.perfume_budget.dto.inventory.response.LocationStockLine;
 import com.example.perfume_budget.dto.inventory.response.ProductStockByLocationResponse;
 import com.example.perfume_budget.repository.InventoryAllocationRepository;
@@ -56,9 +59,11 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
         Product product = getProduct(request.productId());
         validatePositiveAmounts(request.unitCost(), request.unitSellingPrice());
 
-        // First-ever receipt for a product that holds no stock is its opening stock.
+        // First-ever receipt for a product that holds no stock is its opening stock. INV-01b L2: "holds no stock" is a
+        // zero, missing or negative legacy balance (a negative one is not a count and is not preserved, see
+        // ensureLegacyLayer), as documentation/inventory-management-internal.md always said.
         boolean firstReceipt = !inventoryLayerRepository.existsByProductId(product.getId())
-                && (product.getStockQuantity() == null || product.getStockQuantity() == 0);
+                && (product.getStockQuantity() == null || product.getStockQuantity() <= 0);
         InventoryLayerSourceType sourceType = firstReceipt
                 ? InventoryLayerSourceType.OPENING_STOCK
                 : InventoryLayerSourceType.PURCHASE;
@@ -141,6 +146,81 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                 locations,
                 balancesMatchGlobal
         );
+    }
+
+    /** INV-01b L3: the largest report; one more row is read to tell "exactly 500" from "more". */
+    static final int LEGACY_REPORT_MAX = 500;
+
+    @Override
+    @Transactional(readOnly = true)
+    public LegacyBalanceReportResponse legacyBalanceReport() {
+        List<LegacyBalanceCandidate> rows = inventoryLayerRepository.findLegacyBalanceCandidates();
+        boolean truncated = rows.size() > LEGACY_REPORT_MAX;
+        List<LegacyBalanceReportResponse.Line> lines = rows.stream().limit(LEGACY_REPORT_MAX).map(this::toLegacyLine).toList();
+        int total = lines.stream().filter(LegacyBalanceReportResponse.Line::repairable).mapToInt(LegacyBalanceReportResponse.Line::lostUnits).sum();
+        return new LegacyBalanceReportResponse(lines, total, truncated);
+    }
+
+    private LegacyBalanceReportResponse.Line toLegacyLine(LegacyBalanceCandidate c) {
+        int lost = c.getLocationOnHand() - c.getStockQuantity() - c.getReservedQuantity();
+        return new LegacyBalanceReportResponse.Line(c.getProductId(), c.getSku(), c.getName(), c.getStockQuantity(),
+                c.getReservedQuantity(), c.getLocationOnHand(), lost, lost > 0);
+    }
+
+    /**
+     * INV-01b L3: restores the lost legacy units of exactly the requested products. Per product, under the product lock and
+     * re-checked against the same detection query: a LEGACY_BALANCE layer of {@code lostUnits}, dated one second before the
+     * product's oldest layer (the legacy units were on hand first, so FIFO sells them first), at that oldest layer's unit
+     * cost and selling price (the true legacy price is gone), plus one LEGACY_BOOTSTRAP movement. The location ledger is
+     * not touched (it still holds the units); no journal entry (like the original bootstrap). The new movement removes the
+     * product from the report, so a second run does nothing.
+     */
+    @Override
+    @Transactional
+    public LegacyBalanceRepairResponse repairLegacyBalances(List<Long> productIds) {
+        List<Long> ids = productIds.stream().distinct().sorted().toList();
+        List<LegacyBalanceRepairResponse.Line> results = new ArrayList<>();
+        int restored = 0;
+        for (Long id : ids) {
+            if (productRepository.findById(id).isEmpty()) {
+                results.add(new LegacyBalanceRepairResponse.Line(id, "SKIPPED", 0, "PRODUCT_NOT_FOUND"));
+                continue;
+            }
+            stockLocks.lock(List.of(id));
+            LegacyBalanceCandidate c = inventoryLayerRepository.findLegacyBalanceCandidate(id).orElse(null);
+            if (c == null) {
+                results.add(new LegacyBalanceRepairResponse.Line(id, "SKIPPED", 0, "NOT_AFFECTED"));
+                continue;
+            }
+            int lost = c.getLocationOnHand() - c.getStockQuantity() - c.getReservedQuantity();
+            if (lost <= 0) {
+                results.add(new LegacyBalanceRepairResponse.Line(id, "SKIPPED", 0, "NOTHING_TO_RESTORE"));
+                continue;
+            }
+            Product product = getProduct(id);
+            InventoryLayer oldest = inventoryLayerRepository.findByProductIdOrderByReceivedAtAscIdAsc(id).get(0);
+            InventoryLayer layer = inventoryLayerRepository.save(InventoryLayer.builder()
+                    .product(product)
+                    .sourceType(InventoryLayerSourceType.LEGACY_BALANCE)
+                    .sourceReference("LEGACY-" + id)
+                    .note("Restored legacy product balance (INV-01b repair)")
+                    .receivedQuantity(lost)
+                    .remainingQuantity(lost)
+                    .unitCost(oldest.getUnitCost())
+                    .unitSellingPrice(oldest.getUnitSellingPrice())
+                    .currencyCode(oldest.getCurrencyCode())
+                    .receivedAt(oldest.getReceivedAt().minusSeconds(1))
+                    .createdBy(getCurrentActor())
+                    .build());
+            recordMovement(product, layer, InventoryMovementType.LEGACY_BOOTSTRAP, InventoryReferenceType.LEGACY,
+                    "LEGACY-" + id, buildLineKey(id), lost, layer.getUnitCost(), layer.getUnitSellingPrice(),
+                    "Restored legacy stock balance overwritten by a receipt before INV-01");
+            refreshProductInventoryState(product);
+            log.info("Restored {} legacy units of product {}", lost, id);
+            results.add(new LegacyBalanceRepairResponse.Line(id, "REPAIRED", lost, null));
+            restored += lost;
+        }
+        return new LegacyBalanceRepairResponse(results, restored);
     }
 
     @Override
@@ -602,6 +682,14 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
      */
     private void ensureLegacyLayer(Product product, LocalDateTime notAfter) {
         if (!needsLegacyLayer(product)) {
+            // INV-01b L1 (decision): a NEGATIVE legacy balance is not a count of units on hand, so it is deliberately not
+            // turned into a (negative) layer: that would poison FIFO and the stock sum. It is dropped once the first layer
+            // is written (stock = sum of layers); say so, once, where it happens.
+            if (product.getStockQuantity() != null && product.getStockQuantity() < 0
+                    && !inventoryLayerRepository.existsByProductId(product.getId())) {
+                log.warn("Product {} has a negative legacy stock_quantity ({}); it is not bootstrapped and is replaced by the sum of its layers",
+                        product.getId(), product.getStockQuantity());
+            }
             return;
         }
         LocalDateTime now = LocalDateTime.now();

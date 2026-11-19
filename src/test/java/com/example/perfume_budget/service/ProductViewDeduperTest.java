@@ -35,6 +35,18 @@ class ProductViewDeduperTest {
     }
 
     @Test
+    void theWindowBoundaryIsExactlyThirtyMinutes_oneMillisecondEarlyIsStillTheSameView() {
+        ProductViewDeduper d = deduper(100);
+        assertThat(d.firstView("acme", 1, "ip")).isTrue();
+        now.addAndGet(30 * 60_000L - 1);
+        assertThat(d.firstView("acme", 1, "ip")).as("29:59.999").isFalse();
+        now.addAndGet(1);
+        assertThat(d.firstView("acme", 1, "ip")).as("30:00.000 is a new window").isTrue();
+        now.addAndGet(30 * 60_000L - 1);
+        assertThat(d.firstView("acme", 1, "ip")).as("the new window runs from the recount").isFalse();
+    }
+
+    @Test
     void tenantProductAndClientAreAllPartOfTheKey() {
         ProductViewDeduper d = deduper(100);
         assertThat(d.firstView("acme", 1, "ip")).isTrue();

@@ -23,6 +23,12 @@ public interface InventoryManagementService {
     List<InventoryMovementResponse> getProductInventoryHistory(Long productId);
     ProductStockByLocationResponse getProductStockByLocation(Long productId);
 
+    /** INV-01b L3: read-only detection of legacy balances overwritten before INV-01 (at most 500 products). */
+    com.example.perfume_budget.dto.inventory.response.LegacyBalanceReportResponse legacyBalanceReport();
+
+    /** INV-01b L3: opt-in repair of exactly the given products (documentation/inventory-management-internal.md). */
+    com.example.perfume_budget.dto.inventory.response.LegacyBalanceRepairResponse repairLegacyBalances(List<Long> productIds);
+
     void reserveOrderInventory(String orderNumber, List<OrderItem> orderItems);
     void releaseOrderInventory(String orderNumber);
     void finalizeReservedOrder(Order order);
