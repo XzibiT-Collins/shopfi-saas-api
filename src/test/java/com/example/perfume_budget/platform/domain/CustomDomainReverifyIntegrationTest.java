@@ -733,6 +733,20 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
     }
 
     @Test
+    void staleResultIsDroppedWhenAVerifiedRowChangedTokenButKeptDomainAndLease() {
+        armForImmediateDowngrade(); // isolates the token comparison: domain, status and due time are unchanged
+        unpublish(ACME_HOST);
+        Map<String, Object>[] snap = new Map[1];
+        dns.duringNextLookup(f -> {
+            jdbc.update("UPDATE master.tenants SET custom_domain_token = 'rotated-by-direct-edit' WHERE slug = 'acme'");
+            snap[0] = state("acme");
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertThat(snap[0].get("custom_domain_status")).isEqualTo("VERIFIED");
+        assertDroppedAndUntouched(snap[0], r);
+    }
+
+    @Test
     void staleResultIsDroppedWhenAManualVerifyChangedTheStatusDuringTheLookup() {
         armForImmediateDowngrade();
         Map<String, Object>[] snap = new Map[1];
