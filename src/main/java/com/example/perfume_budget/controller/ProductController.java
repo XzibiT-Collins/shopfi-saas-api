@@ -77,6 +77,11 @@ public class ProductController {
     }
 
     /** CAT-07: public lookup by ids (docs/api/catalog-public-lookup-and-views.md). No view is counted. */
+    // INTEG-01: the ids are read from the raw request (repeated or comma separated), so springdoc cannot see them:
+    // declared here so the OpenAPI document (and the frontend's contract drift check) lists the parameter.
+    @io.swagger.v3.oas.annotations.Parameter(name = "ids", in = io.swagger.v3.oas.annotations.enums.ParameterIn.QUERY,
+            description = "Product ids, repeated (ids=1&ids=2) or comma separated (ids=1,2); at most 12",
+            schema = @io.swagger.v3.oas.annotations.media.Schema(type = "string", example = "1,2,3"))
     @GetMapping("/by-ids")
     public ResponseEntity<CustomApiResponse<List<PublicProductListing>>> getProductsByIds(
             jakarta.servlet.http.HttpServletRequest request){
