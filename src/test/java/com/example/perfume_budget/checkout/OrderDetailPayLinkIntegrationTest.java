@@ -93,4 +93,22 @@ class OrderDetailPayLinkIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(s.get("orderNumber").asText()).isEqualTo(first.get("orderNumber").asText());
         assertThat(initiateCalls.get()).isEqualTo(1);
     }
+
+    /**
+     * Same, with a coupon that is NOT used up but has a per-customer limit of 1 that the open order already uses: the
+     * checkout's early pre-check must find the open order BEFORE the coupon pre-check refuses with COUPON_PER_USER_LIMIT
+     * (kills X06: a pre-check that looks for open orders with a cutoff of "now").
+     */
+    @Test
+    void aSecondTabGetsTheReplay_notThePerUserLimitRefusal_whenTheOpenOrderUsesTheCouponsPerUserSlot() throws Exception {
+        long p = product(acme, "PerUser", "50.00", 10);
+        coupon(acme, "PU1", 10);
+        jdbc.update("UPDATE tenant_acme.coupons SET usage_limit = 100, per_user_usage_limit = 1 WHERE code = 'PU1'");
+        Customer c = ready("pl8@acme.test", p, 1);
+        JsonNode first = ok(checkout(c, "pl-key-0081", "couponCode=PU1"));
+        MvcResult second = checkout(c, "pl-key-0082", "couponCode=pu1");
+        JsonNode s = ok(second);
+        assertThat(s.get("idempotentReplay").asBoolean()).isTrue();
+        assertThat(s.get("orderNumber").asText()).isEqualTo(first.get("orderNumber").asText());
+    }
 }
