@@ -99,7 +99,28 @@ dev): `tenant.custom-domain.reverify.enabled`.
 | definite miss (NXDOMAIN, no TXT, or no TXT with the exact value: a changed token counts too) | counts as one miss; the first miss of a streak starts the grace period; retry in `miss-retry-interval` (+ jitter). The domain stays `VERIFIED` and honoured until BOTH `misses-required` (3) consecutive definite misses AND `grace` (24 h) since the first miss are reached; then `VERIFIED` -> `FAILED` |
 | the stored domain no longer passes the rules above (e.g. the platform base domain or CNAME target changed) | `FAILED` at once with the `DOMAIN_*` code (a local rule, no DNS is involved, no grace) |
 
-With the defaults a record that disappeared is noticed within 24 h and the domain is downgraded after about 24 to 30 h.
+**Exposure window (what the grace costs).** With the defaults, after the TXT record is removed the domain can stay
+trusted for roughly 48 to 60 h in the worst case: the first check that notices it comes 24 to 28.8 h after the last
+good one (`interval` plus up to 20 % jitter), then the downgrade needs 3 misses spanning at least 24 h at 6 to 7.2 h
+spacing (`miss-retry-interval` plus jitter), i.e. the first check 24 h or more after the first miss. Shorten `interval`,
+`miss-retry-interval` and `grace` to trade tolerance for a smaller window. A DNS outage only delays this. A platform
+admin (or the owner) can verify or remove at any time for an immediate effect.
+
+**Limits of the TXT proof.** The proof is "the record exists", not "the current registrant published it": someone who
+buys a lapsed domain could replay the old record (the token is not secret; it can be seen in passive DNS history or old
+zone copies) and keep the domain trusted. That is inherent to a static TXT proof; the scheduled check only catches
+domains whose record really disappeared. Removing the domain (or rotating the claim with `PUT` of a different domain and
+back) issues a fresh token.
+
+**Throughput.** One round checks at most `batch-size` (10) domains and rounds start `tick-interval` (1 min) after the
+previous one ended: at most about 14,400 domains per day per instance (less when DNS is slow), so `interval` should be
+chosen with the number of VERIFIED domains in mind. The job's own bucket (`dns-per-minute`, 20) and the global verify
+bucket (`verify-global-per-minute`, 60) are **per JVM**, like every other limiter here: with N instances the totals are
+N times higher.
+
+Configuration is validated at start-up: zero or negative durations, `batch-size`, `misses-required` or `dns-per-minute`
+below 1 and `jitter-percent` outside 0..100 stop the application from starting; `misses-required=1` together with
+`grace=0` is accepted with a warning (a single bad resolver answer would downgrade a domain).
 
 **Downgrade** (one transaction, row lock, same as a failed manual verify): status `FAILED`, `failureReason`
 `TXT_RECORD_NOT_FOUND` (or the `DOMAIN_*` code), `verified_at` cleared, `checked_at` and `last_verified_at` = now (the
@@ -120,8 +141,9 @@ trusting the domain on the next request on every instance. Other instances' CORS
   (`UPDATE ... WHERE id = (SELECT ... WHERE status = 'VERIFIED' AND (due IS NULL OR due <= now) ORDER BY due LIMIT 1
   FOR UPDATE SKIP LOCKED) RETURNING ...`) that moves the row's due time `lease` (10 min) ahead. Two instances (or two
   rounds) never check the same row at once, a row locked by an admin write is skipped not waited for, no row lock is
-  held while DNS is queried (the result is applied under the row lock only if domain and token are still the ones that
-  were checked), and the rows of an instance that crashed mid-check come back when the lease ends.
+  held while DNS is queried (the result is applied under the row lock only if domain, token, status `VERIFIED` and the row's
+  due time (= this claim's lease end) are still the ones that were checked: an answer that arrives after the claim was
+  changed, or after the lease ended and another round took the row, is dropped, so a miss is never counted twice), and the rows of an instance that crashed mid-check come back when the lease ends.
 - A round checks at most `batch-size` (10) domains and a round is `tick-interval` (1 min) after the previous one ends,
   so a backlog is worked off gradually (most overdue first) instead of in a burst. Every schedule gets a random extra
   delay of up to `jitter-percent` (20 %) of its base delay, and the V9 migration spreads the first check of existing

@@ -89,6 +89,7 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
     void setUpReverify() {
         clock = new MutableClock(T0);
         job.setClock(clock);
+        job.setDnsPerMinute(props.getDnsPerMinute());
         job.resetLimits();
         service.resetLimits();
         schedule.setRandom(() -> 0.0); // no jitter unless a test asks
@@ -134,8 +135,8 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
                 + "custom_domain_verified_at = NULL, custom_domain_last_verified_at = NULL, custom_domain_failure = NULL, "
                 + "custom_domain_reverify_due_at = NULL, custom_domain_miss_count = 0, custom_domain_missing_since = NULL "
                 + "WHERE slug = ?", slug);
-        jdbc.update("UPDATE master.tenants SET custom_domain = ?, custom_domain_status = 'VERIFIED', custom_domain_token = ? "
-                + "WHERE slug = ?", domain, token, slug);
+        jdbc.update("UPDATE master.tenants SET custom_domain = ?, custom_domain_status = 'VERIFIED', custom_domain_token = ?, "
+                + "custom_domain_verified_at = ? WHERE slug = ?", domain, token, Timestamp.from(T0.minus(Duration.ofDays(1))), slug);
     }
 
     private void publish(String domain, String token) {
@@ -615,16 +616,197 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
     void neverLogsATokenOrTheTxtValueOrDnsErrorText() {
         unpublish(ACME_HOST);
         dns.fail("_shopfi-verification." + BRAVO_HOST);
+        round(); // miss path (misses-required 3): logs "TXT proof missing ... still trusted"; bravo: DNS error
+        assertThat(logs.list).extracting(ILoggingEvent::getFormattedMessage).anyMatch(m -> m.contains("still trusted"));
         props.setMissesRequired(1);
         props.setGrace(Duration.ZERO);
-        round();
         clock.advance(Duration.ofHours(30));
-        round();
-        assertThat(logs.list).isNotEmpty();
+        round(); // downgrade path
+        assertThat(logs.list).extracting(ILoggingEvent::getFormattedMessage).anyMatch(m -> m.contains("downgraded"));
         for (ILoggingEvent e : logs.list) {
             String text = e.getFormattedMessage() + " " + e.getThrowableProxy();
             assertThat(text).doesNotContain(ACME_TOKEN).doesNotContain(BRAVO_TOKEN)
                     .doesNotContain("shopfi-verification=").doesNotContain("fake timeout");
         }
+    }
+
+    // ---- rework: stale-result guard, lease, job bucket, schema --------------------------------------------------------
+
+    private static final String[] STATE_COLUMNS = {"custom_domain", "custom_domain_status", "custom_domain_token",
+            "custom_domain_checked_at", "custom_domain_verified_at", "custom_domain_last_verified_at",
+            "custom_domain_failure", "custom_domain_miss_count", "custom_domain_missing_since"};
+
+    private Map<String, Object> state(String slug) {
+        Map<String, Object> row = row(slug);
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        for (String c : STATE_COLUMNS) {
+            m.put(c, row.get(c));
+        }
+        return m;
+    }
+
+    /** bravo is not due, so the one-shot hook always runs inside acme's lookup. */
+    private void onlyAcmeDue() {
+        jdbc.update("UPDATE master.tenants SET custom_domain_reverify_due_at = ? WHERE slug = 'bravo'",
+                Timestamp.from(T0.plus(Duration.ofDays(30))));
+    }
+
+    private static CustomDomainService.Actor platform() {
+        return new CustomDomainService.Actor(CustomDomainService.ActorType.PLATFORM_ADMIN, 1L, "p@x.test");
+    }
+
+    /** Job answer is a definite miss and would downgrade at once if it were applied: any effect is visible. */
+    private void armForImmediateDowngrade() {
+        props.setMissesRequired(1);
+        props.setGrace(Duration.ZERO);
+        onlyAcmeDue();
+    }
+
+    private void assertDroppedAndUntouched(Map<String, Object> afterHook, CustomDomainReverifier.RoundResult r) {
+        assertThat(r.claimed()).isEqualTo(1);
+        assertThat(r.downgraded()).isZero();
+        assertThat(r.misses()).isZero();
+        assertThat(r.stillVerified()).isZero();
+        assertThat(state("acme")).isEqualTo(afterHook);
+        assertThat(reverifyAudits("acme")).isZero();
+    }
+
+    @Test
+    void staleResultIsDroppedWhenTheDomainWasRemoved() {
+        armForImmediateDowngrade();
+        unpublish(ACME_HOST);
+        Map<String, Object>[] snap = new Map[1];
+        dns.duringNextLookup(f -> {
+            service.remove("acme", platform());
+            snap[0] = state("acme");
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertDroppedAndUntouched(snap[0], r);
+        assertThat(row("acme").get("custom_domain")).isNull();
+    }
+
+    @Test
+    void staleResultIsDroppedWhenTheSameDomainWasReclaimedWithANewToken() {
+        armForImmediateDowngrade();
+        Map<String, Object>[] snap = new Map[1];
+        dns.duringNextLookup(f -> {
+            service.remove("acme", platform());
+            service.request("acme", ACME_HOST, platform()); // same domain, NEW token
+            String newToken = (String) row("acme").get("custom_domain_token");
+            unpublish(ACME_HOST); // the old token's record is gone; the new one is published
+            dns.put("_shopfi-verification." + ACME_HOST, "shopfi-verification=" + newToken);
+            service.verify("acme", platform()); // VERIFIED again: same domain, same status, different token
+            snap[0] = state("acme");
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertThat(snap[0].get("custom_domain_status")).isEqualTo("VERIFIED");
+        assertThat(snap[0].get("custom_domain_token")).isNotEqualTo(ACME_TOKEN);
+        assertDroppedAndUntouched(snap[0], r);
+    }
+
+    @Test
+    void staleResultIsDroppedWhenTheDomainWasReplacedByAnotherClaim() {
+        armForImmediateDowngrade();
+        unpublish(ACME_HOST);
+        Map<String, Object>[] snap = new Map[1];
+        dns.duringNextLookup(f -> {
+            service.request("acme", "other.acme-brand.com", platform());
+            snap[0] = state("acme");
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertThat(snap[0].get("custom_domain_status")).isEqualTo("PENDING");
+        assertDroppedAndUntouched(snap[0], r);
+    }
+
+    @Test
+    void staleResultIsDroppedWhenAVerifiedRowChangedDomainButKeptItsToken() {
+        armForImmediateDowngrade(); // isolates the domain comparison: status and token are unchanged
+        unpublish(ACME_HOST);
+        Map<String, Object>[] snap = new Map[1];
+        dns.duringNextLookup(f -> {
+            jdbc.update("UPDATE master.tenants SET custom_domain = 'moved.acme-brand.com' WHERE slug = 'acme'");
+            snap[0] = state("acme");
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertThat(snap[0].get("custom_domain_status")).isEqualTo("VERIFIED");
+        assertDroppedAndUntouched(snap[0], r);
+    }
+
+    @Test
+    void staleResultIsDroppedWhenAManualVerifyChangedTheStatusDuringTheLookup() {
+        armForImmediateDowngrade();
+        Map<String, Object>[] snap = new Map[1];
+        dns.duringNextLookup(f -> {
+            unpublish(ACME_HOST);
+            service.verify("acme", platform()); // record gone: VERIFIED -> FAILED, same domain and token
+            snap[0] = state("acme");
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertThat(snap[0].get("custom_domain_status")).isEqualTo("FAILED");
+        assertDroppedAndUntouched(snap[0], r);
+    }
+
+    @Test
+    void claimIsLeasedExactlyForTheLeaseAndANestedRoundClaimsNothing() {
+        onlyAcmeDue();
+        Instant[] due = new Instant[1];
+        CustomDomainReverifier.RoundResult[] nested = new CustomDomainReverifier.RoundResult[1];
+        dns.duringNextLookup(f -> {
+            due[0] = instant("acme", "custom_domain_reverify_due_at");
+            nested[0] = job.runRound();
+        });
+        CustomDomainReverifier.RoundResult r = round();
+        assertThat(due[0]).isEqualTo(T0.plus(Duration.ofMinutes(10)));
+        assertThat(nested[0].claimed()).isZero();
+        assertThat(r.claimed()).isEqualTo(1);
+        assertThat(r.stillVerified()).isEqualTo(1);
+    }
+
+    @Test
+    void aLeaseThatEndedDuringASlowLookupCannotCountTheSameMissTwice() {
+        onlyAcmeDue();
+        unpublish(ACME_HOST);
+        CustomDomainReverifier.RoundResult[] nested = new CustomDomainReverifier.RoundResult[1];
+        dns.duringNextLookup(f -> {
+            clock.advance(Duration.ofMinutes(11)); // the lease (10 min) ended: another round re-claims and checks the row
+            nested[0] = job.runRound();
+        });
+        CustomDomainReverifier.RoundResult outer = round();
+        assertThat(nested[0].claimed()).isEqualTo(1);
+        assertThat(nested[0].misses()).isEqualTo(1);
+        assertThat(outer.claimed()).isEqualTo(1);
+        assertThat(outer.misses()).isZero(); // its answer is dropped
+        assertThat(misses("acme")).isEqualTo(1); // counted once, not twice
+        assertThat(instant("acme", "custom_domain_missing_since")).isEqualTo(T0.plus(Duration.ofMinutes(11)));
+    }
+
+    @Test
+    void jobsOwnDnsBucketStopsLookupsWhileTheGlobalBucketStillHasTokens() {
+        job.setDnsPerMinute(1); // global bucket: 5 per minute in this profile
+        CustomDomainReverifier.RoundResult r = job.runRound();
+        assertThat(r.claimed()).isEqualTo(1);
+        assertThat(r.budgetStop()).isTrue();
+        assertThat(dns.lookups()).isEqualTo(1);
+        // the second row was handed back untouched and is still due
+        long due = jdbc.queryForObject("SELECT count(*) FROM master.tenants WHERE slug IN ('acme','bravo') "
+                + "AND custom_domain_reverify_due_at IS NULL", Long.class);
+        assertThat(due).isEqualTo(1);
+        int left = 0;
+        while (service.tryAcquireGlobalDnsToken()) {
+            left++;
+        }
+        assertThat(left).isEqualTo(4); // only the one lookup was charged to the global bucket
+    }
+
+    @Test
+    void schemaRejectsJobStateOnARowWithNoStatusToo() {
+        jdbc.update("UPDATE master.tenants SET custom_domain = NULL, custom_domain_status = NULL, custom_domain_token = NULL, "
+                + "custom_domain_verified_at = NULL, custom_domain_reverify_due_at = NULL WHERE slug = 'acme'");
+        assertThatThrownBy(() -> jdbc.update("UPDATE master.tenants SET custom_domain_reverify_due_at = now() WHERE slug = 'acme'"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE master.tenants SET custom_domain_miss_count = 1 WHERE slug = 'acme'"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE master.tenants SET custom_domain_missing_since = now() WHERE slug = 'acme'"))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 }

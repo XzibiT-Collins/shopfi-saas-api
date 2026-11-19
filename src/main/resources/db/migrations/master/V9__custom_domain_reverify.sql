@@ -21,7 +21,7 @@ WHERE custom_domain_status = 'VERIFIED';
 ALTER TABLE tenants
     ADD CONSTRAINT ck_tenants_custom_domain_reverify_state
         CHECK (custom_domain_miss_count >= 0
-            AND (custom_domain_status = 'VERIFIED'
+            AND (custom_domain_status IS NOT DISTINCT FROM 'VERIFIED'
                 OR (custom_domain_reverify_due_at IS NULL AND custom_domain_miss_count = 0
                     AND custom_domain_missing_since IS NULL)));
 

@@ -68,7 +68,7 @@ public class CustomDomainReverifier {
     private final CustomDomainReverifyProperties props;
     private final ReverifySchedule schedule;
     private final TransactionTemplate masterTx;
-    private final TokenBucketRateLimiter jobDnsLimiter;
+    private volatile TokenBucketRateLimiter jobDnsLimiter;
     private volatile Clock clock = Clock.systemUTC();
 
     public CustomDomainReverifier(JdbcTemplate jdbc, TenantRepository tenantRepository,
@@ -93,6 +93,11 @@ public class CustomDomainReverifier {
     /** Test support: fixed clock (also used for the claim query, so it is fully deterministic). */
     void setClock(Clock clock) {
         this.clock = clock;
+    }
+
+    /** Test support: replaces the job's own DNS bucket by one with this capacity per minute. */
+    void setDnsPerMinute(int perMinute) {
+        this.jobDnsLimiter = new TokenBucketRateLimiter(Math.max(1, perMinute), Duration.ofMinutes(1));
     }
 
     /** Test support: refills the job's own DNS bucket. */
@@ -145,7 +150,8 @@ public class CustomDomainReverifier {
     private Claim claim() {
         Instant now = clock.instant();
         Timestamp nowTs = Timestamp.from(now);
-        Timestamp leaseEnd = Timestamp.from(now.plus(lease()));
+        // micro precision: what the database stores, so applyLocked can compare it with the row's due time
+        Timestamp leaseEnd = Timestamp.from(now.plus(lease()).truncatedTo(java.time.temporal.ChronoUnit.MICROS));
         List<Claim> rows = jdbc.query("""
                 WITH c AS (SELECT id, custom_domain_reverify_due_at AS old_due FROM master.tenants
                            WHERE custom_domain_status = 'VERIFIED'
@@ -200,8 +206,11 @@ public class CustomDomainReverifier {
         Tenant t = tenantRepository.lockById(c.id()).orElse(null);
         if (t == null || t.getCustomDomainStatus() != CustomDomainStatus.VERIFIED
                 || !Objects.equals(c.domain(), t.getCustomDomain())
-                || !Objects.equals(c.token(), t.getCustomDomainToken())) {
-            return "STALE"; // changed while DNS was queried: that answer is not about the current claim
+                || !Objects.equals(c.token(), t.getCustomDomainToken())
+                || !c.leaseEnd().toInstant().equals(t.getCustomDomainReverifyDueAt())) {
+            // changed while DNS was queried (claim replaced/removed/failed, or the lease ended and another round
+            // re-claimed or rescheduled the row): that answer is not about the current claim, so it is dropped and
+            // can never be counted twice
         }
         Instant now = clock.instant();
         switch (answer) {
