@@ -108,9 +108,12 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
                         .requestMatchers(HttpMethod.GET, "/api/v1/product/featured", "/api/v1/product/listing",
-                                "/api/v1/product/search", "/api/v1/product/*").permitAll()
+                                "/api/v1/product/search", "/api/v1/product/by-ids", "/api/v1/product/*").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/product/featured", "/api/v1/product/listing",
-                                "/api/v1/product/search", "/api/v1/product/*").permitAll()
+                                "/api/v1/product/search", "/api/v1/product/by-ids", "/api/v1/product/*").permitAll()
+                        // VIEW-01: the browser-side view beacon is the one public product mutation (a counter; rate limited,
+                        // deduped and tenant scoped in the service). Exactly POST /product/{slug}/view.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/product/*/view").permitAll()
                         .requestMatchers("/api/v1/product/**").hasRole("ADMIN")
                         // Paystack webhook: unauthenticated by design, authenticated by per-tenant token + HMAC signature.
                         .requestMatchers(HttpMethod.POST, "/api/v1/webhook/*").permitAll()

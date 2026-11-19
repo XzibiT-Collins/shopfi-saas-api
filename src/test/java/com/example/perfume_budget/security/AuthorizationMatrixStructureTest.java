@@ -135,7 +135,8 @@ class AuthorizationMatrixStructureTest {
         expect(PUBLIC, "PlatformAuthController", "login", "refresh", "logout");
         expect(PUBLIC, "TenantOnboardingController", "signup", "verify", "resend", "status");
         expect(PUBLIC, "CategoryController", "getCategories");
-        expect(PUBLIC, "ProductController", "getFeaturedProducts", "getProductListings", "searchProducts", "getProductDetailsPage");
+        expect(PUBLIC, "ProductController", "getFeaturedProducts", "getProductListings", "searchProducts", "getProductDetailsPage",
+                "getProductsByIds", "recordView"); // CAT-07 by-ids read; VIEW-01 view beacon (public mutation, a counter)
         expect(PUBLIC, "StoreThemeController", "getTheme");
 
         // --- any signed-in tenant user, no role. /tax and /tax/all: decided to stay open to signed-in users (SEC-03b F8):
@@ -152,13 +153,14 @@ class AuthorizationMatrixStructureTest {
             "AuthController#logout", "AuthController#refreshToken", "AuthController#forgotPassword",
             "AuthController#resetPassword", "WebhookController#processWebhook", "DevTenantController#createTenant",
             "PlatformAuthController#login", "PlatformAuthController#refresh", "PlatformAuthController#logout",
-            "TenantOnboardingController#signup", "TenantOnboardingController#verify", "TenantOnboardingController#resend");
+            "TenantOnboardingController#signup", "TenantOnboardingController#verify", "TenantOnboardingController#resend",
+            "ProductController#recordView");
 
     /** Public reads. */
     static final Set<String> PUBLIC_READS = Set.of(
             "CategoryController#getCategories", "ProductController#getFeaturedProducts",
             "ProductController#getProductListings", "ProductController#searchProducts",
-            "ProductController#getProductDetailsPage", "StoreThemeController#getTheme",
+            "ProductController#getProductDetailsPage", "ProductController#getProductsByIds", "StoreThemeController#getTheme",
             "TenantOnboardingController#status");
 
     // ---------------------------------------------------------------- handler model

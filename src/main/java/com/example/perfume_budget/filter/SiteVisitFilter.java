@@ -54,6 +54,7 @@ public class SiteVisitFilter extends OncePerRequestFilter {
         String path = canonical(request);
         // HEAD is a probe/prefetch, not a visit (SEC-03b: HEAD became public on the storefront reads)
         return "HEAD".equalsIgnoreCase(request.getMethod()) ||
+                isViewBeacon(request, path) ||
                 hasInvalidPercentEncoding(request.getRequestURI()) ||
                 isWebhookPath(request) ||
                 resemblesWebhook(request.getRequestURI()) ||
@@ -62,6 +63,16 @@ public class SiteVisitFilter extends OncePerRequestFilter {
                 path.endsWith(".js") ||
                 path.endsWith(".css") ||
                 path.endsWith(".ico");
+    }
+
+    /**
+     * VIEW-01: the product view beacon is not a page visit and its path carries a caller chosen slug: recording it would
+     * store the address and an arbitrary string per request (an unbounded-row, PII path). It has its own bounded,
+     * in-memory dedupe and rate limit instead.
+     */
+    static boolean isViewBeacon(HttpServletRequest request, String canonicalPath) {
+        return "POST".equalsIgnoreCase(request.getMethod())
+                && canonicalPath.matches("/api/v1/product/[^/]+/view/?");
     }
 
     /**
