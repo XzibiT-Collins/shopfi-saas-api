@@ -45,7 +45,8 @@ public interface TenantRepository extends JpaRepository<Tenant, Long>,
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update Tenant t set t.customDomain = null, t.customDomainStatus = null, t.customDomainToken = null, "
             + "t.customDomainRequestedAt = null, t.customDomainCheckedAt = null, t.customDomainVerifiedAt = null, "
-            + "t.customDomainLastVerifiedAt = null, t.customDomainFailure = null, t.updatedAt = CURRENT_TIMESTAMP "
+            + "t.customDomainLastVerifiedAt = null, t.customDomainFailure = null, "
+            + "t.customDomainReverifyDueAt = null, t.customDomainMissCount = 0, t.customDomainMissingSince = null, t.updatedAt = CURRENT_TIMESTAMP "
             + "where t.id = :id and lower(t.customDomain) = :host "
             + "and t.customDomainStatus <> com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED "
             + "and t.customDomainRequestedAt < :cutoff "
