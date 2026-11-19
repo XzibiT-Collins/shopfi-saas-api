@@ -39,9 +39,15 @@ public final class IntegrationServer {
                 // best effort
             }
         }, "integration-server-cleanup"));
+        settings(apiPort, controlPort, frontendPort).forEach(System::setProperty);
         new SpringApplicationBuilder(PerfumeBudgetApplication.class, IntegrationServerConfig.class)
                 .profiles("test", "pgtest")
-                .properties(Map.ofEntries(
+                .run(args);
+    }
+
+    /** Applied as system properties: they must beat application-test.properties (H2) and application-pgtest.properties. */
+    private static Map<String, String> settings(int apiPort, int controlPort, int frontendPort) {
+        return Map.ofEntries(
                         Map.entry("server.port", String.valueOf(apiPort)),
                         Map.entry("integration.control-port", String.valueOf(controlPort)),
                         Map.entry("integration.frontend-port", String.valueOf(frontendPort)),
@@ -66,8 +72,7 @@ public final class IntegrationServer {
                         Map.entry("onboarding.resend-ip.capacity", "1000"),
                         Map.entry("onboarding.resend-email.capacity", "1000"),
                         Map.entry("application.auth.rate-limit.resend-otp-ip.capacity", "1000"),
-                        Map.entry("application.auth.rate-limit.resend-otp-email.capacity", "1000")))
-                .run(args);
+                        Map.entry("application.auth.rate-limit.resend-otp-email.capacity", "1000"));
     }
 
     private static int port(String env, int fallback) {

@@ -390,3 +390,20 @@ someone else's signup). Master migration `V4__tenant_signup_resend.sql` adds the
 `./prometheus-scrape-token` **before** `docker compose up` (a missing file makes Docker create a directory with that name,
 and the mount then fails). Prometheus trims the file's trailing newline. With no token configured the endpoint is closed.
 
+
+## Real-stack launcher (INTEG-01, test scope)
+
+`com.example.perfume_budget.integration.IntegrationServer` (src/test) boots the real backend against a dedicated
+PostgreSQL database with in-memory Redis, captured mail, a stub Paystack and fake DNS, seeded tenants `acme` / `bravo`
+(admin `admin@<slug>.test` / `Passw0rd!test`, customer `customer@<slug>.test` / `Passw0rd!cust`, coupon `SAVE10`).
+Tenants resolve from the browser Origin (`http://acme.localhost:3910`); the `X-Tenant-ID` header is off.
+
+```bash
+./mvnw -q test-compile dependency:build-classpath -Dmdep.outputFile=target/integ.cp -Dmdep.includeScope=test
+SHOPFI_TEST_DB_URL=jdbc:postgresql://localhost:5432/<dedicated db> \
+  java -cp target/test-classes:target/classes:$(cat target/integ.cp) com.example.perfume_budget.integration.IntegrationServer
+```
+
+API on `INTEG_API_PORT` (4910), test control + Paystack stub on `INTEG_CONTROL_PORT` (4911; `/__test/mail`, `/__test/otp`,
+`/__test/tenants/{slug}/gateway`, `/__test/paystack/*`). Every app schema in the database is dropped at start and exit.
+The control endpoints live on their own JDK HttpServer inside the launcher: no test endpoint exists in main code.
