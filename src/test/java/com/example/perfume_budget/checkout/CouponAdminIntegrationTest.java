@@ -234,33 +234,6 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
     }
 
     @Test
-    void aUsedUpCouponIsInvalidAtCheckoutPreviewAndTax_evenForACustomerAtThePerUserLimit() throws Exception {
-        // API-06c: checkout used to answer COUPON_PER_USER_LIMIT here while preview said COUPON_INVALID
-        long p = product(acme, "Kiwi", "100.00", 30);
-        Map<String, Object> b = body("LASTONE", "FLAT", "10");
-        b.put("usageLimit", 1);
-        b.put("perUserUsageLimit", 1);
-        createCoupon(acme, adminA, b);
-        Customer c = ready(acme, "uu1@acme.test", p);
-        MvcResult first = checkout(c, "key-uu-0001-aaaa", "couponCode=LASTONE");
-        assertThat(first.getResponse().getStatus()).isEqualTo(200);
-        jdbc.update("UPDATE tenant_acme.orders SET status = 'COMPLETED' WHERE order_number = ?",
-                body(first).at("/data/orderNumber").asText());
-        assertThat(usageCount("LASTONE")).isEqualTo(1);
-        jdbc.update("DELETE FROM tenant_acme.cart_items");
-        cart(c, p, 1);
-
-        MvcResult second = checkout(c, "key-uu-0002-aaaa", "couponCode=LASTONE");
-        assertThat(second.getResponse().getStatus()).isEqualTo(400);
-        assertThat(body(second).get("data").isNull()).as("not COUPON_PER_USER_LIMIT: " + second.getResponse().getContentAsString()).isTrue();
-        assertThat(body(second).at("/description").asText()).isNotEqualTo("You have already used this coupon the maximum number of times");
-        MvcResult preview = mvc.perform(as(post("/api/v1/cart/preview").contentType("application/json")
-                .content("{\"couponCode\":\"LASTONE\"}"), c)).andReturn();
-        assertThat(body(preview).at("/data/coupon/reason").asText()).isEqualTo("COUPON_INVALID");
-        assertThat(usageCount("LASTONE")).isEqualTo(1);
-    }
-
-    @Test
     void cancelledOrFailedOrdersDoNotConsumeThePerUserLimit() throws Exception {
         long p = product(acme, "Jasmine", "100.00", 30);
         Map<String, Object> b = body("AGAIN", "FLAT", "10");

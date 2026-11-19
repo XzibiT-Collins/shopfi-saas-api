@@ -174,11 +174,12 @@ A coupon that cannot be applied does not fail the call: totals are returned with
 `COUPON_MIN_AMOUNT`, `COUPON_NOT_COMBINABLE` (cart has discounted items), `COUPON_PER_USER_LIMIT` (API-06: this
 customer has already used the coupon `perUserUsageLimit` times; `message` is the same text checkout returns, "You have
 already used this coupon the maximum number of times"). The per-user limit is only checked for a coupon that is
-otherwise valid, so it reveals nothing to a customer who has not redeemed the coupon before. A coupon that is used up
-(`usageCount` reached `usageLimit`) is `COUPON_INVALID` on the preview, on `GET /tax` and at checkout, **also for a
-customer who is at the per-user limit** (API-06c: checkout used to answer `COUPON_PER_USER_LIMIT` there, because its
-pre-check ran the per-user rule first). The usage counter is read there only as a hint: the reservation `UPDATE` stays the
-single authority, so a slot freed by a cancel in between is still honoured. Empty cart: 400.
+otherwise valid, so it reveals nothing to a customer who has not redeemed the coupon before. Documented difference (API-06c, assessed, kept): for a coupon that is used up
+(`usageCount` reached `usageLimit`) AND a customer who is already at the per-user limit, checkout answers
+`COUPON_PER_USER_LIMIT` (its pre-check runs the minimum-amount and per-user rules before the reservation `UPDATE` decides
+about the usage counter, so a request that is refused anyway never holds a redemption), while the cart preview and `GET /tax`
+report `COUPON_INVALID` / "inactive" for the same coupon. Both are refusals; clients should treat any 400 on a coupon as
+"cannot be applied" and show the code's message. Pinned by `CouponRetryWiringIntegrationTest` (R18). Empty cart: 400.
 Tax lines (`taxes.orderTaxes[]`) carry `taxCode`, `currency`, `taxAmountFormatted` and `taxRatePercent` in the cart preview
 as on orders; a tax row stored without a currency (older data) is formatted without a currency prefix (`"20.00"`) and has
 `currency: null`, never `"null 20.00"` (API-06b).

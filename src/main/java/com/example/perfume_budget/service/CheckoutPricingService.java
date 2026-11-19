@@ -94,13 +94,6 @@ public class CheckoutPricingService {
         if (coupon == null || !discountCalculationUtil.redeemableIgnoringUsage(coupon)) {
             return;
         }
-        // API-06c: a used-up coupon is answered by the reservation as a plain invalid coupon, exactly like the cart
-        // preview and GET /tax, even when this customer is also at the per-user limit (the counter read here is only
-        // a hint; the reservation UPDATE stays the single authority, so a freed slot is still honoured)
-        if (coupon.getUsageLimit() != null && coupon.getUsageCount() != null
-                && coupon.getUsageCount() >= coupon.getUsageLimit()) {
-            return;
-        }
         quote(cart, true, () -> coupon);
     }
 
