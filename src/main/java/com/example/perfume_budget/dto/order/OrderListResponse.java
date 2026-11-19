@@ -13,6 +13,7 @@ public record OrderListResponse (
         String orderNumber,
         String reference,
         boolean refundRequired,
+        boolean cancellable,          // API-02: true while the owner may POST /api/v1/order/{orderNumber}/cancel (PENDING/INITIATED)
         PaymentStatus paymentStatus,
         OrderProcessingStatus deliveryStatus,
         String totalAmount,

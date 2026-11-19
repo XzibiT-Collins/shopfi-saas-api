@@ -33,6 +33,9 @@ public class LocationLedgerSyncImpl implements LocationLedgerSync {
     private final AuthUserUtil authUserUtil;
     private final ApplicationEventPublisher eventPublisher;
 
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
     @Override
     @Transactional
     public void applyDelta(Product product, StorageLocation location, int delta, StockTransferType type,
@@ -158,6 +161,10 @@ public class LocationLedgerSyncImpl implements LocationLedgerSync {
     }
 
     private LocationStock lockOrCreate(Product product, StorageLocation location) {
+        // EVT-01d low 1 (FIX-B): the location-ledger row lock is a lock point of the settlement path too (after the
+        // product rows, before the ledger accounts): its wait is limited to the settlement's budget left. No-op (no SQL)
+        // outside a webhook settlement.
+        SettlementDeadline.beforeLockWait(entityManager);
         return locationStockRepository.findForUpdate(product.getId(), location.getId())
                 .orElseGet(() -> locationStockRepository.save(LocationStock.builder()
                         .product(product)

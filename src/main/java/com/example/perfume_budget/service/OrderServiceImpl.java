@@ -429,7 +429,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public PageResponse<OrderListResponse> getMyOrders(Pageable pageable) {
         User user = authUserUtil.getCurrentUser();
-        Page<Order> orders = orderRepository.findAllByUser(requireSortable(pageable), user);
+        Page<Order> orders = orderRepository.findAllByUser(withIdTieBreak(requireSortable(pageable)), user);
         Map<Long, Payment> refs = referencesFor(orders.getContent());
         return PaginationUtil.createPageResponse(
                 orders.map(o -> OrderMapper.toOrderListResponse(o, refs.get(o.getId()))));
@@ -506,6 +506,17 @@ public class OrderServiceImpl implements OrderService {
                     "page * size must be below " + MAX_OFFSET + ": narrow the list with from/to, q or a status filter.",
                     Map.of("maxOffset", MAX_OFFSET, "size", size));
         }
+        return withIdTieBreak(org.springframework.data.domain.PageRequest.of(pageable.getPageNumber(), size, pageable.getSort()));
+    }
+
+    /**
+     * ORD-05b: appends the unique id as the final sort key (same direction as the first key) so rows that share a
+     * createdAt/status never swap places between pages; no sort means newest first. An unpaged request is unchanged.
+     */
+    static Pageable withIdTieBreak(Pageable pageable) {
+        if (pageable.isUnpaged()) {
+            return pageable;
+        }
         org.springframework.data.domain.Sort sort = pageable.getSort().isSorted()
                 ? pageable.getSort()
                 : org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt");
@@ -514,7 +525,7 @@ public class OrderServiceImpl implements OrderService {
             org.springframework.data.domain.Sort.Direction dir = sort.iterator().next().getDirection();
             sort = sort.and(org.springframework.data.domain.Sort.by(dir, "id"));
         }
-        return org.springframework.data.domain.PageRequest.of(pageable.getPageNumber(), size, sort);
+        return org.springframework.data.domain.PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sort);
     }
 
     /** Blank = no search; control characters or more than {@link #MAX_SEARCH_LENGTH} characters are a 400 (never truncated). */

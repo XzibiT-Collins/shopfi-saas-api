@@ -29,9 +29,16 @@ class JwtTokenTypeTest {
         return u;
     }
 
-    private String untyped() {
-        return Jwts.builder().subject("a@b.test").issuedAt(new Date()).expiration(new Date(System.currentTimeMillis() + 600_000))
+    /** An untyped token valid for {@code lifetimeMs} from now (the claim set of a pre-SEC-03e token). */
+    private String untyped(long lifetimeMs) {
+        long now = System.currentTimeMillis();
+        return Jwts.builder().subject("a@b.test").issuedAt(new Date(now)).expiration(new Date(now + lifetimeMs))
                 .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(KEY))).compact();
+    }
+
+    /** What an old refresh token looked like: the refresh lifetime (24 h here), above the 1 h access lifetime. */
+    private String untyped() {
+        return untyped(86_400_000L);
     }
 
     @Test
@@ -76,5 +83,35 @@ class JwtTokenTypeTest {
         JWTUtil u = util("2099-01-01T00:00:00Z");
         assertThat(u.isAccessToken(t)).isFalse();
         assertThat(u.isRefreshToken(t)).isFalse();
+    }
+
+    /** FIX-B: during the grace an untyped token must also have lived longer than an access token, or it is just an old access token. */
+    @Test
+    void duringTheGraceAnUntypedTokenWithAnAccessLifetimeIsNotARefreshToken() {
+        JWTUtil u = util("2099-01-01T00:00:00Z");
+        assertThat(u.isRefreshToken(untyped(86_400_000L))).as("refresh lifetime: accepted").isTrue();
+        assertThat(u.isRefreshToken(untyped(3_600_001L + 1_000L))).as("just above the access lifetime: accepted").isTrue();
+        assertThat(u.isRefreshToken(untyped(3_600_000L))).as("exactly the access lifetime: refused").isFalse();
+        assertThat(u.isRefreshToken(untyped(600_000L))).as("shorter than the access lifetime: refused").isFalse();
+        assertThat(u.isRefreshToken(untyped(1_000L))).isFalse();
+    }
+
+    @Test
+    void anUntypedTokenWithoutIssuedAtOrExpiryIsNotARefreshTokenEvenDuringTheGrace() {
+        JWTUtil u = util("2099-01-01T00:00:00Z");
+        String noIat = Jwts.builder().subject("a@b.test").expiration(new Date(System.currentTimeMillis() + 86_400_000L))
+                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(KEY))).compact();
+        String noExp = Jwts.builder().subject("a@b.test").issuedAt(new Date())
+                .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(KEY))).compact();
+        assertThat(u.isRefreshToken(noIat)).isFalse();
+        assertThat(u.isRefreshToken(noExp)).isFalse();
+    }
+
+    @Test
+    void theLifetimeRuleNeverAffectsTypedTokens() {
+        JWTUtil u = util("");
+        assertThat(u.isRefreshToken(u.generateRefreshToken("a@b.test", "ADMIN", 1L, "A B"))).isTrue();
+        ReflectionTestUtils.setField(u, "jwtRefreshExpirationMs", 60_000L); // a refresh token shorter than the access one is still typed
+        assertThat(u.isRefreshToken(u.generateRefreshToken("a@b.test", "ADMIN", 1L, "A B"))).isTrue();
     }
 }

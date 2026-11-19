@@ -47,7 +47,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
                 .isActive(true)
                 .build();
 
-        return toResponse(shopWideDiscountRepository.save(discount));
+        return toResponse(shopWideDiscountRepository.save(discount), LocalDateTime.now(systemClock));
     }
 
     @Override
@@ -55,9 +55,10 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
     public ShopWideDiscountResponse getCurrent() {
         // API-04: only a discount that is in force right now (active flag AND inside its window); an expired or
         // not-yet-started row is "none" (404), exactly what EffectivePriceService prices with.
-        ShopWideDiscount discount = shopWideDiscountRepository.findActiveNow(LocalDateTime.now(systemClock))
+        LocalDateTime now = LocalDateTime.now(systemClock);
+        ShopWideDiscount discount = shopWideDiscountRepository.findActiveNow(now)
                 .orElseThrow(() -> new ResourceNotFoundException("No active shop-wide discount."));
-        return toResponse(discount);
+        return toResponse(discount, now);
     }
 
     /** Upper bound on {@link #listNotEnded()}; setting a discount retires the others, so normally there is one row. */
@@ -70,7 +71,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
         // a scheduled discount back (e.g. after a page reload) and end it with DELETE /{id} before it starts.
         LocalDateTime now = LocalDateTime.now(systemClock);
         return shopWideDiscountRepository.findNotEnded(now, PageRequest.of(0, LIST_LIMIT)).stream()
-                .map(this::toResponse)
+                .map(d -> toResponse(d, now))
                 .toList();
     }
 
@@ -84,8 +85,8 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
         shopWideDiscountRepository.save(discount);
     }
 
-    private ShopWideDiscountResponse toResponse(ShopWideDiscount discount) {
-        LocalDateTime now = LocalDateTime.now(systemClock);
+    /** API-06c: {@code now} is the instant the caller's query used, so a row never shows a status its query did not see. */
+    private ShopWideDiscountResponse toResponse(ShopWideDiscount discount, LocalDateTime now) {
         boolean switchedOn = Boolean.TRUE.equals(discount.getIsActive());
         boolean currentlyActive = switchedOn
                 && !now.isBefore(discount.getStartAt())

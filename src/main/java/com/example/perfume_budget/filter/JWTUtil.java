@@ -164,7 +164,26 @@ public class JWTUtil {
         if (TYPE_REFRESH.equals(type)) {
             return true;
         }
-        return type == null && untypedGraceOpen();
+        return type == null && untypedGraceOpen() && livedLongerThanAnAccessToken(token);
+    }
+
+    /**
+     * FIX-B (FIX-A2 optional hardening): during the untyped grace an untyped token must also have been MINTED with a
+     * lifetime ({@code exp - iat}) above the access-token lifetime, which is what a refresh token always had. An old
+     * untyped ACCESS token (lifetime = the access TTL, e.g. 15 min) therefore cannot be traded for a new access token
+     * while the grace is open. A token without {@code iat} / {@code exp} is refused (fail closed). Legitimate untyped
+     * refresh tokens are unaffected as long as the refresh lifetime is longer than the access lifetime (a deployment
+     * where JWT_REFRESH_EXPIRATION is not above the access expiration has no meaningful refresh token anyway).
+     */
+    private boolean livedLongerThanAnAccessToken(String token) {
+        Claims claims = parseToken(token);
+        Date issuedAt = claims.getIssuedAt();
+        Date expiration = claims.getExpiration();
+        if (issuedAt == null || expiration == null) {
+            return false;
+        }
+        long lifetimeSeconds = (expiration.getTime() - issuedAt.getTime()) / 1000;
+        return lifetimeSeconds > accessTokenTtlSeconds();
     }
 
     private boolean untypedGraceOpen() {

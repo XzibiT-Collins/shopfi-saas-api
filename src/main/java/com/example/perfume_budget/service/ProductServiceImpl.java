@@ -89,7 +89,21 @@ public class ProductServiceImpl implements ProductService {
         String uploadedImageUrl = uploadToCloudIfImageIsPresent(request.productImage());
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
         if (!Boolean.TRUE.equals(request.isNewProduct())) {
-            return tx.execute(status -> createProductRows(request, uploadedImageUrl));
+            try {
+                return tx.execute(status -> createProductRows(request, uploadedImageUrl));
+            } catch (jakarta.persistence.EntityNotFoundException e) {
+                // FIX-B (found by the delete-vs-add-variant race test): the family's base unit (a lazy proxy) was deleted
+                // together with its family by a concurrent product delete between this request's family read and its
+                // first use of the base unit; that used to surface as a 500
+                throw new ResourceNotFoundException("Product family not found.");
+            } catch (DataIntegrityViolationException e) {
+                // ORD-02d: two identical concurrent variant adds both pass the existsBySku check; the loser's insert
+                // hits uc_products_sku and gets the documented answer, not the generic 409 constraint text
+                if (isSkuClash(e)) {
+                    throw new BadRequestException(variantExistsMessage(request.uomCode() != null ? request.uomCode() : "EA"));
+                }
+                throw e;
+            }
         }
         for (int attempt = 1; ; attempt++) {
             try {
@@ -146,6 +160,18 @@ public class ProductServiceImpl implements ProductService {
 
     private static ApiCodeException familyCodeUnavailable() {
         return new ApiCodeException(HttpStatus.CONFLICT, FAMILY_CODE_UNAVAILABLE, FAMILY_CODE_UNAVAILABLE_MESSAGE);
+    }
+
+    static String variantExistsMessage(String uomCode) {
+        return "Variant with UOM " + uomCode + " already exists for this family.";
+    }
+
+    /** A unique violation (SQLState 23505) on products.sku: a concurrent create took the same SKU. */
+    static boolean isSkuClash(DataIntegrityViolationException e) {
+        DbErrorDetails details = DbErrorDetails.of(e);
+        String constraint = details.constraint();
+        return "23505".equals(details.sqlState()) && constraint != null
+                && "uc_products_sku".equals(constraint.substring(constraint.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT));
     }
 
     /** A unique violation (SQLState 23505) on the family code or the SKU: a concurrent create took the same code. */
@@ -222,7 +248,7 @@ public class ProductServiceImpl implements ProductService {
             // Check if variant already exists
             String generatedSku = family.getFamilyCode() + "-" + uom.getCode();
             if (productRepository.existsBySku(generatedSku)) {
-                throw new BadRequestException("Variant with UOM " + uom.getCode() + " already exists for this family.");
+                throw new BadRequestException(variantExistsMessage(uom.getCode()));
             }
 
             Product baseUnit = family.getBaseUnit();

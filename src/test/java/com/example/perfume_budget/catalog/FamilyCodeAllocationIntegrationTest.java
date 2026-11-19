@@ -221,4 +221,28 @@ class FamilyCodeAllocationIntegrationTest extends AbstractCheckoutIntegrationTes
         assertThat(raceAttempts()).as("not retried").isEqualTo(1);
         assertNoOrphans(0);
     }
+
+    /** ORD-02d: the loser of two identical concurrent variant adds gets the documented 400, not the generic 409. */
+    @Test
+    void aConcurrentIdenticalVariantAddLosesWithTheDocumented400_notTheGeneric409() throws Exception {
+        MvcResult base = create();
+        assertThat(base.getResponse().getStatus()).isEqualTo(200);
+        long baseId = body(base).at("/data/productId").asLong();
+        long family = jdbc.queryForObject("SELECT family_id FROM tenant_acme.products WHERE id = ?", Long.class, baseId);
+        // the insert of '<code>-BOX' fails like a concurrent insert of the same SKU (23505 on uc_products_sku) would
+        raceOn("products", "uc_products_sku", 1);
+        Map<String, Object> a = jdbc.queryForMap("SELECT id, email, full_name FROM tenant_acme.users WHERE email = ?", acme.adminEmail());
+        String token = tenants.runAs(acme, () -> jwtUtil.generateAccessToken((String) a.get("email"), "ADMIN",
+                ((Number) a.get("id")).longValue(), (String) a.get("full_name")));
+        MvcResult r = mvc.perform(multipart("/api/v1/product/add-product")
+                .param("productName", "Qzv").param("currency", "GHS").param("sellingPrice", "500.00").param("costPrice", "0")
+                .param("isNewProduct", "false").param("familyId", String.valueOf(family)).param("uomCode", "BOX")
+                .param("conversionFactor", "6").param("isActive", "false").param("isEnlisted", "false")
+                .header("X-Tenant-ID", "acme").cookie(new Cookie("accessToken", token))).andReturn();
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(400);
+        assertThat(body(r).at("/description").asText()).isEqualTo("Variant with UOM BOX already exists for this family.");
+        assertThat(raceAttempts()).as("not retried").isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.products WHERE family_id = ?", Integer.class, family))
+                .as("only the base unit").isEqualTo(1);
+    }
 }

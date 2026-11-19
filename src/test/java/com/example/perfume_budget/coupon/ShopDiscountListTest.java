@@ -67,6 +67,44 @@ class ShopDiscountListTest {
         assertThat(statusOf(row(1, "2026-07-01T00:00:00", "2026-07-30T00:00:00", false))).isEqualTo(Status.INACTIVE);
     }
 
+    /** A clock that moves one hour on every read: two reads in one request would disagree. */
+    private static Clock tickingClock() {
+        return new Clock() {
+            private long reads;
+
+            @Override
+            public ZoneId getZone() {
+                return ZoneId.of("UTC");
+            }
+
+            @Override
+            public Clock withZone(ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public synchronized Instant instant() {
+                return Instant.parse("2026-06-15T12:00:00Z").plusSeconds(3600L * reads++);
+            }
+        };
+    }
+
+    @Test
+    void theStatusOfARowIsComputedAtTheInstantItsQueryUsed_notAtALaterClockRead() {
+        ShopWideDiscountServiceImpl ticking = new ShopWideDiscountServiceImpl(repo, tickingClock());
+        // in force for 30 minutes after the first read; a second clock read (an hour later) would show it EXPIRED
+        ShopWideDiscount d = row(1, "2026-06-15T11:00:00", "2026-06-15T12:30:00", true);
+        when(repo.findNotEnded(eq(NOW), any(Pageable.class))).thenReturn(List.of(d));
+        assertThat(ticking.listNotEnded()).singleElement().satisfies(r -> {
+            assertThat(r.status()).isEqualTo(Status.ACTIVE);
+            assertThat(r.currentlyActive()).isTrue();
+        });
+        // getCurrent: the clock is now one hour later; the query's instant and the row's status agree on it
+        ShopWideDiscount later = row(2, "2026-06-15T12:30:00", "2026-06-15T13:30:00", true);
+        when(repo.findActiveNow(eq(NOW.plusHours(1)))).thenReturn(Optional.of(later));
+        assertThat(ticking.getCurrent().status()).isEqualTo(Status.ACTIVE);
+    }
+
     private Status statusOf(ShopWideDiscount d) {
         when(repo.findActiveNow(any())).thenReturn(Optional.of(d));
         return service.getCurrent().status();

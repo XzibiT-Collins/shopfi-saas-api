@@ -636,7 +636,8 @@ public class AdminMetricServiceImpl implements AdminMetricService {
         Map<String, Long> map = new LinkedHashMap<>();
         map.put("Completed", 0L); map.put("Pending", 0L); map.put("Packing", 0L);
         map.put("Out for Delivery", 0L); map.put("Delivered", 0L);
-        map.put("Cancelled", 0L); map.put("Refunded", 0L);
+        // ORD-07: Returned sits next to Cancelled, as in the ONLINE chart (not appended after Refunded by the merge)
+        map.put("Cancelled", 0L); map.put("Returned", 0L); map.put("Refunded", 0L);
         onlineStatuses.forEach(p -> {
             String label = onlineLabel(p.getDeliveryStatus().name());
             if (label != null) map.merge(label, p.getCount(), Long::sum);

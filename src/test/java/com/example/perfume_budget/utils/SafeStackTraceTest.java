@@ -175,4 +175,24 @@ class SafeStackTraceTest {
     void nullIsRendered() {
         assertThat(SafeStackTrace.of(null)).hasToString("null");
     }
+
+    @Test
+    void theCutNeverLeavesHalfASurrogatePair() {
+        String pair = new String(Character.toChars(0x1F600)); // 2 chars
+        StringBuilder split = new StringBuilder("a".repeat(9)).append(pair).append("tail");
+        SafeStackTrace.cutAt(split, 10); // would end between the two halves
+        assertThat(split.toString()).isEqualTo("a".repeat(9));
+        assertThat(Character.isHighSurrogate(split.charAt(split.length() - 1))).isFalse();
+
+        StringBuilder whole = new StringBuilder("a".repeat(8)).append(pair).append("tail");
+        SafeStackTrace.cutAt(whole, 10); // exactly after the pair: kept
+        assertThat(whole.toString()).isEqualTo("a".repeat(8) + pair);
+
+        StringBuilder plain = new StringBuilder("abcdefghij" + "klm");
+        SafeStackTrace.cutAt(plain, 10);
+        assertThat(plain.toString()).isEqualTo("abcdefghij");
+        StringBuilder shorter = new StringBuilder("abc");
+        SafeStackTrace.cutAt(shorter, 10);
+        assertThat(shorter.toString()).isEqualTo("abc");
+    }
 }

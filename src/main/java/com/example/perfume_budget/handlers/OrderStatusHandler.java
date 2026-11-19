@@ -23,9 +23,8 @@ public class OrderStatusHandler {
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleOrderStatusChangeEvent(OrderStatusChangeEvent event){
         String reference = MailDispatcher.reference(event);
-        mailDispatcher.submit("order status e-mail", reference, () -> {
-            log.info("Order status change e-mail for {}", reference);
-            emailService.notifyCustomerOnOrderStatusChange(event);
-        });
+        // one INFO line per e-mail: EmailServiceImpl logs "Order status e-mail sent for order ..." (or the lost-mail line);
+        // a second "about to send" line here only doubled every status e-mail in the log (ORD-07 review low)
+        mailDispatcher.submit("order status e-mail", reference, () -> emailService.notifyCustomerOnOrderStatusChange(event));
     }
 }

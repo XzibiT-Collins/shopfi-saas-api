@@ -129,4 +129,65 @@ class ProductDeleteIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(delete(id).getResponse().getStatus()).isEqualTo(204);
         assertThat(rows("products", "id = ?", id)).isZero();
     }
+
+    private MvcResult addVariant(long familyId, String uom) throws Exception {
+        return mvc.perform(multipart("/api/v1/product/add-product")
+                .param("productName", "Qdl").param("currency", "GHS").param("sellingPrice", "500.00").param("costPrice", "0")
+                .param("isNewProduct", "false").param("familyId", String.valueOf(familyId)).param("uomCode", uom)
+                .param("conversionFactor", "6").param("isActive", "false").param("isEnlisted", "false")
+                .header("X-Tenant-ID", "acme").cookie(admin())).andReturn();
+    }
+
+    /**
+     * FIX-C review low / FIX-B: deleting the family's base unit while another admin adds a variant to the same family.
+     * Whatever the interleaving, exactly one of them wins, neither answers 5xx, and the rows are consistent: either the
+     * family and its base unit are gone with no variant left behind, or the family keeps its base unit and the variant.
+     * (Lock analysis in docs/api/checkout.md: the delete locks the family row, then the product row; nothing waits for
+     * the other in a cycle, the loser's foreign key check fails and answers 409.)
+     */
+    @Test
+    void deleteRacingAddVariantOnOneFamily_oneWins_neverA500_andTheStateIsConsistent() throws Exception {
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        int deleteWon = 0;
+        int addWon = 0;
+        try {
+            for (int round = 0; round < 24; round++) {
+                long base = createBase().get("productId").asLong();
+                long family = familyOf(base);
+                java.util.concurrent.CyclicBarrier go = new java.util.concurrent.CyclicBarrier(2);
+                java.util.concurrent.Future<MvcResult> del = pool.submit(() -> {
+                    go.await();
+                    return delete(base);
+                });
+                java.util.concurrent.Future<MvcResult> add = pool.submit(() -> {
+                    go.await();
+                    return addVariant(family, "BOX");
+                });
+                MvcResult d = del.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                MvcResult a = add.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                int ds = d.getResponse().getStatus();
+                int as = a.getResponse().getStatus();
+                String ctx = "round " + round + ": delete " + ds + " " + d.getResponse().getContentAsString()
+                        + " / add " + as + " " + a.getResponse().getContentAsString();
+                assertThat(ds).as(ctx).isIn(204, 409);
+                assertThat(as).as(ctx).isIn(200, 400, 404, 409);
+                assertThat((ds == 204) != (as == 200)).as("exactly one wins: " + ctx).isTrue();
+                if (ds == 204) {
+                    deleteWon++;
+                    assertThat(rows("product_families", "id = ?", family)).as(ctx).isZero();
+                    assertThat(rows("products", "family_id = ?", family)).as("no orphan variant: " + ctx).isZero();
+                    assertThat(rows("products", "id = ?", base)).as(ctx).isZero();
+                } else {
+                    addWon++;
+                    assertThat(rows("product_families", "id = ?", family)).as(ctx).isEqualTo(1);
+                    assertThat(rows("product_families", "base_unit_id = ?", base)).as("still the base unit: " + ctx).isEqualTo(1);
+                    assertThat(rows("products", "family_id = ?", family)).as("base + variant: " + ctx).isEqualTo(2);
+                }
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        // information for the PR: both outcomes normally occur; the assertion above is the contract
+        System.out.println("delete-vs-add-variant race: delete won " + deleteWon + ", add won " + addWon);
+    }
 }

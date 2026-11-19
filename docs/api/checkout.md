@@ -126,7 +126,9 @@ Paystack origin, as after checkout). Re-sending the SAME cart as that order also
   OPEN_ORDER_EXISTS` against the order created for the old address. Offer pay or cancel as for any other change.
 * **A product in the cart deactivated or delisted since the order was created:** checkout answers `400` with
   `data.code` `PRODUCT_UNAVAILABLE` (description unchanged, "One or more products in your cart are no longer available
-  for ecommerce purchase.") before any open-order check. If the customer has an open order (from the marker), offer
+  for ecommerce purchase."). The product check comes before the open-order check for a keyless request and for a NEW
+  `Idempotency-Key`; a request that repeats the key of the open order itself is decided earlier still, as a replay of
+  that order's first answer (the key lookup runs before any cart validation). If the customer has an open order (from the marker), offer
   "cancel it" (`POST /api/v1/order/{orderNumber}/cancel`) and ask them to remove the product from the cart. The open
   order itself can still be paid via its `authorizationUrl` while it is open.
 
@@ -155,7 +157,8 @@ Both fields are optional (the body may be omitted). No delivery fee exists: `del
     "couponDiscountAmount": "GHS 20.00",
     "discountedSubtotal": "GHS 180.00",
     "taxes": {
-      "orderTaxes": [ { "id": null, "taxName": "VAT", "taxAmount": 22.50, "taxRate": 12.5 } ],
+      "orderTaxes": [ { "id": null, "taxName": "VAT", "taxAmount": 22.50, "taxRate": 12.5, "taxCode": "VAT",
+                        "currency": "GHS", "taxAmountFormatted": "GHS 22.50", "taxRatePercent": 12.5 } ],
       "totalTaxAmount": "GHS 22.50",
       "totalAmountAfterTax": "GHS 202.50"
     },
@@ -171,7 +174,15 @@ A coupon that cannot be applied does not fail the call: totals are returned with
 `COUPON_MIN_AMOUNT`, `COUPON_NOT_COMBINABLE` (cart has discounted items), `COUPON_PER_USER_LIMIT` (API-06: this
 customer has already used the coupon `perUserUsageLimit` times; `message` is the same text checkout returns, "You have
 already used this coupon the maximum number of times"). The per-user limit is only checked for a coupon that is
-otherwise valid, so it reveals nothing to a customer who has not redeemed the coupon before. Empty cart: 400.
+otherwise valid, so it reveals nothing to a customer who has not redeemed the coupon before. Documented difference (API-06c, assessed, kept): for a coupon that is used up
+(`usageCount` reached `usageLimit`) AND a customer who is already at the per-user limit, checkout answers
+`COUPON_PER_USER_LIMIT` (its pre-check runs the minimum-amount and per-user rules before the reservation `UPDATE` decides
+about the usage counter, so a request that is refused anyway never holds a redemption), while the cart preview and `GET /tax`
+report `COUPON_INVALID` / "inactive" for the same coupon. Both are refusals; clients should treat any 400 on a coupon as
+"cannot be applied" and show the code's message. Pinned by `CouponRetryWiringIntegrationTest` (R18). Empty cart: 400.
+Tax lines (`taxes.orderTaxes[]`) carry `taxCode`, `currency`, `taxAmountFormatted` and `taxRatePercent` in the cart preview
+as on orders; a tax row stored without a currency (older data) is formatted without a currency prefix (`"20.00"`) and has
+`currency: null`, never `"null 20.00"` (API-06b).
 `GET /api/v1/cart` items now carry `lineTotal` (unit price x quantity, server computed); never multiply on the client.
 
 ## GET /api/v1/payment/verify?reference=
@@ -261,7 +272,9 @@ transaction's `lock_timeout` is set to `min(per-wait cap, time left)` (cap 8 s, 
 transaction only; pooled connections keep the defaults). With nothing left the settlement stops (`500`, redelivered),
 so a delivery ends at the budget. A wait in a statement that is not a lock point (a flush, a foreign-key check) is
 still bounded by the limit the previous lock point set, so it can end past the budget by at most the time since that
-lock point (in the settlement path those statements only touch rows already locked in the lock order). Outside a webhook settlement
+lock point (in the settlement path those statements only touch rows already locked in the lock order). The location-ledger
+row lock (`location_stock`, taken after the product rows when the stock is finalised or restocked) is a lock point too
+(FIX-B: it was the one lock that skipped the limit). Outside a webhook settlement
 (checkout, cancel, verify poll, jobs) nothing changes. Postgres `transaction_timeout` was not used: it exists only from
 PostgreSQL 17 (the compose file runs 16) and it terminates the whole session instead of failing the statement.
 `shopfi.webhook.settlement-deadline-ms` is checked at startup: it must be more than 250 ms (no attempt starts with less,
@@ -315,7 +328,7 @@ sends it once. Duplicate success events for an already settled payment send noth
 | 404 | `PAYMENT_NOT_FOUND` | unknown, other customer's or other tenant's reference |
 | 404 | `ORDER_NOT_FOUND` | same for orders |
 | 404 | `DELIVERY_DETAIL_NOT_FOUND` | address not the caller's |
-| 409 | `ORDER_NOT_CANCELLABLE` | order already paid/failed |
+| 409 | `ORDER_NOT_CANCELLABLE` | order already paid/failed; `data` also has `orderNumber` and `paymentStatus` (the current payment status, e.g. `COMPLETED`) so the page can say why. The list rows' `cancellable` flag (`GET /order/my-orders`, `/all`; API-02) is false in exactly these states |
 | 409 | `IDEMPOTENT_ORDER_CLOSED` | keyed order is no longer payable |
 | 409 | `OPEN_ORDER_EXISTS` | (PAY-03) the customer already has an open (unpaid, not expired) order for a different cart / coupon / address, or for this cart but it cannot be resumed (no stored Paystack URL); `data.orderNumber`, `data.expiresAt` (ISO-8601 UTC). Nothing was created or reserved; pay (order detail `authorizationUrl`) or cancel that order, then retry |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | key reused for a different request |
@@ -368,8 +381,10 @@ the order, payment, stock and product rows, and change the coupon counter with O
 before `COMMIT` (deferred to the transaction's before-commit phase, after a flush of everything else). So none of them
 holds the coupon row while it waits for product / stock rows, and two of them can no longer deadlock on coupon vs stock
 (they all lock in the same order). API-05: the "stock" step is always the product rows in ascending id order, in one
-`FOR NO KEY UPDATE` statement, taken before any inventory layer is read and before ANY product row is written
-(stock refresh or sold-count `UPDATE`); checkout takes it after its Paystack call. Rework: payment success
+`FOR NO KEY UPDATE` statement, taken before any inventory layer is read and before any product row is written BY A STOCK
+PATH (stock refresh or sold-count `UPDATE`; API-05b L4: admin product edits and discounts, and the view / cart counters,
+are single-row writes that take no `ProductStockLocks` first: each touches one row, so none can be one half of a
+lock-order cycle); checkout takes it after its Paystack call. Rework: payment success
 (webhook / verify) bumps the sold counts only after the stock finalisation has taken the order's product locks (before,
 its per-item sold-count `UPDATE`s locked the products in order-item order and deadlocked with a checkout of the same
 products, which then answered `503 TRY_AGAIN` after Paystack had been called); merchant restock and walk-in sale do the
@@ -393,7 +408,9 @@ add-item waits for it and removes its line too; an add-item arriving after the c
 cart won the race-free insert (`ON CONFLICT DO NOTHING` inserted nothing), and a clear / settlement deleted that cart
 before the re-read. Add-item, populate and get cart then insert again, at most 3 rounds (each round either inserts the
 request's own cart or saw a cart deleted in between), and only a cart that keeps vanishing answers `503 TRY_AGAIN`
-(`Retry-After: 1`, nothing changed), never the former `500`. Update quantity and remove line never create a cart: with
+(`Retry-After: 1`), never the former `500`. "Nothing changed" holds for add-item and get cart; **populate has no
+request-wide transaction** (each item is added in its own), so the items it added before the 503 stay in the cart and a
+blind retry adds them again (quantities add up): after a populate 503 read `GET /api/v1/cart` before retrying. (CAT-04b) Update quantity and remove line never create a cart: with
 no cart (never had one, or a clear / settlement just deleted it) the line does not exist, `404` "Cart item not found or
 does not belong to you", and no empty cart is left behind. (F-D) Payment success empties the cart of the order's own
 user (by id), not of whoever has the payment's checkout-time e-mail address; an order without a user touches no cart.
@@ -402,6 +419,24 @@ Global order, no path inverts it: customer row (checkout) -> order row (settleme
 cart row -> cart lines -> product rows by id -> location ledger -> ledger accounts by id -> coupon row last. No
 transaction that holds a cart row lock takes a customer, order or payment lock afterwards (add-item's first-cart insert
 needs the customer row's FK share lock, but it takes it before it holds any lock).
+
+**Payment rows are not locked on their own.** Every writer of a payment row (settlement, cancel, expiry, refund
+acknowledgement, return) already holds that order's row lock, and the payment row is reached only through its order, so
+the order lock serialises them; `returnDelivered` and `acknowledgeRefund` read and `save` the payment without a lock of its
+own for that reason (ORD-07 review note). A new path that writes a payment must take the order row first.
+
+**Product delete vs checkout (FIX-C review, FIX-B).** `DELETE /product/delete/{id}` takes no `ProductStockLocks`. For a
+family's base unit it writes, in this order: the family row (`UPDATE product_families SET base_unit_id = NULL`, a
+`FOR NO KEY UPDATE`), the product row (`DELETE`, `FOR UPDATE`), then the family row again (`DELETE`). Checkout, settlement
+and cancel never take a family row, and they take product rows `FOR NO KEY UPDATE` in ascending id; so the delete can only
+ever WAIT for them (for a product row they hold) and they never wait for something the delete holds: no cycle, no deadlock.
+A product that checkout, a cart, an order or the ledgers still reference fails the delete's foreign key checks instead
+(409, rolled back as a whole). Racing the delete against an add-variant on the same family: whichever commits first wins,
+the other answers `409` (a foreign key on the vanished family) or `404` "Product family not found.", never `500`
+(FIX-B: the race test found that an add-variant whose family was deleted between its read of the family and its first use of
+the family's base unit answered `500` from a vanished lazy reference; that is now the `404`), and the rows are
+consistent (family and base unit both gone with no variant, or family, base unit and variant all present); a test pins it
+(`ProductDeleteIntegrationTest`).
 
 ## Coupon limits (`POST /api/v1/coupon/add-coupon`, `PUT /api/v1/coupon/{id}`)
 
@@ -426,6 +461,11 @@ or replaced by a newer discount).
   the others, so normally there is 0 or 1. Use it to read a scheduled discount back (e.g. after a page reload) and end it
   with `DELETE /api/v1/admin/shop-discount/{id}` before it starts.
 * `GET /api/v1/admin/shop-discount/current` (unchanged): only the discount in force right now, else 404.
+* Setting a discount (`PUT`, also one that only starts later) switches off every discount that is still switched on,
+  including the one in force right now, and it is that decision that stays (API-06c, assessed): there is one shop-wide
+  discount at a time, so a scheduled one replaces the running one at once, not when it starts. To keep the running discount
+  until the new one begins, set the new one after the running one has ended. Each row's `status` and `currentlyActive` are
+  computed at the same instant the list query used.
 
 ## Payment settings webhook URL, shown once (API-06)
 

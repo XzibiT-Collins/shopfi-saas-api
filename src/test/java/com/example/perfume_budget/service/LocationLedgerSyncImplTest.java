@@ -315,4 +315,50 @@ class LocationLedgerSyncImplTest {
         assertEquals("ORD-9", captor.getValue().getReferenceId());
         verifyNoInteractions(storageLocationRepository);
     }
+
+    // ---- EVT-01d low 1 (FIX-B): the location-ledger row lock is a settlement lock point
+
+    @org.junit.jupiter.api.AfterEach
+    void clearTransactionFlag() {
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+    }
+
+    @Test
+    void theLocationLedgerRowLockSetsItsLimitFromTheSettlementBudgetLeft_beforeTheLockStatement() {
+        jakarta.persistence.EntityManager em = org.mockito.Mockito.mock(jakarta.persistence.EntityManager.class);
+        jakarta.persistence.Query q = org.mockito.Mockito.mock(jakarta.persistence.Query.class);
+        when(em.createNativeQuery(any(String.class))).thenReturn(q);
+        when(q.setParameter(any(String.class), any())).thenReturn(q);
+        org.springframework.test.util.ReflectionTestUtils.setField(locationLedgerSync, "entityManager", em);
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        when(locationStockRepository.findForUpdate(7L, 1L))
+                .thenReturn(Optional.of(LocationStock.builder().product(product).location(shopFloor).quantityOnHand(5).build()));
+
+        SettlementDeadline.run(System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20), 8000, () -> {
+            locationLedgerSync.applyDelta(product, shopFloor, -1, StockTransferType.SALE_DEDUCTION, InventoryReferenceType.ORDER, "ORD-1", "n", staff);
+            return null;
+        });
+
+        InOrder order = inOrder(em, locationStockRepository);
+        order.verify(em).createNativeQuery(org.mockito.ArgumentMatchers.contains("set_config('lock_timeout'"));
+        order.verify(locationStockRepository).findForUpdate(7L, 1L);
+        // the limit is the time left, never more than the per-wait cap
+        ArgumentCaptor<Object> limit = ArgumentCaptor.forClass(Object.class);
+        verify(q).setParameter(eq("l"), limit.capture());
+        long ms = Long.parseLong(limit.getValue().toString().replace("ms", ""));
+        org.junit.jupiter.api.Assertions.assertTrue(ms > 0 && ms <= 8000, "lock_timeout " + ms);
+    }
+
+    @Test
+    void outsideASettlementTheLocationLedgerLockRunsNoExtraSql() {
+        jakarta.persistence.EntityManager em = org.mockito.Mockito.mock(jakarta.persistence.EntityManager.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(locationLedgerSync, "entityManager", em);
+        org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+        when(locationStockRepository.findForUpdate(7L, 1L))
+                .thenReturn(Optional.of(LocationStock.builder().product(product).location(shopFloor).quantityOnHand(5).build()));
+
+        locationLedgerSync.applyDelta(product, shopFloor, -1, StockTransferType.SALE_DEDUCTION, InventoryReferenceType.ORDER, "ORD-1", "n", staff);
+
+        verifyNoInteractions(em);
+    }
 }

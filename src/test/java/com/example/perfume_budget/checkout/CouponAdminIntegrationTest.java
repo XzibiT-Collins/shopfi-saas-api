@@ -725,12 +725,57 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
             assertThat(data(rot).at("/data/webhookUrl").asText()).endsWith("/api/v1/webhook/" + fresh);
             assertThat(send(get("/api/v1/payment-settings"), acme, adminA, null).getResponse().getContentAsString()).doesNotContain(fresh);
 
-            for (ILoggingEvent e : logs.list) {
+            root.detachAppender(logs); // API-05b L2: stop async writers first, then copy: no ConcurrentModificationException
+            for (ILoggingEvent e : new java.util.ArrayList<>(logs.list)) {
                 assertThat(e.getFormattedMessage()).as("log line leaks a webhook token").doesNotContain(token).doesNotContain(fresh);
             }
         } finally {
             root.detachAppender(logs);
         }
+    }
+
+    @Test
+    void theFirstPaymentSettingsSaveWaitsForTheTenantRowLock_soAConcurrentFirstSaveNeverMintsASecondToken() throws Exception {
+        // API-06c: holds the tenant row like a concurrent first PUT / rotate would; the save must queue on it (deterministic
+        // latch, no timing race) and, once it gets the row, find the token the other writer minted and mint nothing
+        jdbc.update("UPDATE master.tenants SET webhook_token = NULL WHERE slug = 'acme'");
+        String other = "T".repeat(43);
+        Map<String, Object> keys = Map.of("secretKey", "sk_test_FAKELATCH" + "a".repeat(16), "publicKey", "pk_test_FAKELATCHpub", "enabled", true);
+        ExecutorService ex = Executors.newSingleThreadExecutor();
+        try (Connection holder = jdbc.getDataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            int holderPid;
+            try (java.sql.Statement st = holder.createStatement()) {
+                st.execute("SELECT id FROM master.tenants WHERE slug = 'acme' FOR UPDATE");
+                try (java.sql.ResultSet rs = st.executeQuery("SELECT pg_backend_pid()")) {
+                    rs.next();
+                    holderPid = rs.getInt(1);
+                }
+            }
+            Future<MvcResult> put = ex.submit(() -> send(put("/api/v1/payment-settings"), acme, adminA, keys));
+            long deadline = System.currentTimeMillis() + 20_000;
+            int waiting = 0;
+            while (System.currentTimeMillis() < deadline && waiting == 0) {
+                waiting = jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid)) "
+                        + "AND query ILIKE '%tenants%'", Integer.class, holderPid);
+                if (waiting == 0) {
+                    Thread.sleep(20);
+                }
+            }
+            assertThat(waiting).as("the save queues on the tenant row lock (lockBySlug)").isEqualTo(1);
+            assertThat(put.isDone()).isFalse();
+            try (java.sql.Statement st = holder.createStatement()) {
+                st.executeUpdate("UPDATE master.tenants SET webhook_token = '" + other + "' WHERE slug = 'acme'");
+            }
+            holder.commit();
+            MvcResult r = put.get(30, TimeUnit.SECONDS);
+            assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+            assertThat(data(r).at("/data/webhookUrl").isNull()).as("the token already existed: nothing is shown or minted").isTrue();
+            assertThat(data(r).at("/data/hasWebhookToken").asBoolean()).isTrue();
+        } finally {
+            ex.shutdownNow();
+        }
+        assertThat(webhookToken(acme)).isEqualTo(other);
     }
 
     // ---- payment settings
@@ -791,7 +836,8 @@ class CouponAdminIntegrationTest extends AbstractCheckoutIntegrationTest {
             send(post("/api/v1/payment-settings/rotate-webhook-token"), acme, adminA, null);
             assertThat(webhook(b, evt)).isNotEqualTo(404);
 
-            for (ILoggingEvent e : logs.list) {
+            root.detachAppender(logs); // API-05b L2: stop async writers first, then copy: no ConcurrentModificationException
+            for (ILoggingEvent e : new java.util.ArrayList<>(logs.list)) {
                 String line = e.getFormattedMessage();
                 assertThat(line).as("log line leaks").doesNotContain(secret).doesNotContain(oldToken).doesNotContain(newToken);
             }
