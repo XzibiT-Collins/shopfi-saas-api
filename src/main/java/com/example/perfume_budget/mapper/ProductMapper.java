@@ -75,6 +75,7 @@ public class ProductMapper {
                         .categoryName(category.getName())
                         .categoryId(category.getId())
                         .description(category.getDescription())
+                        .slug(category.getSlug())
                         .build(): null)
                 .sellingPrice(effectivePrice.effectiveDisplay())
                 .originalPrice(effectivePrice.originalDisplay())
@@ -91,6 +92,10 @@ public class ProductMapper {
                 .isEnlisted(Boolean.TRUE.equals(product.getIsEnlisted()))
                 .isFeatured(Boolean.TRUE.equals(product.getIsFeatured()))
                 .slug(product.getSlug())
+                .sellingPriceAmount(effectivePrice.effectiveAmount())
+                .originalPriceAmount(effectivePrice.originalAmount())
+                .costPriceAmount(product.getCostPrice() != null ? product.getCostPrice().getAmount() : null)
+                .currency(effectivePrice.currencyCode())
                 .build();
     }
 }

@@ -701,9 +701,47 @@ class ProductServiceImplTest {
     }
 
     @Test
-    void deleteProduct_DelegatesToRepository() {
+    void deleteProduct_plainVariantIsDeleted() {
+        Product variant = Product.builder().id(2L).family(family).build();
+        family.setBaseUnit(baseProduct);
+        when(productRepository.findById(2L)).thenReturn(Optional.of(variant));
+        productService.deleteProduct(2L);
+        verify(productRepository).delete(variant);
+        verify(productFamilyRepository, never()).delete(any(ProductFamily.class));
+    }
+
+    @Test
+    void deleteProduct_unknownIdIsANoOp() {
+        when(productRepository.findById(99L)).thenReturn(Optional.empty());
+        productService.deleteProduct(99L);
+        verify(productRepository, never()).delete(any(Product.class));
+    }
+
+    @Test
+    void deleteProduct_baseUnitAloneInItsFamilyTakesTheFamilyWithIt() {
+        baseProduct.setFamily(family);
+        family.setBaseUnit(baseProduct);
+        when(productRepository.findById(1L)).thenReturn(Optional.of(baseProduct));
+        when(productRepository.countByFamilyAndIdNot(family, 1L)).thenReturn(0L);
         productService.deleteProduct(1L);
-        verify(productRepository).deleteById(1L);
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(productFamilyRepository, productRepository);
+        order.verify(productFamilyRepository).saveAndFlush(family);
+        order.verify(productRepository).delete(baseProduct);
+        order.verify(productFamilyRepository).delete(family);
+        assertNull(family.getBaseUnit());
+    }
+
+    @Test
+    void deleteProduct_baseUnitWithVariantsIs409FamilyHasVariants() {
+        baseProduct.setFamily(family);
+        family.setBaseUnit(baseProduct);
+        when(productRepository.findById(1L)).thenReturn(Optional.of(baseProduct));
+        when(productRepository.countByFamilyAndIdNot(family, 1L)).thenReturn(2L);
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(
+                com.example.perfume_budget.exception.ApiCodeException.class, () -> productService.deleteProduct(1L));
+        assertEquals("FAMILY_HAS_VARIANTS", e.getCode());
+        verify(productRepository, never()).delete(any(Product.class));
+        verify(productFamilyRepository, never()).delete(any(ProductFamily.class));
     }
 
     private ProductRequest buildRequest(

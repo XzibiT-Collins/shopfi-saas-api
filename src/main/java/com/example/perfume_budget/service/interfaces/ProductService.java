@@ -20,6 +20,9 @@ public interface ProductService {
 
     List<PublicProductListing> getFeaturedProducts();
 
+    /** CAT-05: {@code inStockOnly} keeps only products with stock, still at most 8. */
+    List<PublicProductListing> getFeaturedProducts(boolean inStockOnly);
+
     PageResponse<ProductListing> searchAdminProducts(Long categoryId, String searchTerm, Pageable pageable);
     ProductDetails getProductDetails(Long productId);
     /** The public product page. Read only: it never counts a view (VIEW-01, see {@link #recordView}). */

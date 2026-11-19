@@ -88,12 +88,13 @@ class ProductListingCacheIntegrationTest extends AbstractPostgresIntegrationTest
         assertEquals(1, second.content().size());
         verify(productRepository, times(1)).findAllByIsActiveTrueAndIsEnlistedTrue(pageable);
 
+        when(productRepository.findById(1L)).thenReturn(java.util.Optional.of(product));
         productService.deleteProduct(1L);
 
         PageResponse<PublicProductListing> third = productService.getProductListings(pageable);
         assertEquals(1, third.content().size());
         verify(productRepository, times(2)).findAllByIsActiveTrueAndIsEnlistedTrue(pageable);
-        verify(productRepository).deleteById(1L);
+        verify(productRepository).delete(product);
     }
 
     @Test

@@ -66,6 +66,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public IncomeStatementResponse getIncomeStatement(DateRangeRequest dateRange) {
+        requireValidRange(dateRange);
         LocalDateTime start = dateRange.startDate().atStartOfDay();
         LocalDateTime end = dateRange.endDate().atTime(23, 59, 59);
 
@@ -170,6 +171,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public CashFlowResponse getCashFlow(DateRangeRequest dateRange) {
+        requireValidRange(dateRange);
         LocalDateTime start = dateRange.startDate().atStartOfDay();
         LocalDateTime end = dateRange.endDate().atTime(23, 59, 59);
 
@@ -220,15 +222,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public PageResponse<JournalEntryResponse> getJournalEntries(DateRangeRequest dateRange, Pageable pageable) {
-        // CAT-04: ISO dates parse up to year +/-999,999,999; outside 1..9999 the end + 1 day overflowed (500) or Postgres
-        // could not bind the timestamp (409). No ledger entry can be outside that range anyway.
-        if (outsideYears1To9999(dateRange.startDate()) || outsideYears1To9999(dateRange.endDate())) {
-            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_RANGE",
-                    "'startDate' and 'endDate' must be between 0001-01-01 and 9999-12-31.");
-        }
-        if (dateRange.startDate().isAfter(dateRange.endDate())) {
-            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_RANGE", "'startDate' must not be after 'endDate'.");
-        }
+        requireValidRange(dateRange);
         Pageable page = journalPage(pageable);
         // both days whole: [startDate 00:00, endDate + 1 day 00:00) (was BETWEEN ... endDate 23:59:59, which lost the
         // entries of the last second's fractions)
@@ -240,6 +234,22 @@ public class AccountingReportServiceImpl implements AccountingReportService {
                 : journalEntryRepository.findWithLinesByIdIn(ids.getContent()).stream()
                         .collect(Collectors.toMap(JournalEntry::getId, e -> e));
         return PaginationUtil.createPageResponse(ids.map(id -> toJournalEntryResponse(byId.get(id))));
+    }
+
+    /**
+     * CAT-04 / CAT-06: one date rule for every ranged accounting route (journal entries, income statement, cash flow).
+     * ISO dates parse up to year +/-999,999,999; outside 1..9999 the end + 1 day overflowed (500) or Postgres could not bind
+     * the timestamp (409). No ledger entry can be outside that range anyway. Not-real dates (2026-02-30) never get here:
+     * the controller's strict ISO conversion answers 400 first.
+     */
+    static void requireValidRange(DateRangeRequest dateRange) {
+        if (outsideYears1To9999(dateRange.startDate()) || outsideYears1To9999(dateRange.endDate())) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_RANGE",
+                    "'startDate' and 'endDate' must be between 0001-01-01 and 9999-12-31.");
+        }
+        if (dateRange.startDate().isAfter(dateRange.endDate())) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_DATE_RANGE", "'startDate' must not be after 'endDate'.");
+        }
     }
 
     private static boolean outsideYears1To9999(LocalDate date) {

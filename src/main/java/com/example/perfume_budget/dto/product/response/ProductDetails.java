@@ -1,6 +1,7 @@
 package com.example.perfume_budget.dto.product.response;
 
 import com.example.perfume_budget.dto.category.response.CategoryResponse;
+import com.example.perfume_budget.enums.CurrencyCode;
 import lombok.Builder;
 
 import java.math.BigDecimal;
@@ -28,5 +29,10 @@ public record ProductDetails(
         boolean isActive,
         boolean isEnlisted,
         boolean isFeatured,
-        String slug
+        String slug,
+        // API-03: the same prices as numbers (the strings above are display text, "GHS 45.00"; clients must not parse them)
+        BigDecimal sellingPriceAmount,   // effective (discounted) price
+        BigDecimal originalPriceAmount,  // pre-discount selling price
+        BigDecimal costPriceAmount,      // null when the product has no cost price
+        CurrencyCode currency
 ) {}

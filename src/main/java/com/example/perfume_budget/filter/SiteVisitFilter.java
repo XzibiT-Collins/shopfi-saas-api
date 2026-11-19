@@ -69,10 +69,13 @@ public class SiteVisitFilter extends OncePerRequestFilter {
      * VIEW-01: the product view beacon is not a page visit and its path carries a caller chosen slug: recording it would
      * store the address and an arbitrary string per request (an unbounded-row, PII path). It has its own bounded,
      * in-memory dedupe and rate limit instead.
+     *
+     * <p>FIX-C (CATALOG-F review): EVERY method is excluded, not only POST. Only POST is routed (anything else answers 401 /
+     * 405) but a GET, PUT or OPTIONS with a caller chosen slug used to be recorded in {@code site_visits} with the address
+     * and the slug, the same unbounded-row PII path for an attacker who simply used another method.
      */
     static boolean isViewBeacon(HttpServletRequest request, String canonicalPath) {
-        return "POST".equalsIgnoreCase(request.getMethod())
-                && canonicalPath.matches("/api/v1/product/[^/]+/view/?");
+        return canonicalPath.matches("/api/v1/product/[^/]+/view/?");
     }
 
     /**

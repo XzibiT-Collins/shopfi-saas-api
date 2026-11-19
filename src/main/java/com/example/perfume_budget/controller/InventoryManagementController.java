@@ -3,7 +3,10 @@ package com.example.perfume_budget.controller;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.inventory.request.InventoryAdjustmentRequest;
 import com.example.perfume_budget.dto.inventory.request.InventoryReceiptRequest;
+import com.example.perfume_budget.dto.inventory.request.LegacyBalanceRepairRequest;
 import com.example.perfume_budget.dto.inventory.response.InventoryMovementResponse;
+import com.example.perfume_budget.dto.inventory.response.LegacyBalanceReportResponse;
+import com.example.perfume_budget.dto.inventory.response.LegacyBalanceRepairResponse;
 import com.example.perfume_budget.dto.inventory.response.InventorySummaryResponse;
 import com.example.perfume_budget.dto.inventory.response.ProductStockByLocationResponse;
 import com.example.perfume_budget.service.interfaces.InventoryManagementService;
@@ -57,6 +60,22 @@ public class InventoryManagementController {
         return ResponseEntity.ok(CustomApiResponse.success(
                 inventoryManagementService.getProductStockByLocation(productId)
         ));
+    }
+
+    /** INV-01b L3: read-only. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/legacy-balance-report")
+    public ResponseEntity<CustomApiResponse<LegacyBalanceReportResponse>> legacyBalanceReport() {
+        return ResponseEntity.ok(CustomApiResponse.success(inventoryManagementService.legacyBalanceReport()));
+    }
+
+    /** INV-01b L3: opt-in, exactly the listed products. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/legacy-balance-repair")
+    public ResponseEntity<CustomApiResponse<LegacyBalanceRepairResponse>> repairLegacyBalances(
+            @Valid @RequestBody LegacyBalanceRepairRequest request) {
+        return ResponseEntity.ok(CustomApiResponse.success(
+                "Legacy balances repaired", inventoryManagementService.repairLegacyBalances(request.productIds())));
     }
 
     @PreAuthorize("hasRole('ADMIN')")
