@@ -79,7 +79,7 @@ public class ProductServiceImpl implements ProductService {
      * 409 FAMILY_CODE_UNAVAILABLE. Only the new-family path retries; adding a variant keeps its answers.
      */
     @Override
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ProductDetails createProduct(ProductRequest request) {
         checkIfImageIsPresentForEcommerceProduct(request);
 
@@ -273,8 +273,8 @@ public class ProductServiceImpl implements ProductService {
 
     /** Cache names of the public (anonymous) catalog. NEW names (SEC-03b): entries written before the public DTO existed
      *  live under the old names, are never read again and expire by TTL; a rollback to the old build is safe. */
-    static final String PUBLIC_LISTINGS_CACHE = "publicCustomerProductListings";
-    static final String PUBLIC_FEATURED_CACHE = "publicFeaturedProducts";
+    static final String PUBLIC_LISTINGS_CACHE = CatalogCaches.PUBLIC_LISTINGS;
+    static final String PUBLIC_FEATURED_CACHE = CatalogCaches.PUBLIC_FEATURED;
 
     /** Public sort properties: the storefront's own sorts (createdAt, name, price.amount) and the id. Anything else is a
      *  probe for hidden values (stock, cost, sku, counters, flags) and answers 400 INVALID_SORT. */
@@ -385,7 +385,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ProductDetails updateProduct(Long productId, ProductRequest request) {
         Product productToUpdate = productRepository.findById(productId).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
         checkIfImageIsPresentForEcommerceProductUpdate(request, productToUpdate);
@@ -395,7 +395,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ProductDetails setProductDiscount(Long productId, ProductDiscountRequest request) {
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
@@ -409,7 +409,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ProductDetails clearProductDiscount(Long productId) {
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
@@ -640,7 +640,7 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public void deleteProduct(Long productId) {
         productRepository.deleteById(productId);
     }

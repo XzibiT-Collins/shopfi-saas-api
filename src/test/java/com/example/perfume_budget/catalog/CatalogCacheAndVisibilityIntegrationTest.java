@@ -30,7 +30,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  */
 class CatalogCacheAndVisibilityIntegrationTest extends AbstractCheckoutIntegrationTest {
 
-    static final List<String> CATALOG_CACHES = List.of("publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage");
+    static final List<String> CATALOG_CACHES = com.example.perfume_budget.service.CatalogCaches.PUBLIC_CATALOG;
     static final String SENTINEL = "cat02-sentinel";
 
     @Autowired CacheManager cacheManager;
@@ -49,6 +49,7 @@ class CatalogCacheAndVisibilityIntegrationTest extends AbstractCheckoutIntegrati
         jdbc.update("UPDATE tenant_acme.products SET category_id = NULL WHERE category_id IN "
                 + "(SELECT id FROM tenant_acme.categories WHERE description = 'cat02')");
         jdbc.update("DELETE FROM tenant_acme.categories WHERE description = 'cat02'");
+        jdbc.update("DELETE FROM tenant_acme.shop_wide_discounts WHERE label LIKE 'n13-%'");
     }
 
     private Cache cache(String name) {
@@ -95,6 +96,41 @@ class CatalogCacheAndVisibilityIntegrationTest extends AbstractCheckoutIntegrati
 
     private MvcResult anon(String path) throws Exception {
         return mvc.perform(get(path).header("X-Tenant-ID", "acme")).andReturn();
+    }
+
+    // ------------------------------------------------------------------ SEC-03d N13: shop-wide discount writes
+
+    /** The shared constant names the three public caches, exactly (a typo here would silently evict nothing). */
+    @Test
+    void catalogCacheNamesAreTheThreePublicOnes() {
+        assertThat(com.example.perfume_budget.service.CatalogCaches.PUBLIC_CATALOG)
+                .containsExactly("publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage");
+    }
+
+    private Map<String, Object> discountBody() {
+        return Map.of("label", "n13-" + tag, "discountPercentage", 10,
+                "startAt", java.time.LocalDateTime.now().minusHours(1).toString(),
+                "endAt", java.time.LocalDateTime.now().plusDays(1).toString());
+    }
+
+    @Test
+    void settingAShopWideDiscountEvictsTheThreePublicCaches() throws Exception {
+        putSentinels();
+        MvcResult r = asAdmin(put("/api/v1/admin/shop-discount").contentType("application/json")
+                .content(json.writeValueAsString(discountBody())));
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+        assertSentinelsEvicted();
+    }
+
+    @Test
+    void deactivatingAShopWideDiscountEvictsTheThreePublicCaches() throws Exception {
+        MvcResult created = asAdmin(put("/api/v1/admin/shop-discount").contentType("application/json")
+                .content(json.writeValueAsString(discountBody())));
+        long id = body(created).at("/data/id").asLong();
+        putSentinels();
+        MvcResult r = asAdmin(delete("/api/v1/admin/shop-discount/" + id));
+        assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isIn(200, 204);
+        assertSentinelsEvicted();
     }
 
     // ------------------------------------------------------------------ (a) category writes evict the catalog caches

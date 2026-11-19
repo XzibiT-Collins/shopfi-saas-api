@@ -22,7 +22,7 @@ public class ProductCatalogCacheService {
     private final ProductRepository productRepository;
     private final EffectivePriceService effectivePriceService;
 
-    @Cacheable(cacheNames = "publicFeaturedProducts")
+    @Cacheable(cacheNames = CatalogCaches.PUBLIC_FEATURED)
     public List<PublicProductListing> getFeaturedProducts() {
         log.info("Cache miss for featured products, querying database...");
         ShopWideDiscount shop = effectivePriceService.activeShopDiscount().orElse(null);
@@ -33,7 +33,7 @@ public class ProductCatalogCacheService {
                 .toList();
     }
 
-    @Cacheable(cacheNames = "productDetailsPage", key = "#slug")
+    @Cacheable(cacheNames = CatalogCaches.PRODUCT_DETAILS, key = "#slug")
     public ProductDetailsPageResponse getProductDetailsPage(String slug) {
         log.info("Cache miss for product details page, querying database...");
         Product product = productRepository.findBySlugAndIsActiveTrueAndIsEnlistedTrue(slug)

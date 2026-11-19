@@ -27,7 +27,7 @@ business messages and are kept. Status codes and `data.code`s did not change.
 | 401 | `ExpiredJwtException` | `Token has expired` | jjwt's message (expiry and server clock) |
 | 401 | security entry point (any `AuthenticationException`) | `Full authentication is required to access this resource` | the exception's message |
 | 403 | `AuthorizationDeniedException` | `Access Denied` | its message (Spring's own was already `Access Denied`) |
-| any | Spring Boot `/error` (filter errors, `sendError`) | Boot's default body without `message`, `errors`, `exception`, `trace` | same (now pinned, see below) |
+| any | Spring Boot `/error` (filter errors, `sendError`) | Boot's default body without `message`, `errors`, `exception`, `trace` | same (now pinned, see below). The container's `/error` dispatch is permitted for every caller (SEC-01f), so the original status reaches the client: a filter exception is `500`, no tenant `400`, unknown tenant `404`, suspended tenant `423`. Before, all of them were rewritten to `401` by the anonymous `/error` dispatch. |
 
 ## Kept: business messages (our own exception types)
 

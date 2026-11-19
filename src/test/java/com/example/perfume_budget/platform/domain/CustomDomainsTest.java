@@ -155,6 +155,33 @@ class CustomDomainsTest {
         assertThat(CustomDomains.normalize("shоp.de", POLICY)).startsWith("xn--");
     }
 
+    /** L6: look-alikes the first table missed. */
+    @Test
+    void l6_digitOneAndLetterLookAlikesOfThePlatformNameAreRejected() {
+        rejected("shopf1.app", POLICY, CustomDomains.CONFUSABLE);
+        rejected("shopfl.app", POLICY, CustomDomains.CONFUSABLE);
+        rejected("acme.shopf1.app", POLICY, CustomDomains.CONFUSABLE);
+        rejected("5hopfi.app", POLICY, CustomDomains.CONFUSABLE);
+        rejected("shopfi.app".replace('i', 'ı'), POLICY, CustomDomains.CONFUSABLE);
+        // unrelated names with i/l/1/5 stay valid
+        assertThat(CustomDomains.normalize("shop1.com", POLICY)).isEqualTo("shop1.com");
+        assertThat(CustomDomains.normalize("mylittleshop5.com", POLICY)).isEqualTo("mylittleshop5.com");
+    }
+
+    /** L6: IDNA2003 would store straße as strasse; a browser sends xn--strae-oqa. Neither form may be stored as a different host. */
+    @ParameterizedTest
+    @ValueSource(strings = {"straße.de", "STRAßE.de", "www.fußball.de", "faß.de", "σοφός.gr", "ẞtore.de",
+            "a\u200db.com", "xn--strae-oqa.de", "xn--fuball-cta.de"})
+    void l6_idnaDeviationNamesAreRefusedNotStoredAsADifferentHost(String d) {
+        rejected(d, POLICY, CustomDomains.INVALID);
+    }
+
+    @Test
+    void l6_plainAsciiSsAndOrdinaryIdnStillWork() {
+        assertThat(CustomDomains.normalize("strasse.de", POLICY)).isEqualTo("strasse.de");
+        assertThat(CustomDomains.normalize("münchen.de", POLICY)).isEqualTo("xn--mnchen-3ya.de");
+    }
+
     @Test
     void rule_fullwidthFormsFoldToThePlatformNameItself() {
         rejected("ｓｈｏｐｆｉ．ａｐｐ", POLICY, CustomDomains.PLATFORM);

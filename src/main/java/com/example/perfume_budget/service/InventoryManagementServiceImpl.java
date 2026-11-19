@@ -162,7 +162,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public void releaseOrderInventory(String orderNumber) {
         List<InventoryAllocation> allocations = inventoryAllocationRepository
                 .findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
@@ -194,7 +194,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public void finalizeReservedOrder(Order order) {
         stockLocks.lock(order.getItems().stream().map(OrderItem::getProductId).toList());
         List<InventoryAllocation> allocations = inventoryAllocationRepository
@@ -256,14 +256,14 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public int restockConsumedOrderInventory(Order order) {
         return restockConsumedOrderInventory(order, "Returned to stock: order " + order.getOrderNumber() + " cancelled by the merchant");
     }
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public int restockConsumedOrderInventory(Order order, String movementNote) {
         List<InventoryAllocation> allocations = inventoryAllocationRepository
                 .findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
@@ -333,7 +333,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items) {
         stockLocks.lock(items.stream().map(WalkInOrderItem::getProductId).toList());
         for (WalkInOrderItem item : items) {
@@ -351,7 +351,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public InventoryConsumption consumeInventory(Product product,
                                                  int quantity,
                                                  InventoryReferenceType referenceType,
@@ -445,7 +445,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
 
     @Override
     @Transactional
-    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public Product createConversionLayer(Product product,
                                          int quantity,
                                          BigDecimal unitCost,

@@ -174,7 +174,8 @@ class AuthorizationMatrixStructureTest {
         List<Handler> out = new ArrayList<>();
         for (Class<?> c : controllers) {
             RequestMapping classMapping = AnnotatedElementUtils.findMergedAnnotation(c, RequestMapping.class);
-            String base = classMapping != null && classMapping.path().length > 0 ? classMapping.path()[0] : "";
+            // SEC-03d (S-A1/A2/A4/A9): EVERY class path x EVERY method path is a route, not just the first of each
+            String[] bases = classMapping != null && classMapping.path().length > 0 ? classMapping.path() : new String[]{""};
             PreAuthorize classLevel = AnnotatedElementUtils.findMergedAnnotation(c, PreAuthorize.class);
             // own AND inherited handler methods (an abstract base class may declare the mapping)
             for (Method m : ReflectionUtils.getUniqueDeclaredMethods(c, mth -> !mth.isBridge() && !mth.isSynthetic())) {
@@ -191,11 +192,15 @@ class AuthorizationMatrixStructureTest {
                     // an unrestricted mapping answers every verb: treat it as a mutation (and as a GET)
                     verbs.addAll(List.of("GET", "POST", "PUT", "PATCH", "DELETE"));
                 }
-                String sub = mm.path().length > 0 ? mm.path()[0] : "";
+                String[] subs = mm.path().length > 0 ? mm.path() : new String[]{""};
                 PreAuthorize own = AnnotatedElementUtils.findMergedAnnotation(m, PreAuthorize.class);
                 PreAuthorize effective = own != null ? own : classLevel;
-                out.add(new Handler(c, m, c.getSimpleName() + "#" + m.getName(), verbs, unrestricted, base + sub,
-                        effective == null ? null : effective.value()));
+                for (String base : bases) {
+                    for (String sub : subs) {
+                        out.add(new Handler(c, m, c.getSimpleName() + "#" + m.getName(), verbs, unrestricted, base + sub,
+                                effective == null ? null : effective.value()));
+                    }
+                }
             }
         }
         return out;
@@ -335,6 +340,9 @@ class AuthorizationMatrixStructureTest {
             ".requestMatchers(request -> swaggerUiEnabled && isReadMethod(request) && matchesAny(request, swaggerPaths)).permitAll()",
             ".requestMatchers(request -> apiDocsEnabled && isReadMethod(request) && matchesAny(request, apiDocsPaths)).permitAll()");
 
+    /** SEC-01f: the one non-path rule, opening the container's ERROR dispatch (the original status must reach the client). */
+    static final String ERROR_DISPATCH_RULE = ".dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ERROR).permitAll()";
+
     private static String authorizeBlock(String src) {
         String clean = src.replaceAll("//[^\n]*", "").replaceAll("\\s+", " ");
         int a = clean.indexOf(".authorizeHttpRequests(");
@@ -358,6 +366,13 @@ class AuthorizationMatrixStructureTest {
         }
         int allowedLambdas = (block.length() - normalizedBlock.length() > 0)
                 ? (int) ALLOWED_LAMBDA_RULES.stream().filter(l -> block.contains(l)).count() : 0;
+        // exactly this rule, at most once; any other dispatcherTypeMatchers stays banned below
+        String errorRule = ERROR_DISPATCH_RULE.replaceAll("\\s+", " ");
+        int errorRules = count(normalizedBlock, errorRule);
+        if (errorRules > 1) {
+            problems.add("the ERROR dispatch rule appears " + errorRules + " times");
+        }
+        normalizedBlock = normalizedBlock.replace(errorRule, " ");
         int requestMatchers = count(normalizedBlock, "requestMatchers(");
         List<Rule> parsed = securityConfigRules(src);
         if (requestMatchers != parsed.size()) {
@@ -365,7 +380,7 @@ class AuthorizationMatrixStructureTest {
                     + "): a matcher style the parser cannot read (lambda/custom RequestMatcher?)");
         }
         for (String banned : List.of("securityMatcher", "mvcMatchers", "antMatchers", "regexMatchers", "hasAuthority", "hasAnyAuthority",
-                "hasIpAddress", "fullyAuthenticated", "rememberMe", "anonymous()", "access(request")) {
+                "hasIpAddress", "dispatcherTypeMatchers", "fullyAuthenticated", "rememberMe", "anonymous()", "access(request")) {
             if (normalizedBlock.contains(banned)) {
                 problems.add("unsupported construct in the authorization block: " + banned);
             }
@@ -710,6 +725,13 @@ class AuthorizationMatrixStructureTest {
         assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".hasRole(\"ADMIN\")", ".hasAuthority(\"X\")"))).isNotEmpty();
         assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(\"/b/**\")",
                 ".securityMatchers(\"/z\") .requestMatchers(\"/b/**\")"))).isNotEmpty();
+        // SEC-01f: the ERROR dispatch rule is accepted once; twice, or any other dispatcher type, is not
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(HttpMethod.GET",
+                ERROR_DISPATCH_RULE + " .requestMatchers(HttpMethod.GET"))).isEmpty();
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(HttpMethod.GET",
+                ERROR_DISPATCH_RULE + " " + ERROR_DISPATCH_RULE + " .requestMatchers(HttpMethod.GET"))).isNotEmpty();
+        assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(".requestMatchers(HttpMethod.GET",
+                ".dispatcherTypeMatchers(jakarta.servlet.DispatcherType.FORWARD).permitAll() .requestMatchers(HttpMethod.GET"))).isNotEmpty();
         // a rule appended after anyRequest
         assertThat(auditAuthorizeBlock("x " + BASE_RULE_BLOCK.replace(" ) .oauth2Login(", " .requestMatchers(\"/late\").permitAll() ) .oauth2Login("))).isNotEmpty();
     }
@@ -758,13 +780,7 @@ class AuthorizationMatrixStructureTest {
     }
 
     static List<Class<?>> scan(String basePackage, boolean productionOnly) throws Exception {
-        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
-        scanner.addIncludeFilter(new AnnotationTypeFilter(Controller.class)); // meta-annotations (@RestController) included
-        // DevTenantController is @ConditionalOnProperty: evaluate it as enabled so the guard sees it
-        ((org.springframework.core.env.ConfigurableEnvironment) scanner.getEnvironment()).getPropertySources().addFirst(
-                new org.springframework.core.env.MapPropertySource("sec03", java.util.Map.of("tenant.dev-endpoints.enabled", "true")));
-        // the self-test fixtures are @Profile-guarded so the application context never registers them; this scanner opts in
-        ((org.springframework.core.env.ConfigurableEnvironment) scanner.getEnvironment()).addActiveProfile("sec03b-fixture-never");
+        ClassPathScanningCandidateComponentProvider scanner = conditionIgnoringScanner(Controller.class);
         List<Class<?>> out = new ArrayList<>();
         for (BeanDefinition bd : scanner.findCandidateComponents(basePackage)) {
             Class<?> c = Class.forName(bd.getBeanClassName());
@@ -777,6 +793,70 @@ class AuthorizationMatrixStructureTest {
             out.add(c);
         }
         return out;
+    }
+
+    /**
+     * SEC-03d: a scanner that IGNORES {@code @Profile}/{@code @Conditional*}. The stock scanner evaluates them against its
+     * own environment, so a production controller guarded by a condition that is false here (a profile, a property)
+     * would silently be missing from every check; ignoring conditions can only add controllers, never hide one.
+     * Meta-annotations (@RestController) are included.
+     */
+    static ClassPathScanningCandidateComponentProvider conditionIgnoringScanner(Class<? extends java.lang.annotation.Annotation> marker) {
+        AnnotationTypeFilter filter = new AnnotationTypeFilter(marker);
+        return new ClassPathScanningCandidateComponentProvider(false) {
+            @Override
+            protected boolean isCandidateComponent(org.springframework.core.type.classreading.MetadataReader reader)
+                    throws java.io.IOException {
+                return filter.match(reader, getMetadataReaderFactory());
+            }
+        };
+    }
+
+    /** A conditional production controller (the stock scanner drops it) is still found. */
+    @RestController
+    @Profile("sec03d-never-active")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "sec03d.never", havingValue = "yes")
+    static class ConditionalControllerFixture {
+        @GetMapping("/cond")
+        public String conditionalHandler() { return ""; }
+    }
+
+    @Test
+    void sec03d_conditionalControllersAreScannedToo() throws Exception {
+        assertThat(scan("com.example.perfume_budget.security", false)).contains(ConditionalControllerFixture.class);
+        ClassPathScanningCandidateComponentProvider stock = new ClassPathScanningCandidateComponentProvider(false);
+        stock.addIncludeFilter(new AnnotationTypeFilter(Controller.class));
+        assertThat(stock.findCandidateComponents("com.example.perfume_budget.security").stream()
+                .map(BeanDefinition::getBeanClassName)).as("the stock scanner would have hidden it")
+                .doesNotContain(ConditionalControllerFixture.class.getName());
+    }
+
+    /** SEC-03d: exactly one SecurityFilterChain in production code (a second chain could open paths this table never sees). */
+    @Test
+    void sec03d_exactlyOneSecurityFilterChainBeanAndNoWebSecurityCustomizer() throws Exception {
+        ClassPathScanningCandidateComponentProvider scanner = conditionIgnoringScanner(
+                org.springframework.context.annotation.Configuration.class);
+        List<String> chains = new ArrayList<>();
+        List<String> customizers = new ArrayList<>();
+        for (BeanDefinition bd : scanner.findCandidateComponents("com.example.perfume_budget")) {
+            Class<?> c = Class.forName(bd.getBeanClassName());
+            if (c.getProtectionDomain().getCodeSource().getLocation().getPath().contains("test-classes")) {
+                continue;
+            }
+            for (Method m : c.getDeclaredMethods()) {
+                if (AnnotatedElementUtils.hasAnnotation(m, org.springframework.context.annotation.Bean.class)) {
+                    if (org.springframework.security.web.SecurityFilterChain.class.isAssignableFrom(m.getReturnType())) {
+                        chains.add(c.getSimpleName() + "#" + m.getName());
+                    }
+                    if (org.springframework.security.config.annotation.web.configuration.WebSecurityCustomizer.class
+                            .isAssignableFrom(m.getReturnType())) {
+                        customizers.add(c.getSimpleName() + "#" + m.getName());
+                    }
+                }
+            }
+        }
+        assertThat(chains).containsExactly("SecurityConfig#securityFilterChain");
+        assertThat(customizers).as("WebSecurityCustomizer.ignoring() would bypass the whole matcher table").isEmpty();
     }
 
     static boolean isMutation(Method m) {

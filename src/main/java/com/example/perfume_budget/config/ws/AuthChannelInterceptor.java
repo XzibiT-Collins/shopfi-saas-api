@@ -53,6 +53,13 @@ public class AuthChannelInterceptor implements ExecutorChannelInterceptor {
     private final JWTUtil jwtUtil;
     private final CustomUserDetailsService userDetailsService;
     private final LongSupplier clock;
+    private StompSessionRegistry sessionRegistry;
+
+    /** SEC-03e F5: authenticated sessions are tracked so they can be closed on expiry, disable or suspension. */
+    @Autowired(required = false)
+    public void setSessionRegistry(StompSessionRegistry sessionRegistry) {
+        this.sessionRegistry = sessionRegistry;
+    }
 
     @Autowired
     public AuthChannelInterceptor(JWTUtil jwtUtil, CustomUserDetailsService userDetailsService) {
@@ -111,6 +118,12 @@ public class AuthChannelInterceptor implements ExecutorChannelInterceptor {
                 log.debug("STOMP CONNECT refused: token tenant does not match the handshake tenant");
                 throw new StompAccessDeniedException("Token does not belong to this tenant");
             }
+            // SEC-03e F4: only an access token opens a session (a refresh token lives for days and has no business here).
+            // Strict: a token without the claim (issued before it existed) is refused too; access tokens are short lived.
+            if (!JWTUtil.TYPE_ACCESS.equals(claims.get(JWTUtil.TYPE_CLAIM))) {
+                log.debug("STOMP CONNECT refused: not an access token");
+                throw new StompAccessDeniedException("Invalid or expired token");
+            }
             String username = claims.getSubject();
             if (username == null || claims.getExpiration() == null) {
                 throw new StompAccessDeniedException("Invalid or expired token");
@@ -126,6 +139,10 @@ public class AuthChannelInterceptor implements ExecutorChannelInterceptor {
             }
             accessor.setUser(new StompTenantAuthentication(tenant.slug(), user.getUsername(), user, user.getAuthorities()));
             attributes.put(TOKEN_EXPIRY_ATTR, claims.getExpiration().getTime());
+            if (sessionRegistry != null && accessor.getSessionId() != null) {
+                sessionRegistry.authenticated(accessor.getSessionId(), tenant.slug(), user.getUsername(),
+                        claims.getExpiration().getTime());
+            }
             log.info("STOMP session authenticated for a user of tenant {}", tenant.slug());
         } finally {
             if (previous != null) {
