@@ -674,13 +674,14 @@ class DeliveredOrderReturnIntegrationTest extends AbstractCheckoutIntegrationTes
         assertThat(status(before)).isEqualTo(200);
         assertThat(before.getResponse().getContentAsString()).contains(name);
         MvcResult perProductBefore = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold/" + p + "?source=ONLINE"))).andReturn();
-        assertThat(perProductBefore.getResponse().getContentAsString()).contains(o.orderNumber());
+        assertThat(body(perProductBefore).at("/data/totalQuantitySold").asInt()).isEqualTo(2);
         assertThat(status(returnOrder(o.orderNumber()))).isEqualTo(200);
         MvcResult after = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold?source=ONLINE"))).andReturn();
         assertThat(status(after)).isEqualTo(200);
         assertThat(after.getResponse().getContentAsString()).doesNotContain(name);
         MvcResult perProductAfter = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold/" + p + "?source=ONLINE"))).andReturn();
-        assertThat(perProductAfter.getResponse().getContentAsString()).doesNotContain(o.orderNumber());
+        // the per-product list is the stock ledger (the sale row stays, with amount 0); the totals drop the order
+        assertThat(body(perProductAfter).at("/data/totalQuantitySold").asInt()).isZero();
     }
 
     @Test
