@@ -170,6 +170,28 @@ class CatalogCategoryLazyLoadIntegrationTest extends AbstractCheckoutIntegration
         assertThat(item(hit, "productId", productId).get("categoryName").asText()).isEqualTo(categoryName);
     }
 
+    /** HOTFIX-1: the in-stock shelf is a separate query; an uncategorised-only fixture never tripped its lazy load. */
+    @Test
+    void publicFeaturedInStockWithACategorisedProductAnswers200OnCacheMissAndHit() throws Exception {
+        JsonNode miss = anon("/api/v1/product/featured", "inStock", "true");
+        assertThat(item(miss, "productId", productId).get("categoryName").asText()).isEqualTo(categoryName);
+
+        Cache.ValueWrapper w = cache(FEATURED).get("inStock");
+        assertThat(w).as("in-stock featured list cached").isNotNull();
+        assertThat((List<?>) w.get()).isNotEmpty().allMatch(PublicProductListing.class::isInstance);
+        assertSerialisableDto(w.get());
+
+        renameCategory("Musk-" + tag);
+        JsonNode hit = anon("/api/v1/product/featured", "inStock", "true");
+        assertThat(item(hit, "productId", productId).get("categoryName").asText()).isEqualTo(categoryName);
+    }
+
+    @Test
+    void publicByIdsWithACategorisedProductAnswers200() throws Exception {
+        JsonNode r = anon("/api/v1/product/by-ids", "ids", productId);
+        assertThat(item(r, "productId", productId).get("categoryName").asText()).isEqualTo(categoryName);
+    }
+
     @Test
     void publicDetailPageWithACategorisedProductAnswers200OnCacheMissAndHit() throws Exception {
         JsonNode miss = anon("/api/v1/product/" + slug);
@@ -235,6 +257,8 @@ class CatalogCategoryLazyLoadIntegrationTest extends AbstractCheckoutIntegration
                 "admin listing", productRepository.findAll(PageRequest.of(0, 50)).getContent(),
                 "admin search", productRepository.findAll(ProductSpecification.filterProductsForAdmin(null, "Cat01"), PageRequest.of(0, 50)).getContent(),
                 "featured", productRepository.findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrue(),
+                "featured in stock", productRepository.findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrueAndStockQuantityGreaterThan(0),
+                "by ids", productRepository.findAllByIdInAndIsActiveTrueAndIsEnlistedTrue(List.of(productId, second)),
                 "detail page", productRepository.findBySlugAndIsActiveTrueAndIsEnlistedTrue(slug).stream().toList(),
                 "admin detail", productRepository.findWithCategoryById(productId).stream().toList()));
 
