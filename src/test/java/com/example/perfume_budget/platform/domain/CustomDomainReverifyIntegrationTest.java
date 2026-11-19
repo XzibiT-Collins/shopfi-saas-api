@@ -414,7 +414,19 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
             try (Statement s = c.createStatement()) {
                 s.execute("SELECT id FROM master.tenants WHERE slug = 'acme' FOR UPDATE");
                 long start = System.nanoTime();
-                CustomDomainReverifier.RoundResult r = round();
+                job.resetLimits();
+                service.resetLimits();
+                ExecutorService one = Executors.newSingleThreadExecutor();
+                CustomDomainReverifier.RoundResult r;
+                try {
+                    // bounded: a claim that WAITS for the locked row would otherwise hang this test
+                    r = one.submit(job::runRound).get(10, TimeUnit.SECONDS);
+                } catch (java.util.concurrent.TimeoutException e) {
+                    throw new AssertionError("the claim waited for a row locked by another instance");
+                } finally {
+                    c.rollback(); // releases the row so a blocked claim can end
+                    one.shutdownNow();
+                }
                 assertThat(r.claimed()).isEqualTo(1); // bravo
                 assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isLessThan(3000);
                 assertThat(dns.lookups()).isEqualTo(1);
