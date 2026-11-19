@@ -272,4 +272,52 @@ class WebhookProcessorImplTest {
         org.assertj.core.api.Assertions.assertThat(org.springframework.core.annotation.AnnotatedElementUtils
                 .hasAnnotation(WebhookProcessorImpl.class, org.springframework.scheduling.annotation.Async.class)).isFalse();
     }
+
+    // ---- EVT-01d lows (FIX-B)
+
+    /** R4: the settlement binds the per-wait cap (8 s here), so a later lock point cannot wait the whole 20 s budget. */
+    @Test
+    void theSettlementBindsThePerWaitCapNotJustTheDeadline() {
+        java.util.List<Long> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+        when(settlement.applyFailure(any(), any(), any(), any())).thenAnswer(inv -> {
+            seen.add(SettlementDeadline.limit(Long.MAX_VALUE)); // what a lock point asks for with no cap of its own
+            return null;
+        });
+        processor.processWebhook(body("charge.failed", ""));
+        org.assertj.core.api.Assertions.assertThat(seen).containsExactly(8000L);
+        org.assertj.core.api.Assertions.assertThat(SettlementDeadline.active()).as("unbound after the settlement").isFalse();
+    }
+
+    private java.util.List<String> warnLinesFor(WebhookSettlementBulkhead.WebhookBusyException refusal) {
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(WebhookProcessorImpl.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender = new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            doThrow(refusal).when(bulkhead).call(any());
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> processor.processWebhook(body("charge.failed", "")))
+                    .isSameAs(refusal);
+            return new java.util.ArrayList<>(appender.list).stream()
+                    .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN)
+                    .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage).toList();
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void aTenantSlotRefusalIsLoggedAsSuch_notAsAllPermitsTaken() {
+        java.util.List<String> lines = warnLinesFor(new WebhookSettlementBulkhead.WebhookBusyException(
+                WebhookSettlementBulkhead.WebhookBusyException.Reason.TENANT_SLOT));
+        org.assertj.core.api.Assertions.assertThat(lines).singleElement().asString()
+                .contains("tenant's settlement slot is taken").doesNotContain("all settlement permits");
+    }
+
+    @Test
+    void aSharedPermitRefusalIsLoggedAsAllPermitsTaken() {
+        java.util.List<String> lines = warnLinesFor(new WebhookSettlementBulkhead.WebhookBusyException(
+                WebhookSettlementBulkhead.WebhookBusyException.Reason.SHARED_PERMITS));
+        org.assertj.core.api.Assertions.assertThat(lines).singleElement().asString()
+                .contains("all settlement permits are taken").doesNotContain("tenant's");
+    }
 }

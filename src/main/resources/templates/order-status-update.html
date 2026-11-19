@@ -307,14 +307,14 @@
             <div class="order-ref-number" th:text="${orderNumber}">ORD-20260221-A1B2C3</div>
         </div>
 
-        <!-- STATUS TRACKER -->
+        <!-- STATUS TRACKER (a CANCELLED or RETURNED order is closed: all four dots grey, like the banner below; ORD-07) -->
         <div class="tracker-section">
             <div class="tracker-title">Order Progress</div>
             <div class="tracker">
 
                 <!-- PENDING -->
                 <div class="tracker-step">
-                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 0} ? 'done' : '')"
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED' or orderStatus.name() == 'RETURNED'} ? 'cancelled' : (${orderStatus.ordinal() >= 0} ? 'done' : '')"
                          class="step-dot">&#10003;</div>
                     <div th:classappend="${orderStatus.name() == 'PENDING'} ? 'active' : ''"
                          class="step-label">Order Placed</div>
@@ -322,7 +322,7 @@
 
                 <!-- PACKING -->
                 <div class="tracker-step">
-                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 1} ? (${orderStatus.ordinal() == 1} ? 'active' : 'done') : '')"
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED' or orderStatus.name() == 'RETURNED'} ? 'cancelled' : (${orderStatus.ordinal() >= 1} ? (${orderStatus.ordinal() == 1} ? 'active' : 'done') : '')"
                          class="step-dot">&#10003;</div>
                     <div th:classappend="${orderStatus.name() == 'PACKING'} ? 'active' : ''"
                          class="step-label">Packing</div>
@@ -330,7 +330,7 @@
 
                 <!-- OUT FOR DELIVERY -->
                 <div class="tracker-step">
-                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 2} ? (${orderStatus.ordinal() == 2} ? 'active' : 'done') : '')"
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED' or orderStatus.name() == 'RETURNED'} ? 'cancelled' : (${orderStatus.ordinal() >= 2} ? (${orderStatus.ordinal() == 2} ? 'active' : 'done') : '')"
                          class="step-dot">&#10003;</div>
                     <div th:classappend="${orderStatus.name() == 'OUT_FOR_DELIVERY'} ? 'active' : ''"
                          class="step-label">Out for Delivery</div>
@@ -338,7 +338,7 @@
 
                 <!-- DELIVERED -->
                 <div class="tracker-step">
-                    <div th:classappend="${orderStatus.name() == 'CANCELLED'} ? 'cancelled' : (${orderStatus.ordinal() >= 3} ? 'active' : '')"
+                    <div th:classappend="${orderStatus.name() == 'CANCELLED' or orderStatus.name() == 'RETURNED'} ? 'cancelled' : (${orderStatus.ordinal() >= 3} ? 'active' : '')"
                          class="step-dot">&#10003;</div>
                     <div th:classappend="${orderStatus.name() == 'DELIVERED'} ? 'active' : ''"
                          class="step-label">Delivered</div>

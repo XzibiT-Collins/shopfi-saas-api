@@ -71,12 +71,12 @@ public class WebhookSettlementBulkhead {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMillis);
         Semaphore slot = tenantSlots.computeIfAbsent(TenantContext.getSchemaOrDefault(), k -> new Semaphore(perTenant));
         if (!tryAcquire(slot, deadline)) {
-            throw new WebhookBusyException();
+            throw new WebhookBusyException(WebhookBusyException.Reason.TENANT_SLOT);
         }
         try {
             Semaphore s = permits;
             if (!tryAcquire(s, deadline)) {
-                throw new WebhookBusyException();
+                throw new WebhookBusyException(WebhookBusyException.Reason.SHARED_PERMITS);
             }
             try {
                 return settlement.get();
@@ -109,8 +109,22 @@ public class WebhookSettlementBulkhead {
 
     /** All settlement permits are taken; the webhook answers 503 so the provider redelivers. Carries no detail. */
     public static class WebhookBusyException extends RuntimeException {
+        /** Why the settlement was refused (EVT-01d low): ops can tell a fairness refusal from global saturation. */
+        public enum Reason { SHARED_PERMITS, TENANT_SLOT }
+
+        private final Reason reason;
+
         public WebhookBusyException() {
+            this(Reason.SHARED_PERMITS);
+        }
+
+        public WebhookBusyException(Reason reason) {
             super("Webhook settlement capacity busy", null, false, false);
+            this.reason = reason;
+        }
+
+        public Reason reason() {
+            return reason;
         }
     }
 }

@@ -580,4 +580,53 @@ class CartLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(paymentStatus(o.orderNumber())).isEqualTo("COMPLETED");
         assertThat(cartRows(o.c())).as("no user on the order: no cart is touched").hasSize(1);
     }
+
+    // ------------------------------------------------------------------------------------------------------------
+    // CAT-04b (reviewer probe Q2): the exhaustion contract against the real database, not only CartUtilTest mocks
+    // ------------------------------------------------------------------------------------------------------------
+
+    static final String EXHAUST_THREAD = "cat04b-exhaust";
+
+    /**
+     * Each time the request calls insert-if-absent, ANOTHER connection first creates and commits the customer's cart
+     * (so the insert is a no-op) and deletes it again right after (so the re-read finds nothing). Three rounds in a
+     * row: 503 TRY_AGAIN, {@code Retry-After: 1}, a body without internals, exactly 3 insert rounds, and no cart or
+     * line left behind. Pins status, code, header and round count (a mutant with 1 or 2 rounds, a 500 or a 409 dies).
+     */
+    @ParameterizedTest
+    @CsvSource({"add", "populate", "get-cart"})
+    void aCartThatKeepsVanishingAnswers503TryAgainAfterExactlyThreeRounds(String writer) throws Exception {
+        long p = product(acme, "CAT04B " + writer, "10.00", 100);
+        Customer c = customer(acme, "cat04b-" + writer + "@acme.test");
+        ExecutorService other = Executors.newSingleThreadExecutor();
+        java.util.concurrent.atomic.AtomicInteger rounds = new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(inv -> {
+            if (!Thread.currentThread().getName().equals(EXHAUST_THREAD)) return real(inv);
+            rounds.incrementAndGet();
+            other.submit(() -> jdbc.update("INSERT INTO tenant_acme.carts (user_id, created_at) VALUES (?, now())", c.id()))
+                    .get(20, TimeUnit.SECONDS);
+            Object r = real(inv);
+            other.submit(() -> jdbc.update("DELETE FROM tenant_acme.carts WHERE user_id = ?", c.id())).get(20, TimeUnit.SECONDS);
+            return r;
+        }).when(cartRepository).insertIfAbsent(anyLong(), any());
+        ExecutorService ex = Executors.newSingleThreadExecutor(r -> new Thread(r, EXHAUST_THREAD));
+        try {
+            MvcResult r = ex.submit(() -> switch (writer) {
+                case "add" -> addItem(c, p, 1);
+                case "populate" -> populate(c, p, 1);
+                default -> mvc.perform(as(get("/api/v1/cart"), c)).andReturn();
+            }).get(60, TimeUnit.SECONDS);
+            awaitBackgroundIdle();
+            String b = r.getResponse().getContentAsString();
+            assertThat(r.getResponse().getStatus()).as(b).isEqualTo(503);
+            assertThat(r.getResponse().getHeader("Retry-After")).isEqualTo("1");
+            assertThat(body(r).at("/data/code").asText()).isEqualTo("TRY_AGAIN");
+            assertThat(b).doesNotContain("Exception").doesNotContain("SQL");
+            assertThat(rounds.get()).as("insert rounds").isEqualTo(3);
+            assertThat(cartRows(c)).as("no cart and no line left behind").isEmpty();
+        } finally {
+            ex.shutdownNow();
+            other.shutdownNow();
+        }
+    }
 }

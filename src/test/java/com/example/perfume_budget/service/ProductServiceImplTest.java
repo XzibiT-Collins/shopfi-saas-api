@@ -371,7 +371,7 @@ class ProductServiceImplTest {
     }
 
     @Test
-    void createProduct_Variant_ASkuClashIsNotRetried() {
+    void createProduct_Variant_ASkuClashIsNotRetried_andAnswersTheDocumented400() {
         ProductRequest request = buildRequest(false, 5L, "BOX", 6, null, false);
         when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
         when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
@@ -382,8 +382,40 @@ class ProductServiceImplTest {
 
         Throwable thrown = assertThrows(RuntimeException.class, () -> productService.createProduct(request));
 
-        assertSame(clash, thrown);
+        // ORD-02d: the loser of two identical concurrent variant adds gets the documented 400, not the generic 409
+        assertInstanceOf(com.example.perfume_budget.exception.BadRequestException.class, thrown);
+        assertEquals("Variant with UOM BOX already exists for this family.", thrown.getMessage());
         verify(productRepository, times(1)).save(any(Product.class));
+    }
+
+    @Test
+    void createProduct_Variant_AFamilyDeletedByAConcurrentDeleteAnswers404_not500() {
+        // the base unit proxy of the family is gone when the variant first reads it (the delete committed in between)
+        ProductRequest request = buildRequest(false, 5L, "BOX", 6, null, false);
+        when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
+        when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
+        when(productFamilyRepository.findById(5L)).thenReturn(Optional.of(family));
+        when(unitOfMeasureRepository.findByCode("BOX")).thenReturn(Optional.of(boxUom));
+        when(productRepository.save(any(Product.class))).thenThrow(new jakarta.persistence.EntityNotFoundException("gone"));
+
+        ResourceNotFoundException e = assertThrows(ResourceNotFoundException.class, () -> productService.createProduct(request));
+
+        assertEquals("Product family not found.", e.getMessage());
+        verify(transactionManager, times(1)).rollback(any());
+        verify(transactionManager, never()).commit(any());
+    }
+
+    @Test
+    void createProduct_Variant_AnyOtherConstraintViolationKeepsItsGeneric409Path() {
+        ProductRequest request = buildRequest(false, 5L, "BOX", 6, null, false);
+        when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
+        when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
+        when(productFamilyRepository.findById(5L)).thenReturn(Optional.of(family));
+        when(unitOfMeasureRepository.findByCode("BOX")).thenReturn(Optional.of(boxUom));
+        org.springframework.dao.DataIntegrityViolationException other = uniqueViolation("uc_products_slug");
+        when(productRepository.save(any(Product.class))).thenThrow(other);
+
+        assertSame(other, assertThrows(RuntimeException.class, () -> productService.createProduct(request)));
     }
 
     @Test

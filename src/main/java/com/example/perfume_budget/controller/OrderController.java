@@ -13,9 +13,14 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -124,6 +129,43 @@ public class OrderController {
             b.eTag("\"" + response.version() + "\"");
         }
         return b;
+    }
+
+    /**
+     * ORD-04: the only request body on this controller is the status change; a body that cannot be turned into a status
+     * change answers 400 with a stable {@code data.code} (descriptions are unchanged): {@code INVALID_ORDER_STATUS}
+     * for an unknown value or a missing/null {@code orderStatus} (with `knownValues`), {@code INVALID_REQUEST_BODY}
+     * for a missing or unreadable body. Nothing the client sent is echoed.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<CustomApiResponse<Map<String, Object>>> unreadableBody(HttpMessageNotReadableException ex) {
+        for (Throwable t = ex.getCause(); t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof com.fasterxml.jackson.databind.exc.InvalidFormatException f
+                    && f.getTargetType() == OrderProcessingStatus.class) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(
+                        "Request body is missing or malformed.", invalidStatusData()));
+            }
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(
+                "Request body is missing or malformed.", Map.of("code", "INVALID_REQUEST_BODY")));
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<CustomApiResponse<Map<String, Object>>> invalidBody(MethodArgumentNotValidException ex) {
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        ex.getBindingResult().getFieldErrors().forEach(e ->
+                data.put(e.getField(), e.isBindingFailure() ? "Invalid value" : e.getDefaultMessage()));
+        if (ex.getBindingResult().getFieldErrors().stream().anyMatch(e -> "orderStatus".equals(e.getField()))) {
+            data.putAll(invalidStatusData());
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Validation failed", data));
+    }
+
+    private static Map<String, Object> invalidStatusData() {
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("code", "INVALID_ORDER_STATUS");
+        data.put("knownValues", java.util.Arrays.stream(OrderProcessingStatus.values()).map(Enum::name).toList());
+        return data;
     }
 
     /** {@code "3"}, {@code W/"3"} or {@code 3}; anything else is a 400 (a wildcard is not accepted). */

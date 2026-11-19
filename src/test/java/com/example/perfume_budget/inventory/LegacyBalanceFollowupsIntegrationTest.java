@@ -239,6 +239,62 @@ class LegacyBalanceFollowupsIntegrationTest extends AbstractCheckoutIntegrationT
         assertThat(stock(a)).isEqualTo(8);
     }
 
+    /**
+     * FIX-C review low (mutant M13): the repair layer's unit cost is the oldest layer's COST and its selling price is the
+     * oldest layer's SELLING price; the fixture uses three different numbers (cost 37.25, layer price 91.50, product
+     * list price 100.00) so a layer that copied the selling price into the cost, the cost into the price, or took the
+     * product's current price, is caught on the layer and on its LEGACY_BOOTSTRAP movement.
+     */
+    @Test
+    void repair_copiesTheOldestLayersCostAndSellingPrice_notOneForTheOther_andNotTheProductsPrice() throws Exception {
+        long p = legacy("Qinv Repair Prices", 3);
+        LocalDateTime t = LocalDateTime.now().minusDays(3);
+        long layer = jdbc.queryForObject("INSERT INTO tenant_acme.inventory_layers (product_id, source_type, source_reference, received_quantity, "
+                + "remaining_quantity, unit_cost, unit_selling_price, currency_code, received_at, created_by, created_at) "
+                + "VALUES (?, 'PURCHASE', 'old', 3, 3, 37.25, 91.50, 'GHS', ?, 'x', now()) RETURNING id", Long.class, p, t);
+        jdbc.update("INSERT INTO tenant_acme.inventory_movements (layer_id, product_id, movement_type, reference_type, reference_id, "
+                + "reference_line_key, quantity, unit_cost, unit_selling_price, currency_code, created_at) "
+                + "VALUES (?, ?, 'RECEIPT', 'RECEIPT', 'old', 'receipt:' || ?, 3, 37.25, 91.50, 'GHS', now())", layer, p, p);
+        ledger(p, 8);
+
+        MvcResult r = asAdmin(post("/api/v1/admin/inventory/legacy-balance-repair"), Map.of("productIds", List.of(p)));
+        assertThat(body(r).at("/data/results/0/outcome").asText()).as(r.getResponse().getContentAsString()).isEqualTo("REPAIRED");
+
+        Map<String, Object> legacyLayer = jdbc.queryForMap("SELECT unit_cost, unit_selling_price, currency_code FROM tenant_acme.inventory_layers "
+                + "WHERE product_id = ? AND source_type = 'LEGACY_BALANCE'", p);
+        assertThat((java.math.BigDecimal) legacyLayer.get("unit_cost")).isEqualByComparingTo("37.25");
+        assertThat((java.math.BigDecimal) legacyLayer.get("unit_selling_price")).isEqualByComparingTo("91.50");
+        assertThat(legacyLayer.get("currency_code")).isEqualTo("GHS");
+        Map<String, Object> movement = jdbc.queryForMap("SELECT unit_cost, unit_selling_price FROM tenant_acme.inventory_movements "
+                + "WHERE product_id = ? AND movement_type = 'LEGACY_BOOTSTRAP'", p);
+        assertThat((java.math.BigDecimal) movement.get("unit_cost")).isEqualByComparingTo("37.25");
+        assertThat((java.math.BigDecimal) movement.get("unit_selling_price")).isEqualByComparingTo("91.50");
+    }
+
+    /** FIX-C review low: the front desk (a staff role below ADMIN) gets 403 on both legacy-balance routes, nothing written. */
+    @Test
+    void frontDesk_is403_onTheReportAndOnTheRepair_andNothingIsWritten() throws Exception {
+        long p = overwritten("Qinv FrontDesk", 3, 8);
+        Long id = jdbc.queryForObject("INSERT INTO tenant_acme.users (full_name, email, password, roles, is_active, email_verified, created_at) "
+                + "VALUES ('Desk', 'inv01b-desk@acme.test', 'x', 'FRONT_DESK', true, true, now()) RETURNING id", Long.class);
+        String token = tenants.runAs(acme, () -> jwtUtil.generateAccessToken("inv01b-desk@acme.test", "FRONT_DESK", id, "Desk"));
+        Cookie desk = new Cookie("accessToken", token);
+        int layersBefore = count(acme, "inventory_layers");
+        int movementsBefore = count(acme, "inventory_movements");
+
+        MvcResult report = mvc.perform(get("/api/v1/admin/inventory/legacy-balance-report").header("X-Tenant-ID", "acme").cookie(desk)).andReturn();
+        MvcResult repair = mvc.perform(post("/api/v1/admin/inventory/legacy-balance-repair").header("X-Tenant-ID", "acme").cookie(desk)
+                .contentType("application/json").content("{\"productIds\":[" + p + "]}")).andReturn();
+
+        assertThat(report.getResponse().getStatus()).as(report.getResponse().getContentAsString()).isEqualTo(403);
+        assertThat(repair.getResponse().getStatus()).as(repair.getResponse().getContentAsString()).isEqualTo(403);
+        assertThat(count(acme, "inventory_layers")).isEqualTo(layersBefore);
+        assertThat(count(acme, "inventory_movements")).isEqualTo(movementsBefore);
+        assertThat(layers(p)).containsExactly("PURCHASE 3/3");
+        // and the admin still can (the 403 is about the role, not the route)
+        assertThat(asAdmin(get("/api/v1/admin/inventory/legacy-balance-report"), null).getResponse().getStatus()).isEqualTo(200);
+    }
+
     @Test
     void repair_countsOutstandingReservationsOutOfTheLostUnits() throws Exception {
         long p = overwritten("Qinv Repair Reserved", 2, 9);          // 9 on the shelf = 2 in stock + 3 reserved + 4 lost

@@ -55,9 +55,11 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
     /**
      * FIX-A2 (3): the marker stock value 777 must not appear as a JSON NUMBER. A plain substring check flaked (~0.2%
      * per run) because the product slug ends in random hex digits that can spell 777; a number is never inside a
-     * quoted string, so the pattern needs the JSON delimiters around it.
+     * quoted string, so the pattern needs the JSON delimiters around it. FIX-B: also 777.0 / 777.00 (a serializer
+     * that writes a double) and a value that is exactly the quoted string "777" (a number serialized as text); a slug
+     * that merely contains 777 is still fine.
      */
-    static final String MARKER_AS_JSON_NUMBER = "[:\\[,]\\s*777\\s*[,}\\]]";
+    static final String MARKER_AS_JSON_NUMBER = "[:\\[,]\\s*(?:777(?:\\.0+)?|\"777(?:\\.0+)?\")\\s*[,}\\]]";
 
     private void assertClean(String raw) {
         for (String f : HIDDEN) {
@@ -73,6 +75,13 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean("{\"qty\":777}")).isInstanceOf(AssertionError.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean("{\"qty\": 777 ,\"a\":1}")).isInstanceOf(AssertionError.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean("[1,777]")).isInstanceOf(AssertionError.class);
+        // FIX-B: the forms the old pattern missed
+        for (String leaked : new String[]{"{\"qty\":777.0}", "{\"qty\": 777.00 }", "{\"qty\":\"777\"}", "{\"qty\": \"777\" ,\"a\":1}",
+                "[1,\"777\"]", "[\"777.0\",2]"}) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean(leaked)).as(leaked).isInstanceOf(AssertionError.class);
+        }
+        // ...while a random-hex slug or a longer number is still not a hit
+        assertClean("{\"slug\":\"fresh-scent-777\",\"a\":\"x777\",\"b\":7770.0,\"c\":1777.0,\"d\":\"7770\",\"e\":\"777a\"}");
     }
 
     private String anon(String path) throws Exception {

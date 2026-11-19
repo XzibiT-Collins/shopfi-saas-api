@@ -42,6 +42,15 @@ uploaded or saved. If the image storage fails (network error, no URL returned) t
 `data.code = IMAGE_UPLOAD_FAILED` `"Image storage is unavailable; nothing was saved"` and **nothing is written**; it used to
 save the product with an empty image URL and answer `200`.
 
+**What the magic-byte check does not prove (polyglots).** The check looks at the first bytes only (PNG signature, JPEG
+`FF D8 FF`, WebP `RIFF....WEBP`) and does not decode the image. A file that starts with a valid JPEG header and carries
+something else after it (HTML, script, an archive: a *polyglot*) is therefore accepted. This is a known, accepted limit,
+not a bug: the file is never served from the API's own origin or as a document. It is handed to the image storage
+(Cloudinary), which decodes and RE-PROCESSES every upload (re-encodes it as an image and serves it from its own domain
+with an image content type), so trailing payload bytes do not survive. That storage re-processing is the mitigation; do
+not add any code path that stores or serves the uploaded bytes unchanged. Branding uploads (`theme-contract.md` 7.2)
+additionally read the pixel dimensions from the header and have the same limit and the same mitigation.
+
 ### Response: `ProductDetails`
 
 Display strings are unchanged (`sellingPrice` "GHS 45.00" is the effective, discounted price; `originalPrice` the
@@ -100,7 +109,7 @@ Family code format: `<PREFIX>-<DIGITS>[-<SIZE>]`
 
 | Part | Rule |
 |---|---|
-| `PREFIX` | 3 upper-case letters from the brand (or the name when there is no brand): the first letter of word 1 + two letters of word 2, or the first three letters of a single word |
+| `PREFIX` | **1 to 3 upper-cased characters** from the brand (or the name when there is no brand): the first character of word 1 + up to two characters of word 2, or up to the first three characters of a single word. Digits and punctuation are kept as they are (`7 Up` gives `7UP`, `A-B` gives `A-B`), and a short word gives a short prefix (`X` gives `X`), so do not assume three letters |
 | `DIGITS` | random, zero-padded: **3 digits** (`000`-`999`), or **4 digits** (`0000`-`9999`) when the 3-digit space of that prefix is crowded (ORD-02c) |
 | `SIZE` | the `size` field, upper-cased, whitespace removed; omitted when no size |
 
@@ -125,10 +134,19 @@ Allocation (PO decision 2026-11-18):
 ```
 
 The `description` is fixed. The client may retry the same request (new random draws) or change the name / brand
-(a different prefix). With the 4-digit fallback this needs more than ~11,000 families sharing one prefix and size, or
-a near-simultaneous clash twice in a row.
+(a different prefix). It becomes likely only for a crowded prefix and size: once the 3-digit space (1,000 codes) of one
+prefix and size is full, a create is refused with probability `(n / 10,000)^10`, where `n` is the number of families
+already sharing that prefix and size (about 0.01% at 4,000, 0.1% at 5,000, 2.8% at 7,000, 35% at 9,000; before the 3-digit
+space is full it is practically zero), plus a near-simultaneous clash twice in a row.
 
 Not changed: other constraint violations on create keep the generic `409 "A constraint violation occurred"` (no
 `data.code`) and are not retried; adding a variant whose SKU `<familyCode>-<uomCode>` already exists keeps its
-`400 "Variant with UOM <code> already exists for this family."`. A successful create still answers **200** (not 201)
+`400 "Variant with UOM <code> already exists for this family."`, which two identical concurrent adds also get (the loser's
+insert hits the unique SKU; ORD-02d: it used to be the generic 409). A successful create still answers **200** (not 201)
 with the product details (`stockKeepingUnit` = `<familyCode>-EA`).
+
+Known limits (ORD-02d, not changed): (1) the image is uploaded before the rows are written, so a create that then fails
+(`FAMILY_CODE_UNAVAILABLE`, a constraint violation) leaves that uploaded image in the image storage without a product
+pointing at it (there is no clean-up of storage assets yet); (2) a legacy product whose SKU already is `<familyCode>-BOX`
+but belongs to no family makes adding a BOX variant to the family with that code fail with the `400 "Variant with UOM BOX
+already exists for this family."` although the family has no BOX unit: rename the legacy SKU.

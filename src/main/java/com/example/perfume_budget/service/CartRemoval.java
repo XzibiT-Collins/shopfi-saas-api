@@ -23,7 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
  * added concurrently made the cart row delete fail on {@code fk_cart_items_on_cart} (clear 409, webhook 500).
  *
  * <p>Global lock order (see docs/api/checkout.md, "Cart lock order"): user → order → payment → cart → cart_items →
- * products → ledger accounts → coupon. Joins the caller's transaction; never starts one.
+ * products → location ledger → ledger accounts → coupon. Joins the caller's transaction; never starts one.
  */
 @Component
 @RequiredArgsConstructor

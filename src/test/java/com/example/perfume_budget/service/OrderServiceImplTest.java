@@ -538,6 +538,35 @@ class OrderServiceImplTest {
     }
 
     @Test
+    void getMyOrders_appendsTheIdTieBreak_soEqualCreatedAtRowsNeverSwapBetweenPages() {
+        // ORD-05b: same final tie-break the admin list has
+        when(authUserUtil.getCurrentUser()).thenReturn(testUser);
+        when(orderRepository.findAllByUser(any(Pageable.class), eq(testUser))).thenReturn(new PageImpl<>(List.of(testOrder)));
+        org.mockito.ArgumentCaptor<Pageable> captor = org.mockito.ArgumentCaptor.forClass(Pageable.class);
+
+        orderService.getMyOrders(org.springframework.data.domain.PageRequest.of(2, 5,
+                org.springframework.data.domain.Sort.by(org.springframework.data.domain.Sort.Direction.ASC, "createdAt")));
+        orderService.getMyOrders(org.springframework.data.domain.PageRequest.of(0, 5));
+
+        verify(orderRepository, times(2)).findAllByUser(captor.capture(), eq(testUser));
+        Pageable sorted = captor.getAllValues().get(0);
+        assertEquals(2, sorted.getPageNumber());
+        assertEquals(5, sorted.getPageSize());
+        assertEquals(List.of("createdAt: ASC", "id: ASC"), sorted.getSort().stream().map(Object::toString).toList());
+        Pageable unsorted = captor.getAllValues().get(1);
+        assertEquals(List.of("createdAt: DESC", "id: DESC"), unsorted.getSort().stream().map(Object::toString).toList());
+    }
+
+    @Test
+    void withIdTieBreak_keepsAnExplicitIdAndLeavesUnpagedAlone() {
+        Pageable withId = org.springframework.data.domain.PageRequest.of(0, 5,
+                org.springframework.data.domain.Sort.by("status").and(org.springframework.data.domain.Sort.by(
+                        org.springframework.data.domain.Sort.Direction.DESC, "id")));
+        assertEquals(withId.getSort(), OrderServiceImpl.withIdTieBreak(withId).getSort());
+        assertEquals(Pageable.unpaged(), OrderServiceImpl.withIdTieBreak(Pageable.unpaged()));
+    }
+
+    @Test
     void getOrderByOrderNumber_Success_Admin() {
         testUser.setRoles(UserRole.ADMIN);
         when(authUserUtil.getCurrentUser()).thenReturn(testUser);
