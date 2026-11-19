@@ -68,9 +68,27 @@ class AuthChannelInterceptorTest {
     }
 
     private static String token(String email, String tenant, long expiresAtMillis) {
+        return typedToken(email, tenant, expiresAtMillis, "access");
+    }
+
+    private static String typedToken(String email, String tenant, long expiresAtMillis, String type) {
+        Map<String, Object> claims = new HashMap<>();
+        if (tenant != null) claims.put("tenant", tenant);
+        if (type != null) claims.put("typ", type);
         var b = Jwts.builder().subject(email).issuedAt(new Date(expiresAtMillis - 3_600_000)).expiration(new Date(expiresAtMillis))
-                .claims(tenant == null ? Map.of() : Map.of("tenant", tenant));
+                .claims(claims);
         return b.signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(SECRET))).compact();
+    }
+
+    /** SEC-03e F4: a refresh token (or a token with no type) never opens a session, however valid otherwise. */
+    @Test
+    void refreshTokenAndUntypedTokenAreRefusedAsBearer() {
+        long exp = now.get() + 600_000;
+        refused(() -> connect(attrs(ACME, null), typedToken("admin@acme.test", "acme", exp, "refresh")), "Invalid or expired token");
+        refused(() -> connect(attrs(ACME, null), typedToken("admin@acme.test", "acme", exp, null)), "Invalid or expired token");
+        refused(() -> connect(attrs(ACME, null), typedToken("admin@acme.test", "acme", exp, "other")), "Invalid or expired token");
+        refused(() -> connect(attrs(ACME, "cookie-placeholder"), null), "Invalid or expired token");
+        verifyNoInteractions(users);
     }
 
     private String valid(String email) {

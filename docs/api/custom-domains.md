@@ -29,21 +29,29 @@ The value is trimmed, lower-cased, ONE trailing dot is removed and an internatio
 |---|---|
 | `DOMAIN_REQUIRED` | missing, null or blank `domain` |
 | `DOMAIN_IP_LITERAL` | IPv4 in any notation a resolver accepts (`10.0.0.1`, `3232235786`, `0x7f000001`, `0177.0.0.1`, `127.1`, full-width digits) and IPv6 (`::1`, `[::1]`, `fe80::1%eth0`) |
-| `DOMAIN_INVALID` | not a syntactically valid FQDN: scheme, path, port, userinfo, wildcard, underscore or any character outside `[a-z0-9.-]` after IDN conversion; empty label, label over 63 or name over 253 characters; label starting/ending with `-`; `--` in positions 3-4 of a non-IDN label; `xn--` label that is not valid punycode; a single label; a top-level label not starting with a letter |
+| `DOMAIN_INVALID` | not a syntactically valid FQDN: scheme, path, port, userinfo, wildcard, underscore or any character outside `[a-z0-9.-]` after IDN conversion; empty label, label over 63 or name over 253 characters; label starting/ending with `-`; `--` in positions 3-4 of a non-IDN label; `xn--` label that is not valid punycode; a single label; a top-level label not starting with a letter; a Unicode name containing `ß`, `ẞ`, final sigma `ς` or a zero-width joiner (IDNA2003 would store `straße.de` as `strasse.de`, browsers send `xn--strae-oqa.de`: such names are refused, spell the name without them) |
 | `DOMAIN_PLATFORM` | equal to, under or a parent of `tenant.base-domain`, any `tenant.platform-domains` host, or any host of `cors.allowed-origins` / `platform.cors.allowed-origins`, or the CNAME target `tenant.custom-domain.cname-target`. Example: tenant `ydom` claiming `acme.shopfi.test` (the DOMAIN-01 collision) |
-| `DOMAIN_CONFUSABLE` | visually confusable with one of those platform names (NFKD with marks removed, Cyrillic/Greek/Armenian look-alikes and `0`/`1`/`rn`/`vv` folded to Latin), e.g. `xn--shpfi-kye.app` (Cyrillic "о") or `sh0pfi.app` when the base domain is `shopfi.app` |
+| `DOMAIN_CONFUSABLE` | visually confusable with one of those platform names (NFKD with marks removed, Cyrillic/Greek/Armenian look-alikes, `0`/`5` folded to Latin, `i`/`l`/`1` one class, `rn`/`vv` read as `m`/`w`), e.g. `xn--shpfi-kye.app` (Cyrillic "о"), `sh0pfi.app` or `shopf1.app` when the base domain is `shopfi.app` |
 | `DOMAIN_RESERVED` | `localhost` and reserved/internal names and everything under them: `localhost`, `localdomain`, `local`, `internal`, `intranet`, `lan`, `home`, `corp`, `private`, `test`, `example`, `invalid`, `onion`, `arpa`, `alt`, `home.arpa`, `example.com`, `example.net`, `example.org`, plus `tenant.custom-domain.reserved-suffixes` |
 
 Uniqueness: one domain belongs to at most one tenant, compared case-insensitively. Enforced by the service and by the
 master database (`uq_tenants_custom_domain_lower` on `lower(custom_domain)`, plus check constraints for the stored
 shape and for a consistent domain/status/token triple). Two tenants claiming the same domain at the same time: exactly
-one wins, the other gets `409 DOMAIN_TAKEN`. A `PENDING`/`FAILED` claim may be taken by another tenant's claim once
-BOTH its claim time and the last time it was seen `VERIFIED` (`custom_domain_last_verified_at`: set on every successful
-verification and stamped with the current time when a re-verification turns `VERIFIED` into `FAILED`) are older than `tenant.custom-domain.unverified-claim-ttl-hours` (72) (anti-squatting; the old claim is cleared
-and audited as `RELEASE` by `SYSTEM`). A `VERIFIED` domain is never taken over, and a domain that was `VERIFIED` until a
-failed re-verification keeps that protection for the full 72 h counted from that failure (however long ago it was last
+one wins, the other gets `409 DOMAIN_TAKEN`.
+
+A `PENDING`/`FAILED` claim may be taken by another tenant's claim once BOTH of these are older than
+`tenant.custom-domain.unverified-claim-ttl-hours` (72):
+
+- its claim time, and
+- the last time it was seen `VERIFIED` (`custom_domain_last_verified_at`: set on every successful verification and
+  stamped with the current time when a re-verification turns `VERIFIED` into `FAILED`).
+
+This is the anti-squatting rule; the old claim is cleared and audited as `RELEASE` by `SYSTEM`. A claim 71 h 59 min old
+is still protected. A `VERIFIED` domain is never taken over, and a domain that was `VERIFIED` until a failed
+re-verification keeps that protection for the full 72 h counted from that failure (however long ago it was last
 verified), so the owner can restore the record and verify again. A claim that keeps failing does not extend it, and
-neither does refreshing a claim with verify calls (only a successful verification, or the VERIFIED to FAILED change, does).
+neither does refreshing a claim with verify calls (only a successful verification, or the `VERIFIED` to `FAILED`
+change, does).
 
 ## Statuses
 

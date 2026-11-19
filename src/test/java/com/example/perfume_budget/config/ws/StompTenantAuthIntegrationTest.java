@@ -98,6 +98,8 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired NotificationService notificationService;
     @Autowired SimpUserRegistry userRegistry;
     @Autowired AdminSessionManager adminSessions;
+    @Autowired StompSessionRevalidator revalidator;
+    @Autowired StompSessionRegistry sessionRegistry;
     @Autowired TenantOriginPolicy originPolicy;
     @Value("${application.security.jwt.secret-key}") String jwtSecret;
     @Autowired @Qualifier("clientInboundChannel") AbstractSubscribableChannel clientInbound;
@@ -195,7 +197,7 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     private String tokenExpiringAt(TestTenant tenant, String email, long expiresAtMillis) {
-        return Jwts.builder().subject(email).claims(Map.of("tenant", tenant.slug(), "role", "ADMIN"))
+        return Jwts.builder().subject(email).claims(Map.of("tenant", tenant.slug(), "role", "ADMIN", "typ", "access"))
                 .issuedAt(new Date(expiresAtMillis - 7_200_000)).expiration(new Date(expiresAtMillis))
                 .signWith(Keys.hmacShaKeyFor(Decoders.BASE64.decode(jwtSecret))).compact();
     }
@@ -381,7 +383,7 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
     @Test
     void subscribeAfterTheConnectTokenExpiredIsRejected() throws Exception {
         // review F6 / R07 end to end: the session expiry is the CONNECT token's own exp
-        long exp = (System.currentTimeMillis() / 1000 + 4) * 1000;
+        long exp = (System.currentTimeMillis() / 1000 + 9) * 1000; // SEC-03e: 9 s, so a loaded CI box still connects in time
         Attempt attempt = connect(origin(acme), tokenExpiringAt(acme, SHARED_STAFF, exp), null);
         StompSession session = attempt.session();
         assertThat(passed).anyMatch(f -> f.command() == StompCommand.CONNECT);
@@ -434,6 +436,88 @@ class StompTenantAuthIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private static String connectFrame(String token) {
         return "CONNECT\naccept-version:1.2\nhost:localhost\nheart-beat:0,0\nAuthorization:Bearer " + token + "\n\n\u0000";
+    }
+
+    // ------------------------------------------------------------------ SEC-03e
+
+    /** F4: a real refresh token, minted like login does, is not a STOMP bearer (header or cookie). */
+    @Test
+    void refreshTokenIsRefusedAsStompBearer() {
+        String refresh = tenants.runAs(acme, () -> jwtUtil.generateRefreshToken(
+                users.findByEmail(SHARED_STAFF).orElseThrow()));
+        assertConnectRefused(connect(origin(acme), refresh, null), "Invalid or expired token");
+        assertConnectRefused(connect(origin(acme), null, refresh), "Invalid or expired token");
+    }
+
+    private void awaitClosed(StompSession session) {
+        await().atMost(Duration.ofSeconds(10)).until(() -> !session.isConnected());
+    }
+
+    /** F5: a disabled user's open socket is closed by the next revalidation and stops receiving. */
+    @Test
+    void disablingTheUserClosesTheOpenSocket_otherTenantsSameEmailStaysConnected() throws Exception {
+        StompSession acmeStaff = connect(origin(acme), token(acme, SHARED_STAFF), null).session();
+        StompSession bravoStaff = connect(origin(bravo), token(bravo, SHARED_STAFF), null).session();
+        BlockingQueue<String> acmeInbox = subscribe(acmeStaff);
+        BlockingQueue<String> bravoInbox = subscribe(bravoStaff);
+        awaitSubscribed(2);
+        revalidator.revalidate();
+        assertThat(acmeStaff.isConnected()).as("still valid: untouched").isTrue();
+
+        jdbc.update("UPDATE tenant_acme.users SET is_active = false WHERE email = ?", SHARED_STAFF);
+        revalidator.revalidate();
+        awaitClosed(acmeStaff);
+        assertThat(bravoStaff.isConnected()).as("same e-mail in another tenant is unaffected").isTrue();
+        notifyNewPaidOrder(acme);
+        assertThat(acmeInbox.poll(2, TimeUnit.SECONDS)).as("closed socket receives nothing").isNull();
+        assertThat(bravoInbox.poll(1, TimeUnit.SECONDS)).isNull();
+    }
+
+    /** F5: suspending the tenant closes its sockets only. */
+    @Test
+    void suspendingTheTenantClosesItsSockets() throws Exception {
+        TestTenant parked = tenants.ensureTenant("wsrevoke");
+        user(parked, SHARED_STAFF, UserRole.ADMIN);
+        StompSession parkedStaff = connect(origin(parked), token(parked, SHARED_STAFF), null).session();
+        StompSession acmeStaff = connect(origin(acme), token(acme, SHARED_STAFF), null).session();
+        jdbc.update("UPDATE master.tenants SET status = ? WHERE slug = 'wsrevoke'", TenantStatus.SUSPENDED.name());
+        try {
+            revalidator.revalidate();
+            awaitClosed(parkedStaff);
+            assertThat(acmeStaff.isConnected()).isTrue();
+        } finally {
+            jdbc.update("UPDATE master.tenants SET status = ? WHERE slug = 'wsrevoke'", TenantStatus.ACTIVE.name());
+            jdbc.update("DELETE FROM tenant_wsrevoke.users WHERE email = ?", SHARED_STAFF);
+        }
+    }
+
+    /** F5: a socket whose CONNECT token expired is closed even though it never sends another frame. */
+    @Test
+    void expiryClosesAnIdleSocketWithItsSubscriptions() throws Exception {
+        long exp = (System.currentTimeMillis() / 1000 + 9) * 1000;
+        StompSession session = connect(origin(acme), tokenExpiringAt(acme, SHARED_STAFF, exp), null).session();
+        BlockingQueue<String> inbox = subscribe(session);
+        awaitSubscribed(1);
+        revalidator.revalidate();
+        assertThat(session.isConnected()).as("before expiry: open").isTrue();
+        long wait = exp - System.currentTimeMillis() + 300;
+        if (wait > 0) {
+            Thread.sleep(wait);
+        }
+        revalidator.revalidate();
+        awaitClosed(session);
+        notifyNewPaidOrder(acme);
+        assertThat(inbox.poll(2, TimeUnit.SECONDS)).isNull();
+    }
+
+    /** F5: closed sessions leave the registry (no leak). */
+    @Test
+    void closedSessionsLeaveTheRegistry() throws Exception {
+        int before = sessionRegistry.size();
+        StompSession session = connect(origin(acme), token(acme, SHARED_STAFF), null).session();
+        await().atMost(Duration.ofSeconds(10)).until(() -> sessionRegistry.size() == before + 1);
+        session.disconnect();
+        await().atMost(Duration.ofSeconds(10)).until(() -> sessionRegistry.size() == before);
     }
 
     // ------------------------------------------------------------------ delivery

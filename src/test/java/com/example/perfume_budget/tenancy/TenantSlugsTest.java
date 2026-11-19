@@ -31,7 +31,7 @@ class TenantSlugsTest {
     @ParameterizedTest
     @ValueSource(strings = {"public", "master", "tenant_template", "tenant-template", "PUBLIC", " Master ", "pg_catalog",
             "pg-temp", "pg-toast", "www", "api", "admin", "platform", "template", "postgres", "information_schema",
-            "tenant_acme"})
+            "tenant_acme", "console", "app", "dashboard", "static", "assets", "cdn", "mail", "www2", "CONSOLE"})
     void rejectsReservedNames(String slug) {
         assertThatThrownBy(() -> TenantSlugs.normalize(slug)).isInstanceOf(InvalidProvisioningRequestException.class);
     }

@@ -22,14 +22,15 @@ import java.util.regex.Pattern;
  *   <li>{@link #IP_LITERAL}: an IPv6 literal (with or without brackets) or an IPv4 literal in any notation the
  *       resolver libraries accept (dotted, a single decimal/hex/octal number, short forms such as {@code 127.1}).</li>
  *   <li>{@link #INVALID}: not a syntactically valid FQDN: scheme, path, port, userinfo, wildcard, underscore or other
- *       characters outside {@code [a-z0-9.-]} after IDN conversion; an empty label, a label over 63 or a name over 253
+ *       characters outside {@code [a-z0-9.-]} after IDN conversion; a Unicode name containing U+00DF (sharp s),
+ *       U+1E9E, U+03C2 (final sigma) or a zero-width joiner, where IDNA2003 and the browsers' IDNA2008 disagree; an empty label, a label over 63 or a name over 253
  *       characters; a label starting/ending with a hyphen; a non-IDN label with hyphens in positions 3-4; an
  *       {@code xn--} label that is not valid punycode; fewer than two labels; a top-level label that does not start
  *       with a letter.</li>
  *   <li>{@link #PLATFORM}: equal to, under, or a parent of {@code tenant.base-domain}, one of
  *       {@code tenant.platform-domains}, or a host of the static CORS lists (platform-owned names).</li>
  *   <li>{@link #CONFUSABLE}: visually confusable with one of those platform names (Unicode NFKD, combining marks dropped,
- *       Cyrillic/Greek/Armenian look-alikes and {@code 0/1/rn/vv} mapped to Latin), e.g. {@code xn--shpfi-...} with a
+ *       Cyrillic/Greek/Armenian look-alikes, {@code 0/5} mapped to Latin, {@code i/l/1} folded into one class and {@code rn/vv} read as {@code m/w}), e.g. {@code xn--shpfi-...} with a
  *       Cyrillic "o".</li>
  *   <li>{@link #RESERVED}: {@code localhost} or a reserved / internal name or suffix (RFC 2606/6761/7686, {@code .internal},
  *       {@code .local}, {@code .lan}, {@code .corp}, {@code .home.arpa}, {@code example.com}, ...).</li>
@@ -127,6 +128,13 @@ public final class CustomDomains {
             throw reject(IP_LITERAL, "An IP address cannot be used as a custom domain.");
         }
         if (!isAscii(s)) {
+            // L6: IDNA2003 (java.net.IDN) maps these to something else (ss, sigma, nothing) while browsers (IDNA2008 /
+            // UTS 46 non-transitional) send them as xn-- labels, so the stored name would never match the Host/Origin a
+            // browser sends. Such names are refused instead of silently stored as a different host.
+            if (hasIdnaDeviationCharacter(s)) {
+                throw reject(INVALID, "The domain contains a character that cannot be used in a custom domain "
+                        + "(for example the German sharp s). Use a spelling without it.");
+            }
             try {
                 s = IDN.toASCII(s, IDN.USE_STD3_ASCII_RULES).toLowerCase(Locale.ROOT);
             } catch (IllegalArgumentException e) {
@@ -165,6 +173,17 @@ public final class CustomDomains {
             }
         }
         return s;
+    }
+
+    /** U+00DF sharp s, U+03C2 final sigma, U+200C/U+200D joiners: the characters IDNA2003 and IDNA2008 treat differently. */
+    private static boolean hasIdnaDeviationCharacter(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\u00df' || c == '\u03c2' || c == '\u200c' || c == '\u200d' || c == '\u1e9e') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void checkFqdn(String s) {
@@ -266,8 +285,8 @@ public final class CustomDomains {
             Map.entry('օ', "o"), Map.entry('ս', "u"), Map.entry('հ', "h"), Map.entry('ո', "n"), Map.entry('զ', "q"),
             Map.entry('ı', "i"), Map.entry('ɑ', "a"), Map.entry('ɡ', "g"), Map.entry('ℓ', "l"), Map.entry('ɩ', "i"),
             Map.entry('ß', "ss"),
-            // digits that pass for letters
-            Map.entry('0', "o"), Map.entry('1', "l"));
+            // digits that pass for letters (1 is folded together with i and l below)
+            Map.entry('0', "o"), Map.entry('1', "l"), Map.entry('5', "s"));
 
     /** A comparison key: two names with the same skeleton look alike. */
     static String skeleton(String unicodeName) {
@@ -279,7 +298,8 @@ public final class CustomDomains {
             String mapped = CONFUSABLES.get(c);
             out.append(mapped != null ? mapped : String.valueOf(c));
         }
-        return out.toString().replace("rn", "m").replace("vv", "w");
+        // i, l and 1 are one class (shopfi / shopfl / shopf1), as are rn/m and vv/w
+        return out.toString().replace('i', 'l').replace("rn", "m").replace("vv", "w");
     }
 
     /** The codes this class can produce (for documentation tests). */

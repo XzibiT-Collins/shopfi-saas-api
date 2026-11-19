@@ -78,6 +78,11 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // SEC-01f: the container's /error dispatch (after sendError or a filter exception) carries no
+                        // credentials, so without this it is answered 401 by the entry point and every 400/404/423/500
+                        // looks like an expired session. The original status is kept; the body is Spring Boot's
+                        // sanitized error (include-message=never). Only DispatcherType.ERROR is opened, never a path.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ERROR).permitAll()
                         // SEC-03: deny by default. Only the explicit, method-specific allow-list below is public;
                         // everything else needs authentication (anyRequest) and, where listed, a role. Controller
                         // methods ALSO carry @PreAuthorize (defence in depth; AuthorizationMatrixStructureTest enforces it).

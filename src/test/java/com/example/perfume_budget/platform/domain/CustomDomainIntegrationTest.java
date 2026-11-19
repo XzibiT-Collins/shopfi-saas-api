@@ -818,6 +818,28 @@ class CustomDomainIntegrationTest extends AbstractTenantWebTest {
                 Boolean.class)).isTrue();
     }
 
+    /** DOMAIN-02 L1: a claim just inside the 72 h window (71 h 59 min) is still protected, in both stale paths. */
+    @Test
+    void l1_aClaimJustInsideTheStaleWindow_isStillProtected() throws Exception {
+        // unverified (PENDING) claim: age counted from requested_at
+        String pending = "shop.edge-pending.com";
+        assertThat(claim(bravo, bravoAdmin, pending).getStatus()).isEqualTo(200);
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '71 hours 59 minutes' WHERE slug = 'bravo'");
+        assertThat(claim(acme, acmeAdmin, pending).getStatus()).as("pending 71h59m: protected").isEqualTo(409);
+        assertThat(row("bravo").get("custom_domain")).isEqualTo(pending);
+
+        // FAILED claim whose last VERIFIED time is 71 h 59 min ago
+        String failed = "shop.edge-failed.com";
+        JsonNode v = claimAndVerify(acme, acmeAdmin, failed);
+        dns.remove(v.get("txtRecordName").asText());
+        assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("FAILED");
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '200 hours', "
+                + "custom_domain_last_verified_at = now() - interval '71 hours 59 minutes' WHERE slug = 'acme'");
+        MockHttpServletResponse r = claim(bravo, bravoAdmin, failed);
+        assertThat(r.getStatus()).as("failed, verified 71h59m ago: protected").isEqualTo(409);
+        assertThat(row("acme").get("custom_domain")).isEqualTo(failed);
+    }
+
     /** F1: replacing a VERIFIED domain starts a new claim; the old domain's verification does not protect the new one. */
     @Test
     void f1_aReplacementClaimDoesNotInheritTheOldDomainsVerification() throws Exception {

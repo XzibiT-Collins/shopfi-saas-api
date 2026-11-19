@@ -162,6 +162,59 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
         assertThat(byName.size()).isEqualTo(1);
     }
 
+    /** SEC-03d N5: the hidden SKU is not matched whichever other parameters ride along. */
+    @Test
+    void anonymousSearchDoesNotMatchTheHiddenSku_withCategoryRepeatedTermOrExtraParams() throws Exception {
+        long p = product(acme, "Plain Name", "10.00", 5);
+        jdbc.update("UPDATE tenant_acme.products SET sku = 'HIDDEN-SKU-9X' WHERE id = ?", p);
+        long cat = jdbc.queryForObject("INSERT INTO tenant_acme.categories (name, slug, description, created_at) "
+                + "VALUES ('Hidden Sku Cat', 'hidden-sku-cat-' || floor(random() * 1000000)::text, 'd', now()) RETURNING id", Long.class);
+        jdbc.update("UPDATE tenant_acme.products SET category_id = ? WHERE id = ?", cat, p);
+        try {
+            String[][] variants = {
+                    {"categoryId", String.valueOf(cat), "searchTerm", "HIDDEN-SKU"},
+                    {"searchTerm", "HIDDEN-SKU", "searchTerm", "hidden-sku-9x"},
+                    {"searchTerm", "plain", "searchTerm", "HIDDEN-SKU-9X"},
+                    {"searchTerm", "HIDDEN-SKU-9X", "sku", "HIDDEN-SKU-9X"},
+                    {"searchTerm", "HIDDEN-SKU-9X", "sort", "name,asc", "size", "5", "page", "0"},
+                    {"categoryId", String.valueOf(cat), "searchTerm", "9X", "q", "HIDDEN-SKU-9X"},
+            };
+            for (String[] v : variants) {
+                var req = get("/api/v1/product/search").header("X-Tenant-ID", "acme");
+                for (int i = 0; i < v.length; i += 2) {
+                    req = req.param(v[i], v[i + 1]);
+                }
+                JsonNode content = body(mvc.perform(req).andReturn()).at("/data/content");
+                assertThat(content.size()).as("anonymous search " + String.join(",", v)).isZero();
+            }
+            // the category filter itself still works (the product is findable by its name inside it)
+            JsonNode byName = body(mvc.perform(get("/api/v1/product/search").param("categoryId", String.valueOf(cat))
+                    .param("searchTerm", "plain").header("X-Tenant-ID", "acme")).andReturn()).at("/data/content");
+            assertThat(byName.size()).isEqualTo(1);
+        } finally {
+            jdbc.update("UPDATE tenant_acme.products SET category_id = NULL WHERE id = ?", p);
+            jdbc.update("DELETE FROM tenant_acme.categories WHERE id = ?", cat);
+        }
+    }
+
+    /** SEC-03d N5b: an inactive but enlisted product is in no public search, listing or featured answer. */
+    @Test
+    void inactiveEnlistedProductIsAbsentFromPublicSearchListingAndFeatured() throws Exception {
+        long visible = product(acme, "Zzvisible Scent", "10.00", 5);
+        long hidden = product(acme, "Zzhidden Scent", "10.00", 5);
+        jdbc.update("UPDATE tenant_acme.products SET is_featured = true WHERE id IN (?, ?)", visible, hidden);
+        jdbc.update("UPDATE tenant_acme.products SET is_active = false, is_enlisted = true WHERE id = ?", hidden);
+        String search = anon("/api/v1/product/search?searchTerm=zz");
+        String listing = anon("/api/v1/product/listing?size=100");
+        String featured = anon("/api/v1/product/featured");
+        for (String answer : List.of(search, listing, featured)) {
+            assertThat(answer).contains("Zzvisible Scent").doesNotContain("Zzhidden");
+        }
+        String hiddenSlug = jdbc.queryForObject("SELECT slug FROM tenant_acme.products WHERE id = ?", String.class, hidden);
+        assertThat(mvc.perform(get("/api/v1/product/" + hiddenSlug).header("X-Tenant-ID", "acme")).andReturn().getResponse().getStatus())
+                .as("detail page of an inactive product").isEqualTo(404);
+    }
+
     // ------------------------------------------------------------------ 3. HEAD
 
     private long views(long id) {

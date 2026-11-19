@@ -352,7 +352,7 @@ Normalised (trim, lowercase) then checked against an allow-list (the slug become
 
 - 3 to 40 characters.
 - Lowercase letters `a-z`, digits, and hyphens; a hyphen only **between** alphanumerics (no leading, trailing or doubled hyphen). Regex `^[a-z0-9]+(-[a-z0-9]+)*$`. No underscores, dots or Unicode.
-- Reserved (400 `slug is reserved`): `public`, `master`, `tenant-template`, `template`, `tenant`, `tenants`, `www`, `api`, `admin`, `platform`, `postgres`, `information-schema`, `root`, `system`, `internal`, plus anything starting with `pg-` or `tenant-` (their underscore spellings are reserved too).
+- Reserved (400 `slug is reserved`): `public`, `master`, `tenant-template`, `template`, `tenant`, `tenants`, `www`, `api`, `admin`, `platform`, `postgres`, `information-schema`, `root`, `system`, `internal`, `console`, `app`, `dashboard`, `static`, `assets`, `cdn`, `mail`, `www2`, plus anything starting with `pg-` or `tenant-` (their underscore spellings are reserved too).
 - Uniqueness is checked at signup (`409`); there is no "is this slug free?" endpoint, so a client cannot pre-check availability without attempting signup (open question, section 12).
 
 The wizard should mirror the rules client-side, but the server is authoritative. Note: `/status` and `/verify` accept any 1..64 character slug string; only invalid ones simply never match.

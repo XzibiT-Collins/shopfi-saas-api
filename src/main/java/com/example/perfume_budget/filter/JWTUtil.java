@@ -78,8 +78,14 @@ public class JWTUtil {
         }
     }
 
+    /** SEC-03e F4: token type claim, so a refresh token can never be presented where an access token is required. */
+    public static final String TYPE_CLAIM = "typ";
+    public static final String TYPE_ACCESS = "access";
+    public static final String TYPE_REFRESH = "refresh";
+
     public String generateAccessToken(JwtUserDetails user){
         Map<String, Object> claims = new HashMap<>();
+        claims.put(TYPE_CLAIM, TYPE_ACCESS);
         claims.put("role", user.getRole());
         claims.put("userId", user.getId());
         claims.put("fullName", user.getFullName());
@@ -89,6 +95,7 @@ public class JWTUtil {
 
     public String generateAccessToken(String email, String role, Long userId, String fullName){
         Map<String, Object> claims = new HashMap<>();
+        claims.put(TYPE_CLAIM, TYPE_ACCESS);
         claims.put("role", role);
         claims.put("userId", userId);
         claims.put("fullName", fullName);
@@ -99,6 +106,7 @@ public class JWTUtil {
 
     public String generateRefreshToken(String email, String role, Long userId, String fullName){
         Map<String, Object> claims = new HashMap<>();
+        claims.put(TYPE_CLAIM, TYPE_REFRESH);
         claims.put("userId", userId);
         claims.put("role", role);
         claims.put("fullName", fullName);
@@ -108,6 +116,7 @@ public class JWTUtil {
 
     public String generateRefreshToken(JwtUserDetails user){
         Map<String, Object> claims = new HashMap<>();
+        claims.put(TYPE_CLAIM, TYPE_REFRESH);
         claims.put("userId", user.getId());
         claims.put("role", user.getRole());
         claims.put("fullName", user.getFullName());

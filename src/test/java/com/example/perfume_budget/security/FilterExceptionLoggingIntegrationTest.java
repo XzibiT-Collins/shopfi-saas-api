@@ -131,9 +131,8 @@ class FilterExceptionLoggingIntegrationTest extends AbstractPostgresIntegrationT
     }
 
     private static void assertSafelyLogged(CapturedOutput output, HttpResponse<String> response, String exceptionClass) {
-        // Unchanged by the guard (also the answer without it): the container's /error dispatch is anonymous, so
-        // Spring Security's entry point answers 401 there. Changing that is a separate decision (see the PR).
-        assertThat(response.statusCode()).isEqualTo(401);
+        // SEC-01f: the ERROR dispatch is permitted, so the container answer (sendError 500) reaches the client as 500.
+        assertThat(response.statusCode()).isEqualTo(500);
         assertThat(response.body()).doesNotContain("filter-leak@x.test");
         String logged = output.getAll();
         assertThat(logged).doesNotContain("filter-leak@x.test").doesNotContain("Servlet.service()");

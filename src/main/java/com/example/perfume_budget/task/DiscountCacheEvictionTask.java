@@ -1,5 +1,6 @@
 package com.example.perfume_budget.task;
 
+import com.example.perfume_budget.service.CatalogCaches;
 import com.example.perfume_budget.tenancy.TenantRunner;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,8 +20,7 @@ import java.util.List;
 @Component
 @RequiredArgsConstructor
 public class DiscountCacheEvictionTask {
-    private static final List<String> PRODUCT_CACHES =
-            List.of("publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage");
+    private static final List<String> PRODUCT_CACHES = CatalogCaches.PUBLIC_CATALOG;
 
     private final CacheManager cacheManager;
     private final TenantRunner tenantRunner;

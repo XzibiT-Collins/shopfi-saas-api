@@ -21,7 +21,9 @@ public final class TenantSlugs {
     private static final Set<String> RESERVED = Set.of(
             "public", "master", "tenant_template", "tenant-template", "template", "tenant", "tenants",
             "www", "api", "admin", "platform", "postgres", "information-schema", "information_schema",
-            "root", "system", "internal");
+            "root", "system", "internal",
+            // TENANT-14: hosts the platform itself may live on (<name>.<base-domain>); a tenant must never own them.
+            "console", "app", "dashboard", "static", "assets", "cdn", "mail", "www2");
 
     private TenantSlugs() {
     }
@@ -40,12 +42,17 @@ public final class TenantSlugs {
             throw new InvalidProvisioningRequestException(
                     "slug may contain only lowercase letters, digits and single hyphens between them");
         }
-        String asSchemaPart = slug.replace('-', '_');
-        if (RESERVED.contains(slug) || RESERVED.contains(asSchemaPart)
-                || asSchemaPart.startsWith("pg_") || asSchemaPart.startsWith("tenant_")) {
+        if (isReserved(slug)) {
             throw new InvalidProvisioningRequestException("slug is reserved");
         }
         return slug;
+    }
+
+    /** True for a syntactically valid slug that the platform keeps for itself (also used to audit existing tenants). */
+    public static boolean isReserved(String slug) {
+        String asSchemaPart = slug.replace('-', '_');
+        return RESERVED.contains(slug) || RESERVED.contains(asSchemaPart)
+                || asSchemaPart.startsWith("pg_") || asSchemaPart.startsWith("tenant_");
     }
 
     /** {@code acme-co} -> {@code tenant_acme_co}. Input must already be normalised. */

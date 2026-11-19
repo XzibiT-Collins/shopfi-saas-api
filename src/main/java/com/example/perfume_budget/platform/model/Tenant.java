@@ -62,7 +62,8 @@ public class Tenant {
      * The tenant's own storefront host (DOMAIN-02), lower case, no trailing dot. Written only by
      * {@code CustomDomainService} after {@code CustomDomains} validation. Unique across tenants case-insensitively
      * (master index {@code uq_tenants_custom_domain_lower}). Honoured ONLY while {@link #customDomainStatus} is
-     * VERIFIED: read it through {@link #verifiedCustomDomain()} or {@code TenantRegistryService#findByVerifiedCustomDomain}.
+     * VERIFIED: read it through {@link #verifiedCustomDomain()} or
+     * {@code TenantRegistryService#findByVerifiedCustomDomain}.
      */
     @Column(name = "custom_domain")
     private String customDomain;
@@ -109,7 +110,9 @@ public class Tenant {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    /** The custom domain only when it is VERIFIED; a PENDING or FAILED claim is never honoured (DOMAIN-02 AC2). */
+    /**
+     * The custom domain only when it is VERIFIED; a PENDING or FAILED claim is never honoured (DOMAIN-02 AC2).
+     */
     public Optional<String> verifiedCustomDomain() {
         if (customDomainStatus != CustomDomainStatus.VERIFIED || customDomain == null || customDomain.isBlank()) {
             return Optional.empty();
