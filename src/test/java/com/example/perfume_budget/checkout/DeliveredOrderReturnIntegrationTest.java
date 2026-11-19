@@ -654,6 +654,36 @@ class DeliveredOrderReturnIntegrationTest extends AbstractCheckoutIntegrationTes
     }
 
     @Test
+    void anUnpaidOrderThatSomehowIsDeliveredCannotBeReturned() throws Exception {
+        Placed unpaid = place("up1@acme.test", 1);
+        jdbc.update("UPDATE tenant_acme.orders SET delivery_status = 'DELIVERED' WHERE order_number = ?", unpaid.orderNumber());
+        MvcResult r = returnOrder(unpaid.orderNumber());
+        assertThat(status(r)).isEqualTo(409);
+        assertThat(code(r)).isEqualTo("ORDER_NOT_RETURNABLE");
+        assertThat(body(r).at("/data/paymentStatus").asText()).isNotEqualTo("COMPLETED");
+        assertThat(deliveryStatus(unpaid.orderNumber())).isEqualTo("DELIVERED");
+        assertThat(entries(unpaid.orderNumber(), "SALE_REVERSAL")).isZero();
+    }
+
+    @Test
+    void theItemsSoldReportAndItsPerProductViewDropAReturnedOrder() throws Exception {
+        Placed o = placeDelivered("is1@acme.test", 2);
+        long p = o.products().get(0);
+        String name = "Rev is1@acme.test";
+        MvcResult before = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold?source=ONLINE"))).andReturn();
+        assertThat(status(before)).isEqualTo(200);
+        assertThat(before.getResponse().getContentAsString()).contains(name);
+        MvcResult perProductBefore = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold/" + p + "?source=ONLINE"))).andReturn();
+        assertThat(perProductBefore.getResponse().getContentAsString()).contains(o.orderNumber());
+        assertThat(status(returnOrder(o.orderNumber()))).isEqualTo(200);
+        MvcResult after = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold?source=ONLINE"))).andReturn();
+        assertThat(status(after)).isEqualTo(200);
+        assertThat(after.getResponse().getContentAsString()).doesNotContain(name);
+        MvcResult perProductAfter = mvc.perform(admin(get("/api/v1/admin/inventory/sales/items-sold/" + p + "?source=ONLINE"))).andReturn();
+        assertThat(perProductAfter.getResponse().getContentAsString()).doesNotContain(o.orderNumber());
+    }
+
+    @Test
     void theDeliveredOrderStillAnswersTheOldWayForTheOtherRoutes() throws Exception {
         Placed o = placeDelivered("v4@acme.test", 1);
         MvcResult cancel = setStatus(o.orderNumber(), "CANCELLED");
