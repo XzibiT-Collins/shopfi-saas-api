@@ -83,7 +83,15 @@ class NoPersonalDataInLogsTest {
     private static final Pattern BODY_VARIABLE = Pattern.compile("(?i)\\b\\w*body\\b");
     /** What may follow a body and still be the whole body ({@code .toString()}, {@code .strip()}, ...). */
     private static final Pattern STILL_THE_BODY = Pattern.compile(
-            "^\\s*\\.\\s*(?:toString|toPrettyString|strip|trim|stripLeading|stripTrailing|toLowerCase|toUpperCase|substring|lines|getBytes)\\s*\\(");
+            "^\\s*\\.\\s*(?:toString|toPrettyString|strip|trim|stripLeading|stripTrailing|toLowerCase|toUpperCase|substring|lines|getBytes|readAllBytes|readNBytes|asText)\\s*\\(");
+    /**
+     * FIX-A2 (F-4): {@code UTF_8.decode(ByteBuffer.wrap(bytes))}, {@code StandardCharsets.UTF_8.decode(buf)} and
+     * {@code Base64.getDecoder().decode(body)} / {@code encodeToString(body)}: a charset or Base64 round trip of the
+     * body is the body. The receiver is part of the match so that collapsing it leaves no stray identifier behind.
+     */
+    private static final String DECODE_OR_ENCODE =
+            "(?:\\bBase64\\s*\\.\\s*get\\w*(?:Decoder|Encoder)\\s*\\(\\s*\\)|\\b\\w+(?:\\s*\\.\\s*\\w+)*)"
+                    + "\\s*\\.\\s*(?:decode|encode|encodeToString)\\s*\\(";
     /**
      * SEC-01e (F2): calls whose result is still the whole body when an argument is: decoding ({@code new String(bytes)}),
      * printing ({@code Arrays.toString(bytes)}), parsing ({@code MAPPER.readTree(..)} / {@code readValue(..)}) and the
@@ -93,7 +101,12 @@ class NoPersonalDataInLogsTest {
     private static final Pattern BODY_WRAPPER = Pattern.compile(
             "\\bnew\\s+String\\s*\\(|\\b(?:Arrays\\s*\\.\\s*(?:toString|deepToString|asList)|(?:\\w+\\s*\\.\\s*)?(?:readTree|readValue)"
                     + "|String\\s*\\.\\s*(?:valueOf|format|join)|Objects\\s*\\.\\s*(?:toString|requireNonNull)"
-                    + "|Optional\\s*\\.\\s*(?:of|ofNullable))\\s*\\(");
+                    + "|Optional\\s*\\.\\s*(?:of|ofNullable)"
+                    // FIX-A2 (F-4): re-serialising ({@code writeValueAsString(body)}), copying a stream
+                    // ({@code StreamUtils.copyToString(body, ..)}) and the transforms of a body are still the body
+                    + "|(?:\\w+\\s*\\.\\s*)?(?:writeValueAsString|writeValueAsBytes|valueToTree|convertValue)"
+                    + "|(?:StreamUtils|FileCopyUtils|IOUtils)\\s*\\.\\s*(?:copyTo(?:String|ByteArray)|toString|toByteArray)"
+                    + ")\\s*\\(|" + DECODE_OR_ENCODE);
     /** The identifier a collapsed body wrapper becomes; counts as a body even after a qualifier ({@code this.x}). */
     private static final String WRAPPED_BODY = "wrappedRawBody";
     /**
@@ -109,7 +122,10 @@ class NoPersonalDataInLogsTest {
     private static final Pattern IDENTIFIER = Pattern.compile("\\b[A-Za-z_]\\w*\\b");
     /** Wrappers whose argument IS the value: {@code String.valueOf(email)} is the e-mail address. */
     private static final Pattern PASS_THROUGH = Pattern.compile(
-            "(?:String\\s*\\.\\s*(?:valueOf|format|join)|Objects\\s*\\.\\s*(?:toString|requireNonNull)|Optional\\s*\\.\\s*(?:of|ofNullable))\\s*\\(\\s*$");
+            "(?:String\\s*\\.\\s*(?:valueOf|format|join)|Objects\\s*\\.\\s*(?:toString|requireNonNull)|Optional\\s*\\.\\s*(?:of|ofNullable)"
+                    // FIX-A2 (F-4): collections and buffers holding the value ARE the value for the scan
+                    + "|(?:Map|List|Set)\\s*\\.\\s*(?:of|copyOf|entry)|Collections\\s*\\.\\s*(?:singleton|singletonList|unmodifiableList)"
+                    + "|ByteBuffer\\s*\\.\\s*wrap)\\s*\\(\\s*$");
 
     /** One logging call: its level ("info", "debug", "mdc", "stdout") and its argument text, literals blanked. */
     record Call(String level, String arguments) {}
@@ -439,12 +455,45 @@ class NoPersonalDataInLogsTest {
         return !rest.stripLeading().startsWith(".");
     }
 
+    /** FIX-A2 (F-4): {@code b -> ..} and {@code (a, b) -> ..}. */
+    private static final Pattern LAMBDA = Pattern.compile("\\b(\\w+)\\s*->|\\(\\s*(\\w+(?:\\s*,\\s*\\w+)*)\\s*\\)\\s*->");
+
+    private static int statementStart(String code, int from) {
+        int start = 0;
+        for (char c : new char[]{';', '{', '}'}) {
+            start = Math.max(start, code.lastIndexOf(c, from) + 1);
+        }
+        return start;
+    }
+
+    /** The {@code .method(} (with plain arguments) that receives the lambda: {@code opt.ifPresent(b ->} -> {@code opt}. */
+    private static final Pattern LAMBDA_RECEIVER_CALL = Pattern.compile("\\.\\s*\\w+\\s*\\([^()]*$");
+
+    /** True when what the lambda's method is called on ({@code Optional.of(body)}, {@code parts}) is a whole body. */
+    private static boolean mentionsBody(String prefix, Set<String> locals) {
+        String receiver = LAMBDA_RECEIVER_CALL.matcher(prefix).replaceFirst("").strip();
+        return !receiver.isEmpty() && rawBody(receiver, locals);
+    }
+
     /** SEC-01d: locals assigned a raw body ({@code String raw = e.getResponseBodyAsString();}), transitively. */
     static Set<String> rawBodyLocals(String code) {
         Set<String> locals = new HashSet<>(entityNames(code));
         boolean changed = true;
         while (changed) {
             changed = false;
+            // FIX-A2 (F-4): the parameter of a lambda in a statement that holds a body ({@code Optional.of(body)
+            // .ifPresent(b -> log.warn("{}", b))}) is the body
+            Matcher lambda = LAMBDA.matcher(code);
+            while (lambda.find()) {
+                String prefix = code.substring(statementStart(code, lambda.start()), lambda.start());
+                if (mentionsBody(prefix, locals)) {
+                    for (String param : lambda.group(1) != null ? new String[]{lambda.group(1)} : lambda.group(2).split("\\s*,\\s*")) {
+                        if (!param.isBlank() && locals.add(param.strip())) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
             Matcher a = ASSIGNMENT.matcher(code);
             while (a.find()) {
                 String name = a.group(1);
@@ -724,7 +773,41 @@ class NoPersonalDataInLogsTest {
                         "final ClientHttpResponse failed = request.execute();\nlog.error(\"x \" + failed);"),
                 Arguments.of("Arrays.asList(body)", "log.error(\"x {}\", Arrays.asList(e.getResponseBodyAsString()));"),
                 Arguments.of("Arrays.deepToString(body array)",
-                        "log.error(\"x {}\", Arrays.deepToString(new Object[]{e.getResponseBodyAsByteArray()}));"));
+                        "log.error(\"x {}\", Arrays.deepToString(new Object[]{e.getResponseBodyAsByteArray()}));"),
+                // FIX-A2 (F-4): decode / re-serialise / copy / wrap / lambda gaps
+                Arguments.of("UTF_8.decode(ByteBuffer.wrap(bytes))",
+                        "log.error(\"x {}\", StandardCharsets.UTF_8.decode(ByteBuffer.wrap(e.getResponseBodyAsByteArray())));"),
+                Arguments.of("UTF_8.decode(buffer local)",
+                        "ByteBuffer buf = ByteBuffer.wrap(e.getResponseBodyAsByteArray());\nlog.error(\"x {}\", UTF_8.decode(buf));"),
+                Arguments.of("writeValueAsString(entity body)", "log.error(\"x {}\", MAPPER.writeValueAsString(response.getBody()));"),
+                Arguments.of("writeValueAsString(tree local)",
+                        "var tree = MAPPER.readTree(e.getResponseBodyAsByteArray());\nlog.error(\"x {}\", objectMapper.writeValueAsString(tree));"),
+                Arguments.of("writeValueAsBytes(body)", "log.error(\"x {}\", new String(MAPPER.writeValueAsBytes(response.getBody())));"),
+                Arguments.of("readAllBytes of the body stream", "log.error(\"x {}\", new String(response.getBody().readAllBytes()));"),
+                Arguments.of("StreamUtils.copyToString(body)",
+                        "String s = StreamUtils.copyToString(response.getBody(), UTF_8);\nlog.error(\"x {}\", s);"),
+                Arguments.of("Map.of(.., body)", "log.warn(\"x {}\", Map.of(\"error\", e.getResponseBodyAsString()));"),
+                Arguments.of("List.of(body)", "log.warn(\"x {}\", List.of(e.getResponseBodyAsString()));"),
+                Arguments.of("local from Set.of(body)", "var s = Set.of(e.getResponseBodyAsString());\nlog.warn(\"x {}\", s);"),
+                Arguments.of("Base64 decode of the body",
+                        "log.error(\"x {}\", new String(Base64.getDecoder().decode(e.getResponseBodyAsString())));"),
+                Arguments.of("Base64 encode of the body",
+                        "log.error(\"x {}\", Base64.getEncoder().encodeToString(e.getResponseBodyAsByteArray()));"),
+                Arguments.of("Optional.of(body) lambda parameter",
+                        "Optional.of(e.getResponseBodyAsString()).ifPresent(b -> log.warn(\"x {}\", b));"),
+                Arguments.of("forEach parameter over a body list local",
+                        "var parts = List.of(e.getResponseBodyAsString());\nparts.forEach(p -> log.warn(\"x {}\", p));"),
+                // re-review lows N12 / N13 / N16: other entity shapes
+                Arguments.of("typed HttpEntity local",
+                        "HttpEntity<String> sent = new HttpEntity<>(payload, headers);\nlog.info(\"x {}\", sent);"),
+                Arguments.of("var local from getForEntity(..)",
+                        "var r = rest.getForEntity(url, Map.class);\nlog.info(\"x {}\", r);"),
+                Arguments.of("var local from toEntity(..)",
+                        "var r = client.get().retrieve().toEntity(Map.class);\nlog.info(\"x \" + r);"),
+                Arguments.of("java.net.http.HttpResponse local",
+                        "java.net.http.HttpResponse<String> res = http.send(req, BodyHandlers.ofString());\nlog.info(\"x {}\", res);"),
+                Arguments.of("java.net.http.HttpResponse body()",
+                        "HttpResponse<String> res = http.send(req, BodyHandlers.ofString());\nlog.info(\"x {}\", res.body());"));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -756,6 +839,19 @@ class NoPersonalDataInLogsTest {
                 Arguments.of("Arrays.asList of ids", "log.info(\"x {}\", Arrays.asList(ids));"),
                 Arguments.of("one field of a pretty tree",
                         "log.warn(\"x {}\", MAPPER.readTree(e.getResponseBodyAsString()).path(\"code\").toPrettyString());"),
+                // FIX-A2 (F-4): the safe spellings next to the new gaps
+                Arguments.of("decode of a non-body buffer", "log.info(\"x {}\", UTF_8.decode(ByteBuffer.wrap(ids)));"),
+                Arguments.of("writeValueAsString of something else", "log.info(\"x {}\", MAPPER.writeValueAsString(config));"),
+                Arguments.of("readAllBytes of another stream", "log.info(\"x {}\", new String(file.readAllBytes()).length());"),
+                Arguments.of("Map.of of ids", "log.info(\"x {}\", Map.of(\"n\", ids.length));"),
+                Arguments.of("List.of of the status", "log.info(\"x {}\", List.of(response.getStatusCode()));"),
+                Arguments.of("Base64 of something else", "log.info(\"x {}\", Base64.getEncoder().encodeToString(ids));"),
+                Arguments.of("lambda over ids", "Optional.of(ids).ifPresent(b -> log.info(\"x {}\", b.length));"),
+                Arguments.of("lambda over a status", "Optional.of(response.getStatusCode()).ifPresent(c -> log.info(\"x {}\", c));"),
+                Arguments.of("HttpEntity status only",
+                        "var r = rest.getForEntity(url, Map.class);\nlog.info(\"x {}\", r.getStatusCode());"),
+                Arguments.of("java.net.http.HttpResponse status only",
+                        "HttpResponse<String> res = http.send(req, BodyHandlers.ofString());\nlog.info(\"x {}\", res.statusCode());"),
                 Arguments.of("exchange status only",
                         "var reply = restTemplate.exchange(url, HttpMethod.POST, request, Map.class);\nlog.info(\"s {}\", reply.getStatusCode());"));
     }

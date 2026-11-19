@@ -83,6 +83,11 @@ public class AuthCookieUtil {
             throw new InvalidJWTTokenException(INVALID_REFRESH);
         }
         jwtUtil.validateToken(refreshToken);
+        // FIX-A2 (1): only a refresh token refreshes. An access token (short-lived, sent on every request) must not be
+        // exchangeable for a new one forever. Untyped tokens (minted before the claim) pass only during the legacy grace.
+        if (!jwtUtil.isRefreshToken(refreshToken)) {
+            throw new InvalidJWTTokenException(INVALID_REFRESH);
+        }
         String contextSlug = TenantContext.getSlug();
         // Fail closed: a refresh token is only valid for the tenant resolved for this request. The message is the
         // same generic one as for a bad signature so a token from another tenant (or the platform) is simply invalid.

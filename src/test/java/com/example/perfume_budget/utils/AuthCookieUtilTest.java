@@ -56,6 +56,7 @@ class AuthCookieUtilTest {
         User user = User.builder().id(1L).email("test@test.com").fullName("Test").isActive(true).roles(com.example.perfume_budget.enums.UserRole.CUSTOMER).build();
         
         TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+        when(jwtUtil.isRefreshToken(refreshToken)).thenReturn(true);
         when(jwtUtil.extractTenant(refreshToken)).thenReturn("acme");
         when(jwtUtil.accessTokenTtlSeconds()).thenReturn(3600);
         when(jwtUtil.extractUsername(refreshToken)).thenReturn("test@test.com");
@@ -76,6 +77,7 @@ class AuthCookieUtilTest {
     @Test
     void refreshAccessToken_UserNotFound() {
         TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+        when(jwtUtil.isRefreshToken(anyString())).thenReturn(true);
         when(jwtUtil.extractTenant(anyString())).thenReturn("acme");
         when(jwtUtil.extractUsername(anyString())).thenReturn("none@test.com");
         when(userRepository.findByEmail(anyString())).thenReturn(Optional.empty());
@@ -102,6 +104,7 @@ class AuthCookieUtilTest {
     @Test
     void refreshAccessToken_tokenFromAnotherTenant_isSimplyInvalid_withAGenericMessage() {
         TenantContext.set(TenantIdentity.tenant("bravo", "tenant_bravo"));
+        when(jwtUtil.isRefreshToken("t")).thenReturn(true);
         when(jwtUtil.extractTenant("t")).thenReturn("acme");
 
         var ex = assertThrows(com.example.perfume_budget.exception.InvalidJWTTokenException.class,
@@ -114,6 +117,7 @@ class AuthCookieUtilTest {
     @Test
     void refreshAccessToken_platformClaimOrMissingTenantOrMissingContext_isRejected() {
         TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+        when(jwtUtil.isRefreshToken(anyString())).thenReturn(true);
         when(jwtUtil.extractTenant("p")).thenReturn(TenantContext.PLATFORM_SLUG);
         when(jwtUtil.extractTenant("n")).thenReturn(null);
         assertThrows(com.example.perfume_budget.exception.InvalidJWTTokenException.class, () -> authCookieUtil.refreshAccessToken("p", response));
@@ -128,5 +132,18 @@ class AuthCookieUtilTest {
         assertThrows(com.example.perfume_budget.exception.InvalidJWTTokenException.class, () -> authCookieUtil.refreshAccessToken(null, response));
         assertThrows(com.example.perfume_budget.exception.InvalidJWTTokenException.class, () -> authCookieUtil.refreshAccessToken("  ", response));
         verifyNoInteractions(userRepository);
+    }
+
+    /** FIX-A2 (1): a token that is not a refresh token (an access token) is refused before any user lookup. */
+    @Test
+    void refreshAccessToken_aTokenThatIsNotARefreshToken_isInvalid_andNothingIsIssued() {
+        TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+        when(jwtUtil.isRefreshToken("access-token")).thenReturn(false);
+
+        var ex = assertThrows(com.example.perfume_budget.exception.InvalidJWTTokenException.class,
+                () -> authCookieUtil.refreshAccessToken("access-token", response));
+        assertEquals("Invalid or expired token", ex.getMessage());
+        verifyNoInteractions(userRepository);
+        verify(response, never()).addHeader(anyString(), anyString());
     }
 }

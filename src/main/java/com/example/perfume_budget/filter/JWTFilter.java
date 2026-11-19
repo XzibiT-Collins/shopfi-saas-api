@@ -92,6 +92,12 @@ public class JWTFilter extends OncePerRequestFilter {
             log.debug("Auth cookie does not belong to the resolved tenant; treating the request as anonymous");
             return;
         }
+        // FIX-A2 (2): only an access token authenticates; a refresh token (7 days+) in the accessToken cookie or header
+        // must not act as a long-lived access token. The 401 for protected paths comes from the entry point as usual.
+        if (!jwtUtil.isAccessToken(token)) {
+            log.debug("Auth cookie is not an access token; treating the request as anonymous");
+            return;
+        }
         String username = jwtUtil.extractUsername(token);
         if (username == null) {
             return;

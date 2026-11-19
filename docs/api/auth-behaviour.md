@@ -31,6 +31,13 @@ Consequences for clients:
 * No refresh cookie (or empty), an expired/invalid one, or one issued for another tenant or the platform:
   **`401`** JSON `{"description":"Invalid or expired token"}` (was `400` for a missing cookie, and a message that
   named the tenant mismatch for a foreign one). No cookie is set.
+* Token types (FIX-A2): only a token typed `refresh` is accepted by `/auth/refresh`; an ACCESS token sent as the
+  `refreshToken` cookie is `401` (it could otherwise be exchanged for new access tokens indefinitely). Conversely only a
+  token typed `access` authenticates a REST request: a refresh token sent as the `accessToken` cookie leaves the request
+  anonymous (`401` on protected paths). Tokens minted before the `typ` claim existed have no type: they are refused
+  by both, except that `/auth/refresh` accepts an UNTYPED refresh token while `JWT_REFRESH_UNTYPED_GRACE_UNTIL` (ISO-8601
+  instant, e.g. deploy time plus `JWT_REFRESH_EXPIRATION`) is in the future, so existing sessions survive the rollout.
+  Blank (default) or malformed = no grace. Remove the variable once the instant has passed.
 * The client rule stays: on a protected `401`, call refresh once, then retry once, then go to login.
 
 ## 3. Cookie lifetimes

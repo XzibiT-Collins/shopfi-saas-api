@@ -142,7 +142,7 @@ trusting the domain on the next request on every instance. Other instances' CORS
   FOR UPDATE SKIP LOCKED) RETURNING ...`) that moves the row's due time `lease` (10 min) ahead. Two instances (or two
   rounds) never check the same row at once, a row locked by an admin write is skipped not waited for, no row lock is
   held while DNS is queried (the result is applied under the row lock only if domain, token, status `VERIFIED` and the row's
-  due time (= this claim's lease end) are still the ones that were checked: an answer that arrives after the claim was
+  due time (= this claim's lease end) are still the ones that were checked; the status check is redundant defence in depth, because the V9 constraint only allows a due time on a `VERIFIED` row: an answer that arrives after the claim was
   changed, or after the lease ended and another round took the row, is dropped, so a miss is never counted twice), and the rows of an instance that crashed mid-check come back when the lease ends.
 - A round checks at most `batch-size` (10) domains and a round is `tick-interval` (1 min) after the previous one ends,
   so a backlog is worked off gradually (most overdue first) instead of in a burst. Every schedule gets a random extra
