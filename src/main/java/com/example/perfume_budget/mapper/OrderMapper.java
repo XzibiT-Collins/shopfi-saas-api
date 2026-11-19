@@ -85,6 +85,7 @@ public class OrderMapper {
                 .version(order.getVersion())
                 .cancelledAt(toUtc(order.getCancelledAt()))
                 .cancelSource(order.getCancelSource() == null ? null : order.getCancelSource().name())
+                .returnedAt(toUtc(order.getReturnedAt()))
                 .account(includeAccount && order.getUser() != null
                         ? OrderAccountResponse.builder().id(order.getUser().getId())
                         .fullName(order.getUser().getFullName()).email(order.getUser().getEmail()).build()

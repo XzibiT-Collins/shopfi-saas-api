@@ -64,3 +64,16 @@ lines and accounts), independent of the page size.
 
 When an admin journal screen is built: request `?startDate=..&endDate=..&page=0&size=50`, render `data.content`, and
 page with `data.totalPages` / `data.isLast`. Do not page past row 10,000; offer a narrower date range instead.
+
+## Returned delivered orders (ORD-07)
+
+`POST /api/v1/order/{orderNumber}/return` (see [orders.md](orders.md)) posts **one `SALE_REVERSAL` journal entry**
+(reference type `ORDER`, the order number, description "Sale reversed for returned order: ...", `recordedBy` the admin's
+e-mail), dated at the return, mirroring the order's `SALE` entry line by line: revenue, tax and discount lines are taken
+back, the cash line becomes a **credit to 2100 Refunds Payable** (the money is still in the shop until refunded), and
+COGS / inventory are reversed too because the goods are back on the shelf. The refund acknowledgement then posts the
+`REFUND` entry (debit 2100, credit 1000 Cash and Bank) with the usual 409 `INSUFFICIENT_CASH` rule. The reversal reuses
+the paid-cancel guards: each part (revenue, goods) is posted at most once per order, so a return can never double a
+reversal and an order cannot be both cancelled and returned. Closed periods are not rewritten: sales analytics show the
+reversal as negative revenue / COGS on the **return date**. Ledger balances move through the same single atomic
+`UPDATE ... balance = balance + delta` as every other posting (accounts locked last, ascending id).

@@ -22,7 +22,7 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
         JOIN Product p ON p.id = oi.productId
         JOIN oi.order o
         WHERE o.status = :status
-        AND (o.deliveryStatus IS NULL OR o.deliveryStatus <> com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED)
+        AND (o.deliveryStatus IS NULL OR o.deliveryStatus NOT IN (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))
         GROUP BY oi.productId, p.name, p.imageUrl
         ORDER BY totalRevenue DESC
         LIMIT 5

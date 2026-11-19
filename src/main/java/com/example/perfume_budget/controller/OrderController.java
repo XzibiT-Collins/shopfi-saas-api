@@ -96,6 +96,18 @@ public class OrderController {
         return etag(response).body(CustomApiResponse.success(response));
     }
 
+    /**
+     * ORD-07: records the return of a whole DELIVERED order: restock, sale reversed in the books, refund now required
+     * (acknowledge it with the refund-acknowledgement route). Idempotent. 409 ORDER_NOT_RETURNABLE /
+     * RETURN_WINDOW_EXPIRED (docs/api/orders.md).
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/{orderNumber}/return")
+    public ResponseEntity<CustomApiResponse<OrderResponse>> returnDeliveredOrder(@PathVariable String orderNumber){
+        OrderResponse response = orderService.returnDeliveredOrder(orderNumber);
+        return etag(response).body(CustomApiResponse.success(response));
+    }
+
     /** ORD-02: the order's append-only audit trail, oldest first, paged (size capped at 50). */
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{orderNumber}/audit-events")

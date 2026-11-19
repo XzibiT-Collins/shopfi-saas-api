@@ -258,6 +258,13 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Transactional
     @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
     public int restockConsumedOrderInventory(Order order) {
+        return restockConsumedOrderInventory(order, "Returned to stock: order " + order.getOrderNumber() + " cancelled by the merchant");
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = {"publicCustomerProductListings", "publicFeaturedProducts", "productDetailsPage"}, allEntries = true)
+    public int restockConsumedOrderInventory(Order order, String movementNote) {
         List<InventoryAllocation> allocations = inventoryAllocationRepository
                 .findByReferenceTypeAndReferenceIdAndStatusOrderByIdAsc(
                         InventoryReferenceType.ORDER,
@@ -288,7 +295,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
                     allocation.getQuantity(),
                     allocation.getUnitCost(),
                     allocation.getUnitSellingPrice(),
-                    "Returned to stock: order " + order.getOrderNumber() + " cancelled by the merchant");
+                    movementNote);
             Long productId = allocation.getProduct().getId();
             productById.putIfAbsent(productId, allocation.getProduct());
             quantityByProduct.merge(productId, allocation.getQuantity(), Integer::sum);

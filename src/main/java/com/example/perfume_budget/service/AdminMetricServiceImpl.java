@@ -195,7 +195,7 @@ public class AdminMetricServiceImpl implements AdminMetricService {
         BigDecimal totalSpent = orders.stream()
                 .filter(o -> o.getStatus() == PaymentStatus.COMPLETED)
                 // ORD-02 rework (F5): a paid order the shop cancelled is refunded, not spent (as top customers)
-                .filter(o -> o.getDeliveryStatus() != OrderProcessingStatus.CANCELLED)
+                .filter(o -> o.getDeliveryStatus() != OrderProcessingStatus.CANCELLED && o.getDeliveryStatus() != OrderProcessingStatus.RETURNED)
                 .map(o -> o.getTotalAmount().getAmount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
@@ -611,7 +611,7 @@ public class AdminMetricServiceImpl implements AdminMetricService {
             List<OnlineOrderStatusProjection> statuses) {
         Map<String, Long> map = new LinkedHashMap<>();
         map.put("Pending", 0L); map.put("Packing", 0L);
-        map.put("Out for Delivery", 0L); map.put("Delivered", 0L); map.put("Cancelled", 0L);
+        map.put("Out for Delivery", 0L); map.put("Delivered", 0L); map.put("Cancelled", 0L); map.put("Returned", 0L);
         statuses.forEach(p -> {
             String label = onlineLabel(p.getDeliveryStatus().name());
             if (label != null) map.merge(label, p.getCount(), Long::sum);
@@ -655,6 +655,7 @@ public class AdminMetricServiceImpl implements AdminMetricService {
             case "OUT_FOR_DELIVERY" -> "Out for Delivery";
             case "DELIVERED"        -> "Delivered";
             case "CANCELLED"        -> "Cancelled";
+            case "RETURNED"         -> "Returned";
             default                 -> null;
         };
     }

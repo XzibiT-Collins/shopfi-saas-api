@@ -403,6 +403,18 @@
             </p>
         </div>
 
+        <!-- STATUS BANNER - RETURNED (ORD-07) -->
+        <div th:if="${orderStatus.name() == 'RETURNED'}"
+             class="status-banner cancelled">
+            <div class="status-icon">X</div>
+            <div class="status-title cancelled">Order Returned</div>
+            <p class="status-description cancelled">
+                We have received your returned order and it is now closed. Your refund
+                will be paid to you by our team. If you have any questions, please
+                contact our support team.
+            </p>
+        </div>
+
         <!-- THANK YOU -->
         <div class="thank-you-note">
             <p>Thank you for choosing One Time Essentials</p>

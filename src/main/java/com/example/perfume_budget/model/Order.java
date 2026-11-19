@@ -81,6 +81,17 @@ public class Order {
     @Column(name = "cancel_source", length = 16)
     private CancelSource cancelSource;
 
+    /** ORD-07: when the order was marked DELIVERED (start of the optional return window); V17 back-filled old rows. */
+    @Column(name = "delivered_at")
+    private LocalDateTime deliveredAt;
+
+    /** ORD-07: when / by which admin a DELIVERED order was returned (null while it is not). */
+    @Column(name = "returned_at")
+    private LocalDateTime returnedAt;
+
+    @Column(name = "returned_by")
+    private String returnedBy;
+
     private String paymentReference;
 
     /** Client-supplied Idempotency-Key of the checkout that created this order (null for keyless checkouts). */
