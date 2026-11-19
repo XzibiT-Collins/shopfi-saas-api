@@ -61,6 +61,9 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     java.util.List<Long> findExistingIds(@org.springframework.data.repository.query.Param("ids") java.util.Collection<Long> ids);
 
     boolean existsBySku(String sku);
+
+    /** API-03: the other members of a family (delete of its base unit). */
+    long countByFamilyAndIdNot(ProductFamily family, Long id);
     /** CAT-02: the family's members with their unit of measure in the same query (available-uoms maps the code). */
     @org.springframework.data.jpa.repository.EntityGraph(attributePaths = "unitOfMeasure")
     List<Product> findByFamily(ProductFamily family);
@@ -116,6 +119,9 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     /** Public featured list (cached as DTOs). */
     @EntityGraph(attributePaths = CATEGORY)
     List<Product> findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrue();
+
+    /** CAT-05: the featured shelf restricted to products with stock (GET /product/featured?inStock=true). */
+    List<Product> findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrueAndStockQuantityGreaterThan(int stockQuantity);
 
     Page<Product> findAllByIsActiveTrue(Specification<Product> spec, Pageable pageable);
 }

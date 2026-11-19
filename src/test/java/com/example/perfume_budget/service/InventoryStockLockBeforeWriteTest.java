@@ -286,6 +286,24 @@ class InventoryStockLockBeforeWriteTest {
         assertThat(savedLayerTypes()).containsExactly(InventoryLayerSourceType.LEGACY_BALANCE, InventoryLayerSourceType.CONVERSION_IN);
     }
 
+    /** INV-01b L3: the opt-in repair writes a layer, a movement and the product row, so it takes the lock first. */
+    @Test
+    void legacyBalanceRepairLocksTheProductBeforeItWritesAnything() {
+        lenient().when(inventoryLayerRepository.findLegacyBalanceCandidate(1L)).thenReturn(Optional.of(
+                new com.example.perfume_budget.projection.LegacyBalanceCandidate() {
+                    public Long getProductId() { return 1L; }
+                    public String getSku() { return "P1"; }
+                    public String getName() { return "P1"; }
+                    public Integer getStockQuantity() { return 10; }
+                    public Integer getReservedQuantity() { return 0; }
+                    public Integer getLocationOnHand() { return 15; }
+                }));
+        var result = service.repairLegacyBalances(List.of(1L));
+        assertThat(result.restoredUnits()).isEqualTo(5);
+        assertLockedFirst("[1]");
+        assertThat(savedLegacyLayer().getReceivedQuantity()).isEqualTo(5);
+    }
+
     @Test
     void aZeroLegacyBalanceGetsNoLegacyLayer() {
         legacy(1L);

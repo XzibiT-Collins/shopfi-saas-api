@@ -124,6 +124,8 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | InventoryManagementController | POST | `/api/v1/admin/inventory/adjustments` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | InventoryManagementController | GET | `/api/v1/admin/inventory/products/{productId}/summary` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | InventoryManagementController | GET | `/api/v1/admin/inventory/products/{productId}/stock-by-location` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data |
+| InventoryManagementController | GET | `/api/v1/admin/inventory/legacy-balance-report` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
+| InventoryManagementController | POST | `/api/v1/admin/inventory/legacy-balance-repair` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | InventoryManagementController | GET | `/api/v1/admin/inventory/products/{productId}/history` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | NotificationController | GET | `/api/v1/admin/notifications` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data |
 | NotificationController | GET | `/api/v1/admin/notifications/unread-count` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data |

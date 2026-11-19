@@ -44,8 +44,9 @@ public class ProductController {
     }
 
     @GetMapping("/featured")
-    public ResponseEntity<CustomApiResponse<List<PublicProductListing>>> getFeaturedProducts(){
-        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getFeaturedProducts()));
+    public ResponseEntity<CustomApiResponse<List<PublicProductListing>>> getFeaturedProducts(
+            @RequestParam(defaultValue = "false") boolean inStock){
+        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getFeaturedProducts(inStock)));
     }
 
     @GetMapping("/listing")

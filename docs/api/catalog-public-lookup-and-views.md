@@ -63,7 +63,8 @@ non-admin GET since before SEC-03c; reloads and loops inflated `view_count`).
 | Request | no body, no query, no custom header. The storefront sends it as a CORS "simple" request (`fetch(..., {method: 'POST', keepalive: true, credentials: 'include'})` or `navigator.sendBeacon`), so no preflight is needed. The tenant comes from the `Origin` header |
 | Success | **`204 No Content`**, empty body, `Cache-Control: no-store`. The answer is the same whether or not the view was counted (see "Uniform answer") |
 | `429` | `Too many requests` (standard envelope) with `Retry-After`: the client address exceeded the rate limit. Clients ignore it (a lost view is not retried) |
-| Other | `403` for an `Origin` that is not an active tenant origin (CORS, before any handler runs). `405` for any other method; `HEAD` is **not** accepted on this path and never counts |
+| Other methods | The route is open for **POST only**. Any other method (`GET`, `HEAD`, `PUT`, `PATCH`, `DELETE`) from an **anonymous** caller is `401` (the same answer as any protected route; it never reaches the router), from a signed-in session `405`. None of them ever counts a view, and `HEAD` is **not** accepted. A preflight `OPTIONS` is answered by the CORS layer (see [cors.md](cors.md)) and counts nothing |
+| Other | `403` for an `Origin` that is not an active tenant origin (CORS, before any handler runs) |
 
 ### What counts
 
@@ -76,13 +77,23 @@ checked in this order:
    (`bot`, `crawl`, `spider`, `slurp`, `headless`, `lighthouse`, `curl`, `wget`, `python-requests`, `okhttp`,
    `go-http-client`, `java/`, `libwww`, `facebookexternalhit`, `preview`, `scrapy`, `puppeteer`, `phantomjs`, ...), or when
    the request is a prefetch (`Purpose: prefetch`, `Sec-Purpose` containing `prefetch` or `prerender`, `X-Moz: prefetch`).
+   The denylist is a case-insensitive substring match, so it has **known false positives**: any `User-Agent` containing
+   `bot`, `monitor`, `preview`, `fetcher`, `scanner`, `archive` ... is treated as automated, for example the `CUBOT` Android
+   phones ("...; CUBOT_X30 Build/...") match `bot`, so their visits are never counted. Accepted: the counter is analytics and
+   the loss is a small, device-specific undercount; an allowlist for such devices can be added if one matters.
 3. **The product exists, is active and listed in the caller's tenant.** Unknown, unlisted, inactive and malformed slugs
-   (anything outside `[a-z0-9-]{1,200}`) are not counted. The lookup uses the tenant-prefixed product cache.
+   (anything outside `[a-z0-9-]{1,200}`) are not counted. A malformed slug is rejected here, **after** step 1, so it spends a
+   rate-limit token like every other beacon. The lookup uses the tenant-prefixed product cache.
 4. **Not an ADMIN** session (see Auth).
 5. **First view in the dedupe window**: at most one count per `(tenant, product, client key)` per **30 minutes**.
 
 `HEAD` and `GET` never count. A product opened in several tabs, reloaded or revisited inside 30 minutes counts once per
 client key.
+
+**Wording.** The unit is the *client key and product per 30 minutes*, not "once per tab" or "once per page load": a second
+tab, a reload, or a different browser behind the same address is the same visitor, and the same visitor counts again once the
+window is over. Client documentation and copy must not promise a per-tab count. The window boundary is exact: a repeat
+up to 29:59.999 after the counted view is deduped, from 30:00.000 on it counts again (a repeat never extends the window).
 
 ### Client key
 
@@ -118,10 +129,30 @@ differ.
 ### No PII
 
 The client address is used only as an in-memory key (it is never written to the database, a log line or a metric
-label). The handler logs the product id only (as before). The beacon path is **excluded from `SiteVisitFilter`**, so it
-does not record the address and the (attacker chosen) slug in `site_visits` either.
+label). The handler logs the product id only (as before). The beacon path is **excluded from `SiteVisitFilter` for every HTTP
+method** (POST, and also GET, PUT, DELETE, PATCH, OPTIONS, HEAD: only POST is routed, but a request with another method
+used to be recorded with its address and slug), so no spelling of a request to it records the address and the (attacker
+chosen) slug in `site_visits`.
+
+### Slug length
+
+The backend accepts a slug of **1 to 200** characters (`[a-z0-9-]`); a generated product slug is the slugified name plus 8
+hex characters, so its length follows the product name (names are not length limited). The storefront currently skips the
+beacon for a slug longer than **128** characters, so a product with a very long name is never counted from the browser even
+though the backend would accept it. The two limits should be one number (the frontend raising its limit to 200, or product
+names being capped); until then the longer slugs are an undercount, never an error.
 
 ### Residual risks
+
+* **IPv6 rotation.** The client key is the /64 prefix, so rotating the low 64 bits gains nothing. An attacker (or one operator
+  with a /48 or /32) can still use many different /64 prefixes: each is a separate visitor with its own rate-limit bucket and
+  its own dedupe slot, so a single operator can add one view per /64, product and 30 minutes. Bounded by the same address
+  space argument as the botnet case below.
+* **Overflow bucket.** At most 10000 client keys are tracked. A flood from more than 10000 distinct keys (easy over IPv6)
+  fills the table; every key that is not yet tracked then shares one overflow bucket, so genuine visitors arriving during the
+  flood share that one bucket (30 per minute for all of them together) and are answered `429` beyond it: their views are lost,
+  nothing else is affected and nothing grows. This is the deliberate fail closed choice. It ends soon after the flood: a
+  bucket that spent one token is full again, and dropped from the table, after about 2 seconds.
 
 * A botnet with many addresses can still add up to one view per address, product and 30 minutes; the rate limit bounds
   each address. The counter is advisory analytics (it feeds the "top viewed" reports), not money.

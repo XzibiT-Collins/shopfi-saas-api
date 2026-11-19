@@ -187,7 +187,7 @@ Current behavior:
 - base products still get their initial cost/selling price set so a product record can exist (these are overwritten from the active layer once stock is received)
 - no inventory layer or movement is created at product creation
 
-Opening stock is recorded on the **first stock receipt** for a product. In `InventoryManagementServiceImpl.receiveStock(...)`, when a product has no inventory layers and zero stock, the receipt's layer is tagged `OPENING_STOCK` (otherwise `PURCHASE`). Bookkeeping records the inventory value from that receipt as usual.
+Opening stock is recorded on the **first stock receipt** for a product. In `InventoryManagementServiceImpl.receiveStock(...)`, when a product has no inventory layers and a zero, missing or **negative** legacy stock (INV-01b: the code now matches this sentence for the negative case too; before, a negative balance made the first receipt a `PURCHASE`), the receipt's layer is tagged `OPENING_STOCK` (otherwise `PURCHASE`). A product with a positive legacy balance keeps it as a `LEGACY_BALANCE` layer and its first receipt is a `PURCHASE`. Bookkeeping records the inventory value from that receipt as usual.
 
 ### Product Update
 
@@ -454,6 +454,41 @@ preserve, so no layer and no zero-quantity movement; the first receipt is then t
 happens just before a new layer is added, the legacy layer's `receivedAt` is no later than the new layer's, so a
 back-dated receipt never jumps ahead of the legacy units in FIFO order. The location ledger is not touched by the
 bootstrap (the V5 migration already put legacy balances on the shop floor).
+
+**Negative legacy balance (INV-01b, decision).** A negative `stock_quantity` is not a count of units on hand, so it is
+deliberately **not** turned into a (negative) layer: that would poison FIFO and the stock sum. The first layer that is written
+replaces it (`stock = sum of layers`), and the service logs a `WARN` ("Product N has a negative legacy stock_quantity ...") at
+that moment so the dropped balance is visible. The admin reads (summary, history) leave such a product untouched. Pinned by
+`LegacyBalanceFollowupsIntegrationTest`.
+
+**Back-dated receipt (INV-01b L4, cosmetic, documented).** When a receipt is back-dated before "now", the legacy layer is
+dated no later than that receipt (so FIFO sells the legacy units first), which means the legacy layer shows the receipt's
+old date in the layer list. It is a display artefact: the order of sale is correct and there is no better date for the
+legacy units (their true receipt date is unknown).
+
+### Detecting and repairing legacy balances overwritten before INV-01 (INV-01b L3)
+
+Before the INV-01 fix, a receipt on a product that had only a legacy `stock_quantity` replaced the balance with the new
+layer. Such a product has a `PURCHASE` layer, **no** `OPENING_STOCK` layer and **no** `LEGACY_BOOTSTRAP` movement, and its
+location ledger (seeded from the legacy balance by V5) still holds the lost units:
+`lostUnits = sum(location on hand) - stock - outstanding reservations` (`stock-by-location` already shows
+`balancesMatchGlobal = false` for it).
+
+1. **Report (read only)**, per tenant, ADMIN: `GET /api/v1/admin/inventory/legacy-balance-report` answers
+   `{products: [{productId, sku, name, stockQuantity, reservedQuantity, locationOnHand, lostUnits, repairable}], totalLostUnits,
+   truncated}` (at most 500 products; `repairable` = `lostUnits > 0`; a negative `lostUnits` means the ledger is *below* stock,
+   which this repair cannot explain and does not touch). It writes nothing.
+2. **Repair (opt-in)**, per tenant, ADMIN: `POST /api/v1/admin/inventory/legacy-balance-repair` with
+   `{"productIds": [..]}` (1 to 100 ids, never "all"). For each requested product, under the product lock and re-checked
+   against the same criteria: one `LEGACY_BALANCE` layer of `lostUnits`, dated **one second before the product's oldest
+   layer** (the legacy units were on hand first, so FIFO sells them first), at that oldest layer's unit cost and selling price
+   (the true legacy price is gone: review the cost basis afterwards), plus one `LEGACY_BOOTSTRAP` movement. The location ledger
+   and the books are not touched (the units are still in the ledger; the original bootstrap booked nothing either). The new
+   movement takes the product out of the report, so a second run does nothing. Per product the answer is `REPAIRED` or
+   `SKIPPED` with `NOT_AFFECTED`, `NOTHING_TO_RESTORE` or `PRODUCT_NOT_FOUND`.
+
+Because the restored layer is the oldest, the product's active (storefront) price becomes that layer's price until its units
+are sold (INV-01b L6, release note: this is the correct FIFO behaviour, the same as for a normally bootstrapped legacy layer).
 
 The bootstrap layer uses:
 

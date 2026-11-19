@@ -1,7 +1,95 @@
-# Catalog: product create and family codes (ORD-02c)
+# Catalog: product API, family codes and delete (ORD-02c, API-03, CAT-05)
 
-Scope: `POST /api/v1/product/add-product` (ADMIN, `multipart/form-data`). Everything else about the product endpoints is
-unchanged; see `documentation/complex-sku-stock-conversion.md` for the family / variant model.
+The first part documents the product endpoints (API-03: money as numbers, validation, delete, search, featured). The second
+part, from "Family codes and SKUs", documents product create and family codes (ORD-02c). Responses use the envelope of
+[errors.md](errors.md); see `documentation/complex-sku-stock-conversion.md` for the family / variant model.
+
+## Product endpoints (`/api/v1/product`)
+
+| Route | Auth | Notes |
+|---|---|---|
+| `POST /add-product` | ADMIN | `multipart/form-data` only |
+| `PUT /update/{productId}` | ADMIN | `multipart/form-data` only; last write wins (no version check) |
+| `DELETE /delete/{productId}` | ADMIN | see "Deleting a product" |
+| `GET /main/{productId}` | ADMIN | `ProductDetails` |
+| `PUT` / `DELETE /admin/{productId}/discount` | ADMIN | product discount |
+| `GET /admin/listing`, `GET /admin/search` | ADMIN / ADMIN + FRONT_DESK | admin rows |
+| `GET /featured`, `/listing`, `/search`, `/by-ids`, `/{slug}` | none | storefront, public rows |
+
+### Request: `ProductRequest` (create and update, multipart form fields)
+
+| Field | Rule |
+|---|---|
+| `productName` | required, not blank |
+| `currency` | required, a supported currency code |
+| `sellingPrice`, `costPrice` | required decimals, **`>= 0`** (a negative value is `400`) |
+| `lowStockThreshold` | optional integer, **`>= 0`** |
+| `conversionFactor` | optional integer, **`>= 1`** |
+| `categoryId`, `familyId`, `uomCode`, `brand`, `size`, descriptions, `isNewProduct`, `isActive`, `isEnlisted`, `isFeatured` | optional, as before |
+| `productImage` | optional file, see below |
+
+A violated rule answers `400` with `description: "Validation failed"` and `data` = `{ "<field>": "<message>" }` for every
+violated field. Prices are stored with 2 decimals (half-even rounding), as before.
+
+**Content type.** `add-product` and `update` take `multipart/form-data` only. A JSON (or any other) body is **`415`**
+`{"description": "Unsupported content type"}` (it used to be a `500`).
+
+**Product image** (create and update). The type is decided from the file's magic bytes, never from its name or declared
+content type: only **PNG, JPEG and WebP** are accepted, anything else (SVG, HTML, PDF, GIF, a renamed file) is
+**`400`** `"Product image must be a PNG, JPEG or WebP image"`. The size cap is **5 MB**: larger is **`413`**
+`"Product image must be at most 5 MB"` (the request as a whole is capped at 12 MB). Both are decided before anything is
+uploaded or saved. If the image storage fails (network error, no URL returned) the answer is **`502`**
+`data.code = IMAGE_UPLOAD_FAILED` `"Image storage is unavailable; nothing was saved"` and **nothing is written**; it used to
+save the product with an empty image URL and answer `200`.
+
+### Response: `ProductDetails`
+
+Display strings are unchanged (`sellingPrice` "GHS 45.00" is the effective, discounted price; `originalPrice` the
+pre-discount one; `costPrice` the cost). **Clients must not parse them**: the same values are now also given as numbers.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `sellingPriceAmount` | number | effective (discounted) selling price, 2 decimals |
+| `originalPriceAmount` | number | pre-discount selling price (equal to `sellingPriceAmount` when not on sale) |
+| `costPriceAmount` | number or `null` | cost price; `null` when the product has none (`costPrice` then reads `"0.00"`) |
+| `currency` | string or `null` | currency code of the prices |
+| `category` | object or `null` | `{categoryId, categoryName, description, slug}`; `slug` was always `null` here before API-03 |
+
+All other fields (`productId`, `productName`, `stockQuantity`, `isActive`, `slug`, ...) are as before.
+
+### Deleting a product
+
+`DELETE /api/v1/product/delete/{productId}` answers `204`.
+
+* A product created with `isNewProduct=true` is the **base unit of its own family**. It used to always answer `409` (the
+  family points at its base unit and had no cascade). Now the family is deleted **with** its base unit when that product
+  is the family's only member (one transaction).
+* A base unit whose family still has other units (variants such as BOX): **`409`**, `data.code = FAMILY_HAS_VARIANTS`.
+  Nothing is changed; delete the variants first, then the base unit.
+* A variant (non-base unit) deletes on its own.
+* A product that is referenced elsewhere (in a cart, an order, an inventory layer / movement, a stock transfer or a stock
+  conversion) still answers the generic `409 "A constraint violation occurred"` and **nothing is deleted** (the family
+  included). Deactivate such a product (`isActive=false`) instead.
+* An unknown id is a no-op `204` (the delete is idempotent). The public catalog caches are cleared.
+* Lock order (CAT-06 note): the hard delete locks the product row first, then hits the `cart_items` foreign key, while a
+  checkout settlement deletes the cart lines first and then locks products. The two can wait on each other; the database
+  resolves it by aborting one transaction and the settlement is retried, the delete answers its `409`/`503`. Harmless, so the
+  order is documented rather than changed.
+
+### Storefront search (CAT-05)
+
+`GET /product/search?searchTerm=...` (and the admin `GET /product/admin/search`): the term is **literal text**. It is trimmed
+(leading and trailing whitespace, a blank term means "no filter") and `%`, `_` and `\` in it are escaped, so `50%` finds
+names containing the characters "50%" and a lone `%` or `_` matches only names that contain that character; they are no
+longer wildcards. The match is a case-insensitive "contains" on the product name (the admin search also on the SKU).
+
+### Featured shelf (CAT-05)
+
+`GET /product/featured` returns up to 8 featured, active, listed products. `GET /product/featured?inStock=true` returns up
+to **8 featured products that are in stock** (stock quantity above zero), so a shelf with sold-out products still fills up.
+`inStock=false` (the default) is the unchanged list. Any other value of `inStock` is `400`. Both lists are cached
+separately and evicted together with the rest of the public catalog.
+
 
 ## Family codes and SKUs
 

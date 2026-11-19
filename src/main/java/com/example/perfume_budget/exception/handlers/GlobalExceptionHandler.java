@@ -53,6 +53,7 @@ public class GlobalExceptionHandler {
     public static final String TRANSACTION_FAILED = "Transaction failed";
     public static final String CONSTRAINT_VIOLATION = "A constraint violation occurred";
     public static final String OPERATION_NOT_SUPPORTED = "Operation not supported";
+    public static final String UNSUPPORTED_MEDIA_TYPE_TEXT = "Unsupported content type";
     public static final String METHOD_NOT_SUPPORTED = "Request method not supported";
     public static final String RESOURCE_NOT_FOUND = "Resource not found";
     public static final String INVALID_REQUEST = "Invalid request";
@@ -330,6 +331,13 @@ public class GlobalExceptionHandler {
             }
         }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error("Request body is missing or malformed."));
+    }
+
+    /** API-03: a body in the wrong format (JSON to a multipart route) is a clean 415, not the catch-all's 500. */
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<CustomApiResponse<String>> handleMediaTypeNotSupported(
+            org.springframework.web.HttpMediaTypeNotSupportedException ex){
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(CustomApiResponse.error(UNSUPPORTED_MEDIA_TYPE_TEXT));
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

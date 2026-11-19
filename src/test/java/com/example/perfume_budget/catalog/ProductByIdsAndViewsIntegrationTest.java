@@ -125,6 +125,31 @@ class ProductByIdsAndViewsIntegrationTest extends AbstractCheckoutIntegrationTes
     }
 
     @Test
+    void byIds_repeatedParam_entriesOfAllOccurrencesCountTogether() throws Exception {
+        long a = listed(acme, "Ids Rp A");
+        long b = listed(acme, "Ids Rp B");
+        long c = listed(acme, "Ids Rp C");
+        // order: occurrence by occurrence, entry by entry; a repeat across occurrences appears once (first position)
+        MvcResult mixed = mvc.perform(MockMvcRequestBuilders.get("/api/v1/product/by-ids").param("ids", String.valueOf(b))
+                .param("ids", a + "," + c).param("ids", String.valueOf(b)).header("X-Tenant-ID", "acme")).andReturn();
+        List<String> names = new ArrayList<>();
+        body(mixed).get("data").forEach(n -> names.add(n.get("productName").asText()));
+        assertThat(names).containsExactly("Ids Rp B", "Ids Rp A", "Ids Rp C");
+        // the limit of 12 counts every occurrence together, 12 is fine, 13 is not
+        assertThat(mvc.perform(MockMvcRequestBuilders.get("/api/v1/product/by-ids").param("ids", "1,2,3,4,5,6")
+                .param("ids", "7,8,9,10,11,12").header("X-Tenant-ID", "acme")).andReturn().getResponse().getStatus()).isEqualTo(200);
+        MvcResult many = mvc.perform(MockMvcRequestBuilders.get("/api/v1/product/by-ids").param("ids", "1,2,3,4,5,6")
+                .param("ids", "7,8,9,10,11,12").param("ids", "13").header("X-Tenant-ID", "acme")).andReturn();
+        assertThat(many.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(many).get("description").asText()).isEqualTo("At most 12 ids are allowed");
+        // a bad entry in a later occurrence refuses the whole request
+        MvcResult bad = mvc.perform(MockMvcRequestBuilders.get("/api/v1/product/by-ids").param("ids", String.valueOf(a))
+                .param("ids", "0").header("X-Tenant-ID", "acme")).andReturn();
+        assertThat(bad.getResponse().getStatus()).isEqualTo(400);
+        assertThat(body(bad).get("description").asText()).isEqualTo("ids must be positive integers");
+    }
+
+    @Test
     void byIds_validation() throws Exception {
         for (String q : List.of("", "?ids=")) {
             MvcResult r = byIds("acme", q);
@@ -216,6 +241,45 @@ class ProductByIdsAndViewsIntegrationTest extends AbstractCheckoutIntegrationTes
         mvc.perform(beacon("acme", s, shared, CHROME)).andReturn();
         awaitBackgroundIdle();
         assertThat(views(acme, p)).isEqualTo(1);
+    }
+
+    @Test
+    void aMalformedSlugSpendsARateLimitToken_likeEveryOtherBeacon() throws Exception {
+        long p = listed(acme, "Beacon Malformed Rate");
+        String ip = freshIp();
+        for (int i = 0; i < 30; i++) {
+            assertThat(status(beacon("acme", i % 2 == 0 ? "Bad_Slug" : "x".repeat(300), ip, CHROME))).as("malformed beacon " + i).isEqualTo(204);
+        }
+        assertThat(status(beacon("acme", "Bad_Slug", ip, CHROME))).as("31st malformed one is limited").isEqualTo(429);
+        assertThat(status(beacon("acme", slug(acme, p), ip, CHROME))).as("the tokens are gone for real views too").isEqualTo(429);
+        awaitBackgroundIdle();
+        assertThat(views(acme, p)).isZero();
+    }
+
+    @Test
+    void otherMethodsOnTheBeaconPathAreRefused_neverCount_andWriteNoSiteVisit() throws Exception {
+        long p = listed(acme, "Beacon Other Methods");
+        String s = slug(acme, p);
+        int visitsBefore = count(acme, "site_visits");
+        // the route is open for POST only: an anonymous GET / PUT / DELETE / PATCH / HEAD is 401, the same answer as any
+        // other protected route (the docs used to say 405)
+        for (HttpMethod m : List.of(HttpMethod.GET, HttpMethod.PUT, HttpMethod.DELETE, HttpMethod.PATCH, HttpMethod.HEAD)) {
+            int st = status(MockMvcRequestBuilders.request(m, "/api/v1/product/" + s + "/view").header("X-Tenant-ID", "acme")
+                    .header("User-Agent", CHROME).with(r -> { r.setRemoteAddr(freshIp()); return r; }));
+            assertThat(st).as("anonymous " + m).isEqualTo(401);
+        }
+        // a signed-in session reaches the router, which has no such method: 405
+        for (HttpMethod m : List.of(HttpMethod.GET, HttpMethod.PUT, HttpMethod.DELETE)) {
+            int st = status(MockMvcRequestBuilders.request(m, "/api/v1/product/" + s + "/view").header("X-Tenant-ID", "acme")
+                    .header("User-Agent", CHROME).cookie(adminCookie(acme)).with(r -> { r.setRemoteAddr(freshIp()); return r; }));
+            assertThat(st).as("admin " + m).isEqualTo(405);
+        }
+        // OPTIONS with a caller chosen slug: whatever the CORS layer answers, it is not a visit
+        status(MockMvcRequestBuilders.options("/api/v1/product/attacker-slug-" + System.nanoTime() + "/view").header("X-Tenant-ID", "acme")
+                .with(r -> { r.setRemoteAddr(freshIp()); return r; }));
+        awaitBackgroundIdle();
+        assertThat(views(acme, p)).isZero();
+        assertThat(count(acme, "site_visits")).as("no method writes the address and the caller chosen slug").isEqualTo(visitsBefore);
     }
 
     @Test

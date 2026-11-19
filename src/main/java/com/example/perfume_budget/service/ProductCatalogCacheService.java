@@ -33,6 +33,18 @@ public class ProductCatalogCacheService {
                 .toList();
     }
 
+    /** CAT-05: the same shelf, only products with stock; its own cache key inside the same (evicted together) cache. */
+    @Cacheable(cacheNames = CatalogCaches.PUBLIC_FEATURED, key = "'inStock'")
+    public List<PublicProductListing> getInStockFeaturedProducts() {
+        log.info("Cache miss for in-stock featured products, querying database...");
+        ShopWideDiscount shop = effectivePriceService.activeShopDiscount().orElse(null);
+        var now = effectivePriceService.now();
+        return productRepository.findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrueAndStockQuantityGreaterThan(0)
+                .stream()
+                .map(product -> ProductMapper.toPublicProductListing(product, effectivePriceService.compute(product, shop, now)))
+                .toList();
+    }
+
     @Cacheable(cacheNames = CatalogCaches.PRODUCT_DETAILS, key = "#slug")
     public ProductDetailsPageResponse getProductDetailsPage(String slug) {
         log.info("Cache miss for product details page, querying database...");
