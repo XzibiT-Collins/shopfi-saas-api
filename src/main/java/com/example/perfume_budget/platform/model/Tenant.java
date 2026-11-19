@@ -98,6 +98,21 @@ public class Tenant {
     @Column(name = "custom_domain_failure", length = 40)
     private String customDomainFailure;
 
+    /**
+     * DOMAIN-03: next scheduled re-verification; also the row lease while an instance is checking it. Only set while
+     * VERIFIED (database check constraint); null on a VERIFIED row means due now.
+     */
+    @Column(name = "custom_domain_reverify_due_at")
+    private Instant customDomainReverifyDueAt;
+
+    /** DOMAIN-03: consecutive definite "proof absent" answers of the scheduled job (0 unless VERIFIED and failing). */
+    @Column(name = "custom_domain_miss_count", nullable = false)
+    private int customDomainMissCount;
+
+    /** DOMAIN-03: first miss of the current streak (start of the grace period); null when the streak is empty. */
+    @Column(name = "custom_domain_missing_since")
+    private Instant customDomainMissingSince;
+
     /** Opaque token embedded in this tenant's Paystack webhook URL (/api/v1/webhook/{token}). */
     @Column(name = "webhook_token", unique = true, length = 64)
     private String webhookToken;
@@ -130,5 +145,13 @@ public class Tenant {
         customDomainVerifiedAt = null;
         customDomainLastVerifiedAt = null;
         customDomainFailure = null;
+        clearReverifyState();
+    }
+
+    /** DOMAIN-03: drops the re-verification schedule and miss streak (every exit from VERIFIED, every new claim). */
+    public void clearReverifyState() {
+        customDomainReverifyDueAt = null;
+        customDomainMissCount = 0;
+        customDomainMissingSince = null;
     }
 }
