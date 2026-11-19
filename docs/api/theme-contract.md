@@ -185,7 +185,7 @@ Request headers: `Origin` (or `Referer`) required; optional `If-None-Match`.
 | 404 | Unknown tenant | same |
 | 423 | Tenant suspended | same |
 
-Response headers (200 and 304): `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600`, `Vary: Origin, Referer`, `ETag: "<revision>-<first 16 hex of SHA-256 of the canonical JSON of data>"`. Error responses carry `Cache-Control: no-store`.
+Response headers (200 and 304): `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600`, `Vary: Origin, Referer`, `ETag: W/"<n>"`, a weak validator that carries the stored entity VERSION, which is `revision + 1` (a tenant that never saved has `revision` 0 and `ETag: W/"1"`; every successful PUT raises both by one). `If-Match` / `If-None-Match` accept `W/"<n>"` and `"<n>"` and nothing else: a made-up shape such as `"7-3f9a..."` is `400 INVALID_FORMAT`. Pinned against the running backend by the frontend real-stack suite (INTEG-01). Error responses carry `Cache-Control: no-store`.
 
 **Caching rules (security).** The tenant is resolved from the `Origin` header, falling back to `Referer`. The public `Cache-Control` above is sent ONLY when the tenant came from `Origin`. A GET with no (usable) `Origin` (Referer-only or no signal) gets `Cache-Control: private, no-store`, because a shared cache would file it under "Origin: absent" and could serve one tenant's theme to another tenant's Origin-less request. The SSR contract: always send `Origin: https://<tenant-host>`. A CDN/shared cache in front of this API MUST include the `Origin` request header in its cache key (and honour `Vary`); never strip or normalize it.
 
@@ -679,7 +679,7 @@ Two full, deliberately different themes used by UI-02 tests (`acme`: serif, warm
 PUT /api/v1/theme
 Origin: https://acme.shopfi.app
 Content-Type: multipart/form-data; boundary=X
-If-Match: "7-3f9a1c2b4d5e6f70"
+If-Match: W/"7"
 
 --X  name="theme"  Content-Type: application/json   (Theme JSON; assets.logo = {"url": null-or-old, "alt": "Acme Perfumes"})
 --X  name="logo"   Content-Type: image/png          (binary)
