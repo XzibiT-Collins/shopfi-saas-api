@@ -211,6 +211,7 @@ public class CustomDomainReverifier {
             // changed while DNS was queried (claim replaced/removed/failed, or the lease ended and another round
             // re-claimed or rescheduled the row): that answer is not about the current claim, so it is dropped and
             // can never be counted twice
+            return "STALE";
         }
         Instant now = clock.instant();
         switch (answer) {
