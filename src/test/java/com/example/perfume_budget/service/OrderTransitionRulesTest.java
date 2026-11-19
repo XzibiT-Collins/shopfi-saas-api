@@ -14,7 +14,7 @@ class OrderTransitionRulesTest {
             for (OrderProcessingStatus to : values()) {
                 boolean expected = from.ordinal() < DELIVERED.ordinal() && from != CANCELLED
                         && (to == CANCELLED || (to != PENDING && to.ordinal() > from.ordinal() && to != CANCELLED));
-                if (from == to || from == DELIVERED || from == CANCELLED) expected = false;
+                if (from == to || from == DELIVERED || from == CANCELLED || from == RETURNED || to == RETURNED) expected = false; // RETURNED only via POST .../return
                 assertThat(OrderTransitionRules.isAllowed(from, to)).as(from + "->" + to).isEqualTo(expected);
             }
         }
@@ -24,6 +24,8 @@ class OrderTransitionRulesTest {
     void finalStatesAreFinal() {
         assertThat(OrderTransitionRules.isFinal(DELIVERED)).isTrue();
         assertThat(OrderTransitionRules.isFinal(CANCELLED)).isTrue();
+        assertThat(OrderTransitionRules.isFinal(RETURNED)).isTrue();
+        assertThat(OrderTransitionRules.next(RETURNED)).isEmpty();
         assertThat(OrderTransitionRules.isFinal(PENDING)).isFalse();
         assertThat(OrderTransitionRules.next(DELIVERED)).isEmpty();
         assertThat(OrderTransitionRules.next(CANCELLED)).isEmpty();

@@ -2,9 +2,9 @@
 --
 -- delivered_at: when the order was marked DELIVERED; the optional return window (shopfi.orders.return-window-days)
 -- counts from it. returned_at / returned_by: when and by which admin (e-mail only) the return was recorded.
-ALTER TABLE orders ADD COLUMN delivered_at TIMESTAMP WITHOUT TIME ZONE;
-ALTER TABLE orders ADD COLUMN returned_at TIMESTAMP WITHOUT TIME ZONE;
-ALTER TABLE orders ADD COLUMN returned_by VARCHAR(255);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP WITHOUT TIME ZONE;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS returned_at TIMESTAMP WITHOUT TIME ZONE;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS returned_by VARCHAR(255);
 
 -- Back-fill delivered_at of orders that are already DELIVERED: the newest audit row that moved the order to DELIVERED
 -- (ORD-01+), else the order's last update (a delivered order is final, so that was the delivery or later), else its
