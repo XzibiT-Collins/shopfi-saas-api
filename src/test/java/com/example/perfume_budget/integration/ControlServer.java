@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
  *   Paystack stub (the backend's paystack.url points at {base}/paystack):
  *     POST /paystack/transaction/initialize     -> {status, message, data:{authorization_url, access_code, reference}}
  *     GET  /paystack/transaction/verify/{ref}   -> {status, message, data:{status, reference, amount, currency, channel}}
- *     GET  /pay/{ref}                           -> the "hosted payment page" (links back to the tenant callback)
+ *     GET  /ac{ref}                            -> the "hosted payment page" (links back to the tenant callback)
  *   Test controls (never reachable on the API port):
  *     GET  /__test/health
  *     GET  /__test/mail?to=&amp;subject=           -> captured e-mails, newest last
@@ -111,8 +111,9 @@ final class ControlServer {
                 initialize(ex);
             } else if (path.startsWith("/paystack/transaction/verify/")) {
                 verify(ex, URLDecoder.decode(path.substring("/paystack/transaction/verify/".length()), StandardCharsets.UTF_8));
-            } else if (path.startsWith("/pay/")) {
-                payPage(ex, path.substring("/pay/".length()));
+            } else if (path.matches("/ac[A-Za-z0-9]+")) {
+                // like checkout.paystack.com/<access_code>: ONE path segment (the frontend refuses anything else)
+                payPage(ex, path.substring("/ac".length()));
             } else {
                 json(ex, 404, JSON.createObjectNode().put("error", "not found"));
             }
@@ -144,7 +145,7 @@ final class ControlServer {
         initiations.put(ref, rec);
         initiationOrder.add(ref);
         ObjectNode out = JSON.createObjectNode().put("status", true).put("message", "Authorization URL created");
-        out.putObject("data").put("authorization_url", payOrigin + "/pay/" + ref).put("access_code", "AC_" + ref).put("reference", ref);
+        out.putObject("data").put("authorization_url", payOrigin + "/ac" + ref).put("access_code", "ac" + ref).put("reference", ref);
         json(ex, 200, out);
     }
 
