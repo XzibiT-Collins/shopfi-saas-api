@@ -22,6 +22,9 @@ final class IntegrationSeeder {
 
     static final String CUSTOMER_PASSWORD = "Passw0rd!cust";
     static final String COUPON_CODE = "SAVE10";
+    static final String EXPIRED_COUPON = "EXPIRED10";
+    static final String INACTIVE_COUPON = "INACTIVE10";
+    static final String USED_UP_COUPON = "USEDUP10";
 
     private IntegrationSeeder() {
     }
@@ -53,6 +56,16 @@ final class IntegrationSeeder {
             jdbc.update("INSERT INTO " + s + ".coupons (code, discount_type, discount_value, is_active, start_date, expiration_date, "
                     + "usage_count, usage_limit, created_at) VALUES (?, 'PERCENTAGE', 10, true, current_date - 1, current_date + 365, 0, 1000, now())",
                     COUPON_CODE);
+            // the three ways a code stops working: all must be refused (collapsed into COUPON_INVALID)
+            jdbc.update("INSERT INTO " + s + ".coupons (code, discount_type, discount_value, is_active, start_date, expiration_date, "
+                    + "usage_count, usage_limit, created_at) VALUES (?, 'PERCENTAGE', 10, true, current_date - 30, current_date - 1, 0, 1000, now())",
+                    EXPIRED_COUPON);
+            jdbc.update("INSERT INTO " + s + ".coupons (code, discount_type, discount_value, is_active, start_date, expiration_date, "
+                    + "usage_count, usage_limit, created_at) VALUES (?, 'PERCENTAGE', 10, false, current_date - 1, current_date + 365, 0, 1000, now())",
+                    INACTIVE_COUPON);
+            jdbc.update("INSERT INTO " + s + ".coupons (code, discount_type, discount_value, is_active, start_date, expiration_date, "
+                    + "usage_count, usage_limit, created_at) VALUES (?, 'PERCENTAGE', 10, true, current_date - 1, current_date + 365, 1, 1, now())",
+                    USED_UP_COUPON);
 
             customer(jdbc, s, encoder, "customer@" + slug + ".test", cap + " Customer");
 

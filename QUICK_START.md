@@ -404,6 +404,11 @@ SHOPFI_TEST_DB_URL=jdbc:postgresql://localhost:5432/<dedicated db> \
   java -cp target/test-classes:target/classes:$(cat target/integ.cp) com.example.perfume_budget.integration.IntegrationServer
 ```
 
-API on `INTEG_API_PORT` (4910), test control + Paystack stub on `INTEG_CONTROL_PORT` (4911; `/__test/mail`, `/__test/otp`,
+The API binds to 127.0.0.1 only (`server.address`): it runs with the fixed test JWT secret and published fixture
+credentials. The launcher refuses to start unless the database name in `SHOPFI_TEST_DB_URL` contains `test` or `integ`
+(it drops every `master` / `tenant_*` schema there); `SHOPFI_TEST_DB_USER` / `SHOPFI_TEST_DB_PASSWORD` override the role.
+Seeded extra coupons: `EXPIRED10`, `INACTIVE10`, `USEDUP10` (all refused).
+
+API on `INTEG_API_PORT` (4910), the frontend port the Paystack stub sends shoppers back to on `INTEG_FRONTEND_PORT` (3910), test control + Paystack stub on `INTEG_CONTROL_PORT` (4911; `/__test/mail`, `/__test/otp`,
 `/__test/tenants/{slug}/gateway`, `/__test/paystack/*`). Every app schema in the database is dropped at start and exit.
 The control endpoints live on their own JDK HttpServer inside the launcher: no test endpoint exists in main code.
