@@ -68,7 +68,7 @@ class NoPersonalDataInLogsTest {
     private static final Pattern MDC_CALL = Pattern.compile("\\bMDC\\s*\\.\\s*(?:put|putCloseable)\\s*\\(");
     private static final Pattern STDOUT_CALL = Pattern.compile("\\bSystem\\s*\\.\\s*(?:out|err)\\s*\\.\\s*(?:print|println|printf|format)\\s*\\(");
     private static final Pattern SENSITIVE = Pattern.compile(
-            "(?i)\\b\\w*(?:email|e_mail|phone|otp|token|password|passwd|secret|username)\\w*\\b");
+            "(?i)\\b\\w*(?:email|e_mail|phone|otp|token|password|passwd|secret|username|authorization_?url|access_?code)\\w*\\b");
     private static final Pattern CONSTANT = Pattern.compile("[A-Z0-9_]+");
     private static final Pattern EXCEPTION_TEXT = Pattern.compile("\\b(?:getMessage|getLocalizedMessage)\\s*\\(");
     private static final Pattern SIDE_EFFECT = Pattern.compile(
@@ -602,6 +602,23 @@ class NoPersonalDataInLogsTest {
         assertThat(sensitiveIdentifiers(args.get(2))).isEmpty();
         assertThat(sensitiveIdentifiers(args.get(3))).isEmpty();
         assertThat(sensitiveIdentifiers(args.get(4))).containsExactly("resetPasswordToken");
+    }
+
+    /** PAY-03b: a Paystack pay link and its access code are bearer secrets (whoever holds the URL can pay the order). */
+    @Test
+    void thePayLinkAndItsAccessCodeAreSensitiveNames() {
+        List<String> args = logArguments("""
+                log.info("Pay at {}", payment.getAuthorizationUrl());
+                log.info("Pay at {}", response.data().authorization_url());
+                log.info("Code {}", paystack.accessCode);
+                log.info("Code {}", initResponse.getAccess_code());
+                log.info("Order {} initiated", order.getOrderNumber());
+                """);
+        assertThat(sensitiveIdentifiers(args.get(0))).containsExactly("getAuthorizationUrl");
+        assertThat(sensitiveIdentifiers(args.get(1))).containsExactly("authorization_url");
+        assertThat(sensitiveIdentifiers(args.get(2))).containsExactly("accessCode");
+        assertThat(sensitiveIdentifiers(args.get(3))).containsExactly("getAccess_code");
+        assertThat(sensitiveIdentifiers(args.get(4))).isEmpty();
     }
 
     /** EVT-01c (4): each gap the EVT-01b review found is caught; the safe spellings next to them are not flagged. */

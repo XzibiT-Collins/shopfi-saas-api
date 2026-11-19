@@ -131,6 +131,7 @@ public class OrderMapper {
                 .orderNumber(order.getOrderNumber())
                 .reference(reference)
                 .refundRequired(refundRequired)
+                .cancellable(isCancellable(order))
                 .paymentStatus(order.getStatus())
                 .deliveryStatus(order.getDeliveryStatus())
                 .totalAmount(order.getTotalAmount().toString())

@@ -386,6 +386,36 @@ class SalesAnalyticsServiceTest {
         assertEquals(5L, cancelled.value());
     }
 
+    /** ORD-07 review low: Returned has its place in the ALL chart (next to Cancelled, before Refunded) like in ONLINE. */
+    @Test
+    void orderStatus_ALL_hasAReturnedSliceInItsFixedPlace() {
+        when(journalEntryRepository.getRevenueAndCOGSByBucket(anyList(), any(), any(), anyString())).thenReturn(List.of());
+        when(journalEntryRepository.getExpensesByBucket(anyList(), any(), any(), anyString())).thenReturn(List.of());
+        when(orderRepository.countCompletedOnlineOrders(any(), any())).thenReturn(0L);
+        when(walkInOrderRepository.countCompletedWalkInOrders(any(), any())).thenReturn(0L);
+        // projections first: building a mock inside an open when(..).thenReturn(..) is a Mockito misuse
+        List<OnlineOrderStatusProjection> online = List.of(onlineStatus(OrderProcessingStatus.RETURNED, 4),
+                onlineStatus(OrderProcessingStatus.CANCELLED, 1), onlineStatus(OrderProcessingStatus.DELIVERED, 6));
+        List<WalkInOrderStatusProjection> walkIn = List.of(walkInStatus(WalkInOrderStatus.REFUNDED, 2),
+                walkInStatus(WalkInOrderStatus.COMPLETED, 3));
+        when(orderRepository.countOnlineOrdersByDeliveryStatus(any(), any())).thenReturn(online);
+        when(walkInOrderRepository.countWalkInOrdersByStatus(any(), any())).thenReturn(walkIn);
+
+        SalesAnalyticsResponse r = service.getSalesAnalytics(
+                SalesAnalyticsSource.ALL, SalesAnalyticsGranularity.DAY, null, null);
+
+        assertEquals(List.of("Completed", "Delivered", "Cancelled", "Returned", "Refunded"),
+                r.orderStatus().stream().map(OrderStatusSliceResponse::name).toList());
+        assertEquals(4L, r.orderStatus().stream().filter(s -> s.name().equals("Returned")).findFirst().orElseThrow().value());
+        // ONLINE keeps its own order
+        List<OnlineOrderStatusProjection> onlineOnly = List.of(onlineStatus(OrderProcessingStatus.RETURNED, 4),
+                onlineStatus(OrderProcessingStatus.CANCELLED, 1));
+        when(orderRepository.countOnlineOrdersByDeliveryStatus(any(), any())).thenReturn(onlineOnly);
+        assertEquals(List.of("Cancelled", "Returned"), service.getSalesAnalytics(
+                SalesAnalyticsSource.ONLINE, SalesAnalyticsGranularity.DAY, null, null).orderStatus().stream()
+                .map(OrderStatusSliceResponse::name).toList());
+    }
+
     // ----- profitBreakdown and revenueBreakdown aligned -----
 
     @Test

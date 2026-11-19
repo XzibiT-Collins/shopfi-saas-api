@@ -456,14 +456,21 @@ class StockLockOrderIntegrationTest extends AbstractCheckoutIntegrationTest {
             answer = webhookInBackground(g, event("charge.success", reference(on), totalMinor(on)));
             Blocked webhookWait = awaitBlockedBy(h); // the webhook waits for high
             Future<MvcResult> f = ex.submit(() -> checkout(x, null, null));
-            // the checkout's reservation now queues as well (behind the webhook or the holder)
+            // API-05b L1: wait for the checkout's OWN product-lock statement (ORDER BY id FOR NO KEY UPDATE) to be blocked:
+            // it has then taken the lower id and queues for the higher one. Any other blocked backend (an earlier lock
+            // wait of the same request, the customer row) used to satisfy this wait too early, and with the old
+            // webhook order the deadlock then happened only some of the time.
             long deadline = System.currentTimeMillis() + 20_000;
             while (System.currentTimeMillis() < deadline && jdbc.queryForObject(
-                    "SELECT count(*) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 AND pid <> ?",
+                    "SELECT count(*) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 AND pid <> ? "
+                            + "AND query ILIKE '%ORDER BY id FOR NO KEY UPDATE%'",
                     Integer.class, webhookWait.pid()) == 0) {
                 Thread.sleep(20);
             }
             assertThat(f.isDone()).as("checkout queued for the product locks").isFalse();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 "
+                    + "AND pid <> ? AND query ILIKE '%ORDER BY id FOR NO KEY UPDATE%'", Integer.class, webhookWait.pid()))
+                    .as("the checkout's own product-lock statement is the one waiting").isEqualTo(1);
             h.commit();
             xr = f.get(60, TimeUnit.SECONDS);
         } finally {

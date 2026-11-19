@@ -362,4 +362,125 @@ class WebhookSettlementBulkheadTest {
             pool.shutdownNow();
         }
     }
+
+    // ---- EVT-01d lows (FIX-B)
+
+    /** R9: an interrupted caller is refused AND keeps its interrupt flag (the container's thread must still see it). */
+    @Test
+    void anInterruptedCallerIsRefused_keepsItsInterruptFlag_andLeaksNoSlotOrPermit() {
+        WebhookSettlementBulkhead b = new WebhookSettlementBulkhead(2, 1, 50);
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> b.call(() -> "never")).isInstanceOf(WebhookBusyException.class);
+            assertThat(Thread.currentThread().isInterrupted()).as("interrupt flag preserved").isTrue();
+        } finally {
+            Thread.interrupted(); // clear it for the rest of the suite
+        }
+        assertThat(b.availablePermits()).isEqualTo(2);
+        assertThat(b.availableTenantSlots(com.example.perfume_budget.tenancy.TenantContext.getSchemaOrDefault())).isEqualTo(1);
+    }
+
+    /** R3: the tenant slot and the shared permit share ONE wait (waitMillis), they do not each get a fresh one. */
+    @Test
+    void theSlotAndThePermitShareASingleWait() throws Exception {
+        long waitMs = 600;
+        WebhookSettlementBulkhead b = new WebhookSettlementBulkhead(1, 1, 50);
+        // the configured wait is capped at 100 ms in production; widen it here so the timings below are not noise
+        org.springframework.test.util.ReflectionTestUtils.setField(b, "waitMillis", waitMs);
+        // another tenant keeps the only shared permit for the whole test, this tenant's slot is busy for the first 350 ms
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        try {
+            pool.submit(() -> {
+                com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.tenant("other", "tenant_other"));
+                try {
+                    return b.call(() -> {
+                        holding.countDown();
+                        try {
+                            release.await(30, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return null;
+                    });
+                } finally {
+                    com.example.perfume_budget.tenancy.TenantContext.clear();
+                }
+            });
+            assertThat(holding.await(10, TimeUnit.SECONDS)).isTrue();
+            // occupy "mine"'s slot by hand: a settlement of that tenant that is parked on the shared permit would not do
+            // (it is refused after waitMs); instead take the slot semaphore directly
+            java.lang.reflect.Field f = WebhookSettlementBulkhead.class.getDeclaredField("tenantSlots");
+            f.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.concurrent.ConcurrentMap<String, java.util.concurrent.Semaphore> slots =
+                    (java.util.concurrent.ConcurrentMap<String, java.util.concurrent.Semaphore>) f.get(b);
+            java.util.concurrent.Semaphore mine = slots.computeIfAbsent("tenant_mine", k -> new java.util.concurrent.Semaphore(1));
+            mine.acquire();
+            pool.submit(() -> {
+                Thread.sleep(350);
+                mine.release();
+                return null;
+            });
+            long t0 = System.nanoTime();
+            Future<Throwable> refused = pool.submit(() -> {
+                com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.tenant("mine", "tenant_mine"));
+                try {
+                    b.call(() -> "never");
+                    return null;
+                } catch (Throwable t) {
+                    return t;
+                } finally {
+                    com.example.perfume_budget.tenancy.TenantContext.clear();
+                }
+            });
+            Throwable t = refused.get(10, TimeUnit.SECONDS);
+            long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+            assertThat(t).isInstanceOf(WebhookBusyException.class);
+            assertThat(((WebhookBusyException) t).reason()).isEqualTo(WebhookBusyException.Reason.SHARED_PERMITS);
+            // 350 ms for the slot + the 250 ms left for the permit = the one 600 ms wait; a fresh wait for the permit
+            // would take 350 + 600 = 950 ms
+            assertThat(elapsed).as("one shared wait").isBetween(500L, 800L);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void theRefusalSaysWhetherTheTenantSlotOrTheSharedPermitWasTaken() throws Exception {
+        WebhookSettlementBulkhead b = new WebhookSettlementBulkhead(3, 1, 20);
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            pool.submit(() -> b.call(() -> {
+                holding.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return null;
+            }));
+            assertThat(holding.await(10, TimeUnit.SECONDS)).isTrue();
+            // same tenant (default schema), its single slot is taken: a fairness refusal although 2 permits are free
+            Throwable t = pool.submit(() -> {
+                try {
+                    b.call(() -> "never");
+                    return null;
+                } catch (Throwable x) {
+                    return x;
+                }
+            }).get(10, TimeUnit.SECONDS);
+            assertThat(t).isInstanceOf(WebhookBusyException.class);
+            assertThat(((WebhookBusyException) t).reason()).isEqualTo(WebhookBusyException.Reason.TENANT_SLOT);
+            assertThat(b.availablePermits()).isEqualTo(2);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+        assertThat(new WebhookBusyException().reason()).isEqualTo(WebhookBusyException.Reason.SHARED_PERMITS);
+    }
 }

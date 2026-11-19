@@ -101,7 +101,12 @@ public class WebhookProcessorImpl implements WebhookProcessor {
                 default -> log.info("Ignoring unhandled webhook event type for reference {}", reference);
             }
         } catch (WebhookBusyException e) {
-            log.warn("Webhook event not applied: all settlement permits are taken; the provider is asked to redeliver it");
+            if (e.reason() == WebhookBusyException.Reason.TENANT_SLOT) {
+                log.warn("Webhook event not applied: this tenant's settlement slot is taken (per-tenant fairness limit); "
+                        + "the provider is asked to redeliver it");
+            } else {
+                log.warn("Webhook event not applied: all settlement permits are taken; the provider is asked to redeliver it");
+            }
             throw e;
         } catch (RuntimeException e) {
             // not committed: answer non-2xx so the provider redelivers (EVT-01c). Class only, never the message.

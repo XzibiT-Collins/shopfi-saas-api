@@ -68,10 +68,13 @@ tenant is a 404 `ORDER_NOT_FOUND` exactly like a non-existent one (see [authoriz
 | `cancelSource` (new) | `CUSTOMER`, `ADMIN` or `EXPIRY`; `null` while not cancelled and for orders cancelled before ORD-01. |
 | `account` (new) | **ADMIN responses only** (detail `GET /order/{n}`, the PUT and the refund acknowledgement). Owner `id`, `fullName`, `email`. The key is absent for customers (their own order) and in list rows. |
 | `refundRequired` | Now correct in the PUT response too (it was always `false` there). |
-| `authorizationUrl` (new, PAY-03 rework) | The Paystack checkout URL, **only** on the owner's own detail `GET /order/{n}` (and cancel) as CUSTOMER while the order is open (payment `INITIATED`, now before `expiresAt`). `null` once paid, failed, cancelled or expired, and **always `null` in ADMIN responses** (detail, PUT, refund acknowledgement, return received). Not in list rows. Other customers / tenants: 404 as before. See [checkout.md](checkout.md) "Continue to payment". |
+| `authorizationUrl` (new, PAY-03 rework) | The Paystack checkout URL, **only** on the owner's own detail `GET /order/{n}` (never on cancel) as CUSTOMER while the order is open (payment `INITIATED`, now before `expiresAt`). `null` once paid, failed, cancelled or expired, and **always `null` in ADMIN responses** (detail, PUT, refund acknowledgement, return received). Not in list rows. Other customers / tenants: 404 as before. See [checkout.md](checkout.md) "Continue to payment". |
 | `reference` | Now present in the PUT response too. |
 
 `OrderListResponse` (`GET /order/all`, `GET /order/my-orders`) gains `orderedAt` and `version`; `orderDate` is deprecated the same way.
+(API-02, FIX-B) It also has `cancellable` (boolean, the same rule as on `OrderResponse`: true only while the payment is `PENDING` or `INITIATED`), so a list can offer "Cancel" without opening each order.
+
+`orderedAt` is always present on a stored order (`created_at` is `NOT NULL`); the field is typed nullable only because the same record is built for rows that were never stored, which no endpoint returns. Clients may treat it as required.
 
 ## GET /api/v1/order/all (ADMIN)
 
@@ -80,7 +83,7 @@ tenant is a 404 `ORDER_NOT_FOUND` exactly like a non-existent one (see [authoriz
 | `paymentStatus`, `orderStatus` | exact filters (`orderStatus` is the delivery status), as before |
 | `from`, `to` | order time range. Each is an ISO-8601 date (`2026-11-01`, a UTC day) or a date-time with offset (`2026-11-01T10:00:00Z`; encode `+` as `%2B`). `from` is inclusive; `to` as a **date includes that whole day**, as a **date-time is exclusive**. Unparseable: 400 `INVALID_DATE_FILTER`; `from` not before `to`: 400 `INVALID_DATE_RANGE` |
 | `q` | text search, case-insensitive *contains* over the **order number, the delivery recipient name, the delivery phone number and the account e-mail**. `%`, `_` and `\` match literally. Blank = no search; more than 100 characters or any control character: 400 `INVALID_SEARCH` (never truncated) |
-| `sort` | `createdAt` (default, descending), `orderNumber`, `status`, `deliveryStatus`, `id`, as `?sort=createdAt,desc`. The unique `id` is always the final tie-break, so pages never reorder. Any other property: 400 `INVALID_SORT`. **Before ORD-01 the sort was silently ignored.** |
+| `sort` | `createdAt` (default, descending), `orderNumber`, `status`, `deliveryStatus`, `id`, as `?sort=createdAt,desc`. The unique `id` is always the final tie-break, so pages never reorder (also on `GET /order/my-orders`, ORD-05b). Any other property: 400 `INVALID_SORT`. **Before ORD-01 the sort was silently ignored.** `status` is the **payment** status column (not the delivery status; sort by `deliveryStatus` for that). Both are stored as text, so an enum sorts by NAME, not by declaration order: `status` ascending is `CANCELLED`, `COMPLETED`, `FAILED`, `INITIATED`, `PENDING`; `deliveryStatus` ascending is `CANCELLED`, `DELIVERED`, `OUT_FOR_DELIVERY`, `PACKING`, `PENDING`, `RETURNED`. |
 | `page`, `size` | `size` is capped at **50** (larger values are clamped; ORD-02, was 100: the prod profile already clamped to 50). A page may start at most at row 10,000: `page * size` (after the clamp) >= 10,000, or `page` > 1,000,000: 400 `INVALID_PAGE` (`data.maxOffset`, `data.size` on the offset error). Deep offsets scan and discard every earlier row; narrow the list with `from`/`to`, `q` or a status filter instead. |
 
 The list is built with a constant number of queries (page + count + one payment lookup), independent of the page size.
@@ -258,7 +261,7 @@ How to find these orders: `GET /api/v1/order/all` has **no `refundRequired` filt
 so that combination is exactly this case. Paid merchant cancels that still owe a refund show up under
 `?orderStatus=CANCELLED` with `refundRequired: true` the same way.
 
-How to resolve one (both steps are needed; until then it stays in the list as above):
+How to resolve one (steps 1 and 3 are needed, step 2 is optional and only tidies the list; until the acknowledgement it stays in the list as above):
 
 1. Refund the customer outside Shopfi (Paystack dashboard / by hand).
 2. `PUT /api/v1/order/update-order-status/{orderNumber}` with `{"orderStatus": "CANCELLED"}`: `deliveryStatus` ->
@@ -362,11 +365,13 @@ capped at 50, as everywhere under the prod pageable limit; `page` > 1,000,000: 4
       { "id": 12, "eventType": "CANCELLED", "fromStatus": "OUT_FOR_DELIVERY", "toStatus": "CANCELLED",
         "refundRequired": true, "actorEmail": "owner@shop.test", "createdAt": "2026-11-17T09:30:00Z" }
     ],
-    "totalPages": 1, "totalElements": 1, "size": 20, "number": 0, "numberOfElements": 1,
+    "totalPages": 1, "totalElements": 1, "size": 20, "number": 1, "numberOfElements": 1,
     "isFirst": true, "isLast": true, "isEmpty": false
   }
 }
 ```
+
+`number` in the page object is **1-based** (the `page` request parameter stays 0-based), here as in every list of the API.
 
 `eventType`: `STATUS_CHANGED`, `CANCELLED`, `RETURN_RECEIVED`, `RETURNED`, `REFUND_ACKNOWLEDGED`. `fromStatus`/`toStatus` are null on
 `REFUND_ACKNOWLEDGED`. `createdAt` is a UTC instant.
@@ -388,13 +393,15 @@ tenants' numbers return the same 404.
 |---|---|---|
 | 400 | `ORDER_FINAL_STATE` | order is DELIVERED/CANCELLED/RETURNED and another status was requested |
 | 400 | `ORDER_TRANSITION_NOT_ALLOWED` | backwards or otherwise disallowed move (`from`, `to`) |
-| 400 | `ORDER_NOT_PAID` | DELIVERED requested for an order whose payment is not COMPLETED |
+| 400 | `ORDER_NOT_PAID` | DELIVERED requested for an order whose payment is not COMPLETED (`data` also has `orderNumber`, `paymentStatus`) |
+| 400 | `INVALID_ORDER_STATUS` | (ORD-04, update-order-status) `orderStatus` missing, `null` or not one of the known values (`data.knownValues`); the description stays `Validation failed` / `Request body is missing or malformed.`, the submitted value is never echoed |
+| 400 | `INVALID_REQUEST_BODY` | (ORD-04, update-order-status) no body, not JSON, or `version` not a number |
 | 400 | `VERSION_MISMATCH` / `INVALID_IF_MATCH` | body `version` and `If-Match` differ / malformed |
 | 400 | `INVALID_DATE_FILTER` / `INVALID_DATE_RANGE` | `from`/`to` unparseable / not ordered |
 | 400 | `INVALID_SEARCH` / `INVALID_PAGE` / `INVALID_SORT` | `q` too long or with control characters / page too large / unsupported sort |
 | 404 | `ORDER_NOT_FOUND` | unknown, other customer's (customer routes) or other tenant's order |
-| 409 | `ORDER_VERSION_CONFLICT` | stale `version` (`currentVersion`, `deliveryStatus`) |
-| 409 | `REFUND_NOT_REQUIRED` | nothing to acknowledge |
+| 409 | `ORDER_VERSION_CONFLICT` | stale `version` (`data` also has `orderNumber`, `currentVersion`, `deliveryStatus`) |
+| 409 | `REFUND_NOT_REQUIRED` | nothing to acknowledge. The acknowledgement deliberately does **not** require the order to be `CANCELLED`: a refund is also owed for a `RETURNED` order and for a late payment on a `FAILED` / expired order whose stock was gone (that order stays `FAILED` / `PENDING`, see above); `refundRequired` is only ever set together with a `COMPLETED` payment |
 | 409 | `RETURN_NOT_APPLICABLE` | return-received on an order that is not a cancelled paid order |
 | 409 | `ORDER_NOT_RETURNABLE` | return of an order that is not a paid `DELIVERED` order (`orderNumber`, `deliveryStatus`, `paymentStatus`) |
 | 409 | `RETURN_WINDOW_EXPIRED` | return after the configured window (`returnWindowDays`, `deliveredAt`, `deadline`) |

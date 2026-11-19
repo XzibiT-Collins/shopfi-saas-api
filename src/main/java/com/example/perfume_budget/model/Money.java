@@ -35,6 +35,7 @@ public class Money {
 
     @Override
     public String toString() {
-        return currencyCode + " " + amount.toPlainString();
+        // API-06b: a row stored without a currency (order_taxes.tax_currency is nullable) must not show "null 20.00"
+        return (currencyCode == null ? "" : currencyCode + " ") + amount.toPlainString();
     }
 }

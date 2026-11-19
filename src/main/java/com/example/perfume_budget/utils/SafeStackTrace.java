@@ -52,10 +52,22 @@ public final class SafeStackTrace {
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         append(out, throwable, new StackTraceElement[0], "", "", seen, 0);
         if (out.length() > MAX_LENGTH) {
-            out.setLength(MAX_LENGTH);
+            cutAt(out, MAX_LENGTH);
             out.append('\n').append(TRUNCATED);
         }
         return out.toString();
+    }
+
+    /** Cuts {@code out} to at most {@code max} chars without leaving the first half of a surrogate pair at the end. */
+    static void cutAt(StringBuilder out, int max) {
+        int end = max;
+        if (end > 0 && end < out.length() && Character.isHighSurrogate(out.charAt(end - 1))
+                && Character.isLowSurrogate(out.charAt(end))) {
+            end--;
+        }
+        if (end < out.length()) {
+            out.setLength(end); // never grows the builder (setLength would pad with NULs)
+        }
     }
 
     private static void append(StringBuilder out, Throwable t, StackTraceElement[] enclosing, String caption,
