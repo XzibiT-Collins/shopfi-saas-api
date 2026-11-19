@@ -120,7 +120,12 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     @EntityGraph(attributePaths = CATEGORY)
     List<Product> findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrue();
 
-    /** CAT-05: the featured shelf restricted to products with stock (GET /product/featured?inStock=true). */
+    /**
+     * CAT-05: the featured shelf restricted to products with stock (GET /product/featured?inStock=true).
+     * HOTFIX-1: needs the same category fetch as its sibling, or the mapper's getCategory().getName() throws
+     * LazyInitializationException (open-in-view is off) for any categorised product.
+     */
+    @EntityGraph(attributePaths = CATEGORY)
     List<Product> findTop8ByIsActiveTrueAndIsEnlistedTrueAndIsFeaturedTrueAndStockQuantityGreaterThan(int stockQuantity);
 
     Page<Product> findAllByIsActiveTrue(Specification<Product> spec, Pageable pageable);
