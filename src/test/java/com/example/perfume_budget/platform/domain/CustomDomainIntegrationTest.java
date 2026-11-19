@@ -796,7 +796,8 @@ class CustomDomainIntegrationTest extends AbstractTenantWebTest {
                 Boolean.class)).isTrue();
         service.remove("acme", new CustomDomainService.Actor(CustomDomainService.ActorType.PLATFORM_ADMIN, 1L, "root@x"));
         assertThat(row("acme").get("custom_domain")).isNull();
-        assertThat(row("acme").get("custom_domain_last_verified_at")).isNull();
+        assertThat(jdbc.queryForObject("SELECT custom_domain_last_verified_at IS NULL FROM master.tenants WHERE slug = 'acme'",
+                Boolean.class)).as("remove clears the last-verified history").isTrue();
     }
 
     /** F1 boundary: once the last VERIFIED time is past the TTL as well, the FAILED claim is releasable again. */
