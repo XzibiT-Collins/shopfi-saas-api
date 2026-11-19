@@ -52,11 +52,27 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
         return tenants.runAs(acme, () -> cacheManager.getCache(name));
     }
 
+    /**
+     * FIX-A2 (3): the marker stock value 777 must not appear as a JSON NUMBER. A plain substring check flaked (~0.2%
+     * per run) because the product slug ends in random hex digits that can spell 777; a number is never inside a
+     * quoted string, so the pattern needs the JSON delimiters around it.
+     */
+    static final String MARKER_AS_JSON_NUMBER = "[:\\[,]\\s*777\\s*[,}\\]]";
+
     private void assertClean(String raw) {
         for (String f : HIDDEN) {
             assertThat(raw).doesNotContain(f);
         }
-        assertThat(raw).doesNotContain("777");
+        assertThat(raw).doesNotContainPattern(MARKER_AS_JSON_NUMBER);
+    }
+
+    @Test
+    void theMarkerCheckIgnoresARandomHexSlugButStillFindsTheNumber() {
+        assertClean("{\"slug\":\"fresh-scent-a777b\",\"price\":\"GHS 1.00\"}");
+        assertClean("{\"slug\":\"x-777\",\"ids\":[1,2777,7770]}");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean("{\"qty\":777}")).isInstanceOf(AssertionError.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean("{\"qty\": 777 ,\"a\":1}")).isInstanceOf(AssertionError.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertClean("[1,777]")).isInstanceOf(AssertionError.class);
     }
 
     private String anon(String path) throws Exception {
