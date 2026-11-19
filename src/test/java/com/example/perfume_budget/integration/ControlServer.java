@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
 final class ControlServer {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final Pattern SIX_DIGITS = Pattern.compile("(?<!\\d)(\\d{6})(?!\\d)");
+    private static final Pattern SIX_DIGITS = Pattern.compile(">\\s*(\\d{6})\\s*<");
     private static final Pattern RESET_TOKEN = Pattern.compile("resetPasswordToken=([A-Za-z0-9_-]+)");
 
     private final HttpServer server;
