@@ -112,7 +112,9 @@ class PaystackErrorSummaryTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"\u202E", "\u202A", "\u202D", "\u2066", "\u2067", "\u2068", "\u2069", "\uFEFF", "\u200B",
-            "\u200E", "\u00AD"})
+            "\u200E", "\u00AD",
+            // FIX-A2: supplementary tag character (U+E0041), Arabic letter mark, interlinear annotation anchor
+            "\uDB40\uDC41", "\u061C", "\uFFF9"})
     void noInvisibleFormatCharacterSurvives(String format) {
         String redacted = PaystackErrorSummary.redact("ok " + format + "desrever" + format);
         assertThat(redacted).isEqualTo("ok desrever");
@@ -123,6 +125,22 @@ class PaystackErrorSummaryTest {
     @ValueSource(strings = {"jane\u200B@x.com", "jane@\u2066x.com\u2069", "\uFEFFjane.doe%40x.com", "ja\u202Ene@x.com"})
     void aFormatCharacterCannotHideAnEmailAddress(String address) {
         assertThat(PaystackErrorSummary.redact("Customer " + address + " not found")).isEqualTo("Customer [redacted] not found");
+    }
+
+    /**
+     * FIX-A2: format characters are removed BEFORE the e-mail / number redaction, so one spliced into the middle of an
+     * encoded {@code @} or of a card number cannot keep it from matching.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"jane%4\u200B0x.com", "jane%\u200B40x.com", "jane%25\u200B40x.com", "jane\u2066%40\u2069x.com"})
+    void aFormatCharacterInsideAnEncodedAtSignCannotHideTheAddress(String address) {
+        assertThat(PaystackErrorSummary.redact("Customer " + address + " not found")).isEqualTo("Customer [redacted] not found");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"41\u200B11 1111 1111 1111", "4111\u202E 1111 1111\u200B1111", "4111 \uDB40\uDC41 1111 1111 1111"})
+    void aFormatCharacterInsideACardNumberCannotHideTheDigits(String number) {
+        assertThat(PaystackErrorSummary.redact("Card " + number + " declined")).isEqualTo("Card [redacted] declined");
     }
 
     @Test

@@ -776,6 +776,31 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
         assertThat(r.stillVerified()).isEqualTo(1);
     }
 
+    /**
+     * DOMAIN-03 review L (FIX-A2): the production clock has nanosecond precision but PostgreSQL stores microseconds, so
+     * the lease end held by the claim must be cut to microseconds before it is written, or the stale-result guard in
+     * applyLocked compares nanoseconds with microseconds, never matches and silently drops EVERY answer as STALE.
+     * The fixed clock of the other tests has no sub-second part, so only a nanosecond clock can see it.
+     */
+    @Test
+    void aNanosecondPrecisionClockStillMatchesTheLeaseTheDatabaseStored() {
+        clock = new MutableClock(T0.plusNanos(123_456_789));
+        job.setClock(clock);
+        onlyAcmeDue();
+        CustomDomainReverifier.RoundResult found = round();
+        assertThat(found.claimed()).isEqualTo(1);
+        assertThat(found.stillVerified()).as("the answer was applied, not dropped as STALE").isEqualTo(1);
+        assertThat(Duration.between(instant("acme", "custom_domain_verified_at"), clock.instant()).abs())
+                .as("stamped with the clock (to the microsecond the database keeps)").isLessThanOrEqualTo(Duration.ofNanos(1000));
+
+        clock.advance(Duration.ofHours(25));
+        unpublish(ACME_HOST);
+        onlyAcmeDue();
+        CustomDomainReverifier.RoundResult miss = round();
+        assertThat(miss.misses()).as("a miss is counted, not dropped as STALE").isEqualTo(1);
+        assertThat(misses("acme")).isEqualTo(1);
+    }
+
     @Test
     void aLeaseThatEndedDuringASlowLookupCannotCountTheSameMissTwice() {
         onlyAcmeDue();

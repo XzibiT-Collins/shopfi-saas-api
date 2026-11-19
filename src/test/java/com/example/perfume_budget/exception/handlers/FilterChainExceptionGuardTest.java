@@ -103,6 +103,25 @@ class FilterChainExceptionGuardTest {
         assertThat(output.getAll()).doesNotContain("guard-leak@x.test").contains("java.io.IOException");
     }
 
+    /** FIX-A2 (re-review N01): an async dispatch writes the rest of a streamed answer, so a failure there is the F-1 case too. */
+    @Test
+    void aCommittedResponseOnAnAsyncDispatchIsClosedToo(CapturedOutput output) {
+        request.setDispatcherType(DispatcherType.ASYNC);
+        response.setCommitted(true);
+        assertThatThrownBy(() -> guard.doFilter(request, response, failingWith(new IllegalStateException(SECRET))))
+                .isExactlyInstanceOf(CloseNowException.class).hasNoCause()
+                .satisfies(e -> assertThat(e.getMessage()).doesNotContain("guard-leak@x.test"));
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(output.getAll()).doesNotContain("guard-leak@x.test").contains("java.lang.IllegalStateException");
+    }
+
+    @Test
+    void anUncommittedAsyncDispatchIsAnsweredWithTheErrorPage(CapturedOutput output) throws Exception {
+        request.setDispatcherType(DispatcherType.ASYNC);
+        guard.doFilter(request, response, failingWith(new IllegalStateException(SECRET)));
+        assertSafe500(output, "java.lang.IllegalStateException");
+    }
+
     @Test
     void onAnErrorDispatchTheStatusIsSetWithoutAnotherErrorPage(CapturedOutput output) throws Exception {
         request.setDispatcherType(DispatcherType.ERROR);

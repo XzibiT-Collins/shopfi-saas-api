@@ -39,6 +39,11 @@ import java.util.Objects;
  *       (answer without the exact proof) only counts; VERIFIED becomes FAILED once {@code misses-required} consecutive
  *       definite misses span at least {@code grace}. A found proof resets the streak. A stored domain that no longer
  *       passes the validation rules is downgraded at once (local rule, no DNS involved).</li>
+ *   <li><b>Stale-result guard.</b> DNS is queried outside any transaction, so the answer is applied under the row lock
+ *       only if the domain, the token AND the row's due time (this claim's lease end) are still the ones that were
+ *       checked (status {@code VERIFIED} too, as defence in depth: V9 only allows a due time on VERIFIED rows). An answer
+ *       that arrives after the claim changed, or after the lease ended and another round took the row, is dropped, so a
+ *       miss is never counted twice.</li>
  *   <li><b>Downgrade</b> = FAILED, {@code last_verified_at} stamped now (F1b rule), audit row {@code REVERIFY} by
  *       SYSTEM, then {@link TenantOriginPolicy#invalidateAll()} after the transaction ended.</li>
  * </ul>
@@ -204,6 +209,10 @@ public class CustomDomainReverifier {
 
     private String applyLocked(Claim c, String ruleFailure, Dns answer) {
         Tenant t = tenantRepository.lockById(c.id()).orElse(null);
+        // Stale-result guard: domain, token and the row's due time (= this claim's lease end, the one that identifies THIS
+        // claim) must still be the ones that were checked. The status check is redundant defence in depth: the V9 check
+        // constraint only allows a due time on a VERIFIED row, so a changed status already fails the due-time comparison;
+        // it is kept so the guard stays correct if that constraint is ever relaxed.
         if (t == null || t.getCustomDomainStatus() != CustomDomainStatus.VERIFIED
                 || !Objects.equals(c.domain(), t.getCustomDomain())
                 || !Objects.equals(c.token(), t.getCustomDomainToken())

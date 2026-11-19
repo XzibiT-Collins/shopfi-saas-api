@@ -45,7 +45,8 @@ import java.util.regex.Pattern;
  *       never taken over, and one that just failed a re-verification keeps its protection for the full TTL.</li>
  *   <li><b>verify</b> (tenant admin or platform admin): DNS TXT lookup of {@code <txt-label>.<domain>} OUTSIDE any
  *       transaction (no row lock is held across network I/O), then the result is applied under the row lock only if the
- *       claim (domain + token) is still the one that was checked. Found: VERIFIED; definitively absent: FAILED (also a
+ *       claim (domain + token) is still the one that was checked (the scheduled re-verification also compares the row's
+ *       due time = its lease end, see {@code CustomDomainReverifier}). Found: VERIFIED; definitively absent: FAILED (also a
  *       VERIFIED domain whose record disappeared: re-verification revokes it); no definitive answer: nothing changes,
  *       {@code 503 DOMAIN_DNS_UNAVAILABLE}. The stored domain is re-validated first, so a legacy value that breaks the
  *       AC1 rules can never become VERIFIED. Rate limited per tenant and globally.</li>

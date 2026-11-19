@@ -1,0 +1,22 @@
+# FIX-A2 (5): Prometheus alert rules for the application metrics.
+groups:
+  - name: perfume-budget-cache
+    rules:
+      - alert: CacheReadErrors
+        # CacheErrorConfig absorbs a failed cache read as a miss (WARN "entry unreadable"): the request still succeeds, so
+        # without this alert a Redis outage, or entries of an unreadable shape after a deploy, would go unnoticed.
+        expr: sum by (cache) (increase(shopfi_cache_errors_total{op="get"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache {{ $labels.cache }} reads are failing"
+          description: "Reads of cache {{ $labels.cache }} failed (treated as misses) in the last 5 minutes: check Redis, or a serialisation change."
+      - alert: CacheWriteOrEvictErrors
+        expr: sum by (cache, op) (increase(shopfi_cache_errors_total{op=~"put|evict|clear"}[15m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache {{ $labels.cache }} {{ $labels.op }} is failing"
+          description: "Failed cache {{ $labels.op }} on {{ $labels.cache }}; an evict or clear failure can serve stale data until the TTL."

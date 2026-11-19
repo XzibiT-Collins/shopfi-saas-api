@@ -78,3 +78,11 @@ chars), `type` and `code` (plain lower-case identifiers only). The `PaymentExcep
 and stored as the payment's failure reason) are fixed: `Invalid payment request`, `Payment request failed`,
 `Payment initialization failed`, ... `NoPersonalDataInLogsTest` rejects a raw body (`getBody()`, `.body()`,
 `getResponseBodyAsString()`, a `*body` variable) passed to a log call at INFO or above.
+
+## Cache read failures are counted (FIX-A2)
+
+A cache entry that cannot be read (Redis down, an entry of an old serialised shape) is treated as a miss and the request
+still succeeds, with a WARN line. Every such failure also increments the Micrometer counter `shopfi.cache.errors`
+(Prometheus `shopfi_cache_errors_total`, tags `cache` and `op` = `get|put|evict|clear`). `prometheus-alerts.yml` alerts
+`CacheReadErrors` when any `op="get"` failure happened in the last 5 minutes for 5 minutes, and
+`CacheWriteOrEvictErrors` for put/evict/clear failures (an evict or clear failure can serve stale data until the TTL).

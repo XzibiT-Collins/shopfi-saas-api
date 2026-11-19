@@ -2,6 +2,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# FIX-A2: alert rules (cache read errors, ...). Mounted by docker-compose next to this file.
+rule_files:
+  - /etc/prometheus/prometheus-alerts.yml
+
 scrape_configs:
   - job_name: 'perfume-budget'
     metrics_path: '/actuator/prometheus'

@@ -16,6 +16,9 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -33,6 +36,22 @@ public class JWTUtil {
 
     @Value("${application.security.jwt.refresh-token.expiration}")
     private long jwtRefreshExpirationMs;
+
+    /**
+     * FIX-A2 (1): refresh tokens minted before the {@code typ} claim existed carry no type. They are accepted by
+     * {@link #isRefreshToken} only while {@code now} is before this ISO-8601 instant (set it to deploy time plus the
+     * refresh lifetime, after which every untyped token has expired anyway). Blank (default) = no grace: an untyped token
+     * is refused. A malformed value also means no grace (fail closed).
+     */
+    @Value("${application.security.jwt.refresh-token.untyped-grace-until:}")
+    private String untypedRefreshGraceUntil;
+
+    private volatile Clock clock = Clock.systemUTC();
+
+    /** Test support. */
+    void setClock(Clock clock) {
+        this.clock = clock;
+    }
 
     /** Access-token lifetime in whole seconds (rounded up), the single source for the cookie Max-Age. */
     public int accessTokenTtlSeconds(){
@@ -122,6 +141,42 @@ public class JWTUtil {
         claims.put("fullName", user.getFullName());
         putTenantClaim(claims);
         return generateToken(user.getEmail(), jwtRefreshExpirationMs, claims);
+    }
+
+    /** The {@code typ} claim ({@code access} / {@code refresh}), null for a token minted before it existed. */
+    public String extractType(String token) {
+        Object type = parseToken(token).get(TYPE_CLAIM);
+        return type == null ? null : type.toString();
+    }
+
+    /** FIX-A2 (2): true only for a token explicitly typed {@code access}; a refresh or untyped token never authenticates REST. */
+    public boolean isAccessToken(String token) {
+        return TYPE_ACCESS.equals(extractType(token));
+    }
+
+    /**
+     * FIX-A2 (1): true for a token typed {@code refresh}, or untyped while the legacy grace window
+     * ({@code application.security.jwt.refresh-token.untyped-grace-until}) is open. An {@code access} token (or any other
+     * type) is never a refresh token, so a stolen short-lived access token cannot be extended.
+     */
+    public boolean isRefreshToken(String token) {
+        String type = extractType(token);
+        if (TYPE_REFRESH.equals(type)) {
+            return true;
+        }
+        return type == null && untypedGraceOpen();
+    }
+
+    private boolean untypedGraceOpen() {
+        if (untypedRefreshGraceUntil == null || untypedRefreshGraceUntil.isBlank()) {
+            return false;
+        }
+        try {
+            return clock.instant().isBefore(Instant.parse(untypedRefreshGraceUntil.strip()));
+        } catch (DateTimeParseException e) {
+            log.warn("Ignoring a malformed untyped-grace-until value; untyped refresh tokens are refused");
+            return false;
+        }
     }
 
     public Claims extractAllClaims(String token) {

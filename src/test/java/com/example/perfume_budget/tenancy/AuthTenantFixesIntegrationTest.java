@@ -256,6 +256,42 @@ class AuthTenantFixesIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(call(with(get("/api/v1/auth/me"), ACME, fresh)).getStatus()).isEqualTo(200);
     }
 
+    /** FIX-A2 (1): the short-lived ACCESS token in the refresh cookie must not mint new access tokens. */
+    @Test
+    void anAccessTokenPresentedAsTheRefreshCookieIsRefused() throws Exception {
+        Cookie[] own = sessionOf(acme);
+        MockHttpServletResponse r = call(with(post("/api/v1/auth/refresh"), ACME,
+                new Cookie("refreshToken", named(own, "accessToken").getValue())));
+        assertJson401(r);
+        assertThat(r.getCookie("accessToken")).as("nothing is issued").isNull();
+        // and the real refresh cookie still works
+        assertThat(call(with(post("/api/v1/auth/refresh"), ACME, named(own, "refreshToken"))).getStatus()).isEqualTo(200);
+    }
+
+    /** FIX-A2 (1): a refresh token without any typ claim (pre-SEC-03e) is refused when no grace window is configured. */
+    @Test
+    void anUntypedRefreshTokenIsRefusedWithoutAGraceWindow() throws Exception {
+        MockHttpServletResponse r = call(with(post("/api/v1/auth/refresh"), ACME,
+                new Cookie("refreshToken", tokenWithTenantClaim("acme", acme.adminEmail()))));
+        assertJson401(r);
+        assertThat(r.getCookie("accessToken")).isNull();
+    }
+
+    /** FIX-A2 (2): a refresh token sent as the access cookie never authenticates a REST request. */
+    @Test
+    void aRefreshTokenPresentedAsTheAccessCookieDoesNotAuthenticate() throws Exception {
+        Cookie[] own = sessionOf(acme);
+        assertThat(call(with(get("/api/v1/auth/me"), ACME, named(own, "accessToken"))).getStatus()).isEqualTo(200);
+        assertJson401(call(with(get("/api/v1/auth/me"), ACME, new Cookie("accessToken", named(own, "refreshToken").getValue()))));
+    }
+
+    /** FIX-A2 (2): an untyped but otherwise valid token (pre-SEC-03e access token) no longer authenticates either. */
+    @Test
+    void anUntypedTokenDoesNotAuthenticateRest() throws Exception {
+        assertJson401(call(with(get("/api/v1/auth/me"), ACME,
+                new Cookie("accessToken", tokenWithTenantClaim("acme", acme.adminEmail())))));
+    }
+
     @Test
     void refreshWithoutAnyCookie_is401Json_not400() throws Exception {
         assertJson401(call(with(post("/api/v1/auth/refresh"), ACME)));
