@@ -328,7 +328,9 @@ The API stays on one host (`TENANT_PLATFORM_DOMAINS`); only the storefront/admin
      from the frontend host instead).
    After `POST /api/v1/admin/custom-domain/verify` answers `VERIFIED`, the backend honours the domain (CORS, tenant
    resolution, OAuth2 redirect URIs, emailed links). Until then nothing changes. Keep the TXT record published:
-   a later verify (tenant or platform admin) without it moves the domain to `FAILED` and it stops being honoured.
+   a later verify (tenant or platform admin) without it moves the domain to `FAILED` and it stops being honoured, and
+   a scheduled job (DOMAIN-03, on in prod; `TENANT_CUSTOM_DOMAIN_REVERIFY_ENABLED=false` turns it off) re-checks VERIFIED
+   domains and downgrades one whose record stays gone for 3 checks over 24 h; DNS outages never downgrade.
 3. **Certificates for custom domains** are issued by the FRONTEND host, never by this API: add the domain on the
    hosting provider (Vercel/Render "custom domain", or a proxy with on-demand ACME such as Caddy) only after it is
    VERIFIED here, and remove it there when the domain is removed here. The HTTP-01 challenge only works once the

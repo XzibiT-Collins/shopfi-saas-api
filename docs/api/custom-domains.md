@@ -1,4 +1,4 @@
-# Custom domains API (DOMAIN-02)
+# Custom domains API (DOMAIN-02, DOMAIN-03)
 
 A tenant can serve its storefront and admin UI on its own domain (e.g. `shop.acme-brand.com`) in addition to
 `<slug>.<TENANT_BASE_DOMAIN>`. A custom domain is **honoured only while it is `VERIFIED`**: CORS
@@ -58,12 +58,12 @@ change, does).
 | Status | Meaning | Honoured? |
 |---|---|---|
 | `PENDING` | claimed, proof not checked yet (also every pre-DOMAIN-02 value set by direct DB edit; master migration V8) | no |
-| `VERIFIED` | the TXT proof was found at the last check | yes |
+| `VERIFIED` | the TXT proof was found at the last check (re-checked on a schedule, see below) | yes |
 | `FAILED` | the last check did not find the proof, or the stored domain no longer passes the rules above (`failureReason` = the `DOMAIN_*` code) | no |
 
 Transitions: `PUT` (new or different domain) -> `PENDING` with a fresh token. `POST .../verify` -> `VERIFIED` or
-`FAILED` (any status, so it is also the **re-verification**: a `VERIFIED` domain whose record disappeared becomes
-`FAILED` and stops being honoured at once). `DELETE` -> no domain. `PUT` with the domain already set is a no-op that
+`FAILED` (any status, so it is also the **manual re-verification**: a `VERIFIED` domain whose record disappeared becomes
+`FAILED` and stops being honoured at once; the scheduled job downgrades only after a grace period). `DELETE` -> no domain. `PUT` with the domain already set is a no-op that
 keeps the token (the published TXT record stays valid).
 
 ## Ownership proof (DNS TXT)
@@ -78,9 +78,61 @@ a timeout/SERVFAIL changes nothing and answers `503 DOMAIN_DNS_UNAVAILABLE`. An 
 (optional in the ticket). The resolver itself refuses anything that is not a plain dotted host name (no URL-shaped
 names reach JNDI).
 
-**Keep the TXT record published.** Every verify, including a re-verification by a platform admin, checks it again: if
-it is gone the domain becomes `FAILED` and stops being honoured at once. (A periodic automatic re-verification is a
-separate ticket, DOMAIN-03.)
+**Keep the TXT record published, for as long as you use the domain.** A `VERIFIED` domain is re-checked in the
+background (next section). If the record stays gone, the domain becomes `FAILED` and stops being honoured: CORS, tenant
+resolution and OAuth2 redirects. This protects you: a lapsed domain bought by someone else must not stay trusted by the
+platform. Do not remove `_shopfi-verification.<domain>` after the first successful verify. A manual verify (tenant or
+platform admin) still checks at once and downgrades at once.
+
+## Scheduled re-verification (DOMAIN-03)
+
+A background job re-checks the TXT proof of every `VERIFIED` domain (`CustomDomainReverifier`, started by
+`CustomDomainReverifyScheduler` on its own thread). It is **on in the `prod` profile and off everywhere else** (tests,
+dev): `tenant.custom-domain.reverify.enabled`.
+
+**Policy** (per domain; defaults in Configuration):
+
+| Check result | Effect |
+|---|---|
+| proof found | stays `VERIFIED`; miss streak cleared; `checked_at`, `verified_at`, `last_verified_at` = now; next check in `interval` (+ jitter) |
+| DNS gave no definite answer (timeout, SERVFAIL, network error; the resolver's 2 s timeout applies) | **nothing about trust changes**: no downgrade, the miss streak is neither extended nor cleared; retry in `error-retry-interval` (+ jitter). Any length of DNS outage never downgrades a domain |
+| definite miss (NXDOMAIN, no TXT, or no TXT with the exact value: a changed token counts too) | counts as one miss; the first miss of a streak starts the grace period; retry in `miss-retry-interval` (+ jitter). The domain stays `VERIFIED` and honoured until BOTH `misses-required` (3) consecutive definite misses AND `grace` (24 h) since the first miss are reached; then `VERIFIED` -> `FAILED` |
+| the stored domain no longer passes the rules above (e.g. the platform base domain or CNAME target changed) | `FAILED` at once with the `DOMAIN_*` code (a local rule, no DNS is involved, no grace) |
+
+With the defaults a record that disappeared is noticed within 24 h and the domain is downgraded after about 24 to 30 h.
+
+**Downgrade** (one transaction, row lock, same as a failed manual verify): status `FAILED`, `failureReason`
+`TXT_RECORD_NOT_FOUND` (or the `DOMAIN_*` code), `verified_at` cleared, `checked_at` and `last_verified_at` = now (the
+F1b rule: the owner keeps the anti-squatting protection for the full `unverified-claim-ttl-hours` counted from the
+downgrade, and can restore the record and verify again), schedule and miss streak cleared, ONE audit row (below). After
+the commit `TenantOriginPolicy.invalidateAll()` flips the CORS decision cache of that instance at once; tenant
+resolution and the OAuth2 redirect gate read the registry per request (`TenantHostLookup` has no cache), so they stop
+trusting the domain on the next request on every instance. Other instances' CORS caches converge within the CORS cache TTL
+(see Caches). Owners are not emailed (no notification channel is wired for this): they see `FAILED` and the
+`failureReason` in the admin settings, and the platform history shows the `REVERIFY` row.
+
+**How rows are picked** (multi-instance safe, bounded, no thundering herd):
+
+- State lives on `master.tenants` (migration V9): `custom_domain_reverify_due_at`, `custom_domain_miss_count`,
+  `custom_domain_missing_since`; a database check constraint allows them only on `VERIFIED` rows. A new claim, a
+  removal, a manual verify to `FAILED`, or a downgrade clears them; a manual verify to `VERIFIED` restarts the schedule.
+- A round claims ONE row at a time with a single atomic statement
+  (`UPDATE ... WHERE id = (SELECT ... WHERE status = 'VERIFIED' AND (due IS NULL OR due <= now) ORDER BY due LIMIT 1
+  FOR UPDATE SKIP LOCKED) RETURNING ...`) that moves the row's due time `lease` (10 min) ahead. Two instances (or two
+  rounds) never check the same row at once, a row locked by an admin write is skipped not waited for, no row lock is
+  held while DNS is queried (the result is applied under the row lock only if domain and token are still the ones that
+  were checked), and the rows of an instance that crashed mid-check come back when the lease ends.
+- A round checks at most `batch-size` (10) domains and a round is `tick-interval` (1 min) after the previous one ends,
+  so a backlog is worked off gradually (most overdue first) instead of in a burst. Every schedule gets a random extra
+  delay of up to `jitter-percent` (20 %) of its base delay, and the V9 migration spreads the first check of existing
+  `VERIFIED` domains over the first 24 h.
+- DNS budget: each lookup takes one token from the job's own bucket (`dns-per-minute`, 20) AND one from the global
+  verify bucket (`verify-global-per-minute`, 60) that manual verifies use too, so the job can never use more than 20 of
+  the 60 per minute and a manual verify keeps at least 40. When a bucket is empty the claimed row is handed back
+  untouched and the round ends. The per-tenant 10 verifies/hour limit is for manual verifies and is not spent by the job.
+- The job runs without a tenant context and reads and writes only the master registry and the master audit log (one
+  tenant's row per transaction); it never touches a tenant schema. It never logs a token, a TXT value or DNS error text
+  (tenant slug and outcome only).
 
 The CNAME (`cnameTarget`, from `TENANT_CUSTOM_DOMAIN_CNAME_TARGET`) routes traffic; it is shown for convenience and
 not checked by the backend.
@@ -189,15 +241,18 @@ submitted domain.
 
 Every change writes one row to `master.tenant_domain_audit_log` in the same transaction (append-only: database
 triggers reject UPDATE/DELETE/TRUNCATE): `actor_type` (`TENANT_ADMIN`, `PLATFORM_ADMIN`, `SYSTEM`), `actor_id`,
-`actor_email`, `tenant_id`, `tenant_slug`, `action` (`REQUEST`, `VERIFY`, `REMOVE`, `RELEASE`), `domain`,
+`actor_email`, `tenant_id`, `tenant_slug`, `action` (`REQUEST`, `VERIFY`, `REMOVE`, `RELEASE`, `REVERIFY`), `domain`,
 `previous_domain` (on a replace), `previous_status`, `new_status`, `detail` (`REPLACED`, `TXT_RECORD_MATCHED`,
 `TXT_RECORD_NOT_FOUND`, a `DOMAIN_*` code, `UNVERIFIED_CLAIM_EXPIRED`). No token is stored there. A DNS check without
-a definitive answer writes no row.
+a definitive answer writes no row. `REVERIFY` (actor `SYSTEM`, no actor id/email) is written once per scheduled
+downgrade (`previous_status` `VERIFIED`, `new_status` `FAILED`, `detail` `TXT_RECORD_NOT_FOUND` or a `DOMAIN_*` code);
+counted misses, DNS errors and successful re-checks are not transitions and write no row (they are in the log, without
+tokens).
 
 ## Caches and multiple instances
 
 Every write calls `TenantOriginPolicy.invalidateAll()` after its transaction ends, so the CORS decision cache of THAT
-instance flips immediately (also when a re-verification fails). Other instances converge within
+instance flips immediately (also when a re-verification, manual or scheduled, fails). Other instances converge within
 `CORS_TENANT_CACHE_TTL_SECONDS` (30 s; up to TTL + stale grace under lookup pressure, see `cors.md`). Tenant resolution
 has no cache (it reads the registry per request), so API calls stop resolving on the next request everywhere. Rate
 limits are per instance too.
@@ -214,6 +269,13 @@ limits are per instance too.
 | `tenant.custom-domain.dns-timeout-millis` / `dns-retries` | 2000 / 1 | `dns-retries` is the number of JNDI query rounds (clamped to 1..4); round i waits `timeout * 2^i` per server, so the worst case is `timeout * (2^rounds - 1) * servers`: 2 s per server with the defaults (measured 6.1 s for 3 silent servers) |
 | `tenant.custom-domain.verify-per-tenant-per-hour` / `verify-global-per-minute` | 10 / 60 | verification rate limits |
 | `tenant.custom-domain.changes-per-tenant-per-hour` | 20 | claim/remove rate limit (tenant admin) |
+| `tenant.custom-domain.reverify.enabled` (`TENANT_CUSTOM_DOMAIN_REVERIFY_ENABLED`) | `false`; `true` in the `prod` profile | scheduled re-verification on/off |
+| `reverify.tick-interval` / `initial-delay` / `batch-size` | 1m / 2m / 10 | pause between rounds, delay after start-up, domains per round at most |
+| `reverify.interval` / `jitter-percent` | 24h / 20 | time between checks of an OK domain; random extra up to this % of any delay |
+| `reverify.miss-retry-interval` / `error-retry-interval` | 6h / 30m | next check after a definite miss / after a DNS error |
+| `reverify.misses-required` / `grace` | 3 / 24h | downgrade needs both: this many consecutive definite misses and this long since the first |
+| `reverify.lease` | 10m | a claimed row is reserved this long (minimum 60 s) |
+| `reverify.dns-per-minute` | 20 | the job's own DNS budget per JVM, on top of the shared global 60/min |
 | `tenant.custom-domain.unverified-claim-ttl-hours` | 72 | an unverified claim can be taken by another tenant once its claim time and the last time it was seen VERIFIED are both older than this |
 
 ## Frontend follow-up (not in this ticket)

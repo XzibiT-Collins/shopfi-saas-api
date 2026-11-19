@@ -92,6 +92,7 @@ public class CustomDomainService {
     private final TokenBucketRateLimiter verifyLimiter;
     private final TokenBucketRateLimiter globalVerifyLimiter;
     private final TokenBucketRateLimiter changeLimiter;
+    private final ReverifySchedule reverifySchedule;
     private final SecureRandom random = new SecureRandom();
     private volatile Clock clock = Clock.systemUTC();
 
@@ -99,7 +100,8 @@ public class CustomDomainService {
                                TenantOriginPolicy originPolicy, DbLockTimeout lockTimeout, DnsTxtResolver dns,
                                CustomDomainProperties props, TenantResolutionProperties tenantProps,
                                CorsProperties corsProps, PlatformCorsProperties platformCorsProps,
-                               PlatformTransactionManager txManager) {
+                               PlatformTransactionManager txManager, ReverifySchedule reverifySchedule) {
+        this.reverifySchedule = reverifySchedule;
         this.tenantRepository = tenantRepository;
         this.auditRepository = auditRepository;
         this.originPolicy = originPolicy;
@@ -137,6 +139,11 @@ public class CustomDomainService {
     /** The validation policy built from configuration (base domain, platform domains, static CORS hosts). */
     public CustomDomains.Policy policy() {
         return policy;
+    }
+
+    /** DOMAIN-03: one token of the global DNS budget (shared with manual verifies); false when it is used up. */
+    boolean tryAcquireGlobalDnsToken() {
+        return globalVerifyLimiter.tryAcquire("global") == 0;
     }
 
     /** Test support: a fixed clock for the stale-claim cutoff. */
@@ -200,6 +207,7 @@ public class CustomDomainService {
                 t.setCustomDomainVerifiedAt(null);
                 t.setCustomDomainLastVerifiedAt(null); // a new claim starts its own history
                 t.setCustomDomainFailure(null);
+                t.clearReverifyState();
                 tenantRepository.saveAndFlush(t);
                 audit(actor, t.getId(), t.getSlug(), "REQUEST", domain, previousDomain, previousStatus,
                         CustomDomainStatus.PENDING.name(), previousDomain != null ? "REPLACED" : null);
@@ -251,8 +259,12 @@ public class CustomDomainService {
                 if (next == CustomDomainStatus.VERIFIED) {
                     t.setCustomDomainVerifiedAt(now);
                     t.setCustomDomainLastVerifiedAt(now);
+                    // DOMAIN-03: a fresh proof restarts the re-verification schedule and the miss streak
+                    t.clearReverifyState();
+                    t.setCustomDomainReverifyDueAt(reverifySchedule.afterOk(now));
                 } else {
                     t.setCustomDomainVerifiedAt(null);
+                    t.clearReverifyState();
                     if (wasVerified) {
                         // last_verified_at = the last time the domain was SEEN verified (F1b): a domain that stops being
                         // VERIFIED now is protected for the full TTL from now. PENDING/FAILED -> FAILED leaves it alone,
@@ -272,7 +284,7 @@ public class CustomDomainService {
     }
 
     /** Null when the stored domain still passes the AC1 rules in its canonical form, else the rejection code. */
-    private String revalidate(String stored) {
+    String revalidate(String stored) {
         try {
             return CustomDomains.normalize(stored, policy).equals(stored) ? null : CustomDomains.INVALID;
         } catch (CustomDomainRejectedException e) {
