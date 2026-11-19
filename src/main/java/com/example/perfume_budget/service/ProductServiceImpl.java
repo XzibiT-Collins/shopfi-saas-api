@@ -91,11 +91,6 @@ public class ProductServiceImpl implements ProductService {
         if (!Boolean.TRUE.equals(request.isNewProduct())) {
             try {
                 return tx.execute(status -> createProductRows(request, uploadedImageUrl));
-            } catch (jakarta.persistence.EntityNotFoundException e) {
-                // FIX-B (found by the delete-vs-add-variant race test): the family's base unit (a lazy proxy) was deleted
-                // together with its family by a concurrent product delete between this request's family read and its
-                // first use of the base unit; that used to surface as a 500
-                throw new ResourceNotFoundException("Product family not found.");
             } catch (DataIntegrityViolationException e) {
                 // ORD-02d: two identical concurrent variant adds both pass the existsBySku check; the loser's insert
                 // hits uc_products_sku and gets the documented answer, not the generic 409 constraint text
@@ -268,11 +263,25 @@ public class ProductServiceImpl implements ProductService {
             newProduct.setSku(generatedSku);
 
             // Auto-calculate cost price = base unit cost * conversion factor
-            BigDecimal calculatedCost = baseUnit.getCostPrice().getAmount().multiply(BigDecimal.valueOf(convFactor));
-            newProduct.setCostPrice(new Money(calculatedCost, baseUnit.getCostPrice().getCurrencyCode()));
+            Money baseCost = baseUnitCost(baseUnit);
+            BigDecimal calculatedCost = baseCost.getAmount().multiply(BigDecimal.valueOf(convFactor));
+            newProduct.setCostPrice(new Money(calculatedCost, baseCost.getCurrencyCode()));
 
             Product savedProduct = productRepository.save(newProduct);
             return toDetails(savedProduct);
+        }
+    }
+
+    /**
+     * FIX-B/FIX-G: the family's base unit is a lazy proxy; if a concurrent product delete removed the family (and its
+     * base unit) after this request read the family, the first use of the proxy throws EntityNotFoundException. Only
+     * that case is the documented 404; any other vanished reference keeps its own error.
+     */
+    private static Money baseUnitCost(Product baseUnit) {
+        try {
+            return baseUnit.getCostPrice();
+        } catch (jakarta.persistence.EntityNotFoundException e) {
+            throw new ResourceNotFoundException("Product family not found.");
         }
     }
 

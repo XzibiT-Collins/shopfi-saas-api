@@ -61,7 +61,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "application.auth.rate-limit.resend-otp-ip.capacity=6",
         "application.auth.rate-limit.resend-otp-ip.period-seconds=3600",
         "application.auth.rate-limit.resend-otp-email.capacity=3",
-        "application.auth.rate-limit.resend-otp-email.period-seconds=3600"
+        "application.auth.rate-limit.resend-otp-email.period-seconds=3600",
+        // these tests call forgot-password many times from one address: the throttle itself is AuthThrottlesIntegrationTest
+        "application.auth.rate-limit.forgot-password-ip.capacity=1000",
+        "application.auth.rate-limit.forgot-password-email.capacity=1000",
+        "application.auth.rate-limit.resend-otp-email-ceiling.capacity=1000"
 })
 class AuthTenantFixesIntegrationTest extends AbstractPostgresIntegrationTest {
 
@@ -481,17 +485,20 @@ class AuthTenantFixesIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void resendOtp_isThrottledPerEmail_withRetryAfter_identicallyForKnownAndUnknown() throws Exception {
+    void resendOtp_isThrottledPerIpAndEmail_withRetryAfter_identicallyForKnownAndUnknown() throws Exception {
         String known = "known" + SEQ.incrementAndGet() + "@x.test";
         String unknown = "ghost" + SEQ.incrementAndGet() + "@x.test";
         newUser(acme, known, "Oldpass1!acme", false, UserRole.CUSTOMER);
         for (String email : new String[]{known, unknown}) {
+            String ip = "10.30." + SEQ.incrementAndGet() + ".1";
             for (int i = 0; i < 3; i++) {
-                assertThat(resend(acme, email, "10.30." + SEQ.incrementAndGet() + ".1").getStatus()).isEqualTo(200);
+                assertThat(resend(acme, email, ip).getStatus()).isEqualTo(200);
             }
-            MockHttpServletResponse blocked = resend(acme, email, "10.30." + SEQ.incrementAndGet() + ".1");
+            MockHttpServletResponse blocked = resend(acme, email, ip);
             assertThat(blocked.getStatus()).isEqualTo(429);
             assertThat(Long.parseLong(blocked.getHeader("Retry-After"))).isPositive();
+            // AUTH-02 AC1: another address is NOT locked out by the first one spending the email's budget
+            assertThat(resend(acme, email, "10.32." + SEQ.incrementAndGet() + ".1").getStatus()).isEqualTo(200);
         }
         // the same address on another tenant has its own budget
         assertThat(resend(bravo, known, "10.31.0.1").getStatus()).isEqualTo(200);

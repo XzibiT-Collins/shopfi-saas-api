@@ -76,7 +76,11 @@ public final class IntegrationServer {
                         Map.entry("onboarding.resend-ip.capacity", "1000"),
                         Map.entry("onboarding.resend-email.capacity", "1000"),
                         Map.entry("application.auth.rate-limit.resend-otp-ip.capacity", "1000"),
-                        Map.entry("application.auth.rate-limit.resend-otp-email.capacity", "1000"));
+                        Map.entry("application.auth.rate-limit.resend-otp-email.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.resend-otp-email-ceiling.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.forgot-password-ip.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.forgot-password-email.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.resend-login-otp-ip.capacity", "1000"));
     }
 
     private static int port(String env, int fallback) {

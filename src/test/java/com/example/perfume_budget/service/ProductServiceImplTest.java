@@ -396,13 +396,32 @@ class ProductServiceImplTest {
         when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
         when(productFamilyRepository.findById(5L)).thenReturn(Optional.of(family));
         when(unitOfMeasureRepository.findByCode("BOX")).thenReturn(Optional.of(boxUom));
-        when(productRepository.save(any(Product.class))).thenThrow(new jakarta.persistence.EntityNotFoundException("gone"));
+        Product vanishedBase = spy(baseProduct);
+        doThrow(new jakarta.persistence.EntityNotFoundException("gone")).when(vanishedBase).getCostPrice();
+        family.setBaseUnit(vanishedBase);
 
         ResourceNotFoundException e = assertThrows(ResourceNotFoundException.class, () -> productService.createProduct(request));
 
         assertEquals("Product family not found.", e.getMessage());
         verify(transactionManager, times(1)).rollback(any());
         verify(transactionManager, never()).commit(any());
+    }
+
+    /** FIX-G (FIX-B low): only the family base unit case is mapped; any other vanished reference keeps its own error. */
+    @Test
+    void createProduct_Variant_AnotherVanishedReferenceIsNotReportedAsAMissingFamily() {
+        ProductRequest request = buildRequest(false, 5L, "BOX", 6, null, false);
+        when(cloudinaryFileUploadUtil.uploadProductImage(productImage)).thenReturn("http://image.com/new.jpg");
+        when(categoryRepository.findById(1L)).thenReturn(Optional.of(category));
+        when(productFamilyRepository.findById(5L)).thenReturn(Optional.of(family));
+        when(unitOfMeasureRepository.findByCode("BOX")).thenReturn(Optional.of(boxUom));
+        family.setBaseUnit(baseProduct);
+        when(productRepository.save(any(Product.class))).thenThrow(new jakarta.persistence.EntityNotFoundException("category 9 gone"));
+
+        jakarta.persistence.EntityNotFoundException e = assertThrows(jakarta.persistence.EntityNotFoundException.class,
+                () -> productService.createProduct(request));
+
+        assertEquals("category 9 gone", e.getMessage());
     }
 
     @Test

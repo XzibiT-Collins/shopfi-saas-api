@@ -59,10 +59,11 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
     @Autowired org.springframework.transaction.PlatformTransactionManager txManager;
     @MockitoSpyBean TenantSchemaMigrator migrator;
     @MockitoSpyBean ChartOfAccountsSeeder chartSeeder;
+    @MockitoSpyBean TenantRepository tenantRepositorySpy;
 
     @AfterEach
     void cleanup() {
-        Mockito.reset(migrator, chartSeeder);
+        Mockito.reset(migrator, chartSeeder, tenantRepositorySpy);
         TenantContext.clear();
     }
 
@@ -342,5 +343,78 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
         TenantContext.set(TenantIdentity.platform());
         service.provision(req("provl"));
         assertThat(TenantContext.isPlatform()).isTrue();
+    }
+
+    // ---- PROV-04 AC2 / AC3 -------------------------------------------------------------------------------------
+
+    /** AC2: a schema that exists without a registry row is neither adopted, migrated into nor dropped; the row is FAILED. */
+    @Test
+    void anExistingOrphanSchemaIsNeverAdoptedOrDropped() {
+        String slug = "orphanx";
+        jdbc(c -> { try (var st = c.createStatement()) {
+            st.execute("CREATE SCHEMA tenant_orphanx");
+            st.execute("CREATE TABLE tenant_orphanx.keepme (id int)");
+            st.execute("INSERT INTO tenant_orphanx.keepme VALUES (42)");
+            return null; } });
+        try {
+            assertThatThrownBy(() -> service.provision(req(slug))).isInstanceOf(TenantProvisioningException.class);
+            assertThat(PostgresTestDatabase.schemaExists("tenant_orphanx")).as("orphan schema survives").isTrue();
+            assertThat(count("SELECT count(*) FROM tenant_orphanx.keepme")).isEqualTo(1);
+            assertThat(tables("tenant_orphanx")).as("nothing migrated into it").containsExactly("keepme");
+            assertThat(statusOf(slug)).isEqualTo("FAILED");
+        } finally {
+            jdbc(c -> { try (var st = c.createStatement()) { st.execute("DROP SCHEMA IF EXISTS tenant_orphanx CASCADE"); return null; } });
+        }
+    }
+
+    /** AC3: migrateTenant validates the name itself; it never reaches Flyway (which would create the schema) when illegal. */
+    @Test
+    void migrateTenantRejectsIllegalSchemaNamesBeforeFlyway() {
+        for (String evil : List.of("public", "master", "tenant_x\"; DROP SCHEMA master CASCADE;--", "pg_catalog", "evil", "tenant_")) {
+            assertThatThrownBy(() -> migrator.migrateTenant(evil)).as(evil).isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThat(PostgresTestDatabase.schemaExists("evil")).isFalse();
+    }
+
+    /** PLAT-02c N12: the loser of a concurrent same-slug insert (unique violation on the registry) is a lost race, not a failure. */
+    @Test
+    void aUniqueViolationOnTheRegistryInsertIsReportedAsAlreadyExisting() {
+        Mockito.doThrow(new org.springframework.dao.DataIntegrityViolationException("uq_tenants_slug"))
+                .when(tenantRepositorySpy).saveAndFlush(Mockito.any(Tenant.class));
+        assertThatThrownBy(() -> service.provision(req("lostrace")))
+                .isInstanceOf(TenantAlreadyExistsException.class);
+        assertThat(PostgresTestDatabase.schemaExists("tenant_lostrace")).as("no schema touched by the loser").isFalse();
+    }
+
+    /** PLAT-02c N12 (real race): two concurrent provisions of one slug: exactly one wins, the other is a lost race. */
+    @Test
+    void twoConcurrentProvisionsOfOneSlugHaveExactlyOneWinner() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            List<java.util.concurrent.Future<Object>> fs = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                fs.add(pool.submit(() -> {
+                    start.await();
+                    try {
+                        return service.provision(req("twinrace"));
+                    } catch (TenantAlreadyExistsException e) {
+                        return e;
+                    }
+                }));
+            }
+            start.countDown();
+            int wins = 0;
+            int lost = 0;
+            for (var f : fs) {
+                Object r = f.get(120, java.util.concurrent.TimeUnit.SECONDS);
+                if (r instanceof ProvisioningResult) wins++; else lost++;
+            }
+            assertThat(wins).isEqualTo(1);
+            assertThat(lost).isEqualTo(1);
+            assertThat(statusOf("twinrace")).isEqualTo("ACTIVE");
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

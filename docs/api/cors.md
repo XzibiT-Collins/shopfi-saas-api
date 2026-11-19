@@ -46,7 +46,7 @@ headers: `ETag`, `Retry-After` (`cors.exposed-headers`). Preflight cache: 300 s 
 
 ## Caching, TTL and abuse limits
 
-Registry decisions are cached per host (`s:<slug>` / `d:<custom-domain>`) in two bounded LRU maps:
+Registry decisions are cached per host (the key is `h:<host>`; the same shared lookup resolves a base-domain slug or a VERIFIED custom domain) in two bounded LRU maps:
 
 | Property | Default | Meaning |
 |---|---|---|
@@ -58,8 +58,26 @@ Registry decisions are cached per host (`s:<slug>` / `d:<custom-domain>`) in two
 | `cors.tenant-cache.max-refreshes-per-second` | 100 | a SEPARATE budget for refreshing a host that was recently ALLOWED; unknown hosts cannot use it |
 | `cors.tenant-cache.stale-grace-seconds` | 120 | how long past its TTL an ALLOWED decision is still served if the refresh budget is empty or the registry errors; worst-case suspension propagation under attack is `ttl-seconds + stale-grace-seconds` |
 
-A registry error also denies the origin and is not cached. `TenantOriginPolicy.invalidateAll()` drops every decision
-immediately; PLAT-03's suspend/activate operations should call it. The cache is per JVM instance. Note that tenant
+A registry error does NOT deny a host that was allowed recently: inside the stale grace window (`stale-grace-seconds`, 120 s
+past the TTL) the previous ALLOW is still served; a host that was never allowed (unknown or denied) fails closed on a
+registry error and the denial is not cached. Suspension therefore propagates within `ttl-seconds` (30 s) normally and up
+to `ttl-seconds + stale-grace-seconds` (150 s) when the refresh budget is exhausted or the registry errors.
+`TenantOriginPolicy.invalidateAll()` drops every decision immediately; it is called by the platform suspend/activate/
+domain operations (PLAT-02 AC6; not PLAT-03).
+
+Properties (env): `cors.tenant-cache.max-tracked-ips` (bound on the per-client budget map, default 10000),
+`cors.tenant-cache.max-lookups-per-ip-per-second`, `cors.tenant-cache.max-lookups-per-second`,
+`cors.tenant-cache.max-refreshes-per-second`, `cors.tenant-cache.stale-grace-seconds`, the TTLs and entry bounds above.
+
+Known limitations (by design, fail closed under attack):
+- A never-seen new tenant is denied while both lookup budgets (per-client and global) are empty; it is allowed on the
+  next request once a token is available.
+- An idle tenant whose first request arrives more than 150 s after its last allow, during a botnet flood that drains the
+  lookup budgets, is denied until budget is available again (its decision is no longer inside TTL + grace).
+- With more than 10,000 simultaneous attacker addresses the per-client map is full and new clients share ONE overflow
+  bucket (5 lookups per second): they compete only with each other, never with already tracked clients or with
+  recently allowed hosts (those use the separate refresh budget).
+- The per-client key is bounded to 64 characters (a resolved client address is an IP literal, otherwise `invalid`). The cache is per JVM instance. Note that tenant
 resolution itself (`TenantResolutionFilter`) still checks the status per request, so a suspended tenant's API calls
 fail (423) regardless of this cache; the cache only governs whether a browser may read the response.
 

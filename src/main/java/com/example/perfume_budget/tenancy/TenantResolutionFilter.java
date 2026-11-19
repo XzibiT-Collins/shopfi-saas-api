@@ -66,9 +66,11 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
                                     @NonNull HttpServletResponse response,
                                     @NonNull FilterChain filterChain) throws ServletException, IOException {
         // Decoded, lower-cased path (DOMAIN-01b S1): the raw URI would let %70latform skip platform scope.
-        String path = RequestPaths.canonical(request);
+        String decoded = RequestPaths.decoded(request);
+        String path = decoded.toLowerCase(java.util.Locale.ROOT); // platform/oauth2 zone checks only; DOMAIN-01c AC3
 
-        if (isBypass(path)) {
+        // the neutral bypass list is case-SENSITIVE: MVC and Security are, so /ACTUATOR or /WS are not neutral paths
+        if (isBypass(decoded)) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -133,7 +135,8 @@ public class TenantResolutionFilter extends OncePerRequestFilter {
      * {@link TenantRequiredFilter} to decide which unresolved requests to reject.
      */
     static boolean isNeutralPath(String path) {
-        return isBypass(path) || path.startsWith(PLATFORM_PATH_PREFIX) || path.startsWith(OAUTH2_PATH_PREFIX);
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        return isBypass(path) || lower.startsWith(PLATFORM_PATH_PREFIX) || lower.startsWith(OAUTH2_PATH_PREFIX);
     }
 
     private static boolean isBypass(String path) {

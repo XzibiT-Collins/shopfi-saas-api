@@ -80,9 +80,10 @@ Failures:
 |---|---|---|
 | 400 | A field is missing, blank, too long, malformed e-mail, control characters | `Validation failed`, `data` = `{ "<field>": "<message>" }` |
 | 400 | Body is not JSON, empty, or a wrong type (for example an unknown `plan`) | `Request body is missing or malformed.` |
-| 400 | Slug longer than 64 characters (bean validation) | `Validation failed`, `data` = `{ "slug": "<message>" }` (the 3-40 rule below is not reached) |
-| 400 | Slug length (under 3 or 41-64), characters or reserved name | `slug must be 3-40 characters`, `slug may contain only lowercase letters, digits and single hyphens between them`, `slug is reserved` |
-| 400 | Password too short or over 72 UTF-8 bytes | `Password must be at least 8 characters and at most 72 bytes` |
+| 400 | Slug shorter than 3 or longer than 40 characters (bean validation, API-01 AC3: the OpenAPI schema says 3-40) | `Validation failed`, `data` = `{ "slug": "<message>" }` |
+| 400 | Slug characters or reserved name | `slug may contain only lowercase letters, digits and single hyphens between them`, `slug is reserved` |
+| 400 | Password under 8 or over 72 characters (bean validation, API-01 AC3) | `Validation failed`, `data` = `{ "password": "<message>" }` |
+| 400 | Password over 72 UTF-8 bytes (multi-byte characters) or under 8 after trimming | `Password must be at least 8 characters and at most 72 bytes` |
 | 409 | Slug **or** owner e-mail already registered (including a FAILED tenant), or a concurrent duplicate | `Slug or owner email is already registered` |
 | 429 | Rate limit (section 7) | `Too many requests. Please try again later.` + `Retry-After` |
 
@@ -187,9 +188,9 @@ Failures:
 |---|---|---|
 | 400 | Wrong code, expired code (10 min), already-used code, unknown slug, malformed slug, e-mail does not match the signup, tenant already ACTIVE/PROVISIONING/SUSPENDED | `Invalid or expired verification code` (identical for all, so it does not reveal which) |
 | 400 | Missing or blank field, malformed e-mail | `Validation failed` + field map, or `Request body is missing or malformed.` |
-| 429 | **Lockout**: 5 wrong codes lock the signup for 15 min. While locked, even the **correct** code returns 429 | `Too many incorrect codes. Try again later.` + `Retry-After` (seconds until the lock ends) |
+| 429 | **Lockout**: 5 wrong codes lock the signup for 15 min. While locked, even the **correct** code returns 429 | `Too many incorrect codes. Try again later.`, `data.code` = `OTP_LOCKED` + `Retry-After` (seconds until the lock ends) |
 | 429 | IP or e-mail rate limit | `Too many requests. Please try again later.` + `Retry-After` |
-| 429 | Provisioning executor is full (rare). The code is handed back so the same code can be retried | `Onboarding is busy, retry shortly` + `Retry-After: 30` |
+| 429 | Provisioning executor is full (rare). The code is handed back so the same code can be retried | `Onboarding is busy, retry shortly`, `data.code` = `ONBOARDING_BUSY` + `Retry-After: 30` (API-01 AC0: the wizard tells the 30 s busy from the 15 min lock by `data.code`, not by the text; `Retry-After` is exposed through CORS) |
 
 Each failed attempt increments a counter; the counter resets only on a successful verify or when a lock expires on its own. A resend never resets it and never unlocks (section 5). Note the one existence signal: a `429 Too many incorrect codes` is only returned for a real slug+e-mail pair that has been locked, whereas unknown pairs always get 400.
 
@@ -205,7 +206,7 @@ Each failed attempt increments a counter; the counter resets only on a successfu
 ```json
 {
   "description": "Too many incorrect codes. Try again later.",
-  "data": null
+  "data": { "code": "OTP_LOCKED" }
 }
 ```
 

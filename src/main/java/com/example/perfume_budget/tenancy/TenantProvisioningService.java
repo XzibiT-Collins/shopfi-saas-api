@@ -80,13 +80,20 @@ public class TenantProvisioningService {
         }
         ValidatedRequest v = validate(request);
 
-        Tenant tenant = claimOrRegister(v, onClaimed);
+        java.util.concurrent.atomic.AtomicBoolean newRow = new java.util.concurrent.atomic.AtomicBoolean();
+        Tenant tenant = claimOrRegister(v, onClaimed, newRow);
         Long tenantId = tenant.getId();
+        boolean ownsSchema = !newRow.get(); // a retried row's schema is this tenant's own; a new row's must be created by this run
         log.info("Provisioning tenant {} -> schema {}", v.slug(), v.schemaName());
 
         TenantIdentity previous = TenantContext.get();
         try {
-            migrator.createTenantSchema(v.schemaName());
+            if (newRow.get()) {
+                migrator.createNewTenantSchema(v.schemaName()); // PROV-04 AC2: fails if the schema already exists
+                ownsSchema = true;
+            } else {
+                migrator.createTenantSchema(v.schemaName());
+            }
             migrator.migrateTenant(v.schemaName());
 
             TenantContext.set(TenantIdentity.tenant(v.slug(), v.schemaName()));
@@ -105,7 +112,7 @@ public class TenantProvisioningService {
             log.info("Provisioned tenant {}", v.slug());
             return new ProvisioningResult(tenantId, v.slug(), v.schemaName(), TenantStatus.ACTIVE);
         } catch (Exception e) {
-            throw compensate(v, tenantId, e);
+            throw compensate(v, tenantId, e, ownsSchema);
         } finally {
             restore(previous);
         }
@@ -120,11 +127,15 @@ public class TenantProvisioningService {
     }
 
     /** Saga compensation. Each step is attempted regardless of the other's outcome. */
-    private TenantProvisioningException compensate(ValidatedRequest v, Long tenantId, Exception cause) {
+    private TenantProvisioningException compensate(ValidatedRequest v, Long tenantId, Exception cause, boolean ownsSchema) {
         log.error("Provisioning failed for tenant {} ({}); compensating", v.slug(), cause.getClass().getSimpleName());
         boolean dropped = true;
         try {
-            migrator.dropTenantSchema(v.schemaName());
+            if (ownsSchema) { // PROV-04 AC2: never drop a schema this run did not create
+                migrator.dropTenantSchema(v.schemaName());
+            } else {
+                log.warn("Schema {} already existed without a registry row: left untouched", v.schemaName());
+            }
         } catch (Exception dropFailure) {
             dropped = false;
             log.error("Compensation DROP SCHEMA failed for tenant {}: {}", v.slug(), SafeStackTrace.of(dropFailure));
@@ -142,7 +153,8 @@ public class TenantProvisioningService {
     }
 
     /** Master tx #1: insert a new PROVISIONING row, or atomically claim a PENDING/FAILED one for the same owner. */
-    private Tenant claimOrRegister(ValidatedRequest v, java.util.function.Consumer<Tenant> onClaimed) {
+    private Tenant claimOrRegister(ValidatedRequest v, java.util.function.Consumer<Tenant> onClaimed,
+                                   java.util.concurrent.atomic.AtomicBoolean newRow) {
         try {
             return masterTx.execute(s -> {
                 Tenant existing = tenantRepository.findBySlug(v.slug()).orElse(null);
@@ -159,6 +171,7 @@ public class TenantProvisioningService {
                             .ownerEmail(v.ownerEmail())
                             .build());
                     runHook(onClaimed, created);
+                    newRow.set(true);
                     return created;
                 }
                 if (!existing.getOwnerEmail().equalsIgnoreCase(v.ownerEmail())) {

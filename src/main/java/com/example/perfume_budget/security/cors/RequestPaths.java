@@ -21,7 +21,40 @@ public final class RequestPaths {
     /** The decoded path within the application (percent-decoded, {@code ;} content and duplicate slashes removed). */
     public static String decoded(HttpServletRequest request) {
         String p = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
-        return p == null ? "" : p;
+        return p == null ? "" : removeDotSegments(p);
+    }
+
+    /**
+     * DOMAIN-01c AC3 (defence in depth): resolves {@code /./} and {@code /../} segments instead of relying only on the
+     * container's StrictHttpFirewall to refuse them, so every zone decision sees the path the router will resolve.
+     * Never climbs above the root.
+     */
+    static String removeDotSegments(String path) {
+        if (path.indexOf("/.") < 0) {
+            return path;
+        }
+        java.util.ArrayDeque<String> out = new java.util.ArrayDeque<>();
+        String[] parts = path.split("/", -1);
+        for (int i = 0; i < parts.length; i++) {
+            String seg = parts[i];
+            boolean last = i == parts.length - 1;
+            if (seg.equals(".")) {
+                if (last) {
+                    out.addLast("");
+                }
+            } else if (seg.equals("..")) {
+                if (!out.isEmpty() && !out.peekLast().isEmpty()) {
+                    out.removeLast();
+                }
+                if (last) {
+                    out.addLast("");
+                }
+            } else {
+                out.addLast(seg);
+            }
+        }
+        String joined = String.join("/", out);
+        return joined.startsWith("/") || joined.isEmpty() ? (joined.isEmpty() ? "/" : joined) : "/" + joined;
     }
 
     /** {@link #decoded} lower-cased, for prefix comparisons that must be conservative. */

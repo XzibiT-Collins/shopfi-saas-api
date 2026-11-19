@@ -33,7 +33,15 @@ public final class TenantSlugs {
         if (raw == null) {
             throw new InvalidProvisioningRequestException("slug is required");
         }
-        String slug = raw.strip().toLowerCase(Locale.ROOT);
+        String stripped = raw.strip();
+        // PROV-04 AC3: reject non-ASCII BEFORE lowercasing (the Kelvin sign U+212A lowercases to ASCII 'k')
+        for (int i = 0; i < stripped.length(); i++) {
+            if (stripped.charAt(i) > 0x7F) {
+                throw new InvalidProvisioningRequestException(
+                        "slug may contain only lowercase letters, digits and single hyphens between them");
+            }
+        }
+        String slug = stripped.toLowerCase(Locale.ROOT);
         if (slug.length() < MIN_LENGTH || slug.length() > MAX_LENGTH) {
             throw new InvalidProvisioningRequestException(
                     "slug must be " + MIN_LENGTH + "-" + MAX_LENGTH + " characters");

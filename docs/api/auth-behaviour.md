@@ -74,9 +74,19 @@ page `https://<tenant host>/login`, configurable `application.oauth2.failure-pat
 
 * Same `200 {"description":"OTP resent successfully"}` for an unknown email, an already verified email and a pending
   one. Only a pending (unverified) account is actually emailed. (Before: `401 User not found` for unknown.)
-* Throttled with `429` + `Retry-After` (seconds): per client IP (default 10 per 10 min) and per tenant+email (default
-  3 per 10 min); the checks run before any account lookup so they are identical for known and unknown emails.
-  Properties: `application.auth.rate-limit.resend-otp-{ip,email}.{capacity,period-seconds}`. State is per JVM instance.
+* Throttled with `429` + `Retry-After` (seconds): per client IP (default 10 per 10 min), per client IP + tenant + email
+  (default 3 per 10 min; AUTH-02: a stranger cannot spend a victim's budget from another address) and a looser per
+  tenant+email ceiling (default 10 per 10 min) bounding mail-bombing from many addresses; the checks run before any
+  account lookup so they are identical for known and unknown emails.
+  Properties: `application.auth.rate-limit.resend-otp-{ip,email}.{capacity,period-seconds}`,
+  `application.auth.rate-limit.resend-otp-email-ceiling.capacity`. State is per JVM instance.
+* AUTH-02 AC3: `POST /auth/forgot-password` is throttled the same way (`forgot-password-ip.capacity` 10,
+  `forgot-password-email.capacity` 3, shared ceiling) and `POST /auth/resend-login-otp` per client IP only (its body is
+  a challenge token, no email; `resend-login-otp-ip.capacity` 10). 429 + `Retry-After`, before any lookup.
+* AUTH-02 AC2/AC4: an OAuth2 `redirect_uri` is trusted only if it is `https` (plain `http` only in dev), carries no
+  user-info and uses the default port (any port in dev), in addition to the host rule. After a successful login with
+  no valid stashed redirect the browser goes to the tenant's own origin at the configured fallback's path (the global
+  `OAUTH2_REDIRECT_URIS` only when no tenant is known).
 * The body is now validated: a missing/invalid email format is `400`.
 * OTP codes come from `SecureRandom`. Verification is capped at 5 wrong guesses per issued code (registration and
   login OTP): on the 5th wrong guess the code is destroyed and the user must request a new one (verify keeps answering

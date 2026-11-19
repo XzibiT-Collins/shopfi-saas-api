@@ -24,10 +24,48 @@ public final class ClientIps {
     private ClientIps() {
     }
 
-    /** The resolved client address as the servlet container reports it (never null). */
+    /** Shared key/stored value for a container-resolved address that is not an IP literal (PROV-05 AC2). */
+    public static final String INVALID = "invalid";
+
+    /**
+     * The resolved client address as the servlet container reports it (never null). PROV-05 AC2: Tomcat's RemoteIpValve
+     * copies the first untrusted {@code X-Forwarded-For} hop verbatim, so a client can make it any string it likes (a
+     * port, brackets, markup, a 4 KB blob). Anything that is not an IPv4/IPv6 literal (optional IPv6 zone id) becomes
+     * {@link #INVALID} before it is used as a rate-limit bucket key or stored in {@code site_visits}.
+     */
     public static String clientIp(HttpServletRequest request) {
         String addr = request.getRemoteAddr();
-        return addr == null || addr.isBlank() ? "unknown" : addr.strip();
+        if (addr == null || addr.isBlank()) {
+            return "unknown";
+        }
+        String ip = addr.strip();
+        return isIpLiteral(ip) ? ip : INVALID;
+    }
+
+    static boolean isIpLiteral(String s) {
+        if (s.length() > 64) {
+            return false;
+        }
+        if (s.indexOf(':') < 0) {
+            return s.matches("(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)");
+        }
+        String literal = s;
+        int zone = literal.indexOf('%');
+        if (zone >= 0) {
+            if (!literal.substring(zone + 1).matches("[0-9A-Za-z_.-]{1,32}")) {
+                return false;
+            }
+            literal = literal.substring(0, zone);
+        }
+        if (!literal.matches("[0-9a-fA-F:.]+")) {
+            return false; // never reaches the resolver: no DNS lookups for arbitrary text
+        }
+        try {
+            InetAddress.getByName(literal);
+            return true;
+        } catch (UnknownHostException e) {
+            return false;
+        }
     }
 
     /** Rate-limit bucket key: IPv4 as is, IPv6 reduced to its /64 prefix (one subscriber owns a whole /64). */

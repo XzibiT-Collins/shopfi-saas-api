@@ -7,11 +7,11 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 public record TenantSignupRequest(
-        @NotBlank @Size(max = 64) String slug,
+        @NotBlank @Size(min = 3, max = 40) String slug, // API-01 AC3: the real slug rule (TenantSlugs 3-40)
         @NotBlank @Size(max = 255) @Pattern(regexp = "^[^\\p{Cntrl}]*$", message = "must not contain control characters") String displayName,
         @NotBlank @Email @Size(max = 255) String ownerEmail,
         @NotBlank @Size(max = 255) @Pattern(regexp = "^[^\\p{Cntrl}]*$", message = "must not contain control characters") String ownerFullName,
-        @NotBlank @Size(max = 200) String password,
+        @NotBlank @Size(min = 8, max = 72) String password, // API-01 AC3: 8..72 (BCrypt); the 72-BYTE rule stays in the service
         TenantPlan plan) {
 
     /** Never prints the password. */
