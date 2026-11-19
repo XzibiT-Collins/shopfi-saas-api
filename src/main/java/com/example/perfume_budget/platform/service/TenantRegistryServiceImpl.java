@@ -23,8 +23,11 @@ public class TenantRegistryServiceImpl implements TenantRegistryService {
     }
 
     @Override
-    public Optional<Tenant> findByCustomDomain(String customDomain) {
-        return tenantRepository.findByCustomDomain(customDomain);
+    public Optional<Tenant> findByVerifiedCustomDomain(String host) {
+        if (host == null || host.isBlank()) {
+            return Optional.empty();
+        }
+        return tenantRepository.findByVerifiedCustomDomain(host.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     @Override

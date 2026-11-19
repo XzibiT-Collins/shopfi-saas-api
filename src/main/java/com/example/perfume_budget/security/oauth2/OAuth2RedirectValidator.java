@@ -2,7 +2,7 @@ package com.example.perfume_budget.security.oauth2;
 
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
-import com.example.perfume_budget.security.cors.TenantOriginPolicy;
+import com.example.perfume_budget.tenancy.TenantHostLookup;
 import com.example.perfume_budget.tenancy.TenantResolutionProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -15,7 +15,8 @@ import java.util.Optional;
  * Single source of truth for the OAuth2 open-redirect gate.
  *
  * <p>A login {@code redirect_uri} is trusted only if its host belongs to a known tenant
- * (custom domain or {@code <slug>.base-domain}), or, in non-prod, is an allow-listed dev host
+ * (a VERIFIED custom domain or {@code <slug>.base-domain}, through the shared {@link TenantHostLookup}, DOMAIN-02),
+ * or, in non-prod, is an allow-listed dev host
  * paired with a valid {@code X-Tenant-ID}. Used both when starting the flow (to pick the
  * tenant) and again at the redirect point (defense in depth), so an attacker-supplied redirect
  * can never be followed.
@@ -26,6 +27,7 @@ public class OAuth2RedirectValidator {
 
     private final TenantRegistryService tenantRegistryService;
     private final TenantResolutionProperties properties;
+    private final TenantHostLookup hostLookup;
 
     /** Resolve the tenant slug a redirect_uri is allowed to belong to, if any. */
     public Optional<String> resolveAllowedTenant(String redirectUri, HttpServletRequest request) {
@@ -34,13 +36,9 @@ public class OAuth2RedirectValidator {
             return Optional.empty();
         }
 
-        Optional<Tenant> byDomain = tenantRegistryService.findByCustomDomain(host);
-        if (byDomain.isPresent()) {
-            return Optional.of(byDomain.get().getSlug());
-        }
-        String subdomainSlug = extractSubdomainSlug(host);
-        if (subdomainSlug != null && tenantRegistryService.findBySlug(subdomainSlug).isPresent()) {
-            return Optional.of(subdomainSlug);
+        Optional<Tenant> byHost = hostLookup.findByHost(host);
+        if (byHost.isPresent()) {
+            return Optional.of(byHost.get().getSlug());
         }
 
         if (isDevHost(host)) {
@@ -63,8 +61,9 @@ public class OAuth2RedirectValidator {
         }
         Optional<Tenant> tenant = tenantRegistryService.findBySlug(slug);
         if (tenant.isPresent()) {
-            String customDomain = tenant.get().getCustomDomain();
-            if (customDomain != null && customDomain.equalsIgnoreCase(host)) {
+            // DOMAIN-02: a PENDING/FAILED custom domain is not a legitimate destination
+            Optional<String> customDomain = tenant.get().verifiedCustomDomain();
+            if (customDomain.isPresent() && customDomain.get().equalsIgnoreCase(host)) {
                 return true;
             }
             if (host.equalsIgnoreCase(subdomainHost(slug))) {
@@ -82,11 +81,6 @@ public class OAuth2RedirectValidator {
     private String subdomainHost(String slug) {
         String base = properties.getBaseDomain();
         return (base == null || base.isBlank()) ? null : slug + "." + base.toLowerCase();
-    }
-
-    private String extractSubdomainSlug(String host) {
-        // One shared rule with CORS (exactly one valid label under the base domain).
-        return TenantOriginPolicy.subdomainSlug(host, properties.getBaseDomain());
     }
 
     private String hostFromUrl(String value) {

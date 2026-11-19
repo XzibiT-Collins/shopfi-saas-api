@@ -1,5 +1,6 @@
 package com.example.perfume_budget.platform.model;
 
+import com.example.perfume_budget.platform.enums.CustomDomainStatus;
 import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import jakarta.persistence.*;
@@ -10,7 +11,9 @@ import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Optional;
 
 /**
  * Tenant registry row. Lives in the {@code master} schema (schema-qualified) so it
@@ -55,8 +58,44 @@ public class Tenant {
     @Column(name = "owner_email", nullable = false, unique = true)
     private String ownerEmail;
 
-    @Column(name = "custom_domain", unique = true)
+    /**
+     * The tenant's own storefront host (DOMAIN-02), lower case, no trailing dot. Written only by
+     * {@code CustomDomainService} after {@code CustomDomains} validation. Unique across tenants case-insensitively
+     * (master index {@code uq_tenants_custom_domain_lower}). Honoured ONLY while {@link #customDomainStatus} is
+     * VERIFIED: read it through {@link #verifiedCustomDomain()} or {@code TenantRegistryService#findByVerifiedCustomDomain}.
+     */
+    @Column(name = "custom_domain")
     private String customDomain;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "custom_domain_status", length = 20)
+    private CustomDomainStatus customDomainStatus;
+
+    /** Random value the tenant publishes in DNS (TXT) to prove control of {@link #customDomain}. Not a secret. */
+    @Column(name = "custom_domain_token", length = 64)
+    private String customDomainToken;
+
+    @Column(name = "custom_domain_requested_at")
+    private Instant customDomainRequestedAt;
+
+    @Column(name = "custom_domain_checked_at")
+    private Instant customDomainCheckedAt;
+
+    @Column(name = "custom_domain_verified_at")
+    private Instant customDomainVerifiedAt;
+
+    /**
+     * Last time this claim was SEEN VERIFIED: set on every successful verification and stamped with "now" when a
+     * re-verification turns VERIFIED into FAILED; untouched by PENDING/FAILED to FAILED. Unlike
+     * {@link #customDomainVerifiedAt} it survives the failure, so the anti-squatting release
+     * ({@code unverified-claim-ttl-hours}) counts from it (DOMAIN-02 rework F1, F1b).
+     */
+    @Column(name = "custom_domain_last_verified_at")
+    private Instant customDomainLastVerifiedAt;
+
+    /** Machine-readable reason of the last failed check (e.g. {@code TXT_RECORD_NOT_FOUND}); null otherwise. */
+    @Column(name = "custom_domain_failure", length = 40)
+    private String customDomainFailure;
 
     /** Opaque token embedded in this tenant's Paystack webhook URL (/api/v1/webhook/{token}). */
     @Column(name = "webhook_token", unique = true, length = 64)
@@ -69,4 +108,24 @@ public class Tenant {
     @LastModifiedDate
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    /** The custom domain only when it is VERIFIED; a PENDING or FAILED claim is never honoured (DOMAIN-02 AC2). */
+    public Optional<String> verifiedCustomDomain() {
+        if (customDomainStatus != CustomDomainStatus.VERIFIED || customDomain == null || customDomain.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(customDomain.strip().toLowerCase(java.util.Locale.ROOT));
+    }
+
+    /** Clears the custom domain and every verification field (removal, release). */
+    public void clearCustomDomain() {
+        customDomain = null;
+        customDomainStatus = null;
+        customDomainToken = null;
+        customDomainRequestedAt = null;
+        customDomainCheckedAt = null;
+        customDomainVerifiedAt = null;
+        customDomainLastVerifiedAt = null;
+        customDomainFailure = null;
+    }
 }

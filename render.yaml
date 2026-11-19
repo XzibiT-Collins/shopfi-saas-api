@@ -87,6 +87,12 @@ services:
         sync: false
       - key: TENANT_PLATFORM_DOMAINS
         sync: false
+      # DOMAIN-02: host tenants CNAME their custom domain to (shown in the admin API); see docs/api/custom-domains.md
+      - key: TENANT_CUSTOM_DOMAIN_CNAME_TARGET
+        sync: false
+      # Optional DOMAIN-02 knobs (defaults are safe): TENANT_CUSTOM_DOMAIN_DNS_SERVERS (e.g. 1.1.1.1,8.8.8.8; empty =
+      # system resolver), TENANT_CUSTOM_DOMAIN_DNS_TIMEOUT_MILLIS (2000), TENANT_CUSTOM_DOMAIN_VERIFY_PER_TENANT_PER_HOUR (10),
+      # TENANT_CUSTOM_DOMAIN_RESERVED_SUFFIXES (extra names tenants may never claim)
 
   - type: redis
     name: perfume-redis

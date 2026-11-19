@@ -35,6 +35,8 @@ Query: `status` (optional, one of `PENDING|PROVISIONING|ACTIVE|SUSPENDED|FAILED`
 final tiebreaker, so paging is stable.
 
 Fields are registry fields only. `schemaName`, `webhookToken` and anything from a tenant schema are never returned.
+`customDomainStatus` (DOMAIN-02) is `PENDING`, `VERIFIED` or `FAILED` (`null` without a custom domain); only a `VERIFIED`
+domain is live. Custom-domain management: [custom-domains.md](custom-domains.md).
 `ownerEmail` IS returned, on purpose: the console is SUPER_ADMIN only and needs it to contact the owner of a `PENDING`/`FAILED`
 signup. It is personal data, so the console must not log it, cache it in shared storage or show it to anyone below SUPER_ADMIN.
 
@@ -51,6 +53,7 @@ signup. It is personal data, so the console must not log it, cache it in shared 
         "plan": "FREE",
         "ownerEmail": "owner@acme.example",
         "customDomain": null,
+        "customDomainStatus": null,
         "createdAt": "2026-11-01T09:30:00.123456",
         "updatedAt": "2026-11-01T09:31:10.654321"
       }
@@ -90,6 +93,7 @@ Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description
     "plan": "FREE",
     "ownerEmail": "owner@acme.example",
     "customDomain": null,
+    "customDomainStatus": null,
     "createdAt": "2026-11-01T09:30:00.123456",
     "updatedAt": "2026-11-01T09:31:10.654321"
   }
@@ -201,6 +205,7 @@ per-admin throttle (the `429` action throttle covers the four POST actions only,
       "plan": "FREE",
       "ownerEmail": "owner@acme.example",
       "customDomain": null,
+      "customDomainStatus": null,
       "createdAt": "2026-11-01T09:30:00.123456",
       "updatedAt": "2026-11-14T10:00:00.000001"
     }
@@ -226,6 +231,7 @@ Idempotent repeat (already suspended): HTTP 200, `changed=false`, no audit row:
       "plan": "FREE",
       "ownerEmail": "owner@acme.example",
       "customDomain": null,
+      "customDomainStatus": null,
       "createdAt": "2026-11-01T09:30:00.123456",
       "updatedAt": "2026-11-14T10:00:00.000001"
     }
@@ -251,6 +257,7 @@ Saga already running (HTTP 202):
       "plan": "FREE",
       "ownerEmail": "owner@bravo.example",
       "customDomain": null,
+      "customDomainStatus": null,
       "createdAt": "2026-11-14T09:00:00.000000",
       "updatedAt": "2026-11-14T09:59:00.000000"
     }

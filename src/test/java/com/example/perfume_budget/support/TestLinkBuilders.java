@@ -21,7 +21,8 @@ public final class TestLinkBuilders {
         TenantRegistryService registry = mock(TenantRegistryService.class);
         lenient().when(registry.findBySlug("acme")).thenReturn(Optional.of(Tenant.builder().slug("acme").build()));
         lenient().when(registry.findBySlug("shop")).thenReturn(Optional.of(
-                Tenant.builder().slug("shop").customDomain("Shop.Example.COM").build()));
+                Tenant.builder().slug("shop").customDomain("Shop.Example.COM")
+                        .customDomainStatus(com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED).build()));
         TenantResolutionProperties props = new TenantResolutionProperties();
         props.setBaseDomain(baseDomain);
         return new TenantLinkBuilder(registry, props, new OnboardingProperties(), fallbackUrl, "/reset-password", "/login");

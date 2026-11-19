@@ -16,7 +16,7 @@ import java.util.Optional;
  *
  * <p>Origin resolution for a tenant slug, first match wins:
  * <ol>
- *   <li>the tenant's custom domain: {@code <scheme>://<custom-domain>};</li>
+ *   <li>the tenant's custom domain, only while it is VERIFIED (DOMAIN-02 AC4): {@code <scheme>://<custom-domain>};</li>
  *   <li>{@code tenant.base-domain}: {@code <scheme>://<slug>.<base-domain>} (the same host shape the tenant
  *       resolution filter and TenantOnboardingService use; scheme is {@code onboarding.public-scheme});</li>
  *   <li>none: dev profiles with no base domain. {@link #resetPasswordLink} then falls back to
@@ -57,9 +57,9 @@ public class TenantLinkBuilder {
         String scheme = onboardingProps.getPublicScheme();
         Optional<Tenant> tenant = tenantRegistryService.findBySlug(slug);
         if (tenant.isPresent()) {
-            String custom = tenant.get().getCustomDomain();
-            if (custom != null && !custom.isBlank()) {
-                return Optional.of(scheme + "://" + custom.strip().toLowerCase());
+            Optional<String> custom = tenant.get().verifiedCustomDomain();
+            if (custom.isPresent()) {
+                return Optional.of(scheme + "://" + custom.get());
             }
         }
         String base = tenantProps.getBaseDomain();

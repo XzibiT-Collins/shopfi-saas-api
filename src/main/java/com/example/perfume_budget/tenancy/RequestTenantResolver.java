@@ -46,6 +46,7 @@ public class RequestTenantResolver {
     private final TenantRegistryService tenantRegistryService;
     private final TenantResolutionProperties properties;
     private final Environment environment;
+    private final TenantHostLookup hostLookup;
 
     @Autowired
     public RequestTenantResolver(TenantRegistryService tenantRegistryService, TenantResolutionProperties properties,
@@ -53,6 +54,7 @@ public class RequestTenantResolver {
         this.tenantRegistryService = tenantRegistryService;
         this.properties = properties;
         this.environment = environment;
+        this.hostLookup = new TenantHostLookup(tenantRegistryService, properties);
     }
 
     public Resolution resolve(HttpServletRequest request) {
@@ -73,17 +75,11 @@ public class RequestTenantResolver {
     }
 
     private Optional<Tenant> resolveTenant(String originHost, HttpServletRequest request) {
-        if (originHost != null && !properties.isPlatformDomain(originHost)) {
-            Optional<Tenant> byDomain = tenantRegistryService.findByCustomDomain(originHost);
-            if (byDomain.isPresent()) {
-                return byDomain;
-            }
-            String subdomainSlug = extractSubdomainSlug(originHost);
-            if (subdomainSlug != null) {
-                Optional<Tenant> bySubdomain = tenantRegistryService.findBySlug(subdomainSlug);
-                if (bySubdomain.isPresent()) {
-                    return bySubdomain;
-                }
+        if (originHost != null) {
+            // DOMAIN-02: one shared host rule (VERIFIED custom domains only; hosts under the base domain by slug only)
+            Optional<Tenant> byHost = hostLookup.findByHost(originHost);
+            if (byHost.isPresent()) {
+                return byHost;
             }
         }
 
@@ -117,17 +113,5 @@ public class RequestTenantResolver {
         } catch (IllegalArgumentException e) {
             return null;
         }
-    }
-
-    private String extractSubdomainSlug(String host) {
-        String base = properties.getBaseDomain();
-        if (base == null || base.isBlank()) {
-            return null;
-        }
-        String suffix = "." + base.toLowerCase();
-        if (host.endsWith(suffix) && host.length() > suffix.length()) {
-            return host.substring(0, host.length() - suffix.length());
-        }
-        return null;
     }
 }

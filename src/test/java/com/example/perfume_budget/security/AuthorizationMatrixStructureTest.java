@@ -92,6 +92,8 @@ class AuthorizationMatrixStructureTest {
         expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus", "acknowledgeRefund", "receiveReturn",
                 "getAuditEvents");
         expect(ADMIN, "PaymentSettingsController", "get", "update", "rotateWebhookToken");
+        expect(ADMIN, "TenantCustomDomainController", "getCustomDomain", "requestCustomDomain", "verifyCustomDomain",
+                "removeCustomDomain"); // DOMAIN-02
         expect(ADMIN, "ProductController", "createProduct", "updateProduct", "getAdminProductListings", "getProductDetails",
                 "setProductDiscount", "clearProductDiscount", "deleteProduct");
         expect(ADMIN, "ProductFamilyController", "getAllFamilies", "getAvailableUoms");
@@ -122,6 +124,8 @@ class AuthorizationMatrixStructureTest {
         // --- platform control plane
         expect(SUPER_ADMIN, "PlatformTenantController", "list", "detail", "audit", "approve", "suspend", "reactivate", "reprovision");
         expect(SUPER_ADMIN, "PlatformAuthController", "me");
+        expect(SUPER_ADMIN, "PlatformTenantDomainController", "getTenantCustomDomain", "verifyTenantCustomDomain",
+                "removeTenantCustomDomain"); // DOMAIN-02
 
         // --- intentionally public (permitAll in SecurityConfig; mutations are protected by another mechanism)
         expect(PUBLIC, "AuthController", "register", "verifyOtp", "verifyLoginOtp", "resendOtp", "resendLoginOtp", "login",

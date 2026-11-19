@@ -4,6 +4,7 @@ import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
 import com.example.perfume_budget.platform.service.TokenBucketRateLimiter;
+import com.example.perfume_budget.tenancy.TenantHostLookup;
 import com.example.perfume_budget.tenancy.TenantResolutionProperties;
 import com.example.perfume_budget.tenancy.TenantSlugs;
 import lombok.extern.slf4j.Slf4j;
@@ -30,7 +31,7 @@ import java.util.regex.Pattern;
  *   <li>(c) in the static {@code cors.allowed-origins} list (exact, normalised; a wildcard fails startup), or</li>
  *   <li>(a) {@code <scheme>://<slug>.<tenant.base-domain>} with exactly ONE label under the base domain, a slug
  *       that passes {@link TenantSlugs} (syntax and reserved names) and an ACTIVE tenant with that slug, or</li>
- *   <li>(b) {@code <scheme>://<customDomain>} of an ACTIVE tenant.</li>
+ *   <li>(b) {@code <scheme>://<customDomain>} of an ACTIVE tenant whose custom domain is VERIFIED (DOMAIN-02).</li>
  * </ol>
  * Non-prod profiles accept http and an explicit port for (a)/(b); the prod profile accepts https on the default
  * port only. Uppercase hosts are lowercased (the resolution filter does the same); a trailing dot, userinfo, a
@@ -60,8 +61,9 @@ public class TenantOriginPolicy {
         }
     }
 
-    private final TenantRegistryService registry;
     private final TenantResolutionProperties tenantProps;
+    /** DOMAIN-02: the same host rule as the resolution filter (VERIFIED custom domains only). */
+    private final TenantHostLookup hostLookup;
     private final boolean prod;
     private final Set<String> staticOrigins;
     private final Cache allowedCache;
@@ -84,8 +86,8 @@ public class TenantOriginPolicy {
 
     TenantOriginPolicy(TenantRegistryService registry, TenantResolutionProperties tenantProps,
                        CorsProperties corsProps, boolean prod, LongSupplier clock) {
-        this.registry = registry;
         this.tenantProps = tenantProps;
+        this.hostLookup = new TenantHostLookup(registry, tenantProps);
         this.prod = prod;
         this.clock = clock;
         CorsProperties.TenantCache c = corsProps.getTenantCache();
@@ -183,8 +185,8 @@ public class TenantOriginPolicy {
     }
 
     /**
-     * Mirrors {@code TenantResolutionFilter}: a custom domain match wins over the slug, and the decision is taken
-     * for THAT tenant, so an origin approved here is always processed as the same tenant (DOMAIN-01b S3).
+     * Mirrors {@code TenantResolutionFilter} through the shared {@link TenantHostLookup}, and the decision is taken for
+     * THAT tenant, so an origin approved here is always processed as the same tenant (DOMAIN-01b S3, DOMAIN-02).
      */
     private boolean isActiveTenantOrigin(ParsedOrigin p, String clientKey) {
         if (!schemeAndPortAllowed(p)) {
@@ -192,10 +194,8 @@ public class TenantOriginPolicy {
         }
         String host = p.host();
         String base = tenantProps.getBaseDomain() == null ? "" : tenantProps.getBaseDomain().strip().toLowerCase(Locale.ROOT);
-        String slug = null;
         if (!base.isEmpty() && (host.equals(base) || host.endsWith("." + base))) {
-            slug = subdomainSlug(host, base);
-            if (slug == null) {
+            if (subdomainSlug(host, base) == null) {
                 return false; // syntactically not a tenant host: no registry access for garbage
             }
         } else if (tenantProps.isPlatformDomain(host) || IPV4.matcher(host).matches() || !host.contains(".")) {
@@ -204,14 +204,9 @@ public class TenantOriginPolicy {
         if (tenantProps.isPlatformDomain(host)) {
             return false;
         }
-        final String slugFinal = slug;
-        return cachedActive("h:" + host, clientKey, () -> {
-            java.util.Optional<Tenant> byDomain = registry.findByCustomDomain(host);
-            if (byDomain.isPresent()) {
-                return byDomain;
-            }
-            return slugFinal == null ? java.util.Optional.<Tenant>empty() : registry.findBySlug(slugFinal);
-        });
+        // DOMAIN-02: one shared lookup with TenantResolutionFilter (under the base domain: slug only; elsewhere: a
+        // VERIFIED custom domain only), so an origin allowed here is always processed as the same tenant.
+        return cachedActive("h:" + host, clientKey, () -> hostLookup.findByHost(host));
     }
 
     private boolean cachedActive(String key, String clientKey, java.util.function.Supplier<java.util.Optional<Tenant>> lookup) {

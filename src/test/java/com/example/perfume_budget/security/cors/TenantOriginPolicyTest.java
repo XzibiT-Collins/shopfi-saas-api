@@ -41,7 +41,7 @@ class TenantOriginPolicyTest {
         tenantProps.setPlatformDomains(List.of("shopfi.test-apex.example", "api.shopfi.test"));
         cors = new CorsProperties();
         when(registry.findBySlug(anyString())).thenReturn(Optional.empty());
-        when(registry.findByCustomDomain(anyString())).thenReturn(Optional.empty());
+        when(registry.findByVerifiedCustomDomain(anyString())).thenReturn(Optional.empty());
         active("acme");
     }
 
@@ -109,8 +109,8 @@ class TenantOriginPolicyTest {
 
     @Test
     void customDomainOfActiveTenantIsAllowed_andNotWhenSuspended() {
-        when(registry.findByCustomDomain("shop.acme.com")).thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE, "shop.acme.com")));
-        when(registry.findByCustomDomain("old.acme.com")).thenReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, "old.acme.com")));
+        when(registry.findByVerifiedCustomDomain("shop.acme.com")).thenReturn(Optional.of(tenant("acme", TenantStatus.ACTIVE, "shop.acme.com")));
+        when(registry.findByVerifiedCustomDomain("old.acme.com")).thenReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, "old.acme.com")));
         TenantOriginPolicy p = policy(true);
         assertThat(p.isAllowed("https://shop.acme.com")).isTrue();
         assertThat(p.isAllowed("https://SHOP.acme.com")).isTrue();
@@ -118,7 +118,7 @@ class TenantOriginPolicyTest {
         assertThat(p.isAllowed("https://shop.acme.com.evil.com")).isFalse();
         // platform hosts and the base domain are never looked up as custom domains
         assertThat(p.isAllowed("https://api.shopfi.test")).isFalse();
-        verify(registry, never()).findByCustomDomain("api.shopfi.test");
+        verify(registry, never()).findByVerifiedCustomDomain("api.shopfi.test");
     }
 
     @Test
@@ -304,16 +304,17 @@ class TenantOriginPolicyTest {
         assertThat(p.isAllowed("https://acme.shopfi.test")).isFalse();
     }
 
-    // ---- DOMAIN-01b S3: custom domain collides with a slug host ------------------------------------------------------
+    // ---- DOMAIN-01b S3 / DOMAIN-02: custom domain collides with a slug host ----------------------------------------
 
     @Test
-    void customDomainUnderTheBaseDomainWinsOverTheSlug_likeTheResolutionFilter() {
-        // tenant ydom owns custom_domain=acme.shopfi.test; the resolution filter would process the request as ydom
-        when(registry.findByCustomDomain("acme.shopfi.test")).thenReturn(Optional.of(tenant("ydom", TenantStatus.SUSPENDED, "acme.shopfi.test")));
-        assertThat(policy(true).isAllowed("https://acme.shopfi.test"))
-                .as("origin must not be approved for ACTIVE acme while it resolves as suspended ydom").isFalse();
-        when(registry.findByCustomDomain("acme.shopfi.test")).thenReturn(Optional.of(tenant("ydom", TenantStatus.ACTIVE, "acme.shopfi.test")));
-        assertThat(policy(true).isAllowed("https://acme.shopfi.test")).isTrue();
+    void hostUnderTheBaseDomainIsDecidedBySlugOnly_aCustomDomainThereIsNeverConsulted_domain02() {
+        // reproduced collision: tenant ydom with custom_domain=acme.shopfi.test (only possible by a direct DB edit; the
+        // DOMAIN-02 write path rejects it). The origin belongs to acme by slug, for CORS and the resolution filter alike.
+        when(registry.findByVerifiedCustomDomain("acme.shopfi.test")).thenReturn(Optional.of(tenant("ydom", TenantStatus.SUSPENDED, "acme.shopfi.test")));
+        assertThat(policy(true).isAllowed("https://acme.shopfi.test")).as("acme is ACTIVE by slug").isTrue();
+        verify(registry, never()).findByVerifiedCustomDomain("acme.shopfi.test");
+        when(registry.findBySlug("acme")).thenReturn(Optional.of(tenant("acme", TenantStatus.SUSPENDED, null)));
+        assertThat(policy(true).isAllowed("https://acme.shopfi.test")).as("follows acme, never ydom").isFalse();
     }
 
     // ---- DOMAIN-01b S4: invalidateAll() racing an in-flight lookup ------------------------------------------------

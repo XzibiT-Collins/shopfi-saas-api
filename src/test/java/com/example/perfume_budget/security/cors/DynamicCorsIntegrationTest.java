@@ -90,6 +90,9 @@ class DynamicCorsIntegrationTest extends AbstractPostgresIntegrationTest {
         Tenant t = tenantRepository.findBySlug(slug).orElseThrow();
         t.setStatus(status);
         t.setCustomDomain(domain);
+        // DOMAIN-02: only VERIFIED domains are honoured; these fixtures model verified ones
+        t.setCustomDomainStatus(domain == null ? null : com.example.perfume_budget.platform.enums.CustomDomainStatus.VERIFIED);
+        t.setCustomDomainToken(domain == null ? null : "fixture-token");
         tenantRepository.save(t);
     }
 
@@ -334,7 +337,7 @@ class DynamicCorsIntegrationTest extends AbstractPostgresIntegrationTest {
         }
         // 20 lookups per second budget (+ at most one refill during the loop), far below the 600 requests
         verify(registry, atMost(60)).findBySlug(startsWith("rand"));
-        verify(registry, atMost(60)).findByCustomDomain(startsWith("rand"));
+        verify(registry, atMost(60)).findByVerifiedCustomDomain(startsWith("rand"));
         // syntactically invalid origins and reserved slugs never reach the registry
         clearInvocations(registry);
         for (String o : List.of("null", "https://a.b.shopfi.test", "https://www.shopfi.test", "https://acme.shopfi.test:99999",
@@ -342,7 +345,7 @@ class DynamicCorsIntegrationTest extends AbstractPostgresIntegrationTest {
             preflight(TENANT_PATH, o, "GET", null);
         }
         verify(registry, never()).findBySlug(anyString());
-        verify(registry, never()).findByCustomDomain(anyString());
+        verify(registry, never()).findByVerifiedCustomDomain(anyString());
     }
 
     // ---- WebSocket ---------------------------------------------------------------------------------------------

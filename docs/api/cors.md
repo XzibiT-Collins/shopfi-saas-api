@@ -18,8 +18,11 @@ Tenant origin rules, all enforced before the registry is consulted unless noted:
 - (a) `<scheme>://<slug>.<tenant.base-domain>`: exactly ONE label under the base domain (`a.b.base` is refused), a slug
   that passes `TenantSlugs` (3 to 40 chars, `[a-z0-9]` with single hyphens, not reserved: `www`, `api`, `admin`,
   `platform`, ...), and an ACTIVE tenant with that slug (registry).
-- (b) `<scheme>://<custom domain>` of an ACTIVE tenant (registry). Platform domains, the base domain itself, IP
-  literals and single-label hosts are never looked up.
+- (b) `<scheme>://<custom domain>` of an ACTIVE tenant whose custom domain is `VERIFIED` (DOMAIN-02, registry;
+  `PENDING`/`FAILED` domains are ignored). Platform domains, the base domain itself, IP literals and single-label hosts
+  are never looked up, and a host under the base domain is decided by its slug ONLY (a custom domain is never consulted
+  there). CORS and tenant resolution use the same rule (`tenancy/TenantHostLookup`), so an allowed origin is always
+  processed as the same tenant. See [custom-domains.md](custom-domains.md).
 - (c) an exact entry of `cors.allowed-origins` (non-tenant origins: local dev, a shared console). Wildcards fail startup.
 - Parsing is strict: `http(s)://host[:port]` only. Userinfo, path or trailing slash, trailing dot, unicode or
   punycode (`xn--`) slugs, `null`, empty values, a wildcard and several `Origin` headers are rejected. Hosts are
@@ -89,4 +92,6 @@ tenant afterwards (see `authorization-matrix.md` section 2a).
 | `CORS_TENANT_CACHE_TTL_SECONDS`, `CORS_TENANT_CACHE_NEGATIVE_TTL_SECONDS` | no | see above |
 
 Frontend note: send tenant API calls with `credentials: 'include'`; the public onboarding wizard uses
-`credentials: 'omit'`. A custom domain must be set on an ACTIVE tenant before its origin is accepted.
+`credentials: 'omit'`. A custom domain must be VERIFIED on an ACTIVE tenant before its origin is accepted
+(DOMAIN-02: every custom-domain change calls `invalidateAll()` after its commit, so removal or a failed
+re-verification takes effect at once on that instance).
