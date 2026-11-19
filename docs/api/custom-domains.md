@@ -38,11 +38,12 @@ Uniqueness: one domain belongs to at most one tenant, compared case-insensitivel
 master database (`uq_tenants_custom_domain_lower` on `lower(custom_domain)`, plus check constraints for the stored
 shape and for a consistent domain/status/token triple). Two tenants claiming the same domain at the same time: exactly
 one wins, the other gets `409 DOMAIN_TAKEN`. A `PENDING`/`FAILED` claim may be taken by another tenant's claim once
-BOTH its claim time and the last time it was `VERIFIED` (`custom_domain_last_verified_at`, kept when a re-verification
-fails) are older than `tenant.custom-domain.unverified-claim-ttl-hours` (72) (anti-squatting; the old claim is cleared
+BOTH its claim time and the last time it was seen `VERIFIED` (`custom_domain_last_verified_at`: set on every successful
+verification and stamped with the current time when a re-verification turns `VERIFIED` into `FAILED`) are older than `tenant.custom-domain.unverified-claim-ttl-hours` (72) (anti-squatting; the old claim is cleared
 and audited as `RELEASE` by `SYSTEM`). A `VERIFIED` domain is never taken over, and a domain that was `VERIFIED` until a
-failed re-verification keeps that protection for the full 72 h, so the owner can restore the record and verify again.
-Refreshing a claim with verify calls does not extend it (only a successful verification does).
+failed re-verification keeps that protection for the full 72 h counted from that failure (however long ago it was last
+verified), so the owner can restore the record and verify again. A claim that keeps failing does not extend it, and
+neither does refreshing a claim with verify calls (only a successful verification, or the VERIFIED to FAILED change, does).
 
 ## Statuses
 
@@ -205,7 +206,7 @@ limits are per instance too.
 | `tenant.custom-domain.dns-timeout-millis` / `dns-retries` | 2000 / 1 | `dns-retries` is the number of JNDI query rounds (clamped to 1..4); round i waits `timeout * 2^i` per server, so the worst case is `timeout * (2^rounds - 1) * servers`: 2 s per server with the defaults (measured 6.1 s for 3 silent servers) |
 | `tenant.custom-domain.verify-per-tenant-per-hour` / `verify-global-per-minute` | 10 / 60 | verification rate limits |
 | `tenant.custom-domain.changes-per-tenant-per-hour` | 20 | claim/remove rate limit (tenant admin) |
-| `tenant.custom-domain.unverified-claim-ttl-hours` | 72 | an unverified claim can be taken by another tenant once its claim time and its last VERIFIED time are both older than this |
+| `tenant.custom-domain.unverified-claim-ttl-hours` | 72 | an unverified claim can be taken by another tenant once its claim time and the last time it was seen VERIFIED are both older than this |
 
 ## Frontend follow-up (not in this ticket)
 

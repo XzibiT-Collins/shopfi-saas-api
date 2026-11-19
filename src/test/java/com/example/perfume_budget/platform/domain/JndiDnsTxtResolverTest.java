@@ -156,6 +156,20 @@ class JndiDnsTxtResolverTest {
         assertThat(r.lookupTxt("_shopfi-verification.shop.acme-brand.com")).containsExactly("x");
     }
 
+    /** L-b: the 253-character DNS name limit is enforced by the resolver itself. */
+    @Test
+    void aNameOver253CharactersIsRefused_253IsAccepted() throws Exception {
+        String ok = "a".repeat(60) + "." + "a".repeat(60) + "." + "a".repeat(60) + "." + "a".repeat(60) + ".abcde.com";
+        assertThat(ok.length()).isEqualTo(253);
+        assertThat(JndiDnsTxtResolver.isPlainName(ok)).isTrue();
+        assertThat(JndiDnsTxtResolver.isPlainName("a" + ok)).isFalse();
+        String dns = start(q -> answer(q, 0, List.of(List.of("x"))));
+        JndiDnsTxtResolver r = new JndiDnsTxtResolver(List.of(dns), 300, 1);
+        assertThatThrownBy(() -> r.lookupTxt("b" + ok)).isInstanceOf(DnsTxtResolver.DnsLookupException.class);
+        assertThatThrownBy(() -> r.lookupTxt("a".repeat(300))).isInstanceOf(DnsTxtResolver.DnsLookupException.class);
+        assertThat(queries.get()).as("nothing was sent").isZero();
+    }
+
     @Test
     void zeroRetriesStillSendsOneQuery_neverAnAutomaticFailure() throws Exception {
         String dns = start(q -> answer(q, 0, List.of(List.of("shopfi-verification=one"))));

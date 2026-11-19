@@ -760,6 +760,45 @@ class CustomDomainIntegrationTest extends AbstractTenantWebTest {
         assertThat(row("acme").get("custom_domain")).isEqualTo(domain);
     }
 
+    /**
+     * F1b (re-review probe r1_f1b): a shop VERIFIED once, months ago, never re-verified, whose record is briefly gone:
+     * the failing re-verification must stamp "last seen VERIFIED" = now, or the claim is releasable at once.
+     */
+    @Test
+    void f1b_aDomainVerifiedMonthsAgoThatFailsReverificationNow_isProtectedForTheFullTtl_thenTheFailedClaimCannotExtendIt() throws Exception {
+        String domain = "shop.f1b-brand.com";
+        JsonNode v = claimAndVerify(acme, acmeAdmin, domain);
+        jdbc.update("UPDATE master.tenants SET custom_domain_requested_at = now() - interval '2000 hours', "
+                + "custom_domain_verified_at = now() - interval '1999 hours', "
+                + "custom_domain_last_verified_at = now() - interval '1999 hours' WHERE slug = 'acme'");
+        dns.remove(v.get("txtRecordName").asText());
+        assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT extract(epoch from now() - custom_domain_last_verified_at) FROM master.tenants WHERE slug = 'acme'",
+                Double.class)).as("VERIFIED -> FAILED stamps the last time it was seen verified").isLessThan(60);
+
+        MockHttpServletResponse squat = claim(bravo, bravoAdmin, domain);
+        assertThat(squat.getStatus()).as(squat.getContentAsString()).isEqualTo(409);
+        assertThat(code(squat)).isEqualTo("DOMAIN_TAKEN");
+
+        // FAILED -> FAILED must not refresh the protection: 73 h after the stamp the claim is releasable although it keeps failing
+        jdbc.update("UPDATE master.tenants SET custom_domain_last_verified_at = now() - interval '73 hours' WHERE slug = 'acme'");
+        assertThat(data(verifyNow(acme, acmeAdmin)).get("status").asText()).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT extract(epoch from now() - custom_domain_last_verified_at) / 3600 FROM master.tenants WHERE slug = 'acme'",
+                Double.class)).as("a repeated failure leaves the stamp alone").isGreaterThan(72);
+        assertThat(claim(bravo, bravoAdmin, domain).getStatus()).isEqualTo(200);
+    }
+
+    /** L-a: removal clears the whole history, last_verified_at included (a later claim starts clean). */
+    @Test
+    void removal_clearsTheLastVerifiedTime() throws Exception {
+        claimAndVerify(acme, acmeAdmin, "shop.clear-history.com");
+        assertThat(jdbc.queryForObject("SELECT custom_domain_last_verified_at IS NOT NULL FROM master.tenants WHERE slug = 'acme'",
+                Boolean.class)).isTrue();
+        service.remove("acme", new CustomDomainService.Actor(CustomDomainService.ActorType.PLATFORM_ADMIN, 1L, "root@x"));
+        assertThat(row("acme").get("custom_domain")).isNull();
+        assertThat(row("acme").get("custom_domain_last_verified_at")).isNull();
+    }
+
     /** F1 boundary: once the last VERIFIED time is past the TTL as well, the FAILED claim is releasable again. */
     @Test
     void f1_aFailedClaimWhoseLastVerificationIsOlderThanTheTtl_isReleasable() throws Exception {

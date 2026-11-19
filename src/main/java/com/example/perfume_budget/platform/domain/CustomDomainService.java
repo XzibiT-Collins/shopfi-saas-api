@@ -244,6 +244,7 @@ public class CustomDomainService {
                 String previous = name(t.getCustomDomainStatus());
                 Instant now = clock.instant();
                 CustomDomainStatus next = outcome == null ? CustomDomainStatus.VERIFIED : CustomDomainStatus.FAILED;
+                boolean wasVerified = t.getCustomDomainStatus() == CustomDomainStatus.VERIFIED;
                 t.setCustomDomainStatus(next);
                 t.setCustomDomainCheckedAt(now);
                 t.setCustomDomainFailure(outcome);
@@ -251,7 +252,13 @@ public class CustomDomainService {
                     t.setCustomDomainVerifiedAt(now);
                     t.setCustomDomainLastVerifiedAt(now);
                 } else {
-                    t.setCustomDomainVerifiedAt(null); // last_verified_at is kept: see releaseStaleClaim (F1)
+                    t.setCustomDomainVerifiedAt(null);
+                    if (wasVerified) {
+                        // last_verified_at = the last time the domain was SEEN verified (F1b): a domain that stops being
+                        // VERIFIED now is protected for the full TTL from now. PENDING/FAILED -> FAILED leaves it alone,
+                        // so a claim that keeps failing cannot extend its own protection.
+                        t.setCustomDomainLastVerifiedAt(now);
+                    }
                 }
                 tenantRepository.saveAndFlush(t);
                 audit(actor, t.getId(), t.getSlug(), "VERIFY", domain, null, previous, next.name(),
