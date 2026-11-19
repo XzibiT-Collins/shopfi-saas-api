@@ -51,6 +51,11 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     Page<Product> findAll(Specification<Product> spec, Pageable pageable);
 
     Optional<Product> findByIdAndIsActiveTrueAndIsEnlistedTrue(Long id);
+
+    /** CAT-07: public lookup by ids (active + listed only, category in the same query). Order is the caller's. */
+    @EntityGraph(attributePaths = CATEGORY)
+    List<Product> findAllByIdInAndIsActiveTrueAndIsEnlistedTrue(java.util.Collection<Long> ids);
+
     /** Existence check for theme references (THEME-02): which of {@code ids} exist in the current tenant. */
     @org.springframework.data.jpa.repository.Query("select p.id from Product p where p.id in :ids")
     java.util.List<Long> findExistingIds(@org.springframework.data.repository.query.Param("ids") java.util.Collection<Long> ids);

@@ -8,6 +8,9 @@ import com.example.perfume_budget.dto.product.response.ProductDetails;
 import com.example.perfume_budget.dto.product.response.ProductDetailsPageResponse;
 import com.example.perfume_budget.dto.product.response.ProductListing;
 import com.example.perfume_budget.dto.product.response.PublicProductListing;
+import com.example.perfume_budget.security.ClientIps;
+import com.example.perfume_budget.service.ProductIdList;
+import com.example.perfume_budget.service.ProductViewRequests;
 import com.example.perfume_budget.service.interfaces.ProductService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -73,12 +76,27 @@ public class ProductController {
         return ResponseEntity.ok().body(CustomApiResponse.success(productService.searchAdminProducts(categoryId, searchTerm, pageable)));
     }
 
+    /** CAT-07: public lookup by ids (docs/api/catalog-public-lookup-and-views.md). No view is counted. */
+    @GetMapping("/by-ids")
+    public ResponseEntity<CustomApiResponse<List<PublicProductListing>>> getProductsByIds(
+            jakarta.servlet.http.HttpServletRequest request){
+        List<Long> ids = ProductIdList.parse(request.getParameterValues("ids"));
+        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getPublicProductsByIds(ids)));
+    }
+
+    /** Read only since VIEW-01: views are counted by {@link #recordView}, sent by the browser. */
     @GetMapping("/{slug}")
-    public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(
-            @PathVariable String slug, jakarta.servlet.http.HttpServletRequest request){
-        // HEAD runs this same handler; it must not bump the view counter (SEC-03b F11)
-        boolean countView = !"HEAD".equalsIgnoreCase(request.getMethod());
-        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug, countView)));
+    public ResponseEntity<CustomApiResponse<ProductDetailsPageResponse>> getProductDetailsPage(@PathVariable String slug){
+        return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetailsPage(slug)));
+    }
+
+    /** VIEW-01: the browser-side view beacon (docs/api/catalog-public-lookup-and-views.md). Always 204 unless limited. */
+    @PostMapping("/{slug}/view")
+    public ResponseEntity<Void> recordView(@PathVariable String slug, jakarta.servlet.http.HttpServletRequest request){
+        boolean automated = ProductViewRequests.isAutomated(request.getHeader("User-Agent"), request.getHeader("Purpose"),
+                request.getHeader("Sec-Purpose"), request.getHeader("X-Moz"));
+        productService.recordView(slug, ClientIps.rateLimitKey(request), automated);
+        return ResponseEntity.noContent().cacheControl(org.springframework.http.CacheControl.noStore()).build();
     }
 
     @PreAuthorize("hasRole('ADMIN')")

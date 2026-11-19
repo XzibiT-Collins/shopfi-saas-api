@@ -22,12 +22,20 @@ public interface ProductService {
 
     PageResponse<ProductListing> searchAdminProducts(Long categoryId, String searchTerm, Pageable pageable);
     ProductDetails getProductDetails(Long productId);
-    default ProductDetailsPageResponse getProductDetailsPage(String slug) {
-        return getProductDetailsPage(slug, true);
-    }
+    /** The public product page. Read only: it never counts a view (VIEW-01, see {@link #recordView}). */
+    ProductDetailsPageResponse getProductDetailsPage(String slug);
 
-    /** {@code countView=false} for HEAD: the response is identical but no view is recorded. */
-    ProductDetailsPageResponse getProductDetailsPage(String slug, boolean countView);
+    /** CAT-07: the active, listed products among {@code ids} (tenant scoped), in the order of {@code ids}. */
+    List<PublicProductListing> getPublicProductsByIds(List<Long> ids);
+
+    /**
+     * VIEW-01: the view beacon. Rate limited per {@code clientKey}; a bot/prefetch request, an unknown or unlisted
+     * product, an ADMIN session and a repeat inside the dedupe window are not counted.
+     *
+     * @return true when a view was counted
+     * @throws com.example.perfume_budget.exception.RateLimitExceededException when the client key is over the limit
+     */
+    boolean recordView(String slug, String clientKey, boolean automated);
     ProductDetails updateProduct(Long productId, ProductRequest request);
     ProductDetails setProductDiscount(Long productId, ProductDiscountRequest request);
     ProductDetails clearProductDiscount(Long productId);

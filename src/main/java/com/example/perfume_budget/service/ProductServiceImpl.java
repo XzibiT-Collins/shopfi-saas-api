@@ -12,6 +12,7 @@ import com.example.perfume_budget.enums.UserRole;
 import com.example.perfume_budget.events.ViewCountEvent;
 import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
+import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.mapper.ProductMapper;
 import com.example.perfume_budget.model.*;
 import com.example.perfume_budget.pricing.EffectivePrice;
@@ -71,6 +72,8 @@ public class ProductServiceImpl implements ProductService {
     private final ProductCatalogCacheService productCatalogCacheService;
     private final EffectivePriceService effectivePriceService;
     private final PlatformTransactionManager transactionManager;
+    private final ProductViewRateLimiter viewRateLimiter;
+    private final ProductViewDeduper viewDeduper;
 
     /**
      * ORD-02c: not one big transaction any more. The image is uploaded once, then the rows are written in a
@@ -375,12 +378,44 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public ProductDetailsPageResponse getProductDetailsPage(String slug, boolean countView) {
-        ProductDetailsPageResponse response = productCatalogCacheService.getProductDetailsPage(slug);
-        if (countView) {
-            updateProductViewCount(response.productId());
+    public ProductDetailsPageResponse getProductDetailsPage(String slug) {
+        return productCatalogCacheService.getProductDetailsPage(slug);
+    }
+
+    @Override
+    public List<PublicProductListing> getPublicProductsByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
         }
-        return response;
+        Function<Product, PublicProductListing> mapper = publicListingMapper();
+        java.util.Map<Long, Product> byId = new java.util.HashMap<>();
+        for (Product p : productRepository.findAllByIdInAndIsActiveTrueAndIsEnlistedTrue(ids)) {
+            byId.put(p.getId(), p);
+        }
+        return ids.stream().map(byId::get).filter(Objects::nonNull).map(mapper).toList();
+    }
+
+    @Override
+    public boolean recordView(String slug, String clientKey, boolean automated) {
+        viewRateLimiter.check(clientKey);
+        if (automated || !ProductViewRequests.isWellFormedSlug(slug)) {
+            return false;
+        }
+        String tenant = TenantContext.getSlug();
+        if (tenant == null) {
+            return false;
+        }
+        Long productId;
+        try {
+            productId = productCatalogCacheService.getProductDetailsPage(slug).productId();
+        } catch (ResourceNotFoundException e) {
+            return false;
+        }
+        if (productId == null || isAdminSession() || !viewDeduper.firstView(tenant, productId, clientKey)) {
+            return false;
+        }
+        eventPublisher.publishEvent(ViewCountEvent.builder().productId(productId).build());
+        return true;
     }
 
     @Override
@@ -465,17 +500,9 @@ public class ProductServiceImpl implements ProductService {
         }
     }
 
-    private void updateProductViewCount(Long id) {
-        log.info("Updating product view count for product: {}", id);
+    private boolean isAdminSession() {
         User currentUser = authUserUtil.getCurrentUser();
-        boolean isAdminUser = currentUser != null &&
-                currentUser.getRoles().equals(UserRole.ADMIN);
-        if (!isAdminUser) {
-            log.info("User is not an admin");
-            eventPublisher.publishEvent(ViewCountEvent.builder().productId(id).build());
-        }else{
-            log.info("current user is an Admin");
-        }
+        return currentUser != null && UserRole.ADMIN.equals(currentUser.getRoles());
     }
 
     private Product checkAndUpdateProductFields(Product productToUpdate, ProductRequest request) {

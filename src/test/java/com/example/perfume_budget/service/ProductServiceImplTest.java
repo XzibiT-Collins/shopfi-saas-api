@@ -76,6 +76,11 @@ class ProductServiceImplTest {
     @Mock
     private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
+    @org.mockito.Spy
+    private ProductViewRateLimiter viewRateLimiter = new ProductViewRateLimiter(1000, 1000);
+    @org.mockito.Spy
+    private ProductViewDeduper viewDeduper = new ProductViewDeduper(java.time.Clock.systemUTC(), 30, 1000);
+
     @InjectMocks
     private ProductServiceImpl productService;
 
@@ -478,55 +483,72 @@ class ProductServiceImplTest {
         assertEquals("Inactive Product", result.content().getFirst().productName());
     }
 
-    @Test
-    void getProductDetailsPage_ForAdmin_DoesNotPublishViewEvent() {
-        User admin = User.builder().roles(UserRole.ADMIN).build();
-        when(authUserUtil.getCurrentUser()).thenReturn(admin);
-        ProductDetailsPageResponse cachedResponse = ProductDetailsPageResponse.builder()
-                .productId(1L)
-                .slug("perfume-a")
-                .productName("Perfume A")
-                .productShortDescription("Short description")
-                .productDescription("Detailed description")
-                .productImageUrl("http://image.com/a.jpg")
-                .category("Fragrance")
-                .sellingPrice("USD 100.00")
-                .isOutOfStock(false)
-                .isFeatured(false)
-                .build();
-        when(productCatalogCacheService.getProductDetailsPage("perfume-a")).thenReturn(cachedResponse);
-
-        ProductDetailsPageResponse result = productService.getProductDetailsPage("perfume-a");
-
-        assertEquals("perfume-a", result.slug());
-        verify(productCatalogCacheService).getProductDetailsPage("perfume-a");
-        verify(eventPublisher, never()).publishEvent(any(ViewCountEvent.class));
+    private static ProductDetailsPageResponse page() {
+        return ProductDetailsPageResponse.builder().productId(1L).slug("perfume-a").productName("Perfume A")
+                .productShortDescription("Short description").productDescription("Detailed description")
+                .productImageUrl("http://image.com/a.jpg").category("Fragrance").sellingPrice("USD 100.00")
+                .isOutOfStock(false).isFeatured(false).build();
     }
 
     @Test
-    void getProductDetailsPage_ForCustomer_PublishesViewEventOnEachCall() {
-        when(authUserUtil.getCurrentUser()).thenReturn(null);
-        ProductDetailsPageResponse cachedResponse = ProductDetailsPageResponse.builder()
-                .productId(1L)
-                .slug("perfume-a")
-                .productName("Perfume A")
-                .productShortDescription("Short description")
-                .productDescription("Detailed description")
-                .productImageUrl("http://image.com/a.jpg")
-                .category("Fragrance")
-                .sellingPrice("USD 100.00")
-                .isOutOfStock(false)
-                .isFeatured(false)
-                .build();
-        when(productCatalogCacheService.getProductDetailsPage("perfume-a")).thenReturn(cachedResponse);
+    void getProductDetailsPage_isReadOnly_neverPublishesAViewEvent() {
+        when(productCatalogCacheService.getProductDetailsPage("perfume-a")).thenReturn(page());
 
-        ProductDetailsPageResponse first = productService.getProductDetailsPage("perfume-a");
-        ProductDetailsPageResponse second = productService.getProductDetailsPage("perfume-a");
+        productService.getProductDetailsPage("perfume-a");
+        productService.getProductDetailsPage("perfume-a");
 
-        assertEquals("perfume-a", first.slug());
-        assertEquals("perfume-a", second.slug());
         verify(productCatalogCacheService, times(2)).getProductDetailsPage("perfume-a");
-        verify(eventPublisher, times(2)).publishEvent(any(ViewCountEvent.class));
+        verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void recordView_countsOncePerTenantProductAndClient() {
+        com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.tenant("acme", "tenant_acme"));
+        try {
+            when(authUserUtil.getCurrentUser()).thenReturn(null);
+            when(productCatalogCacheService.getProductDetailsPage("perfume-a")).thenReturn(page());
+
+            assertTrue(productService.recordView("perfume-a", "1.2.3.4", false));
+            assertFalse(productService.recordView("perfume-a", "1.2.3.4", false), "repeat inside the window");
+            assertTrue(productService.recordView("perfume-a", "5.6.7.8", false), "another client");
+            verify(eventPublisher, times(2)).publishEvent(any(ViewCountEvent.class));
+        } finally {
+            com.example.perfume_budget.tenancy.TenantContext.clear();
+        }
+    }
+
+    @Test
+    void recordView_doesNotCountBotsAdminsUnknownOrMalformedSlugs() {
+        com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.tenant("acme", "tenant_acme"));
+        try {
+            when(productCatalogCacheService.getProductDetailsPage("perfume-a")).thenReturn(page());
+            when(productCatalogCacheService.getProductDetailsPage("gone")).thenThrow(new ResourceNotFoundException("Product not Found."));
+
+            assertFalse(productService.recordView("perfume-a", "9.9.9.1", true), "automated");
+            assertFalse(productService.recordView("gone", "9.9.9.2", false), "unknown or unlisted");
+            assertFalse(productService.recordView("Bad Slug", "9.9.9.3", false), "malformed");
+            when(authUserUtil.getCurrentUser()).thenReturn(User.builder().roles(UserRole.ADMIN).build());
+            assertFalse(productService.recordView("perfume-a", "9.9.9.4", false), "admin session");
+            verify(productCatalogCacheService, never()).getProductDetailsPage("Bad Slug");
+            verifyNoInteractions(eventPublisher);
+            // an admin did not use up the dedupe slot of its address: a visitor behind it still counts
+            when(authUserUtil.getCurrentUser()).thenReturn(null);
+            assertTrue(productService.recordView("perfume-a", "9.9.9.4", false));
+        } finally {
+            com.example.perfume_budget.tenancy.TenantContext.clear();
+        }
+    }
+
+    @Test
+    void recordView_withoutATenantCountsNothing() {
+        assertFalse(productService.recordView("perfume-a", "7.7.7.7", false));
+        verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void getPublicProductsByIds_emptyInputDoesNotQuery() {
+        assertTrue(productService.getPublicProductsByIds(List.of()).isEmpty());
+        verifyNoInteractions(productRepository);
     }
 
     @Test

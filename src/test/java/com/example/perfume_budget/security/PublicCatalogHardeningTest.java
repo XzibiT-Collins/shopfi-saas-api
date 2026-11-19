@@ -21,7 +21,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /**
  * SEC-03b rework: (1) pre-deploy Redis entries of the OLD shape never reach anonymous callers, (2) the public sort and
- * search cannot be used as an oracle for hidden fields, (3) HEAD does not count a view or a site visit.
+ * search cannot be used as an oracle for hidden fields, (3) HEAD does not count a view or a site visit; VIEW-01: GET does not count either.
  */
 class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
 
@@ -222,41 +222,19 @@ class PublicCatalogHardeningTest extends AbstractCheckoutIntegrationTest {
     }
 
     @Test
-    void headDoesNotCountAViewButGetDoes() throws Exception {
+    void headAndGetDoNotCountAView_onlyTheBrowserBeaconDoes() throws Exception {
+        // VIEW-01: GET /product/{slug} is read only (the storefront server renders it, so it never sees the visitor);
+        // views are counted by POST /product/{slug}/view (ProductByIdsAndViewsIntegrationTest).
         long p = product(acme, "View Scent", "10.00", 5);
         String slug = jdbc.queryForObject("SELECT slug FROM tenant_acme.products WHERE id = ?", String.class, p);
         jdbc.update("UPDATE tenant_acme.products SET view_count = 0 WHERE id = ?", p);
-        long before = views(p);
         for (int i = 0; i < 3; i++) {
             assertThat(mvc.perform(head("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")).andReturn().getResponse().getStatus()).isEqualTo(200);
-        }
-        Thread.sleep(1500);
-        assertThat(views(p)).as("3 HEADs must not change view_count").isEqualTo(before);
-        assertThat(mvc.perform(get("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")).andReturn().getResponse().getStatus()).isEqualTo(200);
-        long deadline = System.currentTimeMillis() + 8000;
-        while (views(p) == before && System.currentTimeMillis() < deadline) {
-            Thread.sleep(100);
-        }
-        assertThat(views(p)).as("a GET still counts").isEqualTo(before + 1);
-    }
-
-    @Test
-    void everyGetCountsAView_evenFromOneClient_documentedResidualUntilView01() throws Exception {
-        // SEC-03c rework (PO decision on review F1): no per-client-IP dedupe on GET, because the storefront renders
-        // product pages server-side and every visitor would share the frontend server's IP. A GET counts as on main;
-        // real per-visitor counting is the browser-side beacon of VIEW-01.
-        long p = product(acme, "Every Get Scent", "10.00", 5);
-        String slug = jdbc.queryForObject("SELECT slug FROM tenant_acme.products WHERE id = ?", String.class, p);
-        jdbc.update("UPDATE tenant_acme.products SET view_count = 0 WHERE id = ?", p);
-        for (int i = 0; i < 3; i++) {
             assertThat(mvc.perform(get("/api/v1/product/" + slug).header("X-Tenant-ID", "acme")
                     .with(r -> { r.setRemoteAddr("203.0.113.7"); return r; })).andReturn().getResponse().getStatus()).isEqualTo(200);
         }
-        long deadline = System.currentTimeMillis() + 8000;
-        while (views(p) < 3 && System.currentTimeMillis() < deadline) {
-            Thread.sleep(100);
-        }
-        assertThat(views(p)).as("3 GETs from the same client IP (e.g. the SSR frontend server) count 3 views").isEqualTo(3);
+        awaitBackgroundIdle();
+        assertThat(views(p)).as("3 HEADs and 3 GETs must not change view_count").isZero();
     }
 
     @Test
