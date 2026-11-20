@@ -47,13 +47,25 @@ public class ThemeStore {
      * Replaces the stored document.
      *
      * @param expectedVersion entity version the caller last saw, or null for last-write-wins
-     * @throws ThemeConflictException when the version is stale or a concurrent write won
+     * @param validatedStoredUrls the image URLs of the theme version this document was validated against (they were
+     *                            acceptable only because they were stored then). THEME-06 AC2: if a concurrent writer has
+     *                            meanwhile removed one of them (and its post-commit cleanup may already have deleted the
+     *                            asset) while this document still references it, the save is a conflict, even without
+     *                            {@code If-Match}; unrelated concurrent edits stay last-write-wins
+     * @throws ThemeConflictException when the version is stale, a concurrent write won, or the document references an
+     *                                asset a concurrent write removed
      */
     @Transactional
-    public ThemeSnapshot save(JsonNode document, Long expectedVersion, String updatedBy) {
+    public ThemeSnapshot save(JsonNode document, Long expectedVersion, String updatedBy, java.util.Set<String> validatedStoredUrls) {
         StoreSettings s = loadOrHeal();
         if (expectedVersion != null && !expectedVersion.equals(s.getVersion())) {
             throw new ThemeConflictException("Theme was modified by someone else; reload and retry");
+        }
+        java.util.Set<String> storedNow = ThemeServiceImpl.imageUrls(s.getTheme());
+        for (String url : ThemeServiceImpl.imageUrls(document)) {
+            if (validatedStoredUrls != null && validatedStoredUrls.contains(url) && !storedNow.contains(url)) {
+                throw new ThemeConflictException("Theme was modified by someone else; reload and retry");
+            }
         }
         LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.MILLIS);
         long next = s.getVersion() + 1;

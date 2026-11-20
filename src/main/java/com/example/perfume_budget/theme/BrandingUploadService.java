@@ -116,7 +116,19 @@ public class BrandingUploadService {
         String folder = brandingFolder();
         String name = uniquePublicId(kind, sectionId);
         validate(kind, file, path);
-        return new Stored(storage.upload(file.bytes(), folder, name), name);
+        try {
+            return new Stored(storage.upload(file.bytes(), folder, name), name);
+        } catch (RuntimeException e) {
+            // THEME-06 AC3: the remote store may have kept the asset although the call threw (timeout while reading the
+            // reply). The id is brand-new and nothing references it, so deleting it is always safe; best effort.
+            try {
+                storage.delete(folder, name);
+            } catch (RuntimeException cleanupFailure) {
+                // the original failure is what the caller must see
+                e.addSuppressed(cleanupFailure);
+            }
+            throw e;
+        }
     }
 
     /** {@link #publicId} plus a random 64-bit suffix. */

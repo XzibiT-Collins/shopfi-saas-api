@@ -141,6 +141,7 @@ public class ThemeValidator {
         for (ValidationMessage m : skeletonSchema.validate(skeleton)) {
             errors.addMessage(m, skeleton, "");
         }
+        rejectLineTerminatorsAndControls(doc, "", errors); // THEME-06 AC0: `$` in a Java regex also matches before a final \n
         JsonNode origPages = doc.get("pages");
         if (origPages != null && origPages.isObject()) {
             Set<String> seenIds = new HashSet<>();
@@ -154,6 +155,57 @@ public class ThemeValidator {
         }
         contrast(doc, errors);
         return errors.isEmpty();
+    }
+
+    private static final Pattern RICH_TEXT_BODY_PATH = Pattern.compile("^pages\\.(?:home|product)\\[\\d+\\]\\.props\\.body$");
+
+    /**
+     * THEME-06 AC0 (PR #18 review): the JSON-schema patterns (hexColor, plainText, link, social URL, cloudinaryImageUrl)
+     * end with {@code $}, which the Java regex engine also matches BEFORE a trailing line terminator, so {@code "#111827\n"},
+     * {@code "Hi\n"} and {@code "/x\n"} pass the schema. The schema is the cross-repo contract (the frontend carries a
+     * byte-identical copy and an ECMAScript engine, where {@code $} has no such quirk and {@code \z} is not portable), so it
+     * is NOT changed; instead EVERY string of the document is checked here: no C0 control character or DEL anywhere, and no
+     * trailing NEL / LINE SEPARATOR / PARAGRAPH SEPARATOR (the other terminators {@code $} skips). The only exception is
+     * a rich-text body, whose Markdown legitimately holds {@code \n}, {@code \r} and {@code \t} and has its own checker.
+     * The CommonMark check and this validator, not the schema alone, are authoritative.
+     */
+    private void rejectLineTerminatorsAndControls(JsonNode node, String path, Errors errors) {
+        if (node.isTextual()) {
+            if (RICH_TEXT_BODY_PATH.matcher(path).matches() || path.isEmpty() || errors.has(path)) {
+                return;
+            }
+            String t = node.asText();
+            if (hasControl(t) || endsWithLineTerminator(t)) {
+                String[] f = Errors.patternFailure(path, t);
+                errors.add(path, f[0], f[1]);
+            }
+            return;
+        }
+        if (node.isObject()) {
+            node.fields().forEachRemaining(e -> rejectLineTerminatorsAndControls(e.getValue(), Errors.join(path, e.getKey()), errors));
+        } else if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                rejectLineTerminatorsAndControls(node.get(i), path + "[" + i + "]", errors);
+            }
+        }
+    }
+
+    private static boolean hasControl(String t) {
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean endsWithLineTerminator(String t) {
+        if (t.isEmpty()) {
+            return false;
+        }
+        char c = t.charAt(t.length() - 1);
+        return c == '\n' || c == '\r' || c == '\u0085' || c == '\u2028' || c == '\u2029';
     }
 
     private void slot(String slot, JsonNode arr, Set<String> seenIds, int[] richTextChars, Errors errors) {
@@ -199,20 +251,32 @@ public class ThemeValidator {
                 if (body != null && body.isTextual()) {
                     String text = body.asText();
                     String bodyPath = base + ".props.body";
-                    // ALWAYS runs, at any length: over-cap bodies come back as TOO_LONG (code points, like the
-                    // schema's maxLength), never skipped.
-                    RichTextChecker.Problem problem = RichTextChecker.check(text);
-                    if (problem != null && !errors.has(bodyPath)) {
-                        errors.add(bodyPath, problem.code(), problem.message());
-                    }
+                    // THEME-06 AC1: the document budget is counted FIRST. A body that pushes the running total over
+                    // MAX_RICH_TEXT_TOTAL gets RICH_TEXT_BUDGET_EXCEEDED and so does the rest of the document: it can
+                    // never be stored, so the (quadratic-prone) safety checker is not run on it or on the bodies after
+                    // it. That bounds validation CPU by the budget (at most ~8000 + one body of code points scanned)
+                    // instead of 18 sections x 5000 characters. Every body inside the budget is checked at any length
+                    // (an over-cap one comes back as TOO_LONG, never skipped).
                     richTextChars[0] += (int) Math.min(Integer.MAX_VALUE / 2, text.codePointCount(0, text.length()));
-                    if (richTextChars[0] > MAX_RICH_TEXT_TOTAL && !errors.has(bodyPath)) {
-                        errors.add(bodyPath, "RICH_TEXT_BUDGET_EXCEEDED",
-                                "all rich-text bodies together may hold at most " + MAX_RICH_TEXT_TOTAL + " characters");
+                    if (richTextChars[0] > MAX_RICH_TEXT_TOTAL) {
+                        if (!errors.has(bodyPath)) {
+                            errors.add(bodyPath, "RICH_TEXT_BUDGET_EXCEEDED",
+                                    "all rich-text bodies together may hold at most " + MAX_RICH_TEXT_TOTAL + " characters");
+                        }
+                    } else {
+                        RichTextChecker.Problem problem = checkRichText(text);
+                        if (problem != null && !errors.has(bodyPath)) {
+                            errors.add(bodyPath, problem.code(), problem.message());
+                        }
                     }
                 }
             }
         }
+    }
+
+    /** Seam for the budget-before-check test (THEME-06 AC1). */
+    RichTextChecker.Problem checkRichText(String text) {
+        return RichTextChecker.check(text);
     }
 
     private void contrast(JsonNode doc, Errors errors) {
@@ -446,13 +510,8 @@ public class ThemeValidator {
                 case "additionalProperties" -> { code = "UNKNOWN_PROPERTY"; text = "unknown property"; }
                 case "type" -> { code = "WRONG_TYPE"; text = "has the wrong type"; }
                 case "pattern" -> {
-                    if (path.endsWith("url") || path.endsWith("Url") || path.endsWith("href") || path.endsWith("Href")) {
-                        code = "URL_NOT_ALLOWED"; text = "URL is not allowed";
-                    } else if (value != null && value.isTextual() && UNSAFE_CHARS.matcher(value.asText()).find()) {
-                        code = "UNSAFE_CONTENT"; text = "must not contain angle brackets or control characters";
-                    } else {
-                        code = "INVALID_FORMAT"; text = "has an invalid format";
-                    }
+                    String[] f = patternFailure(path, value != null && value.isTextual() ? value.asText() : null);
+                    code = f[0]; text = f[1];
                 }
                 case "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum" -> { code = "OUT_OF_RANGE"; text = "is out of range"; }
                 case "maxLength", "maxItems" -> { code = "TOO_LONG"; text = "is too long"; }
@@ -477,7 +536,17 @@ public class ThemeValidator {
             add(path, code, text);
         }
 
-        private static String join(String a, String b) {
+        /** {code, message} for a value that failed (or, for line terminators, would have slipped through) a schema pattern. */
+        static String[] patternFailure(String path, String value) {
+            if (path.endsWith("url") || path.endsWith("Url") || path.endsWith("href") || path.endsWith("Href")) {
+                return new String[]{"URL_NOT_ALLOWED", "URL is not allowed"};
+            } else if (value != null && UNSAFE_CHARS.matcher(value).find()) {
+                return new String[]{"UNSAFE_CONTENT", "must not contain angle brackets or control characters"};
+            }
+            return new String[]{"INVALID_FORMAT", "has an invalid format"};
+        }
+
+        static String join(String a, String b) {
             if (a.isEmpty()) {
                 return b;
             }

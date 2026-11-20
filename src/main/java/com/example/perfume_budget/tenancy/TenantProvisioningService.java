@@ -83,7 +83,7 @@ public class TenantProvisioningService {
         java.util.concurrent.atomic.AtomicBoolean newRow = new java.util.concurrent.atomic.AtomicBoolean();
         Tenant tenant = claimOrRegister(v, onClaimed, newRow);
         Long tenantId = tenant.getId();
-        boolean ownsSchema = !newRow.get(); // a retried row's schema is this tenant's own; a new row's must be created by this run
+        boolean ownsSchema = false; // set only once THIS run has created the schema (never for an adopted orphan)
         log.info("Provisioning tenant {} -> schema {}", v.slug(), v.schemaName());
 
         TenantIdentity previous = TenantContext.get();
@@ -92,7 +92,12 @@ public class TenantProvisioningService {
                 migrator.createNewTenantSchema(v.schemaName()); // PROV-04 AC2: fails if the schema already exists
                 ownsSchema = true;
             } else {
+                // FIX-H (FIX-G review L1): a retry of a FAILED/PENDING row is never blocked by a leftover schema (an earlier
+                // CREATE SCHEMA that failed on the client side, or a failed compensating DROP): it adopts and migrates it,
+                // but only a schema this run created is dropped again when the retry fails.
+                boolean existed = migrator.tenantSchemaExists(v.schemaName());
                 migrator.createTenantSchema(v.schemaName());
+                ownsSchema = !existed;
             }
             migrator.migrateTenant(v.schemaName());
 
@@ -131,10 +136,10 @@ public class TenantProvisioningService {
         log.error("Provisioning failed for tenant {} ({}); compensating", v.slug(), cause.getClass().getSimpleName());
         boolean dropped = true;
         try {
-            if (ownsSchema) { // PROV-04 AC2: never drop a schema this run did not create
+            if (ownsSchema) { // PROV-04 AC2 / FIX-H L1: never drop a schema this run did not create
                 migrator.dropTenantSchema(v.schemaName());
             } else {
-                log.warn("Schema {} already existed without a registry row: left untouched", v.schemaName());
+                log.warn("Schema {} was not created by this run: left untouched", v.schemaName());
             }
         } catch (Exception dropFailure) {
             dropped = false;

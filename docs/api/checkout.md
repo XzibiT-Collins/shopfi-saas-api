@@ -244,7 +244,7 @@ The per-tenant token selects the tenant, the `X-Paystack-Signature` HMAC-SHA512 
 
 * `charge.success`: completes the payment. Amount and currency are required and must match the order; an event without them is ignored (fail closed) and the customer's verify poll settles it from the provider's own data. Idempotent.
   A late success for an order that is FAILED or CANCELLED/expired re-reserves the stock and completes it; if the stock
-  is gone the payment is recorded COMPLETED with `refundRequired` and the order stays closed; the cash is booked once as a `LATE_PAYMENT` journal entry (Cash and Bank / Refunds Payable, no sale, ORD-02b, see orders.md). Any other failure while re-reserving (database/pool timeout) is not treated as out of stock: nothing is changed and the next webhook or verify poll retries.
+  is gone the payment is recorded COMPLETED with `refundRequired` and the order stays closed; the cash is booked once as a `LATE_PAYMENT` journal entry (Cash and Bank / Refunds Payable, no sale, ORD-02b, see orders.md). Any other failure while re-reserving (database/pool timeout) is not treated as out of stock: nothing is changed and the settlement is retried: a webhook answers `500` (see above), so Paystack redelivers it, and the customer's verify poll retries it too. (A webhook that was answered `200` is never resent by Paystack; since EVT-01c a settlement that did not commit is never answered `200`.)
 * `charge.failed`: the only event that marks the payment/order FAILED and releases the stock. Never overrides COMPLETED.
 * any other event type: ignored.
 

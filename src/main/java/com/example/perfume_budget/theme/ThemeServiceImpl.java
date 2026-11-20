@@ -97,7 +97,7 @@ public class ThemeServiceImpl implements ThemeService {
                     throw new BrandingStorageException("Image store returned an unexpected URL", null);
                 }
             }
-            ThemeSnapshot saved = store.save(working, expectedVersion, updatedBy);
+            ThemeSnapshot saved = store.save(working, expectedVersion, updatedBy, storedUrls);
             cleanupRemoved(storedUrls, working, slug);
             return saved;
         } catch (RuntimeException e) {

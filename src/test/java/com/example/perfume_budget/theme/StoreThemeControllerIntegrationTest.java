@@ -315,6 +315,34 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         assertThat(etagOf(B)).isEqualTo(bBefore);
     }
 
+    /**
+     * MAIN-RED-02 AC3 (mutants M1/M8 of the MAIN-RED-01 review): a validly signed ADMIN token for a real admin of THIS tenant
+     * that carries NO tenant claim must not write the theme (tenant tokens are always bound to their tenant), and neither
+     * may one carrying the platform claim ("__platform__"). Both are the same 401 an anonymous caller gets, nothing changes.
+     */
+    @Test
+    void putWithATokenThatHasNoTenantClaim_or_thePlatformClaim_isNotIdentityOnATenantHost() throws Exception {
+        String noClaim = jwtUtil.generateAccessToken(a.adminEmail(), "ADMIN", 1L, "n"); // minted with no tenant bound
+        assertThat(jwtUtil.extractTenant(noClaim)).as("fixture: no tenant claim").isNull();
+        com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.platform());
+        String platformClaim;
+        try {
+            platformClaim = jwtUtil.generateAccessToken(a.adminEmail(), "ADMIN", 1L, "n");
+        } finally {
+            com.example.perfume_budget.tenancy.TenantContext.clear();
+        }
+        assertThat(jwtUtil.extractTenant(platformClaim)).as("fixture: platform claim").isEqualTo("__platform__");
+
+        String before = etagOf(A);
+        for (String forged : new String[]{noClaim, platformClaim}) {
+            assertThat(mvc.perform(putJson(A, forged, doc("#111111").toString())).andReturn().getResponse().getStatus())
+                    .as(jwtUtil.extractTenant(forged) + " token").isEqualTo(401);
+        }
+        assertThat(etagOf(A)).as("nothing was written").isEqualTo(before);
+        // control: the same admin with a token bound to this tenant is accepted
+        assertThat(mvc.perform(putJson(A, adminA, doc("#7c2d12").toString())).andReturn().getResponse().getStatus()).isEqualTo(200);
+    }
+
     /** Same-tenant behaviour is untouched: the cookie IS identity on its own tenant (CUSTOMER 403, ADMIN 200). */
     @Test
     void sameTenantCookie_isStillIdentity() throws Exception {

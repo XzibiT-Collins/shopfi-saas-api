@@ -296,6 +296,37 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
         assertThat(handler.handleMultipartException(ex, other).getStatusCode().value()).isEqualTo(500); // unchanged elsewhere
     }
 
+    /** THEME-07 AC4: the 400 mapping is for PUT only; the same theme path with any other method keeps the generic behaviour. */
+    @Test
+    void multipartExceptionAdvice_isPutOnly_otherMethodsOnTheThemePathStayGeneric() {
+        var handler = new com.example.perfume_budget.exception.handlers.GlobalExceptionHandler();
+        var ex = new org.springframework.web.multipart.MultipartException("Failed to parse multipart servlet request");
+        for (String method : List.of("POST", "PATCH", "DELETE", "GET")) {
+            var req = new org.springframework.mock.web.MockHttpServletRequest(method, "/api/v1/theme");
+            req.setServletPath("/api/v1/theme");
+            assertThat(handler.handleMultipartException(ex, req).getStatusCode().value()).as(method).isEqualTo(500);
+        }
+        var put = new org.springframework.mock.web.MockHttpServletRequest("PUT", "/api/v1/theme");
+        put.setServletPath("/api/v1/theme");
+        assertThat(handler.handleMultipartException(ex, put).getStatusCode().value()).isEqualTo(400);
+    }
+
+    /**
+     * THEME-07 AC4: {@code multipart/form-data,boundary=...} (a comma where the parameter separator should be) is not a
+     * multipart media type with a boundary: the container does not treat it as multipart at all, so it never reaches the
+     * multipart parser or its advice and is answered by the documented 415 (neither JSON nor multipart), not a 500, with
+     * nothing spooled and the theme untouched.
+     */
+    @Test
+    void commaInsteadOfSemicolonBeforeBoundary_is415_notA500_andNothingIsSpooled() throws Exception {
+        byte[] body = validBody("xyz");
+        Resp r = exchange(head("PUT", "/api/v1/theme", "multipart/form-data,boundary=xyz", body.length, true), body);
+        assertThat(r.status()).as(r.headers() + r.body()).isEqualTo(415);
+        assertThat(spooled()).isEmpty();
+        Resp after = exchange(head("GET", "/api/v1/theme", null, -1, false), null);
+        assertThat(after.status()).isEqualTo(200);
+    }
+
     private static byte[] validBody(String b) {
         String t = ThemeTestDocs.defaults().toString();
         return ("--" + b + "\r\nContent-Disposition: form-data; name=\"theme\"; filename=\"t.json\"\r\n"
@@ -492,6 +523,7 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
         assertThat(h).contains("cache-control: no-cache, no-store, max-age=0, must-revalidate").contains("vary: origin")
                 .doesNotContain("s-maxage").doesNotContain("max-age=60")
                 .doesNotContain("public").doesNotContain("etag:");
+        assertThat(h).contains("pragma: no-cache").contains("expires: 0"); // MAIN-RED-02 AC2 (cors.md lists the full header set)
         assertThat(h).doesNotContain("access-control-allow-origin").doesNotContain("access-control-allow-credentials");
     }
 
@@ -512,8 +544,20 @@ class StoreThemeMultipartHttpTest extends AbstractPostgresIntegrationTest {
         String folded = "GET /api/v1/theme HTTP/1.1\r\nHost: " + HOST + "\r\nOrigin: " + ORIGIN
                 + ", https://other.shopfi.test\r\nConnection: close\r\n\r\n";
         Resp r = exchange(folded, null);
-        assertThat(r.status()).as(r.body()).isIn(400, 403);
-        assertThat(r.headers().toLowerCase()).doesNotContain("s-maxage");
+        assertThat(r.status()).as(r.headers() + r.body()).isEqualTo(403); // MAIN-RED-02: the CORS layer answers, not the controller
+        assertThat(r.body()).contains("Invalid CORS request").doesNotContain("\"tokens\"");
+        assertThat(r.headers().toLowerCase()).doesNotContain("s-maxage").doesNotContain("access-control-allow-origin");
+    }
+
+    /** THEME-07 AC2: an empty Origin line is answered by the CORS layer too (403), never served as a public theme. */
+    @Test
+    void getWithAnEmptyOriginLine_isRejectedByCors403_noTenantData() throws Exception {
+        String empty = "GET /api/v1/theme HTTP/1.1\r\nHost: " + HOST + "\r\nOrigin: " + ORIGIN
+                + "\r\nOrigin: \r\nConnection: close\r\n\r\n";
+        Resp r = exchange(empty, null);
+        assertThat(r.status()).as(r.headers() + r.body()).isEqualTo(403);
+        assertThat(r.body()).doesNotContain("\"tokens\"");
+        assertThat(r.headers().toLowerCase()).doesNotContain("s-maxage").doesNotContain("access-control-allow-origin");
     }
 
     @Test

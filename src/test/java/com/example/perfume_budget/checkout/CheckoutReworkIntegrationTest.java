@@ -117,4 +117,21 @@ class CheckoutReworkIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(parsed.getOffset().getTotalSeconds()).isZero();
         assertThat(parsed).isAfter(OffsetDateTime.now().minusMinutes(1)).isBefore(OffsetDateTime.now().plusHours(2));
     }
+
+    /**
+     * PAY-02 AC5: the test above only discriminates in a non-UTC JVM (the stored creation time is server-local and
+     * zone-less, so labelling it UTC is only wrong when the JVM zone is not UTC). Run it with the JVM default zone moved to
+     * a zone with a large offset, restoring it afterwards.
+     */
+    @Test
+    void expiresAtIsAnUtcInstantWithOffset_inANonUtcJvm() throws Exception {
+        java.util.TimeZone original = java.util.TimeZone.getDefault();
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Pacific/Auckland")); // UTC+12/+13, never UTC
+        try {
+            assertThat(java.time.ZoneId.systemDefault().getId()).isEqualTo("Pacific/Auckland");
+            expiresAtIsAnUtcInstantWithOffset();
+        } finally {
+            java.util.TimeZone.setDefault(original);
+        }
+    }
 }

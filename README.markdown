@@ -90,6 +90,12 @@ The application maintains high code quality with a focus on logic integrity.
   ```bash
   ./mvnw test
   ```
+- **Run the suite in batches (recommended; PostgreSQL connection slots are limited):**
+  ```bash
+  scripts/run-test-batches.sh      # 4 sequential batches, SHOPFI_TEST_DB_REQUIRED=true
+  scripts/check-no-skipped.sh      # a green run with skipped > 0 is INVALID: this fails it
+  ```
+  See `QUICK_START.md` (Testing) for the database guard and the batch rules.
 - **Key Test Suites:**
   - `BookkeepingServiceTest`: Validates ledger logic and balance protection.
   - `AccountingReportServiceImplTest`: Verifies financial calculation accuracy.

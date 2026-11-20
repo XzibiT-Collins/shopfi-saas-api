@@ -21,6 +21,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -64,6 +65,8 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired PlatformTransactionManager txManager;
     @Autowired ProductRepository products;
     @Autowired CategoryRepository categories;
+    @Autowired ThemeStore themeStore;
+    @MockitoSpyBean ThemeValidator validatorSpy;
 
     TestTenant a;
     TestTenant b;
@@ -271,7 +274,6 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(dbPrimary(healer)).isEqualTo("#0b3d2e");
     }
 
-    @Autowired ThemeStore themeStore;
 
     /**
      * 6 threads x 5 rounds all read a tenant whose singleton row was deleted. The V9 unique index is dropped in this
@@ -455,5 +457,83 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
     @Test
     void updateWithoutTenantFails() {
         assertThatThrownBy(() -> themes.updateTheme(defaults(), null)).isInstanceOf(IllegalStateException.class);
+    }
+
+    // ---------------------------------------------------------------- THEME-06 AC2: no dangling asset after a concurrent write
+
+    private String storeLogo(TestTenant t) {
+        ObjectNode doc = defaults();
+        doc.with("assets").putObject("logo").put("alt", "Theme");
+        ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(64, 64), "image/png", "l.png"), null, Map.of());
+        return as(t, () -> themes.updateTheme(doc, null, up, "admin")).theme().at("/assets/logo/url").asText();
+    }
+
+    private ObjectNode withLogoUrl(String url) {
+        ObjectNode doc = defaults();
+        doc.with("assets").putObject("logo").put("alt", "Theme").put("url", url);
+        return doc;
+    }
+
+    private String logoKey(String url) {
+        return url.substring(url.indexOf("shopfi/")).replaceAll("\\.png$", "");
+    }
+
+    /**
+     * Writer W1 (no If-Match) validated a document that keeps the stored logo; before W1 saves, writer W2 removes the logo
+     * (its post-commit cleanup deletes the asset). W1's save must be a 409-style conflict, not a theme pointing at a deleted
+     * asset.
+     */
+    @Test
+    void aWriterWithoutIfMatchCannotSaveAThemePointingAtAnAssetAConcurrentWriterRemoved() {
+        String logo = storeLogo(a);
+        java.util.concurrent.atomic.AtomicBoolean competed = new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (competed.compareAndSet(false, true)) {
+                var w1Tenant = com.example.perfume_budget.tenancy.TenantContext.get();
+                put(a, defaults(), null); // W2: no logo -> the old asset is deleted after its commit
+                com.example.perfume_budget.tenancy.TenantContext.set(w1Tenant); // runAs cleared W1's context; W1 goes on
+            }
+            return inv.callRealMethod();
+        }).when(validatorSpy).validate(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+
+        assertThatThrownBy(() -> put(a, withLogoUrl(logo), null)).isInstanceOf(ThemeConflictException.class);
+
+        assertThat(competed).isTrue();
+        assertThat(storage.objects).as("W2's cleanup deleted the asset").doesNotContainKey(logoKey(logo));
+        assertThat(get(a).theme().at("/assets/logo").isNull()).as("the stored theme is W2's, with no logo").isTrue();
+        assertThat(dbPrimary(a)).isNotNull();
+    }
+
+    @Test
+    void anUnrelatedConcurrentEditStaysLastWriteWins_whenTheAssetIsStillStored() {
+        String logo = storeLogo(a);
+        java.util.concurrent.atomic.AtomicBoolean competed = new java.util.concurrent.atomic.AtomicBoolean();
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (competed.compareAndSet(false, true)) {
+                ObjectNode w2 = withLogoUrl(logo);
+                ((ObjectNode) w2.get("tokens").get("colors")).put("primary", "#0b3d2e").put("onPrimary", "#ffffff");
+                var w1Tenant = com.example.perfume_budget.tenancy.TenantContext.get();
+                put(a, w2, null); // W2 changes a colour and keeps the logo
+                com.example.perfume_budget.tenancy.TenantContext.set(w1Tenant); // runAs cleared W1's context; W1 goes on
+            }
+            return inv.callRealMethod();
+        }).when(validatorSpy).validate(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+
+        ThemeSnapshot saved = put(a, withLogoUrl(logo), null); // W1 (stale colours, logo kept): last write wins
+
+        assertThat(competed).isTrue();
+        assertThat(saved.theme().at("/assets/logo/url").asText()).isEqualTo(logo);
+        assertThat(storage.objects).containsKey(logoKey(logo));
+    }
+
+    @Test
+    void storeSaveRejectsADocumentReferencingAValidatedUrlThatIsNoLongerStored() {
+        String logo = storeLogo(a);
+        put(a, defaults(), null); // the logo is gone from the stored theme
+        assertThatThrownBy(() -> as(a, () -> themeStore.save(withLogoUrl(logo), null, "w1", java.util.Set.of(logo))))
+                .isInstanceOf(ThemeConflictException.class);
+        // a document that does not reference it, or a URL that was never in the validated set, is not affected
+        assertThat(as(a, () -> themeStore.save(defaults(), null, "w1", java.util.Set.of(logo))).version()).isGreaterThan(1);
+        assertThat(as(a, () -> themeStore.save(defaults(), null, "w1", java.util.Set.of())).version()).isGreaterThan(1);
     }
 }

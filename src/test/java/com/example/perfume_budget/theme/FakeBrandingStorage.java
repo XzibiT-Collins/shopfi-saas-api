@@ -14,6 +14,8 @@ class FakeBrandingStorage implements BrandingStorage {
     final List<String> uploads = new CopyOnWriteArrayList<>();
     final List<String> deletes = new CopyOnWriteArrayList<>();
     volatile boolean failUploads;
+    /** The asset IS stored, then the call throws (a timeout while reading the reply). */
+    volatile boolean failAfterStoring;
 
     FakeBrandingStorage(String cloud) {
         this.cloud = cloud;
@@ -27,6 +29,9 @@ class FakeBrandingStorage implements BrandingStorage {
         String key = folder + "/" + name;
         objects.put(key, bytes);
         uploads.add(key);
+        if (failAfterStoring) {
+            throw new BrandingStorageException("fake store timed out after storing", null);
+        }
         return "https://res.cloudinary.com/" + cloud + "/image/upload/v1/" + key + ".png";
     }
 
@@ -42,6 +47,7 @@ class FakeBrandingStorage implements BrandingStorage {
         uploads.clear();
         deletes.clear();
         failUploads = false;
+        failAfterStoring = false;
     }
 
     /** Minimal valid image headers for the sniffer. */

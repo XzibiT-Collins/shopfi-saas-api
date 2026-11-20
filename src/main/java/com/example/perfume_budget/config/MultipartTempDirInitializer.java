@@ -8,6 +8,10 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -29,6 +33,12 @@ import java.util.UUID;
  * another JVM's in-flight parts. At startup this class removes only sibling {@code instance-<pid>-*} directories whose
  * process no longer exists (leftovers of a crash or kill); the own subdirectory is removed on shutdown.
  *
+ * <p>THEME-07 AC1: a container's JVM is PID 1 (exec-form ENTRYPOINT), so after a SIGKILL / OOM and a restart the old
+ * directories carry the SAME pid as the new process and "is that pid alive" cannot tell them apart. Every instance
+ * therefore holds an exclusive OS file lock on {@code <instance>/.lock} for its whole life (the OS drops it when the
+ * process dies). A sibling with the OWN pid is a leftover, and reaped, exactly when that lock can be taken (or the lock
+ * file is missing); a sibling whose lock is held, by another process or by another initializer in this JVM, is live.
+ *
  * <p>Safety rules (a wrong {@code MULTIPART_TMP_DIR} must never lead to deleting unrelated files; startup FAILS with
  * a clear message instead of guessing):
  * <ul>
@@ -49,12 +59,15 @@ public class MultipartTempDirInitializer implements InitializingBean, Disposable
     public static final String DIR_NAME = "shopfi-multipart";
     public static final String MARKER = ".shopfi-multipart";
     static final String INSTANCE_PREFIX = "instance-";
+    static final String LOCK_FILE = ".lock";
 
     private static final Set<PosixFilePermission> OWNER_ONLY = PosixFilePermissions.fromString("rwx------");
 
     private final String location;
     private final String currentUser;
     private volatile Path instanceDir;
+    private FileChannel lockChannel;
+    private FileLock lock;
 
     @org.springframework.beans.factory.annotation.Autowired
     public MultipartTempDirInitializer(@Value("${spring.servlet.multipart.location:}") String location) {
@@ -84,6 +97,7 @@ public class MultipartTempDirInitializer implements InitializingBean, Disposable
             Path mine = base.resolve(INSTANCE_PREFIX + ProcessHandle.current().pid() + "-" + UUID.randomUUID());
             Files.createDirectory(mine, dirAttrs());
             verifyOwnedAndPrivate(mine);
+            holdLock(mine);
             this.instanceDir = mine;
         } catch (IOException e) {
             throw new IllegalStateException("Cannot prepare multipart spool directory " + base + ": " + e, e);
@@ -94,8 +108,44 @@ public class MultipartTempDirInitializer implements InitializingBean, Disposable
     public void destroy() {
         Path mine = instanceDir;
         if (mine != null) {
+            releaseLock();
             deleteTree(mine);
         }
+    }
+
+    private void holdLock(Path mine) throws IOException {
+        Path file = mine.resolve(LOCK_FILE);
+        FileChannel ch = FileChannel.open(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        try {
+            FileLock l = ch.tryLock();
+            if (l == null) {
+                throw new IOException("lock on a brand-new file is already held");
+            }
+            this.lockChannel = ch;
+            this.lock = l;
+        } catch (IOException | RuntimeException e) {
+            ch.close();
+            throw e;
+        }
+    }
+
+    private void releaseLock() {
+        try {
+            if (lock != null) {
+                lock.release();
+            }
+        } catch (IOException ignored) {
+            // closing the channel drops the lock anyway
+        }
+        try {
+            if (lockChannel != null) {
+                lockChannel.close();
+            }
+        } catch (IOException ignored) {
+            // nothing left to release
+        }
+        lock = null;
+        lockChannel = null;
     }
 
     // ------------------------------------------------------------------------------------------------ base
@@ -192,6 +242,7 @@ public class MultipartTempDirInitializer implements InitializingBean, Disposable
 
     /** Removes {@code instance-<pid>-*} children whose pid is not a live process; never touches anything else. */
     private static void reapDeadInstances(Path base) throws IOException {
+        long ownPid = ProcessHandle.current().pid();
         try (DirectoryStream<Path> s = Files.newDirectoryStream(base, INSTANCE_PREFIX + "*")) {
             for (Path p : s) {
                 if (Files.isSymbolicLink(p)) {
@@ -202,10 +253,37 @@ public class MultipartTempDirInitializer implements InitializingBean, Disposable
                     continue;
                 }
                 Long pid = pidOf(p.getFileName().toString());
-                if (pid != null && ProcessHandle.of(pid).isEmpty()) {
+                if (pid == null) {
+                    continue;
+                }
+                boolean stale = pid == ownPid ? !isLockedByALiveInstance(p) : ProcessHandle.of(pid).isEmpty();
+                if (stale) {
                     deleteTree(p);
                 }
             }
+        }
+    }
+
+    /**
+     * True when {@code dir}'s lock file exists and its lock is held (by another process, or by another initializer in
+     * this JVM). A missing, unreadable or lockable lock file means nobody lives there.
+     */
+    private static boolean isLockedByALiveInstance(Path dir) {
+        Path file = dir.resolve(LOCK_FILE);
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        try (FileChannel ch = FileChannel.open(file, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
+            FileLock l = ch.tryLock();
+            if (l == null) {
+                return true; // held by another process
+            }
+            l.release();
+            return false;
+        } catch (OverlappingFileLockException held) {
+            return true; // held by another initializer in this JVM
+        } catch (IOException e) {
+            return true; // cannot tell: never delete what might be in use
         }
     }
 
