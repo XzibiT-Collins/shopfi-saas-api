@@ -42,7 +42,7 @@
         "displayName": { "$ref": "#/$defs/NoControlChars" },
         "ownerEmail": { "$ref": "#/$defs/Email" },
         "ownerFullName": { "$ref": "#/$defs/NoControlChars" },
-        "password": { "type": "string", "minLength": 8, "maxLength": 72, "description": "Trimmed by the server. At least 8 characters; at most 72 UTF-8 bytes (BCrypt limit, so 72 is only exact for ASCII). The API accepts up to 200 characters at the bean-validation layer and then rejects over-72-byte values with 400." },
+        "password": { "type": "string", "minLength": 8, "maxLength": 72, "description": "Trimmed by the server. At least 8 characters; at most 72 UTF-8 bytes (BCrypt limit, so 72 is only exact for ASCII). Bean validation enforces 8..72 characters (field-map 400); over-72-byte multi-byte values are rejected by the service with 400." },
         "plan": { "enum": ["FREE", "STARTER", "PRO"], "description": "Optional, defaults to FREE. Records intent only; no billing." }
       }
     },

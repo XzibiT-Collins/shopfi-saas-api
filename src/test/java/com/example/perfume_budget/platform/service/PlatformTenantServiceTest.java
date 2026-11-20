@@ -80,6 +80,7 @@ class PlatformTenantServiceTest {
         Tenant t = tenant(slug, status);
         when(tenants.findBySlug(slug)).thenReturn(Optional.of(t));
         when(tenants.findById(1L)).thenReturn(Optional.of(t));
+        when(tenants.lockById(1L)).thenReturn(Optional.of(t)); // PLAT-02c: reconcile locks the tenant row first
         return t;
     }
 
@@ -413,6 +414,7 @@ class PlatformTenantServiceTest {
         assertThat(a.getPreviousStatus()).isEqualTo(TenantStatus.ACTIVE);
         assertThat(a.getNewStatus()).isEqualTo(TenantStatus.ACTIVE);
         verifyNoInteractions(saga);
+        verify(tenants).lockById(1L); // PLAT-02c: reconcile serialises on the tenant row
     }
 
     @Test

@@ -43,6 +43,17 @@ class PlatformAdminBootstrapTest {
         verify(repo, never()).saveAndFlush(any());
     }
 
+    /** PLAT-03 S10: a long but trivially repetitive password is refused. */
+    @Test
+    void triviallyRepetitivePasswordIsRefused() {
+        for (String weak : new String[]{"a".repeat(20), "ab".repeat(10), "abc".repeat(8), "abcd".repeat(6)}) {
+            assertThat(boot("root@x.test", weak).bootstrap()).as(weak).isFalse();
+        }
+        verify(repo, never()).saveAndFlush(any());
+        when(repo.existsByEmailIgnoreCase("root@x.test")).thenReturn(false);
+        assertThat(boot("root@x.test", "abcde".repeat(3)).bootstrap()).isTrue();
+    }
+
     @Test
     void createsActiveAdmin_withBcryptHash_neverThePlaintext() {
         when(repo.existsByEmailIgnoreCase("root@x.test")).thenReturn(false);

@@ -2,6 +2,7 @@ package com.example.perfume_budget.integration;
 
 import com.example.perfume_budget.PerfumeBudgetApplication;
 import com.example.perfume_budget.support.PostgresTestDatabase;
+import com.example.perfume_budget.support.TestDatabaseGuard;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 
 import java.util.Map;
@@ -31,7 +32,7 @@ public final class IntegrationServer {
         int apiPort = port("INTEG_API_PORT", 4910);
         int controlPort = port("INTEG_CONTROL_PORT", 4911);
         int frontendPort = port("INTEG_FRONTEND_PORT", 3910);
-        requireDisposableDatabase(PostgresTestDatabase.URL);
+        TestDatabaseGuard.requireDisposable(PostgresTestDatabase.URL);
         PostgresTestDatabase.dropAppSchemas();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
@@ -75,17 +76,11 @@ public final class IntegrationServer {
                         Map.entry("onboarding.resend-ip.capacity", "1000"),
                         Map.entry("onboarding.resend-email.capacity", "1000"),
                         Map.entry("application.auth.rate-limit.resend-otp-ip.capacity", "1000"),
-                        Map.entry("application.auth.rate-limit.resend-otp-email.capacity", "1000"));
-    }
-
-    /** The launcher drops every app schema of the database it is pointed at: refuse anything not clearly a test DB. */
-    static void requireDisposableDatabase(String jdbcUrl) {
-        String path = jdbcUrl.replaceFirst("\\?.*$", "");
-        String name = path.substring(path.lastIndexOf('/') + 1).toLowerCase();
-        if (!name.contains("test") && !name.contains("integ")) {
-            throw new IllegalStateException("IntegrationServer drops the app schemas of its database: refusing '" + name
-                    + "' (the database name must contain \"test\" or \"integ\"; see SHOPFI_TEST_DB_URL)");
-        }
+                        Map.entry("application.auth.rate-limit.resend-otp-email.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.resend-otp-email-ceiling.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.forgot-password-ip.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.forgot-password-email.capacity", "1000"),
+                        Map.entry("application.auth.rate-limit.resend-login-otp-ip.capacity", "1000"));
     }
 
     private static int port(String env, int fallback) {

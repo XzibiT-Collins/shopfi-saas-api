@@ -395,4 +395,13 @@ class TenantOriginPolicyTest {
         assertThat(p.isAllowed("https://acme.shopfi.test")).isFalse();
         verify(registry, times(1)).findBySlug("acme");
     }
+
+    /** DOMAIN-01c AC3: the per-client budget key is bounded (a long key would be an ~8 KB map key x 10,000). */
+    @Test
+    void theClientKeyIsBounded() {
+        assertThat(TenantOriginPolicy.boundedClientKey(null)).isEqualTo("-");
+        assertThat(TenantOriginPolicy.boundedClientKey("203.0.113.9")).isEqualTo("203.0.113.9");
+        assertThat(TenantOriginPolicy.boundedClientKey("x".repeat(8000))).hasSize(TenantOriginPolicy.MAX_CLIENT_KEY_LENGTH);
+        assertThat(TenantOriginPolicy.boundedClientKey("y".repeat(64))).hasSize(64);
+    }
 }

@@ -27,6 +27,7 @@ import java.util.Locale;
 public class PlatformAdminBootstrap implements ApplicationRunner {
 
     static final int MIN_PASSWORD_LENGTH = 12;
+    static final int MIN_DISTINCT_CHARACTERS = 5;
     static final int MAX_PASSWORD_BYTES = 72;
 
     private final PlatformAdminRepository admins;
@@ -66,6 +67,12 @@ public class PlatformAdminBootstrap implements ApplicationRunner {
         if (password.length() < MIN_PASSWORD_LENGTH || password.getBytes(StandardCharsets.UTF_8).length > MAX_PASSWORD_BYTES) {
             log.warn("PLATFORM_ADMIN_PASSWORD must be {} to {} bytes; platform admin bootstrap skipped",
                     MIN_PASSWORD_LENGTH, MAX_PASSWORD_BYTES);
+            return false;
+        }
+        if (password.codePoints().distinct().count() < MIN_DISTINCT_CHARACTERS) {
+            // PLAT-03 S10: 12 x "a" or "abababababab" pass a bare length check
+            log.warn("PLATFORM_ADMIN_PASSWORD must contain at least {} different characters; platform admin bootstrap skipped",
+                    MIN_DISTINCT_CHARACTERS);
             return false;
         }
         if (admins.existsByEmailIgnoreCase(normalized)) {

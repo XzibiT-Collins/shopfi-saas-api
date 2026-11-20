@@ -40,8 +40,22 @@ class ClientIpsTest {
         assertThat(ClientIps.rateLimitKey(req("fe80::1%eth0"))).isEqualTo("fe80:0000:0000:0000::/64");
         assertThat(ClientIps.rateLimitKey(req("::ffff:192.0.2.5"))).isEqualTo("192.0.2.5");
         assertThat(ClientIps.rateLimitKey(req("::1"))).isEqualTo("0000:0000:0000:0000::/64");
-        assertThat(ClientIps.rateLimitKey(req("not:an:ip:at:all:zz"))).isEqualTo("not:an:ip:at:all:zz");
+        assertThat(ClientIps.rateLimitKey(req("not:an:ip:at:all:zz"))).isEqualTo("invalid");
         assertThat(ClientIps.rateLimitKey(req(null))).isEqualTo("unknown");
         assertThat(ClientIps.rateLimitKey(req("  "))).isEqualTo("unknown");
+    }
+
+    /** PROV-05 AC2: ports, brackets, garbage and markup in the container-resolved address never become a key / stored value. */
+    @Test
+    void onlyIpLiteralsSurviveAsTheClientAddress() {
+        for (String bad : new String[]{"1.2.3.4:8080", "[::1]", "[2001:db8::1]:443", "<script>alert(1)</script>", "evil.example.com",
+                "1.2.3", "1.2.3.4.5", "256.1.1.1", "01.2.3.4x", "1.2.3.4, 5.6.7.8", "::1%", "fe80::1%bad zone", "a".repeat(5000),
+                "12345::1", "2001:db8::1::2"}) {
+            assertThat(ClientIps.clientIp(req(bad))).as(bad).isEqualTo("invalid");
+            assertThat(ClientIps.rateLimitKey(req(bad))).as(bad).isEqualTo("invalid");
+        }
+        for (String good : new String[]{"203.0.113.9", "0.0.0.0", "255.255.255.255", "2001:db8::1", "::1", "fe80::1%eth0", "::ffff:192.0.2.5"}) {
+            assertThat(ClientIps.clientIp(req(good))).as(good).isEqualTo(good);
+        }
     }
 }

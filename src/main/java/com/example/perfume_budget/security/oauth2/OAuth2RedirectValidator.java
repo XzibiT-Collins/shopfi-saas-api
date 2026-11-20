@@ -83,13 +83,32 @@ public class OAuth2RedirectValidator {
         return (base == null || base.isBlank()) ? null : slug + "." + base.toLowerCase();
     }
 
-    private String hostFromUrl(String value) {
+    /**
+     * AUTH-02 AC2: the host of a redirect URL, or null unless the URL is a plain web URL: scheme {@code https} (or
+     * {@code http} only in dev: header resolution on, or a localhost host), no user-info
+     * ({@code https://evil.com@acme.shopfi.test/}), and no port other than the default one (any port in dev). A
+     * host-only check accepted {@code javascript://acme.shopfi.test/%0aalert(1)}.
+     */
+    String hostFromUrl(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }
         try {
-            String host = URI.create(value).getHost();
-            return host != null ? host.toLowerCase() : null;
+            URI uri = URI.create(value);
+            String host = uri.getHost();
+            if (host == null || uri.getRawUserInfo() != null) {
+                return null;
+            }
+            host = host.toLowerCase();
+            boolean dev = properties.getHeaderResolution().isEnabled() || host.equals("localhost") || host.endsWith(".localhost");
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
+            boolean https = scheme.equals("https");
+            if (!https && !(scheme.equals("http") && dev)) {
+                return null;
+            }
+            int port = uri.getPort();
+            boolean portOk = port == -1 || (https && port == 443) || dev;
+            return portOk ? host : null;
         } catch (IllegalArgumentException e) {
             return null;
         }

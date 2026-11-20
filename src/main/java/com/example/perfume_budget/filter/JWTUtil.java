@@ -46,6 +46,15 @@ public class JWTUtil {
     @Value("${application.security.jwt.refresh-token.untyped-grace-until:}")
     private String untypedRefreshGraceUntil;
 
+    /**
+     * FIX-G (FIX-B low): the access-token lifetime in force when the legacy untyped tokens were minted, in seconds.
+     * The untyped-grace lifetime check compares against {@code max(this, current access TTL)}, so lowering
+     * {@code application.security.jwt.expiration} during the grace window cannot turn an old untyped ACCESS token
+     * into an accepted refresh token. Blank/invalid/non-positive (default) = the current access TTL only.
+     */
+    @Value("${application.security.jwt.refresh-token.untyped-grace-legacy-access-ttl-seconds:}")
+    private String untypedGraceLegacyAccessTtlSeconds;
+
     private volatile Clock clock = Clock.systemUTC();
 
     /** Test support. */
@@ -183,7 +192,19 @@ public class JWTUtil {
             return false;
         }
         long lifetimeSeconds = (expiration.getTime() - issuedAt.getTime()) / 1000;
-        return lifetimeSeconds > accessTokenTtlSeconds();
+        return lifetimeSeconds > Math.max(accessTokenTtlSeconds(), legacyAccessTtlSeconds());
+    }
+
+    private long legacyAccessTtlSeconds() {
+        if (untypedGraceLegacyAccessTtlSeconds == null || untypedGraceLegacyAccessTtlSeconds.isBlank()) {
+            return 0;
+        }
+        try {
+            return Math.max(0, Long.parseLong(untypedGraceLegacyAccessTtlSeconds.strip()));
+        } catch (NumberFormatException e) {
+            log.warn("Ignoring a malformed untyped-grace-legacy-access-ttl-seconds value");
+            return 0;
+        }
     }
 
     private boolean untypedGraceOpen() {

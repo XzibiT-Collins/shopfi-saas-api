@@ -826,6 +826,35 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         assertThat(phases("p2-two-c")).isEqualTo("RECONCILE");
     }
 
+    /** PLAT-02c: reconcile takes the tenant row lock, so a concurrent reconcile waits instead of writing a second RECONCILE row. */
+    @Test
+    void reconcileWaitsForTheTenantRowLock() throws Exception {
+        mk("p2-rlock", TenantStatus.ACTIVE, true);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try (Connection holder = PostgresTestDatabase.connect()) {
+            holder.setAutoCommit(false);
+            try (var st = holder.createStatement()) {
+                // FOR NO KEY UPDATE does not block the audit insert's FK check, but conflicts with FOR UPDATE: only the
+                // reconcile's own row lock can make the call wait
+                st.execute("SELECT id FROM master.tenants WHERE slug = 'p2-rlock' FOR NO KEY UPDATE");
+            }
+            Future<?> call = pool.submit(() -> noGraceService().approve("p2-rlock", principal()));
+            try {
+                call.get(1500, java.util.concurrent.TimeUnit.MILLISECONDS);
+                throw new AssertionError("reconcile finished while another transaction held the tenant row lock");
+            } catch (java.util.concurrent.TimeoutException expected) {
+                // still waiting for the lock
+            }
+            assertThat(signupRows("p2-rlock")).as("nothing repaired while waiting").isEqualTo(1);
+            holder.commit();
+            call.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(signupRows("p2-rlock")).isZero();
+        assertThat(phases("p2-rlock")).isEqualTo("RECONCILE");
+    }
+
     @Test
     void laterSuspendAndReactivateOutcomes_doNotCompleteAnOpenApproveIntent() throws Exception {
         mk("p2-f3", TenantStatus.PENDING, true);

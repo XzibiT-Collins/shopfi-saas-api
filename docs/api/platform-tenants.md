@@ -379,7 +379,7 @@ BCrypt hash for a tenant whose owner already exists).
   and **the tamper resistance is NOT enforced against a compromised application credential or database administrator**.
   Splitting migrations/DDL from a runtime role with only `INSERT, SELECT` on `tenant_audit_log` is the intended hardening, but
   it is NOT deliverable with the current code and must not be assumed in deployment; it is tracked as a separate security
-  item (SEC-01). Until then, protect the audit trail with database-side controls (restricted access to the credential,
+  item (SEC-01c). Until then, protect the audit trail with database-side controls (restricted access to the credential,
   database audit logging, off-host log shipping).
 * **Single instance.** After every action the CORS decision cache is dropped with `TenantOriginPolicy.invalidateAll()`, which
   clears the cache of the JVM that handled the request only. With more than one API instance the other instances converge only

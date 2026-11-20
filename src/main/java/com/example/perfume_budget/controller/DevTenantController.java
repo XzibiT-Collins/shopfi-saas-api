@@ -50,6 +50,12 @@ public class DevTenantController {
 
     public record DevCreateTenantRequest(String slug, String displayName, String ownerEmail,
                                          String ownerPassword, String ownerFullName) {
+        /** PROV-04 AC3: the password never reaches a log line through the record's default toString. */
+        @Override
+        public String toString() {
+            return "DevCreateTenantRequest[slug=" + slug + ", displayName=" + displayName + ", ownerEmail=" + ownerEmail
+                    + ", ownerPassword=***, ownerFullName=" + ownerFullName + "]";
+        }
     }
 
     public record DevTenantResponse(Long id, String slug, String schemaName, String status) {

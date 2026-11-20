@@ -55,6 +55,8 @@ class TenantSlugsTest {
             "acmé",        // e-acute
             "ａｃｍｅ", // fullwidth
             "ab", "", "   ",
+            "\u212Aiosk",    // PROV-04 AC3: Kelvin sign lowercases to ASCII 'k' ("kiosk")
+            "\u0130stanbul", // dotted capital I lowercases to "i" + combining dot
     })
     void rejectsInjectionAndMalformed(String slug) {
         assertThatThrownBy(() -> TenantSlugs.normalize(slug)).isInstanceOf(InvalidProvisioningRequestException.class);

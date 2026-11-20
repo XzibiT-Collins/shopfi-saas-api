@@ -273,6 +273,13 @@ boot and again on JVM exit.
 | `SHOPFI_TEST_DB_PASSWORD` | `shopfi_test` (local throwaway credential) |
 | `SHOPFI_TEST_DB_REQUIRED` | unset: Postgres tests are skipped (with a reason) if the DB is unreachable; `true`: fail instead (use in CI) |
 
+**Test database guard.** Everything in the harness that drops the `master` / `tenant_template` / `tenant_*` schemas
+(`PostgresTestDatabase.dropAppSchemas`, the `IntegrationServer` launcher) first runs `TestDatabaseGuard`: the database
+name in `SHOPFI_TEST_DB_URL` must start with `shopfi_test` or end with `_test` / `_integ` (a name that merely contains
+"test", such as `latest_orders`, is refused) and the host must be `localhost` / `127.0.0.1` / `::1`. For a test
+database on another host set `SHOPFI_TEST_DB_ALLOW_REMOTE=true` (this never relaxes the name rule). A refused URL fails
+immediately with a "Refusing to drop schemas" message, before any connection is opened.
+
 No Postgres on the host? `docker compose up -d postgres` (see `docker-compose.yml`) and point
 `SHOPFI_TEST_DB_URL/USER/PASSWORD` at it (create a database such as `shopfi_test` first). Testcontainers is not used.
 
@@ -300,7 +307,7 @@ Required (no default):
 | Payments | `PLATFORM_ENCRYPTION_KEY`, `PLATFORM_API_BASE_URL` |
 | Cloudinary | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` |
 | Seed admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD` |
-| Platform super-admin (first login) | `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` (12 to 72 bytes), optional `PLATFORM_ADMIN_FULL_NAME`. Insert-only: creates the first SUPER_ADMIN at boot if that email does not exist, never changes an existing one (rotate a password in the DB, not via env). Unset or empty = bootstrap skipped with one WARN (no DB access), same in dev and prod; after the first super-admin exists both variables can be removed from the environment, and changing them later never alters an existing admin. Login: `POST /api/v1/platform/auth/login`. |
+| Platform super-admin (first login) | `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` (12 to 72 bytes, at least 5 different characters), optional `PLATFORM_ADMIN_FULL_NAME`. Insert-only: creates the first SUPER_ADMIN at boot if that email does not exist, never changes an existing one (rotate a password in the DB, not via env). Unset or empty = bootstrap skipped with one WARN (no DB access), same in dev and prod; after the first super-admin exists both variables can be removed from the environment, and changing them later never alters an existing admin. Login: `POST /api/v1/platform/auth/login`. |
 | URLs | `FRONTEND_CHANGE_PASSWORD_URL` |
 | CORS | `PLATFORM_CORS_ALLOWED_ORIGINS` (platform-admin console origin(s); empty = the platform API is unreachable from browsers), optional `CORS_ALLOWED_ORIGINS` (non-tenant origins only: tenant subdomains and custom domains are allowed automatically from the tenant registry). See `docs/api/cors.md`. |
 | Tenancy | `TENANT_BASE_DOMAIN` (e.g. `shopfi.app`, tenants are `<slug>.TENANT_BASE_DOMAIN`), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts) |
@@ -370,6 +377,13 @@ if this regresses). IPv6 clients are bucketed by their /64.
   the addresses of ALL your proxies and nothing else (full-match regex, e.g. `10\..*|203\.0\.113\.\d+`). If you
   forget one, all clients collapse into that proxy's address (shared bucket: safe but too strict); if you list too
   much (e.g. `.*`), clients can spoof again.
+- Local docker-compose / Docker Desktop / a shared LAN or VPN (PROV-05 AC1): the default regex trusts every private and
+  loopback address, and in those setups other containers, the Docker bridge gateway or neighbours on the LAN are in
+  those ranges. Anything that can reach the port from a private address is then treated as a proxy and its
+  `X-Forwarded-For` is honoured, so it can pick its own rate-limit bucket. Never expose a dev/compose instance to an
+  untrusted LAN, and in production set `TRUSTED_PROXY_REGEX` to the exact proxy addresses whenever the router's peer
+  range is known (the shipped default is only right for a single Render router on a private network). The resolved
+  address is always validated as an IPv4/IPv6 literal (`invalid` bucket otherwise).
 - Direct exposure without any proxy: the peer is the client, headers are ignored. Local `curl` from the same host is
   treated as a trusted proxy in dev, so a hand-set `X-Forwarded-For` is honoured there only.
 - Rate-limit state is per JVM instance and bounded (`onboarding.max-tracked-keys`, default 10000 per limiter; beyond
@@ -405,8 +419,8 @@ SHOPFI_TEST_DB_URL=jdbc:postgresql://localhost:5432/<dedicated db> \
 ```
 
 The API binds to 127.0.0.1 only (`server.address`): it runs with the fixed test JWT secret and published fixture
-credentials. The launcher refuses to start unless the database name in `SHOPFI_TEST_DB_URL` contains `test` or `integ`
-(it drops every `master` / `tenant_*` schema there); `SHOPFI_TEST_DB_USER` / `SHOPFI_TEST_DB_PASSWORD` override the role.
+credentials. The launcher refuses to start unless `SHOPFI_TEST_DB_URL` passes the shared test-database guard (see
+"Test database guard" above; it drops every `master` / `tenant_*` schema there); `SHOPFI_TEST_DB_USER` / `SHOPFI_TEST_DB_PASSWORD` override the role.
 Seeded extra coupons: `EXPIRED10`, `INACTIVE10`, `USEDUP10` (all refused).
 
 API on `INTEG_API_PORT` (4910), the frontend port the Paystack stub sends shoppers back to on `INTEG_FRONTEND_PORT` (3910), test control + Paystack stub on `INTEG_CONTROL_PORT` (4911; `/__test/mail`, `/__test/otp`,

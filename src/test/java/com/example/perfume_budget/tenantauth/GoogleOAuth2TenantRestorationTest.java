@@ -228,7 +228,8 @@ class GoogleOAuth2TenantRestorationTest extends AbstractTenantWebTest {
             successHandler.onAuthenticationSuccess(req, resp, new TestingAuthenticationToken(user, null));
             assertThat(resp.getRedirectedUrl()).as("redirect for " + bad)
                     .doesNotContain("evil.example").doesNotContain(BRAVO_DOMAIN)
-                    .startsWith("http://localhost:3000/oauth2/redirect"); // configured fallback
+                    // AUTH-02 AC4: the tenant's OWN origin (verified custom domain) at the fallback's path, not the global fallback
+                    .startsWith("https://" + ACME_DOMAIN + "/oauth2/redirect");
         }
     }
 

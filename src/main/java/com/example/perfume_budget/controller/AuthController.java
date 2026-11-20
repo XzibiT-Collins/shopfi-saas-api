@@ -44,14 +44,16 @@ public class AuthController {
 
     @PostMapping("/resend-otp")
     public ResponseEntity<CustomApiResponse<?>> resendOtp(@Valid @RequestBody EmailRequest request, HttpServletRequest httpRequest){
-        // Throttle on the input (per IP and per tenant+email) before any account lookup.
+        // Throttle on the input (per IP, per IP+tenant+email and a per-email ceiling) before any account lookup.
         authRateLimiter.checkResendOtp(ClientIps.rateLimitKey(httpRequest), request.email());
         authService.resendRegistrationOtp(request.email());
         return ResponseEntity.ok(CustomApiResponse.success("OTP resent successfully"));
     }
 
     @PostMapping("/resend-login-otp")
-    public ResponseEntity<CustomApiResponse<?>> resendLoginOtp(@Valid @RequestBody LoginOtpResendRequest request){
+    public ResponseEntity<CustomApiResponse<?>> resendLoginOtp(@Valid @RequestBody LoginOtpResendRequest request,
+                                                               HttpServletRequest httpRequest){
+        authRateLimiter.checkResendLoginOtp(ClientIps.rateLimitKey(httpRequest));
         authService.resendLoginOtp(request);
         return ResponseEntity.ok(CustomApiResponse.success("Login OTP resent successfully"));
     }
@@ -85,7 +87,9 @@ public class AuthController {
     }
 
     @PostMapping("/forgot-password")
-    public ResponseEntity<CustomApiResponse<Void>> forgotPassword(@Valid @RequestBody EmailRequest request){
+    public ResponseEntity<CustomApiResponse<Void>> forgotPassword(@Valid @RequestBody EmailRequest request,
+                                                                  HttpServletRequest httpRequest){
+        authRateLimiter.checkForgotPassword(ClientIps.rateLimitKey(httpRequest), request.email());
         authService.forgotPassword(request.email());
         return ResponseEntity.ok(CustomApiResponse.success("Password reset email sent"));
     }

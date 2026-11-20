@@ -425,13 +425,24 @@ public class PlatformTenantService {
 
     /**
      * A retried approve/reprovision on an ACTIVE tenant: repair what a crash after the saga may have left. In ONE
-     * transaction: delete a leftover signup row (BCrypt hash) and, if a hash was deleted or the newest INTENT has no later
-     * OUTCOME/RECONCILE row; nothing is touched while the newest INTENT is younger than the grace period without an OUTCOME (an in-flight winner is not raced), append a RECONCILE row
-     * (ACTIVE -> ACTIVE) naming the retrying admin. Nothing to repair: nothing written (plain idempotent no-op).
-     * A failure here never changes the response of the no-op.
+     * transaction, holding the tenant row lock:
+     * <ol>
+     *   <li>nothing is touched while the newest INTENT is younger than the grace period and has no OUTCOME (an in-flight
+     *       winner is not raced);</li>
+     *   <li>otherwise delete a leftover signup row (BCrypt hash);</li>
+     *   <li>if a hash was deleted, or the newest INTENT has no later OUTCOME/RECONCILE row, append a RECONCILE row
+     *       (ACTIVE -> ACTIVE) naming the retrying admin.</li>
+     * </ol>
+     * Nothing to repair: nothing written (plain idempotent no-op). A failure here never changes the response of the no-op.
      */
-    private void reconcile(PlatformPrincipal actor, Tenant tenant, TenantAction action) {
-        bestEffort("reconcile", tenant, () -> masterTx.executeWithoutResult(s -> {
+    private void reconcile(PlatformPrincipal actor, Tenant requested, TenantAction action) {
+        bestEffort("reconcile", requested, () -> masterTx.executeWithoutResult(s -> {
+            // PLAT-02c: serialise concurrent reconciles of one tenant on its row (SELECT ... FOR UPDATE) so two retries
+            // cannot both see "no RECONCILE row yet" and write two; the loser re-reads the winner's committed rows
+            Tenant tenant = tenantRepository.lockById(requested.getId()).orElse(null);
+            if (tenant == null) {
+                return;
+            }
             TenantAuditLog intent = auditRepository
                     .findFirstByTenantIdAndPhaseOrderByIdDesc(tenant.getId(), TenantAuditPhase.INTENT).orElse(null);
             // Only an OUTCOME of the SAME action and starting status, written after that INTENT, completes it (a later

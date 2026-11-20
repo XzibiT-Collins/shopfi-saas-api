@@ -22,7 +22,9 @@ import java.util.List;
  * Set {@code SHOPFI_TEST_DB_REQUIRED=true} to fail (instead of skip) when the database is unreachable.
  *
  * <p>Only the schemas the app creates ({@code master}, {@code tenant_template}, {@code tenant_*}) are ever
- * dropped, so point this at a dedicated database, never at one holding real data.
+ * dropped, so point this at a dedicated database, never at one holding real data. {@link TestDatabaseGuard} enforces
+ * it: the database name must start with {@code shopfi_test} or end with {@code _test} / {@code _integ} and the host
+ * must be local (override: {@code SHOPFI_TEST_DB_ALLOW_REMOTE=true}); otherwise no DROP is issued.
  */
 public final class PostgresTestDatabase {
 
@@ -57,7 +59,13 @@ public final class PostgresTestDatabase {
 
     /** Drops every schema the application owns, so the next boot starts from an empty database. */
     public static void dropAppSchemas() {
-        try (Connection c = connect(); Statement st = c.createStatement()) {
+        dropAppSchemas(URL, USER, PASSWORD);
+    }
+
+    /** Guard first (no connection is opened for a refused URL, so no DROP can be issued), then drop. */
+    static void dropAppSchemas(String url, String user, String password) {
+        TestDatabaseGuard.requireDisposable(url);
+        try (Connection c = DriverManager.getConnection(url, user, password); Statement st = c.createStatement()) {
             List<String> schemas = new ArrayList<>();
             try (ResultSet rs = st.executeQuery(
                     "SELECT schema_name FROM information_schema.schemata "

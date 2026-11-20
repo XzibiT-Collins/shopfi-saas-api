@@ -47,6 +47,10 @@ public class TenantSchemaMigrator {
 
     /** Applies (and creates if absent) the per-tenant template migrations into {@code schemaName}. */
     public void migrateTenant(String schemaName) {
+        // PROV-04 AC3: validate before the name reaches Flyway (which creates the schema); the neutral template is allowed
+        if (!TenantContext.DEFAULT_SCHEMA.equals(schemaName)) {
+            requireTenantSchema(schemaName);
+        }
         Flyway.configure()
                 .dataSource(dataSource)
                 .schemas(schemaName)
@@ -77,6 +81,14 @@ public class TenantSchemaMigrator {
     /** {@code CREATE SCHEMA IF NOT EXISTS} for a tenant schema (auto-committed DDL, outside any JPA tx). */
     public void createTenantSchema(String schemaName) {
         runDdl("CREATE SCHEMA IF NOT EXISTS " + quote(requireTenantSchema(schemaName)));
+    }
+
+    /**
+     * PROV-04 AC2: {@code CREATE SCHEMA} WITHOUT {@code IF NOT EXISTS} for a brand-new registry row: a schema that already
+     * exists with no registry row is an orphan (or someone else's data), never adopted or migrated into.
+     */
+    public void createNewTenantSchema(String schemaName) {
+        runDdl("CREATE SCHEMA " + quote(requireTenantSchema(schemaName)));
     }
 
     /** Saga compensation: {@code DROP SCHEMA IF EXISTS ... CASCADE}; idempotent. */

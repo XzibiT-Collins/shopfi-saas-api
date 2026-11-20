@@ -3,7 +3,7 @@ package com.example.perfume_budget.platform.service;
 import com.example.perfume_budget.events.UserRegistrationEvent;
 import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.exception.DuplicateResourceException;
-import com.example.perfume_budget.exception.RateLimitExceededException;
+import com.example.perfume_budget.exception.RetryAfterApiCodeException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.platform.dto.OnboardingStatusResponse;
 import com.example.perfume_budget.platform.dto.TenantResendRequest;
@@ -177,7 +177,10 @@ class TenantOnboardingServiceTest {
 
         // locked: even the right code is refused and provisioning is not started
         assertThatThrownBy(() -> service.verify(new TenantVerifyRequest("acme", "owner@example.com", pendingOtp)))
-                .isInstanceOf(RateLimitExceededException.class);
+                .isInstanceOfSatisfying(RetryAfterApiCodeException.class, e -> {
+                    assertThat(e.getCode()).isEqualTo("OTP_LOCKED"); // API-01 AC0: not the busy code
+                    assertThat(e.getRetryAfterSeconds()).isGreaterThan(30);
+                });
         verifyNoInteractions(executor);
     }
 
@@ -219,7 +222,11 @@ class TenantOnboardingServiceTest {
         pendingSignup(null);
         doThrow(new RejectedExecutionException()).when(executor).execute(any());
         assertThatThrownBy(() -> service.verify(new TenantVerifyRequest("acme", "owner@example.com", pendingOtp)))
-                .isInstanceOf(RateLimitExceededException.class);
+                .isInstanceOfSatisfying(RetryAfterApiCodeException.class, e -> {
+                    assertThat(e.getCode()).isEqualTo("ONBOARDING_BUSY");
+                    assertThat(e.getRetryAfterSeconds()).isEqualTo(30);
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.TOO_MANY_REQUESTS);
+                });
         verify(signups).clearVerified(7L);
     }
 
@@ -252,7 +259,7 @@ class TenantOnboardingServiceTest {
         TenantSignup s = pendingSignup(null);
         doThrow(new RejectedExecutionException()).doNothing().when(executor).execute(any());
         TenantVerifyRequest req = new TenantVerifyRequest("acme", "owner@example.com", pendingOtp);
-        assertThatThrownBy(() -> service.verify(req)).isInstanceOf(RateLimitExceededException.class);
+        assertThatThrownBy(() -> service.verify(req)).isInstanceOf(RetryAfterApiCodeException.class);
         assertThat(service.verify(req).status()).isEqualTo("PROVISIONING"); // same code works again
     }
 

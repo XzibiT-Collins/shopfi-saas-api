@@ -62,6 +62,10 @@ import java.util.concurrent.RejectedExecutionException;
 @Service
 public class TenantOnboardingService {
 
+    /** API-01 AC0: stable {@code data.code} of the two verify 429s (a 15 minute lockout vs a 30 second executor-busy). */
+    public static final String CODE_OTP_LOCKED = "OTP_LOCKED";
+    public static final String CODE_BUSY = "ONBOARDING_BUSY";
+
     static final String GENERIC_VERIFY_FAILURE = "Invalid or expired verification code";
     private static final int MIN_PASSWORD = 8;
     private static final int MAX_PASSWORD_BYTES = 72; // BCrypt silently truncates beyond this
@@ -166,7 +170,9 @@ public class TenantOnboardingService {
             throw new BadRequestException(GENERIC_VERIFY_FAILURE);
         }
         if (r.outcome() == Outcome.LOCKED) {
-            throw new RateLimitExceededException("Too many incorrect codes. Try again later.", r.retryAfter());
+            throw new com.example.perfume_budget.exception.RetryAfterApiCodeException(
+                    org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, CODE_OTP_LOCKED,
+                    "Too many incorrect codes. Try again later.", r.retryAfter());
         }
         try {
             onboardingExecutor.execute(() -> runProvisioning(r.request(), r.tenantId()));
@@ -181,7 +187,8 @@ public class TenantOnboardingService {
                     signupRepository.saveAndFlush(su);
                 });
             });
-            throw new RateLimitExceededException("Onboarding is busy, retry shortly", 30);
+            throw new com.example.perfume_budget.exception.RetryAfterApiCodeException(
+                    org.springframework.http.HttpStatus.TOO_MANY_REQUESTS, CODE_BUSY, "Onboarding is busy, retry shortly", 30);
         }
         return new OnboardingStatusResponse(slug, TenantStatus.PROVISIONING.name(), null, null);
     }

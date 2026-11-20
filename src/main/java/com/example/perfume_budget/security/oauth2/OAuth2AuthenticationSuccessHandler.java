@@ -28,6 +28,7 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
 
     private final AuthCookieUtil authCookieUtil;
     private final OAuth2RedirectValidator redirectValidator;
+    private final com.example.perfume_budget.tenancy.TenantLinkBuilder tenantLinkBuilder;
 
     @Value("${application.oauth2.authorized-redirect-uris}")
     private String fallbackRedirectUri;
@@ -51,12 +52,12 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
 
         // Open-redirect gate (defense in depth): only follow the redirect if its host still
         // belongs to the authenticated tenant; otherwise use the safe configured fallback.
-        String safeRedirect = fallbackRedirectUri;
-        if (redirectUri != null && redirectValidator.isAllowedForTenant(redirectUri, TenantContext.getSlug())) {
+        String slug = TenantContext.getSlug();
+        String safeRedirect = tenantFallback(slug);
+        if (redirectUri != null && redirectValidator.isAllowedForTenant(redirectUri, slug)) {
             safeRedirect = redirectUri;
         } else if (redirectUri != null) {
-            log.warn("Discarding untrusted OAuth2 redirect_uri for tenant {}: {}",
-                    TenantContext.getSlug(), redirectUri);
+            log.warn("Discarding untrusted OAuth2 redirect_uri for tenant {}: {}", slug, redirectUri);
         }
 
         String target = UriComponentsBuilder.fromUriString(safeRedirect)
@@ -65,5 +66,20 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
 
         log.info("OAuth2 success for user {}; redirecting to {}", user.getId(), target);
         getRedirectStrategy().sendRedirect(request, response, target);
+    }
+
+    /**
+     * AUTH-02 AC4 (like the failure handler): without a validated stashed redirect, a logged-in tenant lands on its OWN
+     * origin (verified custom domain or subdomain) at the configured fallback's path; the global fallback is used only
+     * when no tenant is known.
+     */
+    String tenantFallback(String slug) {
+        if (slug == null) {
+            return fallbackRedirectUri;
+        }
+        String path = UriComponentsBuilder.fromUriString(fallbackRedirectUri).build().getPath();
+        return tenantLinkBuilder.origin(slug)
+                .map(origin -> origin + (path == null ? "" : path))
+                .orElse(fallbackRedirectUri);
     }
 }

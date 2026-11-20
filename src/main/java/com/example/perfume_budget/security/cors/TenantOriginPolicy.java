@@ -170,13 +170,17 @@ public class TenantOriginPolicy {
         if (staticOrigins.contains(p.canonical())) {
             return true;
         }
-        return isActiveTenantOrigin(p, clientKey == null ? "-" : clientKey);
+        return isActiveTenantOrigin(p, boundedClientKey(clientKey));
     }
 
-    /** True if the origin is an ACTIVE tenant's subdomain or custom domain (no static list). */
-    public boolean isTenantOrigin(String origin) {
-        ParsedOrigin p = parse(origin);
-        return p != null && isActiveTenantOrigin(p, "-");
+    /** DOMAIN-01c AC3: the per-client budget key is a bounded string (it is a map key held for 10,000 clients). */
+    static final int MAX_CLIENT_KEY_LENGTH = 64;
+
+    static String boundedClientKey(String clientKey) {
+        if (clientKey == null) {
+            return "-";
+        }
+        return clientKey.length() <= MAX_CLIENT_KEY_LENGTH ? clientKey : clientKey.substring(0, MAX_CLIENT_KEY_LENGTH);
     }
 
     /** Whether the origin passes the scheme/port rules for tenant hosts (https and default port only in prod). */

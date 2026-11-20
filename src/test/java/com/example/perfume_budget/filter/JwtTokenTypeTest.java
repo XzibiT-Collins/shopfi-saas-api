@@ -96,6 +96,24 @@ class JwtTokenTypeTest {
         assertThat(u.isRefreshToken(untyped(1_000L))).isFalse();
     }
 
+    /** FIX-G: lowering the access TTL during the grace must not turn an old untyped 1 h ACCESS token into a refresh token. */
+    @Test
+    void theLegacyAccessTtlKeepsTheLifetimeRuleSoundWhenTheAccessTtlIsLoweredDuringTheGrace() {
+        JWTUtil u = util("2099-01-01T00:00:00Z");
+        ReflectionTestUtils.setField(u, "jwtAccessExpirationMs", 1_800_000L); // lowered from 1 h to 30 min
+        String oldUntypedAccess = untyped(3_600_000L);                       // minted when the access TTL was 1 h
+        assertThat(u.isRefreshToken(oldUntypedAccess)).as("without the setting the lowered TTL lets it through").isTrue();
+
+        ReflectionTestUtils.setField(u, "untypedGraceLegacyAccessTtlSeconds", "3600");
+        assertThat(u.isRefreshToken(oldUntypedAccess)).isFalse();
+        assertThat(u.isRefreshToken(untyped(86_400_000L))).as("a real legacy refresh token is unaffected").isTrue();
+
+        ReflectionTestUtils.setField(u, "untypedGraceLegacyAccessTtlSeconds", "garbage");
+        assertThat(u.isRefreshToken(oldUntypedAccess)).as("malformed value = current TTL only").isTrue();
+        ReflectionTestUtils.setField(u, "untypedGraceLegacyAccessTtlSeconds", "-5");
+        assertThat(u.isRefreshToken(untyped(86_400_000L))).isTrue();
+    }
+
     @Test
     void anUntypedTokenWithoutIssuedAtOrExpiryIsNotARefreshTokenEvenDuringTheGrace() {
         JWTUtil u = util("2099-01-01T00:00:00Z");

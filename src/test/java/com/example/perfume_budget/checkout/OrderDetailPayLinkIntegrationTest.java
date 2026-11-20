@@ -64,6 +64,27 @@ class OrderDetailPayLinkIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(r.getResponse().getHeaders("Cache-Control").toString()).doesNotContain("max-age=3");
     }
 
+    /** FIX-G (FIX-B low): the 404 (unknown / foreign order) and 401 (no cookie) variants are not cacheable either. */
+    @Test
+    void theNotFoundAndUnauthenticatedVariantsAreNotCacheableEither() throws Exception {
+        long p = product(acme, "Cache404", "50.00", 10);
+        Customer owner = ready("pl4a@acme.test", p, 1);
+        String n = ok(checkout(owner, "pl-key-0004", null)).get("orderNumber").asText();
+        Customer stranger = customer(acme, "pl4b@acme.test");
+
+        MvcResult foreign = detail(stranger, n);
+        assertThat(foreign.getResponse().getStatus()).isEqualTo(404);
+        assertThat(String.valueOf(foreign.getResponse().getHeader("Cache-Control"))).contains("no-store").doesNotContain("public");
+
+        MvcResult unknown = detail(owner, "ORD-DOES-NOT-EXIST");
+        assertThat(unknown.getResponse().getStatus()).isEqualTo(404);
+        assertThat(String.valueOf(unknown.getResponse().getHeader("Cache-Control"))).contains("no-store").doesNotContain("public");
+
+        MvcResult anon = mvc.perform(get("/api/v1/order/" + n).header("X-Tenant-ID", "acme")).andReturn();
+        assertThat(anon.getResponse().getStatus()).isEqualTo(401);
+        assertThat(String.valueOf(anon.getResponse().getHeader("Cache-Control"))).contains("no-store").doesNotContain("public");
+    }
+
     /** P3: the pay URL and its access code are never written to the application log (kills Y12). */
     @Test
     void theUrlAndItsAccessCodeAreNeverLogged(CapturedOutput out) throws Exception {
