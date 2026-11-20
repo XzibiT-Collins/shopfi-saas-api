@@ -23,7 +23,8 @@ class TestDatabaseGuardTest {
             "jdbc:postgresql://localhost:5432/shopfi_test_2?user=a&password=b",
             "jdbc:postgresql://localhost:5432/orders_test",
             "jdbc:postgresql://localhost:5432/Shop_INTEG",
-            "jdbc:postgresql://[::1]:5432/ci_test"})
+            "jdbc:postgresql://[::1]:5432/ci_test",
+            "jdbc:postgresql://localhost:5432/shopfi_test_ci42"})
     void disposableLocalDatabasesAreAccepted(String url) {
         assertThatCode(() -> TestDatabaseGuard.requireDisposable(url, NO_ENV)).doesNotThrowAnyException();
     }
@@ -37,6 +38,19 @@ class TestDatabaseGuardTest {
             "jdbc:postgresql://localhost:5432/integration_prod",
             "jdbc:postgresql://localhost:5432/test_prod",
             "jdbc:postgresql://localhost:5432/prod_test_backup",
+            // FIX-H (FIX-G review L6): a bare prefix match let these through
+            "jdbc:postgresql://localhost:5432/shopfi_testing",
+            "jdbc:postgresql://localhost:5432/shopfi_testprod",
+            "jdbc:postgresql://localhost:5432/shopfi_test_production",
+            "jdbc:postgresql://localhost:5432/shopfi_test_live",
+            "jdbc:postgresql://localhost:5432/shopfi_test_a_b",
+            "jdbc:postgresql://localhost:5432/shopfi_test__x",
+            "jdbc:postgresql://localhost:5432/shopfi_test-x",
+            "jdbc:postgresql://localhost:5432/shopfi_test_",
+            "jdbc:postgresql://localhost:5432/prod_test",
+            "jdbc:postgresql://localhost:5432/live_integ",
+            "jdbc:postgresql://localhost:5432/main_test",
+            "jdbc:postgresql://localhost:5432/shopfi_test_averyveryverylongsuffix1",
             "jdbc:postgresql://localhost:5432/",
             "jdbc:postgresql://localhost:5432",
             "jdbc:postgresql:shopfi_test",

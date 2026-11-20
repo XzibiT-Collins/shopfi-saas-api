@@ -38,7 +38,7 @@ class ThemeServiceUploadFlowTest {
         service = new ThemeServiceImpl(store, validator, new BrandingUploadService(storage), new ConcurrentMapCacheManager(), MAPPER);
         TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
         when(store.read()).thenReturn(new ThemeSnapshot(defaults().toString(), 1));
-        when(store.save(any(), any(), any())).thenAnswer(i -> new ThemeSnapshot(i.getArgument(0).toString(), 2));
+        when(store.save(any(), any(), any(), any())).thenAnswer(i -> new ThemeSnapshot(i.getArgument(0).toString(), 2));
     }
 
     @AfterEach
@@ -59,7 +59,7 @@ class ThemeServiceUploadFlowTest {
         ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(10, 10), "image/png", "l.png"), null, Map.of());
         assertThatThrownBy(() -> service.updateTheme(d, null, up, "admin")).isInstanceOf(ThemeValidationException.class);
         assertThat(storage.uploads).isEmpty();
-        verify(store, never()).save(any(), any(), any());
+        verify(store, never()).save(any(), any(), any(), any());
     }
 
     @Test
@@ -69,7 +69,7 @@ class ThemeServiceUploadFlowTest {
                 .isInstanceOfSatisfying(ThemeValidationException.class,
                         e -> assertThat(e.getErrors()).extracting(ThemeFieldError::code).contains("FILE_TYPE_NOT_ALLOWED"));
         assertThat(storage.uploads).isEmpty();
-        verify(store, never()).save(any(), any(), any());
+        verify(store, never()).save(any(), any(), any(), any());
     }
 
     @Test
@@ -80,7 +80,7 @@ class ThemeServiceUploadFlowTest {
         assertThat(saved.theme().at("/assets/logo/url").asText())
                 .matches("https://res\\.cloudinary\\.com/shopfi-demo/image/upload/v1/shopfi/acme/branding/logo-[0-9a-f]{16}\\.png");
         assertThat(saved.theme().at("/assets/logo/alt").asText()).isEqualTo("Acme");
-        verify(store).save(any(), eq(1L), eq("admin"));
+        verify(store).save(any(), eq(1L), eq("admin"), any());
     }
 
     @Test
@@ -123,7 +123,7 @@ class ThemeServiceUploadFlowTest {
         ObjectNode stored = defaults();
         stored.with("assets").putObject("background").put("url", OLD_BG);
         when(store.read()).thenReturn(new ThemeSnapshot(stored.toString(), 3));
-        doThrow(new ThemeConflictException("stale")).when(store).save(any(), any(), any());
+        doThrow(new ThemeConflictException("stale")).when(store).save(any(), any(), any(), any());
         ThemeUploads up = new ThemeUploads(null,
                 new BrandingFile(FakeBrandingStorage.jpeg(100, 100), "image/jpeg", "b.jpg"), Map.of());
 
@@ -153,7 +153,7 @@ class ThemeServiceUploadFlowTest {
         assertThat(storage.uploads).isEmpty();   // no Cloudinary call of any kind
         assertThat(storage.deletes).isEmpty();
         assertThat(storage.objects).containsOnlyKeys("shopfi/acme/branding/background");
-        verify(store, never()).save(any(), any(), any());
+        verify(store, never()).save(any(), any(), any(), any());
     }
 
     @Test
@@ -181,7 +181,7 @@ class ThemeServiceUploadFlowTest {
         storage.failUploads = true;
         ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(10, 10), "image/png", "x.png"), null, Map.of());
         assertThatThrownBy(() -> service.updateTheme(withLogoAlt(), null, up, "a")).isInstanceOf(BrandingStorageException.class);
-        verify(store, never()).save(any(), any(), any());
+        verify(store, never()).save(any(), any(), any(), any());
     }
 
     @Test
@@ -214,7 +214,34 @@ class ThemeServiceUploadFlowTest {
         ((ObjectNode) d.get("tokens").get("colors")).put("primary", "#0B3D2E");
         service.updateTheme(d, null);
         verify(store).save(argThat(n -> !n.has("revision") && !n.has("updatedAt")
-                && n.at("/tokens/colors/primary").asText().equals("#0b3d2e")), isNull(), any());
+                && n.at("/tokens/colors/primary").asText().equals("#0b3d2e")), isNull(), any(), any());
+    }
+
+    /** THEME-06 AC2: the save is told which stored image URLs the document was validated against. */
+    @Test
+    void saveReceivesTheImageUrlsOfTheVersionTheDocumentWasValidatedAgainst() {
+        ObjectNode stored = defaults();
+        stored.with("assets").putObject("background").put("url", OLD_BG);
+        when(store.read()).thenReturn(new ThemeSnapshot(stored.toString(), 3));
+        ObjectNode doc = defaults();
+        doc.with("assets").putObject("background").put("url", OLD_BG);
+        service.updateTheme(doc, null, ThemeUploads.NONE, "a");
+        verify(store).save(any(), isNull(), eq("a"), eq(java.util.Set.of(OLD_BG)));
+    }
+
+    /**
+     * THEME-06 AC3: an upload that succeeds remotely but then throws (timeout while reading the reply) is still deleted
+     * (its id is brand-new and nothing references it), and the theme is not saved.
+     */
+    @Test
+    void anUploadThatSucceededRemotelyButThrewIsCleanedUp() {
+        storage.failAfterStoring = true;
+        ThemeUploads up = new ThemeUploads(new BrandingFile(FakeBrandingStorage.png(10, 10), "image/png", "x.png"), null, Map.of());
+        assertThatThrownBy(() -> service.updateTheme(withLogoAlt(), null, up, "a")).isInstanceOf(BrandingStorageException.class);
+        assertThat(storage.uploads).singleElement().asString().matches("shopfi/acme/branding/logo-[0-9a-f]{16}");
+        assertThat(storage.deletes).containsExactly(storage.uploads.get(0));
+        assertThat(storage.objects).isEmpty();
+        verify(store, never()).save(any(), any(), any(), any());
     }
 
     @Test

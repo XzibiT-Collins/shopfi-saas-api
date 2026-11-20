@@ -84,6 +84,10 @@ final class MultipartBoundary {
             boolean quoted = i < ct.length() && ct.charAt(i) == '"';
             if (quoted) {
                 i++;
+                // THEME-07 AC4: a backslash inside quotes is unescaped HERE (\" and \\ become the next character), which can
+                // differ from how Tomcat's parameter parser reads the same quoted string. Benign: this guard only rejects
+                // boundaries that are invalid under THIS reading, and the controller reads the parts Tomcat parsed with
+                // Tomcat's own boundary, so the two readings never need to agree for a request to be handled safely.
                 while (i < ct.length() && ct.charAt(i) != '"') {
                     if (ct.charAt(i) == '\\' && i + 1 < ct.length()) {
                         i++;

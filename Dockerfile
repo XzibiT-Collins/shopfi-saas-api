@@ -26,6 +26,11 @@ COPY --from=builder /app/target/*.jar app.jar
 
 RUN chown appuser:appgroup app.jar
 
+# THEME-07 AC3: multipart spool directory owned by the service user, NOT under the shared, predictable /tmp (any local
+# user could pre-create /tmp/shopfi-multipart and make startup fail closed). See docs/api/theme-contract.md 5.1.
+RUN mkdir /app/shopfi-multipart && chown appuser:appgroup /app/shopfi-multipart && chmod 700 /app/shopfi-multipart
+ENV MULTIPART_TMP_DIR=/app/shopfi-multipart
+
 USER appuser
 
 EXPOSE 8080

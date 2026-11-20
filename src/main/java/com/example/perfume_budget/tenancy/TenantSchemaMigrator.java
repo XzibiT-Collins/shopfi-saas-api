@@ -91,6 +91,25 @@ public class TenantSchemaMigrator {
         runDdl("CREATE SCHEMA " + quote(requireTenantSchema(schemaName)));
     }
 
+    /**
+     * FIX-H (FIX-G review L1): true when the tenant schema exists right now. A retry of a FAILED / PENDING registry row
+     * uses it to learn whether {@code CREATE SCHEMA IF NOT EXISTS} will create the schema (this run owns it and may drop it
+     * when the retry fails) or adopt a leftover orphan (never dropped by a failed retry).
+     */
+    public boolean tenantSchemaExists(String schemaName) {
+        String name = requireTenantSchema(schemaName);
+        try (Connection connection = dataSource.getConnection();
+             java.sql.PreparedStatement ps = connection.prepareStatement(
+                     "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = ?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Schema lookup failed", e);
+        }
+    }
+
     /** Saga compensation: {@code DROP SCHEMA IF EXISTS ... CASCADE}; idempotent. */
     public void dropTenantSchema(String schemaName) {
         runDdl("DROP SCHEMA IF EXISTS " + quote(requireTenantSchema(schemaName)) + " CASCADE");

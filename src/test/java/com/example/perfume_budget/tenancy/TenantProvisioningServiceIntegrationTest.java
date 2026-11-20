@@ -367,6 +367,104 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
         }
     }
 
+    // ---- FIX-H (FIX-G review L1): orphan schema vs retry -------------------------------------------------------
+
+    private static void createOrphan(String schema) {
+        jdbc(c -> { try (var st = c.createStatement()) {
+            st.execute("CREATE SCHEMA " + schema);
+            st.execute("CREATE TABLE " + schema + ".keepme (id int)");
+            st.execute("INSERT INTO " + schema + ".keepme VALUES (7)");
+            return null; } });
+    }
+
+    private static void dropSchema(String schema) {
+        jdbc(c -> { try (var st = c.createStatement()) { st.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); return null; } });
+    }
+
+    private void failedRow(String slug) {
+        tenantRepository.save(Tenant.builder().slug(slug).displayName(slug).schemaName("tenant_" + slug)
+                .status(TenantStatus.FAILED).plan(TenantPlan.FREE).ownerEmail("owner@" + slug + ".test").build());
+    }
+
+    /** The user-visible L1 scenario: CREATE SCHEMA succeeded server-side but failed client-side; the retry must not be blocked. */
+    @Test
+    void aRetryAfterAFailedCreateSchemaIsNotBlockedByTheOrphanItLeftBehind() {
+        Mockito.doAnswer(inv -> { inv.callRealMethod(); throw new IllegalStateException("connection reset after CREATE"); })
+                .when(migrator).createNewTenantSchema("tenant_orphr");
+        try {
+            assertThatThrownBy(() -> service.provision(req("orphr"))).isInstanceOf(TenantProvisioningException.class);
+            assertThat(statusOf("orphr")).isEqualTo("FAILED");
+            assertThat(PostgresTestDatabase.schemaExists("tenant_orphr")).as("the failed run did not own it, so it is left").isTrue();
+            Mockito.reset(migrator);
+            assertThat(service.provision(req("orphr")).status()).isEqualTo(TenantStatus.ACTIVE);
+            assertThat(statusOf("orphr")).isEqualTo("ACTIVE");
+            assertThat(count("SELECT count(*) FROM tenant_orphr.users")).isEqualTo(1);
+        } finally {
+            Mockito.reset(migrator);
+            dropSchema("tenant_orphr");
+        }
+    }
+
+    @Test
+    void aRetryOverAnEmptyOrphanAdoptsAndMigratesIt() {
+        jdbc(c -> { try (var st = c.createStatement()) { st.execute("CREATE SCHEMA tenant_orphs"); return null; } });
+        failedRow("orphs");
+        try {
+            assertThat(service.provision(req("orphs")).status()).isEqualTo(TenantStatus.ACTIVE);
+            assertThat(tables("tenant_orphs")).contains("users");
+        } finally {
+            dropSchema("tenant_orphs");
+        }
+    }
+
+    /**
+     * A leftover that holds foreign data cannot be migrated into (Flyway refuses a non-empty schema without a baseline): the
+     * retry fails, and, unlike before FIX-H, the failure no longer DROPs the schema it merely found.
+     */
+    @Test
+    void aRetryOverANonEmptyForeignOrphanFailsWithoutDestroyingIt() {
+        createOrphan("tenant_orphn");
+        failedRow("orphn");
+        try {
+            assertThatThrownBy(() -> service.provision(req("orphn"))).isInstanceOf(TenantProvisioningException.class);
+            assertThat(PostgresTestDatabase.schemaExists("tenant_orphn")).isTrue();
+            assertThat(count("SELECT count(*) FROM tenant_orphn.keepme")).isEqualTo(1);
+            assertThat(statusOf("orphn")).isEqualTo("FAILED");
+        } finally {
+            dropSchema("tenant_orphn");
+        }
+    }
+
+    @Test
+    void aFailedRetryNeverDropsAnOrphanSchemaItDidNotCreate() {
+        createOrphan("tenant_orphq");
+        failedRow("orphq");
+        Mockito.doThrow(new IllegalStateException("flyway-boom")).when(migrator).migrateTenant("tenant_orphq");
+        try {
+            assertThatThrownBy(() -> service.provision(req("orphq"))).isInstanceOf(TenantProvisioningException.class);
+            assertThat(PostgresTestDatabase.schemaExists("tenant_orphq")).as("adopted orphan survives the failed retry").isTrue();
+            assertThat(count("SELECT count(*) FROM tenant_orphq.keepme")).isEqualTo(1);
+            assertThat(statusOf("orphq")).isEqualTo("FAILED");
+        } finally {
+            Mockito.reset(migrator);
+            dropSchema("tenant_orphq");
+        }
+    }
+
+    @Test
+    void aFailedRetryDropsTheSchemaItCreatedItself() {
+        failedRow("orphp");
+        Mockito.doThrow(new IllegalStateException("flyway-boom")).when(migrator).migrateTenant("tenant_orphp");
+        try {
+            assertThat(PostgresTestDatabase.schemaExists("tenant_orphp")).isFalse();
+            assertThatThrownBy(() -> service.provision(req("orphp"))).isInstanceOf(TenantProvisioningException.class);
+            assertThat(PostgresTestDatabase.schemaExists("tenant_orphp")).as("created by this run, so compensated").isFalse();
+            assertThat(statusOf("orphp")).isEqualTo("FAILED");
+        } finally {
+            Mockito.reset(migrator);
+        }
+    }
+
     /** AC3: migrateTenant validates the name itself; it never reaches Flyway (which would create the schema) when illegal. */
     @Test
     void migrateTenantRejectsIllegalSchemaNamesBeforeFlyway() {

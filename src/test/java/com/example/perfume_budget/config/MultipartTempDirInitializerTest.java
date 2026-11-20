@@ -60,19 +60,64 @@ class MultipartTempDirInitializerTest {
     @Test
     void reapsInstanceDirectoriesOfDeadProcesses_only() throws Exception {
         Path base = root.resolve("shopfi-multipart");
-        init(base);
+        MultipartTempDirInitializer liveInstance = init(base);
         Path dead = Files.createDirectory(base.resolve("instance-2147483646-dead"));
         Files.writeString(dead.resolve("orphan.tmp"), "x");
-        Path live = Files.createDirectory(base.resolve("instance-" + ProcessHandle.current().pid() + "-live"));
-        Files.writeString(live.resolve("keep.tmp"), "x");
+        Files.writeString(liveInstance.instanceDir().resolve("keep.tmp"), "x"); // a live same-PID sibling (holds its lock)
         Path unrelated = Files.createDirectory(base.resolve("something-else"));
         Files.writeString(unrelated.resolve("keep2.tmp"), "x");
         Files.writeString(base.resolve("loose-file"), "x");
         init(base);
         assertThat(dead).doesNotExist();
-        assertThat(live.resolve("keep.tmp")).exists();
+        assertThat(liveInstance.instanceDir().resolve("keep.tmp")).exists();
         assertThat(unrelated.resolve("keep2.tmp")).exists();
         assertThat(base.resolve("loose-file")).exists();
+    }
+
+    /**
+     * THEME-07 AC1: in a container the JVM is PID 1 before and after a kill, so a leftover directory carries the OWN pid.
+     * It is reaped at startup (it holds no lock), while a live sibling of the same pid (lock held) is not.
+     */
+    @Test
+    void reapsAStaleDirectoryOfTheOwnPid_neverALiveOne() throws Exception {
+        Path base = root.resolve("shopfi-multipart");
+        MultipartTempDirInitializer live = init(base);
+        long pid = ProcessHandle.current().pid();
+        Path staleWithLockFile = Files.createDirectory(base.resolve("instance-" + pid + "-killed1"));
+        Files.writeString(staleWithLockFile.resolve(MultipartTempDirInitializer.LOCK_FILE), ""); // lock released by the dead process
+        Files.writeString(staleWithLockFile.resolve("part.tmp"), "x");
+        Path staleWithoutLockFile = Files.createDirectory(base.resolve("instance-" + pid + "-killed2"));
+        Files.writeString(staleWithoutLockFile.resolve("part.tmp"), "x");
+        Files.writeString(live.instanceDir().resolve("inflight.tmp"), "x");
+
+        MultipartTempDirInitializer restarted = init(base);
+
+        assertThat(staleWithLockFile).doesNotExist();
+        assertThat(staleWithoutLockFile).doesNotExist();
+        assertThat(live.instanceDir().resolve("inflight.tmp")).as("a live same-pid instance is never reaped").hasContent("x");
+        assertThat(restarted.instanceDir()).isDirectory().isNotEqualTo(live.instanceDir());
+    }
+
+    @Test
+    void aStaleOwnPidDirectoryIsReapedAfterTheOwnerShutDown() throws Exception {
+        Path base = root.resolve("shopfi-multipart");
+        MultipartTempDirInitializer first = init(base);
+        Path firstDir = first.instanceDir();
+        first.destroy();
+        assertThat(firstDir).doesNotExist(); // destroy releases the lock and removes the directory
+        assertThat(init(base).instanceDir()).isDirectory();
+    }
+
+    @Test
+    void aSymlinkedLockFileInAnOwnPidDirectoryIsNotFollowed() throws Exception {
+        Path base = root.resolve("shopfi-multipart");
+        init(base);
+        Path outside = Files.writeString(root.resolve("outside.txt"), "keep");
+        Path stale = Files.createDirectory(base.resolve("instance-" + ProcessHandle.current().pid() + "-linked"));
+        Files.createSymbolicLink(stale.resolve(MultipartTempDirInitializer.LOCK_FILE), outside);
+        init(base);
+        assertThat(stale).doesNotExist();
+        assertThat(outside).hasContent("keep");
     }
 
     @Test

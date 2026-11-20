@@ -266,6 +266,16 @@ boot and again on JVM exit.
 ./mvnw test -Dtest='PostgresBootTest,MigrationBeforeValidationTest'   # just the boot/Flyway checks
 ```
 
+**Run the whole suite in batches, and never trust a run with skipped tests (MAIN-RED-02).** PostgreSQL has a fixed number of
+connection slots and every cached Spring context owns a connection pool, so the full suite is run as four sequential
+batches (`scripts/run-test-batches.sh`: checkout/contract/isolation, tenantauth/tenancy, platform/theme/security, and every
+other package). The test profile caps the Hikari pool (`minimum-idle=0`, `idle-timeout=10s`) and the Spring TestContext
+cache (`src/test/resources/spring.properties`, `maxSize=8`), which is what lets a single `./mvnw test` finish on a small
+database too; if it ever runs out of connections, use the batch script. Set `SHOPFI_TEST_DB_REQUIRED=true` (the script does):
+without it the Postgres suites SKIP when the database is unreachable and Maven still prints BUILD SUCCESS. **A green run
+with skipped > 0 is INVALID**: `scripts/check-no-skipped.sh [reports-dir]` fails (exit 1) when any surefire report says
+`skipped > 0` and exits 2 when there is no report at all; the batch script runs it after every batch.
+
 | Env var | Default |
 |---|---|
 | `SHOPFI_TEST_DB_URL` | `jdbc:postgresql://localhost:5432/shopfi_test` |
@@ -275,8 +285,10 @@ boot and again on JVM exit.
 
 **Test database guard.** Everything in the harness that drops the `master` / `tenant_template` / `tenant_*` schemas
 (`PostgresTestDatabase.dropAppSchemas`, the `IntegrationServer` launcher) first runs `TestDatabaseGuard`: the database
-name in `SHOPFI_TEST_DB_URL` must start with `shopfi_test` or end with `_test` / `_integ` (a name that merely contains
-"test", such as `latest_orders`, is refused) and the host must be `localhost` / `127.0.0.1` / `::1`. For a test
+name in `SHOPFI_TEST_DB_URL` must be `shopfi_test` / `shopfi_integ` (optionally followed by one short suffix such as
+`shopfi_test_2`) or lower-case words ending in `_test` / `_integ`, and no underscore-separated word may be `prod`,
+`production`, `live`, `staging` or `main` (a name that merely contains or starts with "test", such as `latest_orders`,
+`shopfi_testing` or `shopfi_test_prod`, is refused) and the host must be `localhost` / `127.0.0.1` / `::1`. For a test
 database on another host set `SHOPFI_TEST_DB_ALLOW_REMOTE=true` (this never relaxes the name rule). A refused URL fails
 immediately with a "Refusing to drop schemas" message, before any connection is opened.
 
