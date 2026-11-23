@@ -3,6 +3,7 @@ package com.example.perfume_budget.contract;
 import com.example.perfume_budget.dto.walk_in.request.CustomerSearchRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInOrderRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInQuoteRequest;
+import com.example.perfume_budget.dto.walk_in.request.WalkInReversalRequest;
 import com.example.perfume_budget.dto.walk_in.response.WalkInOrderResponse;
 import com.example.perfume_budget.dto.walk_in.response.WalkInQuoteResponse;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -39,7 +40,7 @@ class WalkInDocContractTest {
     @Test
     void examplesMatchTheRecords() throws Exception {
         Map<String, String> ex = examples();
-        assertThat(ex.keySet()).containsExactly("quote-request", "quote-response", "order-request", "order-response", "customer-search-request");
+        assertThat(ex.keySet()).containsExactly("quote-request", "quote-response", "order-request", "order-response", "customer-search-request", "reversal-request", "reversal-response");
 
         WalkInQuoteRequest qr = STRICT.readValue(ex.get("quote-request"), WalkInQuoteRequest.class);
         assertThat(qr.items()).hasSize(1);
@@ -56,6 +57,12 @@ class WalkInDocContractTest {
         assertThat(o.totalAmount()).isEqualTo(q.totalAmount());
 
         assertThat(STRICT.readValue(ex.get("customer-search-request"), CustomerSearchRequest.class).query()).isNotBlank();
+
+        assertThat(STRICT.readValue(ex.get("reversal-request"), WalkInReversalRequest.class).reason()).isNotBlank();
+        WalkInOrderResponse rev = STRICT.treeToValue(STRICT.readTree(ex.get("reversal-response")).get("data"), WalkInOrderResponse.class);
+        assertThat(rev.status()).isEqualTo(com.example.perfume_budget.enums.WalkInOrderStatus.CANCELLED);
+        assertThat(rev.idempotentReplay()).isFalse();
+        assertThat(rev.totalAmount()).isEqualTo(q.totalAmount());
     }
 
     @Test
@@ -67,6 +74,14 @@ class WalkInDocContractTest {
             assertThat(doc).contains(code);
             assertThat(svc).contains("\"" + code + "\"");
         }
+        for (String code : new String[]{"IDEMPOTENCY_KEY_REQUIRED", "WALK_IN_ORDER_NOT_CANCELLABLE", "WALK_IN_ORDER_NOT_REFUNDABLE",
+                "WALK_IN_STOCK_NOT_RESTORABLE"}) {
+            assertThat(doc).contains(code);
+            assertThat(svc).contains("\"" + code + "\"");
+        }
+        assertThat(doc).contains("INSUFFICIENT_CASH");
+        assertThat(Files.readString(Path.of("src/main/java/com/example/perfume_budget/service/BookkeepingService.java")))
+                .contains("\"INSUFFICIENT_CASH\"");
         assertThat(doc).contains("ACCOUNTING_ERROR");
         assertThat(handler).contains("\"ACCOUNTING_ERROR\"");
     }

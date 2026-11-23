@@ -196,6 +196,8 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | WalkInOrderController | GET | `/api/v1/admin/walk-in/orders` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | WalkInOrderController | GET | `/api/v1/admin/walk-in/orders/{orderNumber}` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | WalkInOrderController | PATCH | `/api/v1/admin/walk-in/orders/{orderNumber}/receipt-printed` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | mutates |
+| WalkInOrderController | POST | `/api/v1/admin/walk-in/orders/{orderNumber}/cancel` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates stock + ledger + order status; `Idempotency-Key` required |
+| WalkInOrderController | POST | `/api/v1/admin/walk-in/orders/{orderNumber}/refund` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates stock + ledger + order status; `Idempotency-Key` required |
 | WebhookController | POST | `/api/v1/webhook/{token}` | permitAll (POST) | - | mutates payments; auth = per-tenant token + HMAC |
 | PlatformAuthController | POST | `/api/v1/platform/auth/login` | permitAll (explicit POST) | - | mutates |
 | PlatformAuthController | POST | `/api/v1/platform/auth/refresh` | permitAll (explicit POST) | - | mutates |

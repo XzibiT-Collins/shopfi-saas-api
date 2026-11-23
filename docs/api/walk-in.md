@@ -1,4 +1,4 @@
-# Walk-in sales API (WALKIN-BE: API-RD-02 walk-in part, API-RD-03 AC1+AC2, API-RD-13)
+# Walk-in sales API (WALKIN-BE: API-RD-02 walk-in part, API-RD-03 AC1+AC2+AC3, API-RD-13)
 
 The register (front desk / admin) sells over the counter. Base path `/api/v1/admin/walk-in`. All endpoints run inside the
 tenant resolved by the tenant filter (schema per tenant): products, customers, orders and idempotency keys of another
@@ -17,9 +17,10 @@ get `403`. Money fields are strings in the form `GHS 220.00`; ids and counts are
 | GET | `/customers/search?query=` | **deprecated**, same result, text in the URL (RD-13b) |
 | GET | `/orders`, `/orders/{orderNumber}` | list / read walk-in orders |
 | PATCH | `/orders/{orderNumber}/receipt-printed` | mark the receipt printed |
+| POST | `/orders/{orderNumber}/cancel` | void a completed sale: stock back, sale reversed, **ADMIN only**, `Idempotency-Key` required (AC3) |
+| POST | `/orders/{orderNumber}/refund` | refund a completed sale in full: stock back, sale reversed, **ADMIN only**, `Idempotency-Key` required (AC3) |
 
-Cancel and refund (API-RD-03 AC3) are NOT part of this contract yet. `CANCELLED` / `REFUNDED` exist as order statuses
-only; a later release adds the endpoints (see "Cancel / refund readiness").
+Cancel and refund are the only endpoints here that ADMIN alone may call (see "Cancel and refund").
 
 ## POST /quote
 
@@ -183,10 +184,127 @@ it never reaches access logs, browser history or referrers.
 `GET /customers/search?query=` is **deprecated**: it answers the same data with `Deprecation: true` and a `Link`
 header, and is kept only until the register moves to POST. New code must not use it.
 
-## Cancel / refund readiness (API-RD-03 AC3, later)
+## Cancel and refund (API-RD-03 AC3)
 
-Not implemented here, but the design leaves room: the order row keeps its key and fingerprint for life, status already
-has `CANCELLED` / `REFUNDED`, and the replay path returns the order's current state. Cancel and refund will be new
-endpoints under `/orders/{orderNumber}/...` taking their own `Idempotency-Key` with the same rules, restoring stock and
-posting reversing journal entries in one transaction, so the failure behaviour above (rollback, `ACCOUNTING_ERROR`)
-carries over.
+`POST /api/v1/admin/walk-in/orders/{orderNumber}/cancel` and `.../refund`. `{orderNumber}` is the order number of the
+other `/orders/{orderNumber}` endpoints (not a numeric id). Both take the same request, run the same transaction and
+return the order.
+
+```json reversal-request
+{ "reason": "Customer changed their mind" }
+```
+
+```json reversal-response
+{
+  "description": null,
+  "data": {
+    "orderNumber": "WI-20260101-0001",
+    "customerName": "Kofi Mensah",
+    "customerPhone": "0240000000",
+    "processedBy": "Ama Front Desk",
+    "discountType": "PERCENTAGE",
+    "discountValue": "10.00%",
+    "paymentMethod": "CASH",
+    "status": "CANCELLED",
+    "subtotal": "GHS 100.00",
+    "originalSubtotal": "GHS 100.00",
+    "automaticDiscountAmount": "GHS 0.00",
+    "discountAmount": "GHS 10.00",
+    "totalTaxAmount": "GHS 9.00",
+    "totalAmount": "GHS 99.00",
+    "amountPaid": "GHS 500.00",
+    "changeGiven": "GHS 401.00",
+    "receiptPrinted": true,
+    "createdAt": "2026-01-01T10:15:30",
+    "items": [
+      { "productName": "Oud Noir 50ml", "sku": "OUD-50", "quantity": 2, "unitPrice": "GHS 50.00", "totalPrice": "GHS 100.00" }
+    ],
+    "idempotentReplay": false
+  }
+}
+```
+
+| Input | Where | Notes |
+|---|---|---|
+| `Idempotency-Key` | header, **required** | same format as the sale (8-64 chars of `A-Za-z0-9._:-`); missing: `400` `IDEMPOTENCY_KEY_REQUIRED`, malformed: `400` `IDEMPOTENCY_KEY_INVALID` |
+| `reason` | body, required | 1-255 characters after trimming; stored in the audit trail, never logged. A body with any other property (for example an `amount`) is rejected with `400`: **there is no partial refund**, and a client that asks for one must not silently get a full one |
+
+### Who may do it
+
+**ADMIN only.** `FRONT_DESK` gets `403` for both endpoints even when every front-desk permission is granted. Reason:
+the front-desk permission model (`FrontDeskPermission`, per-user overrides on top of a template) technically allows a
+new permission, but the repository has no endpoint to grant one, so a new `WALK_IN_ORDER_CANCEL` permission could not be
+given to anybody through the product, and this action moves money and stock. Decision (safest default, flagged for
+product): ADMIN-only until the owner wants a cashier-level permission; then add the enum value, a template row and
+change the `@PreAuthorize`. Enforced twice: `@PreAuthorize("hasRole('ADMIN')")` on the controller and the same check in
+the service. `CUSTOMER` gets `403`, anonymous `401`, an admin of another tenant is anonymous (`401`).
+
+### State machine
+
+```
+COMPLETED --cancel--> CANCELLED      (terminal)
+COMPLETED --refund--> REFUNDED       (terminal)
+```
+
+Only a `COMPLETED` order can be cancelled or refunded. `CANCELLED` and `REFUNDED` are terminal: cancelling a cancelled
+order, refunding a cancelled one, cancelling a refunded one and refunding a refunded one are all `409`
+`WALK_IN_ORDER_NOT_CANCELLABLE` / `WALK_IN_ORDER_NOT_REFUNDABLE` with `data.currentStatus`. The two actions have the same
+effects; they differ in meaning and in the reports' wording only: **cancel** voids a sale that should not have happened
+(keyed in error, customer left before paying out), **refund** gives the money back for a sale that happened (goods
+returned). Both put the goods back on the shelf and pay the full total back.
+
+### Full refunds only
+
+The money paid back is always the order's `totalAmount` (the sale's total after discounts and tax; change given at the
+counter is not part of it). A partial refund (a subset of lines or an amount) is not offered: it needs per-line
+return quantities, partial tax / discount reversal and a remainder state that `COMPLETED -> REFUNDED` cannot express, and
+getting that wrong moves money. Extending the contract later is additive (an optional `items` list); until then the
+`400` above keeps clients honest.
+
+### What one successful call does (one transaction, all or nothing)
+
+1. Takes a row lock on the order, so concurrent reversals of one sale run one after the other.
+2. **Stock:** every unit the sale took comes back to the inventory layer it was taken from (`RETURN` movement per
+   layer), to the location-ledger location it left (`SALE_RETURN`), and comes off the product's sold count. It restores
+   what the sale's `SALE` movements took minus what earlier `RETURN` movements gave back, so it can never restore twice.
+3. **Books:** one `WALK_IN_REVERSAL` journal entry dated now (closed periods stay untouched) mirrors every line of the
+   sale's `WALK_IN_SALE` entry on the opposite side with the same amount: cash / mobile money paid back at the counter
+   (not parked in Refunds Payable like an online paid cancel), revenue, tax, discounts and cost of goods sold / inventory
+   reversed. The books net to zero for the order. Sales analytics (`WALK_IN` and `ALL`) include the reversal, and the
+   items-sold report leaves the cancelled / refunded sale out.
+4. Sets the status, and writes one append-only audit row (`walk_in_order_audit_events`: event type, from / to status,
+   acting admin's e-mail, reason, amount, key, fingerprint, time). The database also allows at most one such row per
+   order, which is a backstop of exactly-once.
+
+If any step fails nothing is kept: stock, ledger, status and audit roll back together and the same key can be retried.
+
+### Idempotency and concurrency
+
+* **Scope: tenant + order + key** (the tenant is the schema). The same key on another order is another request.
+* **Same key + same action + same reason** (reason compared after trimming): `200` with the order's current state and
+  `idempotentReplay: true`; nothing is written. A replay is decided before the state check, so it still answers after
+  the order became terminal.
+* **Same key + another reason, or the other action** (a refund with a cancel's key): `409` `IDEMPOTENCY_KEY_REUSED`.
+* **A new key on an order that already left `COMPLETED`:** `409` (see the state machine): a different key is a different
+  intent, so it is not answered as a replay.
+* **Concurrent requests:** serialised on the order row. Eight cancels with eight keys: one `200`, seven `409`. A cancel
+  racing a refund: exactly one wins and its status sticks. Eight retries with one key: one fresh `200`, seven replays.
+  In every case stock is restored once, one reversal entry and one audit row exist.
+* A replay of the original **sale** key after a cancel (`POST /order`) answers the order with `status: CANCELLED`; it never
+  sells again.
+
+### Errors
+
+| Status | `data.code` | When |
+|---|---|---|
+| 400 | `IDEMPOTENCY_KEY_REQUIRED` | no `Idempotency-Key` header (or blank) |
+| 400 | `IDEMPOTENCY_KEY_INVALID` | key not 8-64 chars of `A-Za-z0-9._:-` |
+| 400 | none | missing / blank / over-long `reason`, unknown body property, no body |
+| 401 / 403 | none | anonymous / another tenant's token (401); `FRONT_DESK`, `CUSTOMER` (403) |
+| 404 | none | no such walk-in order in this tenant (another tenant's order is a 404 too) |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | key already used on this order for another reason or action |
+| 409 | `WALK_IN_ORDER_NOT_CANCELLABLE` | cancel of an order that is not `COMPLETED` (`data.currentStatus`) |
+| 409 | `WALK_IN_ORDER_NOT_REFUNDABLE` | refund of an order that is not `COMPLETED` (`data.currentStatus`) |
+| 409 | `INSUFFICIENT_CASH` | Cash or Mobile Money in the books is too low to pay the sale back (`data.orderNumber`, `currentBalance`, `attemptedAmount`); nothing changed |
+| 409 | `WALK_IN_STOCK_NOT_RESTORABLE` | the sale has no recorded stock movements to put back (data from before inventory layers); nothing changed, reverse it by a manual adjustment |
+| 500 | `ACCOUNTING_ERROR` | the ledger could not post the reversal (no sale entry, a ledger account missing); everything rolled back |

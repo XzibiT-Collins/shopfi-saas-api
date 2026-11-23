@@ -30,4 +30,12 @@ public interface WalkInOrderService {
     WalkInOrderResponse getWalkInOrder(String orderNumber);
 
     void markReceiptPrinted(String orderNumber);
+
+    /** API-RD-03 AC3: COMPLETED -> CANCELLED (ADMIN only, keyed): stock back, sale reversed, audit row. */
+    WalkInOrderResponse cancelWalkInOrder(String orderNumber, com.example.perfume_budget.dto.walk_in.request.WalkInReversalRequest request,
+                                          String idempotencyKey);
+
+    /** API-RD-03 AC3: COMPLETED -> REFUNDED, full refund (ADMIN only, keyed): stock back, sale reversed, audit row. */
+    WalkInOrderResponse refundWalkInOrder(String orderNumber, com.example.perfume_budget.dto.walk_in.request.WalkInReversalRequest request,
+                                          String idempotencyKey);
 }

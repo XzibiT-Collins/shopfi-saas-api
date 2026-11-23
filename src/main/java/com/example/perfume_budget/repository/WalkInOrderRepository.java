@@ -18,6 +18,14 @@ import java.util.Optional;
 public interface WalkInOrderRepository extends JpaRepository<WalkInOrder, Long> {
     Optional<WalkInOrder> findByOrderNumber(String orderNumber);
 
+    /**
+     * API-RD-03 AC3: row lock (SELECT ... FOR UPDATE) on one walk-in order. Cancel and refund take it first, so two
+     * concurrent reversals of the same sale run one after the other and the second sees the terminal status.
+     */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT w FROM WalkInOrder w WHERE w.orderNumber = :orderNumber")
+    Optional<WalkInOrder> lockByOrderNumber(@Param("orderNumber") String orderNumber);
+
     boolean existsByOrderNumber(String orderNumber);
 
     Page<WalkInOrder> findAllByOrderByCreatedAtDesc(Pageable pageable);
