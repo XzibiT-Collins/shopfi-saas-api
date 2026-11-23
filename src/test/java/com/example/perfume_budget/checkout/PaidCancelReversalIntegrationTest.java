@@ -1042,7 +1042,7 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         // held: delivered, packing, livePending, legacy = 4
         assertThat(couponRow("PRG")).containsEntry("usage_count", 4);
 
-        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version IS NOT NULL AND CAST(version AS INTEGER) >= 16");
+        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version IS NOT NULL AND CAST(version AS INTEGER) >= 16"); // every migration after V15 (newer ones must be re-run too, or Flyway refuses the gap)
         migrator.migrateTenant("tenant_acme");
         assertThat(jdbc.queryForObject("SELECT success FROM tenant_acme.flyway_schema_history WHERE version = '16'", Boolean.class)).isTrue();
         assertThat(couponRow("PRG")).as("only the legacy paid cancel released").containsEntry("usage_count", 3);
@@ -1051,7 +1051,7 @@ class PaidCancelReversalIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(released(packing.orderNumber())).isFalse();
         assertThat(released(livePending.orderNumber())).isFalse();
         migrator.migrateTenant("tenant_acme"); // no-op
-        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version IS NOT NULL AND CAST(version AS INTEGER) >= 16");
+        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version IS NOT NULL AND CAST(version AS INTEGER) >= 16"); // every migration after V15 (newer ones must be re-run too, or Flyway refuses the gap)
         migrator.migrateTenant("tenant_acme"); // re-run the data fix
         assertThat(couponRow("PRG")).as("idempotent re-run").containsEntry("usage_count", 3);
         assertThat(released(delivered.orderNumber())).isFalse();

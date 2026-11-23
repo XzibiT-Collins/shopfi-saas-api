@@ -40,6 +40,16 @@ public class PlatformAuthController {
         return ResponseEntity.ok(CustomApiResponse.success("Logged out", null));
     }
 
+    /** API-RD-07 AC1: SUPER_ADMIN changes their own password; every older token is revoked, this session is re-issued. */
+    @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPER_ADMIN')")
+    @PostMapping("/change-password")
+    public ResponseEntity<CustomApiResponse<PlatformAuthResponse>> changePassword(
+            @AuthenticationPrincipal PlatformPrincipal principal,
+            @Valid @RequestBody PlatformChangePasswordRequest request, HttpServletRequest http, HttpServletResponse response) {
+        return ResponseEntity.ok(CustomApiResponse.success("Password changed",
+                service.changePassword(principal, request, ClientIps.rateLimitKey(http), response)));
+    }
+
     @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPER_ADMIN')")
     @GetMapping("/me")
     public ResponseEntity<CustomApiResponse<PlatformAuthResponse>> me(@AuthenticationPrincipal PlatformPrincipal principal) {

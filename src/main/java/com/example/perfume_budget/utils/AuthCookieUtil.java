@@ -48,7 +48,8 @@ public class AuthCookieUtil {
                 user.getEmail(),
                 user.getRole(),
                 user.getId(),
-                user.getFullName()
+                user.getFullName(),
+                user.getTokenVersion()
         );
     }
 
@@ -57,7 +58,8 @@ public class AuthCookieUtil {
                 user.getEmail(),
                 user.getRole(),
                 user.getId(),
-                user.getFullName()
+                user.getFullName(),
+                user.getTokenVersion()
         );
     }
 
@@ -102,6 +104,11 @@ public class AuthCookieUtil {
 
         if(!user.isActive()){
             throw new InactiveAccountException("User account is inactive");
+        }
+        // API-RD-08: a password change bumps the user's token version; a refresh token minted before it is dead
+        // (same generic answer as a bad signature, so it reveals nothing about why).
+        if (!jwtUtil.tokenVersionMatches(refreshToken, user.getTokenVersion())) {
+            throw new InvalidJWTTokenException(INVALID_REFRESH);
         }
         String newAccessToken = generateAccessToken(user);
         addCookie(response, "accessToken", newAccessToken, jwtUtil.accessTokenTtlSeconds());

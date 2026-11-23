@@ -36,8 +36,8 @@ class AuthCookieUtilTest {
     @Test
     void setAuthCookies_Success() {
         User user = User.builder().id(1L).email("test@test.com").fullName("Test").roles(com.example.perfume_budget.enums.UserRole.CUSTOMER).build();
-        when(jwtUtil.generateAccessToken(anyString(), any(), anyLong(), anyString())).thenReturn("access");
-        when(jwtUtil.generateRefreshToken(anyString(), any(), anyLong(), anyString())).thenReturn("refresh");
+        when(jwtUtil.generateAccessToken(anyString(), any(), anyLong(), anyString(), anyInt())).thenReturn("access");
+        when(jwtUtil.generateRefreshToken(anyString(), any(), anyLong(), anyString(), anyInt())).thenReturn("refresh");
 
         authCookieUtil.setAuthCookies(null, response, user);
 
@@ -51,6 +51,23 @@ class AuthCookieUtilTest {
     }
 
     @Test
+    void refreshAccessToken_refusesARefreshTokenMintedBeforeThePasswordChange() {
+        String refreshToken = "stale-refresh";
+        User user = User.builder().id(1L).email("test@test.com").fullName("Test").isActive(true).tokenVersion(1)
+                .roles(com.example.perfume_budget.enums.UserRole.CUSTOMER).build();
+        TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
+        when(jwtUtil.isRefreshToken(refreshToken)).thenReturn(true);
+        when(jwtUtil.extractTenant(refreshToken)).thenReturn("acme");
+        when(jwtUtil.extractUsername(refreshToken)).thenReturn("test@test.com");
+        when(userRepository.findByEmail("test@test.com")).thenReturn(Optional.of(user));
+        when(jwtUtil.tokenVersionMatches(refreshToken, 1)).thenReturn(false);
+
+        assertThrows(com.example.perfume_budget.exception.InvalidJWTTokenException.class,
+                () -> authCookieUtil.refreshAccessToken(refreshToken, response));
+        verify(response, never()).addHeader(eq("Set-Cookie"), anyString());
+    }
+
+    @Test
     void refreshAccessToken_Success() {
         String refreshToken = "valid-refresh";
         User user = User.builder().id(1L).email("test@test.com").fullName("Test").isActive(true).roles(com.example.perfume_budget.enums.UserRole.CUSTOMER).build();
@@ -60,8 +77,9 @@ class AuthCookieUtilTest {
         when(jwtUtil.extractTenant(refreshToken)).thenReturn("acme");
         when(jwtUtil.accessTokenTtlSeconds()).thenReturn(3600);
         when(jwtUtil.extractUsername(refreshToken)).thenReturn("test@test.com");
+        when(jwtUtil.tokenVersionMatches(anyString(), anyInt())).thenReturn(true);
         when(userRepository.findByEmail("test@test.com")).thenReturn(Optional.of(user));
-        when(jwtUtil.generateAccessToken(anyString(), any(), anyLong(), anyString())).thenReturn("new-access");
+        when(jwtUtil.generateAccessToken(anyString(), any(), anyLong(), anyString(), anyInt())).thenReturn("new-access");
 
         authCookieUtil.refreshAccessToken(refreshToken, response);
 
@@ -90,8 +108,8 @@ class AuthCookieUtilTest {
     @Test
     void authCookies_maxAgeComesFromTheConfiguredJwtLifetimes_notHardCodedConstants() {
         User user = User.builder().id(1L).email("t@t.test").fullName("T").roles(com.example.perfume_budget.enums.UserRole.CUSTOMER).build();
-        when(jwtUtil.generateAccessToken(anyString(), any(), anyLong(), anyString())).thenReturn("a");
-        when(jwtUtil.generateRefreshToken(anyString(), any(), anyLong(), anyString())).thenReturn("r");
+        when(jwtUtil.generateAccessToken(anyString(), any(), anyLong(), anyString(), anyInt())).thenReturn("a");
+        when(jwtUtil.generateRefreshToken(anyString(), any(), anyLong(), anyString(), anyInt())).thenReturn("r");
         when(jwtUtil.accessTokenTtlSeconds()).thenReturn(900);
         when(jwtUtil.refreshTokenTtlSeconds()).thenReturn(86400);
 

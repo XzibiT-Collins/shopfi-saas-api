@@ -16,6 +16,8 @@ public class OnboardingRateLimiter {
     private final TokenBucketRateLimiter statusIp;
     private final TokenBucketRateLimiter resendIp;
     private final TokenBucketRateLimiter resendEmail;
+    private final TokenBucketRateLimiter findStoreIp;
+    private final TokenBucketRateLimiter findStoreSlug;
 
     public OnboardingRateLimiter(OnboardingProperties p) {
         int max = p.getMaxTrackedKeys();
@@ -26,10 +28,22 @@ public class OnboardingRateLimiter {
         this.statusIp = build(p.getStatusIp(), max);
         this.resendIp = build(p.getResendIp(), max);
         this.resendEmail = build(p.getResendEmail(), max);
+        this.findStoreIp = build(p.getFindStoreIp(), max);
+        this.findStoreSlug = build(p.getFindStoreSlug(), max);
     }
 
     private static TokenBucketRateLimiter build(OnboardingProperties.Limit l, int maxKeys) {
         return new TokenBucketRateLimiter(l.getCapacity(), Duration.ofSeconds(l.getPeriodSeconds()), maxKeys, System::nanoTime);
+    }
+
+    /** API-RD-04: on the request input only, BEFORE any lookup, so a 429 is identical for known and unknown stores. */
+    public void checkFindStoreIp(String ip) {
+        check(findStoreIp, ip);
+    }
+
+    /** The key is the typed name (stripped, lower case), never anything read from the registry. */
+    public void checkFindStoreSlug(String typedSlug) {
+        check(findStoreSlug, normalize(typedSlug));
     }
 
     public void checkResendIp(String ip) {

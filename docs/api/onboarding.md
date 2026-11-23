@@ -27,6 +27,7 @@ Every example below tagged `<!-- example: <name> <kind> <Schema> [status] -->` i
 | `POST /verify` | `202` | Check the code; on success start provisioning asynchronously |
 | `POST /resend` | `202` (always) | Issue a fresh code (expired, lost, or after a FAILED attempt) |
 | `GET /status?slug=` | `200` | Poll the onboarding state; URLs once ACTIVE |
+| `POST /find-store` | `202` (always) | "Find your store": e-mail the owner the sign-in link if the store exists (API-RD-04) |
 
 ## 3. `POST /signup`
 
@@ -240,6 +241,54 @@ Failures (the only non-202 outcomes): `400` validation / malformed body as above
 
 Frontend consequence: because success and no-op look the same, the UI must say "if the details match, a code is on its way", enforce its own 60 s countdown, and not promise delivery.
 
+## 5b. `POST /find-store` ("Find your store", API-RD-04)
+
+Request (`StoreLookupRequest`): `slug` (the store name the visitor typed; required, at most 64 characters).
+
+<!-- example: find-store-request valid StoreLookupRequest -->
+```json
+{ "slug": "acme-store" }
+```
+
+**Not an existence check, on purpose.** The endpoint is public, so any answer that differed between a store that exists and one
+that does not would let anybody list the platform's customers. It therefore **always answers `202` with the identical body**,
+for an existing store, an unknown one, a malformed or reserved name, and a store that is not `ACTIVE` (pending, provisioning,
+failed, suspended):
+
+<!-- example: find-store-accepted response StoreLookupEnvelope 202 -->
+```json
+{
+  "description": "If a store with that name exists, we've emailed its owner a link to sign in.",
+  "data": null
+}
+```
+
+What happens when the store exists and is `ACTIVE`: its **owner** (the owner e-mail stored at signup, never an address from the
+request; extra body properties are ignored) is e-mailed the sign-in link of the store (`<scheme>://<custom-domain or slug.base-domain>`
+plus `onboarding.admin-login-path`, built from the registry). The link is a plain page address; it signs nobody in. Nothing in
+the response, status, headers or response time depends on whether the store exists:
+
+* **Same work for every input.** One registry lookup (a malformed name looks up a value that can never exist instead of skipping the
+  lookup) and one hand-off to the mail executor (a no-op task when nothing is to be sent). Link building and SMTP run on that
+  executor after the response.
+* **Throttled on the input, before any lookup.** `find-store-ip` (per client IP) and `find-store-slug` (per typed name, so one
+  owner is mailed at most 3 times an hour from any number of addresses; case and surrounding blanks share the bucket). `429` +
+  `Retry-After` and the standard body, identical for known and unknown names. A stranger can spend a store's name budget, in which case
+  the owner can still sign in directly; the same trade-off as `resend-email` above.
+* Failures: `400` for a missing, blank or over-long `slug` (decided by the input alone) and `429`.
+
+<!-- example: find-store-blank-slug invalid StoreLookupRequest 400 -->
+```json
+{ "slug": "   " }
+```
+
+Frontend consequence: the page must not say "store found" or "store not found". Show the response text, offer "Try another name" and
+"Resend", and keep the owner's inbox as the only channel that confirms existence. The old blind redirect to `<slug>.<base-domain>/admin/login`
+can stay as a secondary link only if product accepts that it reveals nothing (it opens a host that answers 404 for unknown names).
+
+Known gap: `GET /status?slug=` (section 6) still answers `404` for an unknown name and `200` for a known one, so it remains an
+existence oracle for anybody who calls it directly (per-IP throttled only). It exists for the wizard's polling; the frontend must not use it for "Find your store".
+
 ## 6. `GET /status?slug=<slug>` and the state machine
 
 `slug` is a required query parameter (missing: `400 Missing required parameter: slug.`). Case and surrounding whitespace are normalised. A slug that is malformed, unknown or whose tenant is `SUSPENDED` returns `404 Unknown tenant` (suspended is deliberately indistinguishable from nonexistent). `429` when over the per-IP limit.
@@ -325,6 +374,8 @@ Token buckets, in memory **per JVM instance** (N instances multiply the effectiv
 | `status-ip` | client IP | 60 | 60 s |
 | `resend-ip` | client IP | 10 | 3600 s |
 | `resend-email` | e-mail | 3 | 3600 s |
+| `find-store-ip` | client IP | 10 | 600 s |
+| `find-store-slug` | typed store name (trimmed, lower case) | 3 | 3600 s |
 
 A throttled request gets `429`, `Retry-After: <whole seconds, >= 1>`, and `Too many requests. Please try again later.` Both the IP and the e-mail limiter must pass.
 

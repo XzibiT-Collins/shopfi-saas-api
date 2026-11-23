@@ -89,6 +89,9 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
     static final Set<String> AUDIT_KEYS = Set.of("id", "tenantSlug", "action", "phase", "actorEmail", "previousStatus",
             "newStatus", "occurredAt");
     static final Set<String> PAGE_KEYS = Set.of("items", "page", "size", "totalElements", "totalPages", "sort", "direction");
+    /** The tenant LIST page adds the custom-domain header facet (API-RD-07 AC2); the audit page does not. */
+    static final Set<String> LIST_PAGE_KEYS = Set.of("items", "page", "size", "totalElements", "totalPages", "sort", "direction",
+            "customDomainCounts");
 
     @Autowired MockMvc mvc;
     @Autowired PlatformAdminRepository admins;
@@ -567,7 +570,7 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
         assertThat(slugs("?search=zzzz-no-match-p4")).isEmpty();
         JsonNode d = body(read(BASE + "?search=p4s-")).get("data");
         assertThat(d.get("totalElements").asInt()).isEqualTo(5);
-        assertThat(keys(d)).isEqualTo(PAGE_KEYS);
+        assertThat(keys(d)).isEqualTo(LIST_PAGE_KEYS);
         for (JsonNode i : d.get("items")) {
             assertThat(keys(i)).isEqualTo(TENANT_KEYS);
         }

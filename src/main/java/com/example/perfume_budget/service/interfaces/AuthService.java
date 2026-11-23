@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service.interfaces;
 
+import com.example.perfume_budget.dto.auth.request.ChangePasswordRequest;
+import com.example.perfume_budget.dto.auth.request.UpdateProfileRequest;
 import com.example.perfume_budget.dto.auth.request.LoginRequest;
 import com.example.perfume_budget.dto.auth.request.LoginOtpResendRequest;
 import com.example.perfume_budget.dto.auth.request.LoginOtpVerificationRequest;
@@ -22,6 +24,12 @@ public interface AuthService {
     void resendLoginOtp(LoginOtpResendRequest request);
 
     AuthResponse loggedInUser();
+
+    /** API-RD-08: {@code PATCH /auth/me}, the caller's own full name. */
+    AuthResponse updateProfile(UpdateProfileRequest request);
+
+    /** API-RD-08: {@code POST /auth/change-password}; revokes every older token and re-issues the caller's cookies. */
+    void changePassword(ChangePasswordRequest request, HttpServletResponse response);
     void logout(HttpServletResponse response);
 
     void forgotPassword(String email);

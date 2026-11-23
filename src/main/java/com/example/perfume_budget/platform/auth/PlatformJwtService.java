@@ -56,16 +56,33 @@ public class PlatformJwtService {
     }
 
     public String issueAccess(Long adminId, String email, String fullName) {
-        return issue(adminId, email, fullName, TYPE_ACCESS, properties.getAccessTtl());
+        return issueAccess(adminId, email, fullName, 0);
     }
 
     public String issueRefresh(Long adminId, String email, String fullName) {
-        return issue(adminId, email, fullName, TYPE_REFRESH, properties.getRefreshTtl());
+        return issueRefresh(adminId, email, fullName, 0);
     }
 
-    private String issue(Long adminId, String email, String fullName, String type, Duration ttl) {
+    /** API-RD-07: {@code tokenVersion} is the admin's {@code token_version}, minted into the {@code tv} claim. */
+    public String issueAccess(Long adminId, String email, String fullName, int tokenVersion) {
+        return issue(adminId, email, fullName, TYPE_ACCESS, properties.getAccessTtl(), tokenVersion);
+    }
+
+    public String issueRefresh(Long adminId, String email, String fullName, int tokenVersion) {
+        return issue(adminId, email, fullName, TYPE_REFRESH, properties.getRefreshTtl(), tokenVersion);
+    }
+
+    /** The token's {@code tv} claim; 0 when absent (a token minted before the claim existed is version 0). */
+    public static int tokenVersion(Claims claims) {
+        return claims.get(TOKEN_VERSION_CLAIM) instanceof Number n ? n.intValue() : 0;
+    }
+
+    static final String TOKEN_VERSION_CLAIM = "tv";
+
+    private String issue(Long adminId, String email, String fullName, String type, Duration ttl, int tokenVersion) {
         Date now = new Date();
         return Jwts.builder()
+                .claim(TOKEN_VERSION_CLAIM, tokenVersion)
                 .subject(email)
                 .claim("tenant", TenantContext.PLATFORM_SLUG)
                 .claim("role", PlatformRole.SUPER_ADMIN.name())

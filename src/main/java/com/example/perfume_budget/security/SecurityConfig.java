@@ -129,7 +129,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/platform/auth/login", "/api/v1/platform/auth/refresh",
                                 "/api/v1/platform/auth/logout").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/platform/onboarding/signup",
-                                "/api/v1/platform/onboarding/verify", "/api/v1/platform/onboarding/resend").permitAll()
+                                "/api/v1/platform/onboarding/verify", "/api/v1/platform/onboarding/resend",
+                                "/api/v1/platform/onboarding/find-store").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/platform/onboarding/status").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/platform/onboarding/status").permitAll()
                         .requestMatchers("/api/v1/platform/**").hasRole("SUPER_ADMIN")

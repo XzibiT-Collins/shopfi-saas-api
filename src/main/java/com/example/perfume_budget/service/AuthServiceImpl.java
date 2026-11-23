@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.dto.auth.request.ChangePasswordRequest;
+import com.example.perfume_budget.dto.auth.request.UpdateProfileRequest;
 import com.example.perfume_budget.dto.auth.request.LoginRequest;
 import com.example.perfume_budget.dto.auth.request.LoginOtpResendRequest;
 import com.example.perfume_budget.dto.auth.request.LoginOtpVerificationRequest;
@@ -48,6 +50,7 @@ public class AuthServiceImpl implements AuthService {
     private final OtpService otpService;
     private final FeatureFlagService featureFlagService;
     private final FrontDeskAccessService frontDeskAccessService;
+    private final AccountSelfService accountSelfService;
 
     @Override
     public LoginResponse login(LoginRequest request, HttpServletResponse response) {
@@ -158,6 +161,29 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
+    public AuthResponse updateProfile(UpdateProfileRequest request) {
+        User currentUser = requireCurrentUser();
+        return buildAuthResponse(accountSelfService.updateFullName(currentUser.getId(), request.fullName()));
+    }
+
+    @Override
+    public void changePassword(ChangePasswordRequest request, HttpServletResponse response) {
+        User currentUser = requireCurrentUser();
+        User saved = accountSelfService.changePassword(currentUser.getId(), request.currentPassword(),
+                request.newPassword(), request.confirmPassword());
+        // Every older token is now revoked (token version bumped); this session continues on fresh cookies.
+        authCookieUtil.setAuthCookies(null, response, saved);
+    }
+
+    private User requireCurrentUser() {
+        User currentUser = authUserUtil.getCurrentUser();
+        if (currentUser == null) {
+            throw new BadCredentialsException("Not authenticated");
+        }
+        return currentUser;
+    }
+
+    @Override
     public void logout(HttpServletResponse response) {
         authCookieUtil.removeAuthCookies(response);
     }
@@ -187,6 +213,8 @@ public class AuthServiceImpl implements AuthService {
         User user = getActiveUserByEmail(email.strip().toLowerCase());
         checkDuplicatePassword(user.getPassword(), newPassword);
         user.setPassword(passwordEncoder.encode(newPassword));
+        // A reset is how an owner evicts a stolen session: every token minted before it stops working (same save as the hash).
+        user.setTokenVersion(user.getTokenVersion() + 1);
         userRepository.save(user);
 
         log.info("Password reset successful for user {}", user.getId());

@@ -65,6 +65,12 @@ class PlatformTenantsContractTest {
         assertThat(r.data().size()).isLessThanOrEqualTo(100);
         assertThat(r.data().items().get(0).status()).isIn((Object[]) java.util.Arrays.stream(TenantStatus.values()).map(Enum::name).toArray());
         assertThat(json).doesNotContain("schemaName").doesNotContain("webhookToken").doesNotContain("password");
+        // API-RD-07 AC2: the documented header facet has exactly one key per custom-domain state plus NONE
+        java.util.Set<String> countKeys = new java.util.TreeSet<>(r.data().customDomainCounts().keySet());
+        java.util.Set<String> states = new java.util.TreeSet<>(java.util.Arrays.stream(
+                com.example.perfume_budget.platform.enums.CustomDomainStatus.values()).map(Enum::name).toList());
+        states.add("NONE");
+        assertThat(countKeys).isEqualTo(states);
     }
 
     @Test

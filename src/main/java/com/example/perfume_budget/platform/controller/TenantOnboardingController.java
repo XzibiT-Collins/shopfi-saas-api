@@ -2,6 +2,8 @@ package com.example.perfume_budget.platform.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.platform.dto.OnboardingStatusResponse;
+import com.example.perfume_budget.platform.dto.StoreLookupRequest;
+import com.example.perfume_budget.platform.service.StoreLookupService;
 import com.example.perfume_budget.platform.dto.TenantResendRequest;
 import com.example.perfume_budget.security.ClientIps;
 import com.example.perfume_budget.platform.dto.TenantSignupRequest;
@@ -28,6 +30,7 @@ public class TenantOnboardingController {
 
     private final TenantOnboardingService service;
     private final OnboardingRateLimiter limiter;
+    private final StoreLookupService storeLookup;
 
     @Operation(summary = "Start onboarding: create a PENDING tenant and e-mail a 6-digit code")
     @ApiResponse(responseCode = "201", description = "Signup accepted, status PENDING")
@@ -81,5 +84,24 @@ public class TenantOnboardingController {
         service.resend(request);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(CustomApiResponse.success(TenantOnboardingService.RESEND_MESSAGE, null));
+    }
+
+    /**
+     * API-RD-04 "Find your store". Never says whether the store exists: always 202 with the same body for a known,
+     * unknown, malformed, not-yet-active or suspended name. When an ACTIVE store matches, its owner is e-mailed the
+     * sign-in link (to the owner address on record only).
+     */
+    @Operation(summary = "Find your store (non-enumerating: always 202 with the same body; the owner is e-mailed the sign-in link)")
+    @ApiResponse(responseCode = "202", description = "Always returned when the request is well-formed and not rate limited")
+    @ApiResponse(responseCode = "400", description = "Validation failure (missing or over-long slug)", content = @Content)
+    @ApiResponse(responseCode = "429", description = "Rate limited per IP or per store name (Retry-After)", content = @Content)
+    @PostMapping("/find-store")
+    public ResponseEntity<CustomApiResponse<Void>> findStore(
+            @Valid @RequestBody StoreLookupRequest request, HttpServletRequest http) {
+        limiter.checkFindStoreIp(ClientIps.rateLimitKey(http));
+        limiter.checkFindStoreSlug(request.slug());
+        storeLookup.requestLoginLink(request.slug());
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(CustomApiResponse.success(StoreLookupService.MESSAGE, null));
     }
 }

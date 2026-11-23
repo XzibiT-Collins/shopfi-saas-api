@@ -137,6 +137,12 @@ public class AuthChannelInterceptor implements ExecutorChannelInterceptor {
             if (!jwtUtil.validateToken(token, user)) {
                 throw new StompAccessDeniedException("Invalid or expired token");
             }
+            // API-RD-08: a token minted before the user's last password change cannot open a session. Sessions that
+            // are already open end with their token's expiry (documented limitation).
+            if (user instanceof com.example.perfume_budget.security.AuthUser au
+                    && !jwtUtil.tokenVersionMatches(token, au.getUser().getTokenVersion())) {
+                throw new StompAccessDeniedException("Invalid or expired token");
+            }
             accessor.setUser(new StompTenantAuthentication(tenant.slug(), user.getUsername(), user, user.getAuthorities()));
             attributes.put(TOKEN_EXPIRY_ATTR, claims.getExpiration().getTime());
             if (sessionRegistry != null && accessor.getSessionId() != null) {
