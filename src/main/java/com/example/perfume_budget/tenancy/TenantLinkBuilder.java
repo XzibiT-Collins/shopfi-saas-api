@@ -62,11 +62,22 @@ public class TenantLinkBuilder {
                 return Optional.of(scheme + "://" + custom.get());
             }
         }
-        String base = tenantProps.getBaseDomain();
-        if (tenant.isPresent() && base != null && !base.isBlank()) {
-            return Optional.of(scheme + "://" + tenant.get().getSlug() + "." + base.strip().toLowerCase());
+        if (tenant.isPresent()) {
+            return subdomainOrigin(scheme, tenant.get().getSlug(), tenantProps.getBaseDomain());
         }
         return Optional.empty();
+    }
+
+    /**
+     * The one place that shapes a subdomain tenant's origin, {@code <scheme>://<slug>.<base-domain>}, from the configured
+     * {@code tenant.base-domain} (env {@code TENANT_BASE_DOMAIN}); no domain literal exists anywhere in the code.
+     * Empty when the base domain is blank (dev). The base is trimmed and lower-cased.
+     */
+    public static Optional<String> subdomainOrigin(String scheme, String slug, String baseDomain) {
+        if (slug == null || slug.isBlank() || baseDomain == null || baseDomain.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(scheme + "://" + slug + "." + baseDomain.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     /** The emailed password-reset link for a tenant. Throws if no tenant-aware link can be built. */

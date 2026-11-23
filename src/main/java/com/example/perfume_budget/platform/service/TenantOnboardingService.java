@@ -349,10 +349,11 @@ public class TenantOnboardingService {
             }
         }
         if (st == TenantStatus.ACTIVE) {
-            String base = tenantProps.getBaseDomain();
-            if (base != null && !base.isBlank()) {
-                String store = props.getPublicScheme() + "://" + tenant.getSlug() + "." + base;
-                return new OnboardingStatusResponse(tenant.getSlug(), st.name(), store, store + props.getAdminLoginPath());
+            java.util.Optional<String> store = com.example.perfume_budget.tenancy.TenantLinkBuilder.subdomainOrigin(
+                    props.getPublicScheme(), tenant.getSlug(), tenantProps.getBaseDomain());
+            if (store.isPresent()) {
+                return new OnboardingStatusResponse(tenant.getSlug(), st.name(), store.get(),
+                        store.get() + props.getAdminLoginPath());
             }
         }
         return new OnboardingStatusResponse(tenant.getSlug(), st.name(), null, null);

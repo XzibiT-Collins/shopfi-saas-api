@@ -19,6 +19,6 @@ import java.util.List;
 @ConfigurationProperties(prefix = "platform.cors")
 public class PlatformCorsProperties {
 
-    /** Exact origins of the platform-admin console, e.g. {@code https://console.shopfi.app}. */
+    /** Exact origins of the platform-admin console, e.g. such as {@code https://console.<your-domain>} (env {@code PLATFORM_CORS_ALLOWED_ORIGINS}). */
     private List<String> allowedOrigins = new ArrayList<>();
 }
