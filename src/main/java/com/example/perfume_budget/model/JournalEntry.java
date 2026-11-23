@@ -51,4 +51,14 @@ public class JournalEntry {
     @CreatedDate
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
+
+    /** API-RD-12d: manual entries only. The caller's Idempotency-Key, the admin it belongs to, and a SHA-256 of the body. */
+    @Column(name = "idempotency_key", length = 64)
+    private String idempotencyKey;
+
+    @Column(name = "idempotency_user_id")
+    private Long idempotencyUserId;
+
+    @Column(name = "request_fingerprint", length = 64)
+    private String requestFingerprint;
 }

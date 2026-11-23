@@ -99,8 +99,13 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(BadRequestException.class)
-    public ResponseEntity<CustomApiResponse<String>> handleBadRequestException(BadRequestException ex){
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(ex.getMessage()));
+    public ResponseEntity<CustomApiResponse<Object>> handleBadRequestException(BadRequestException ex){
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(coded(ex.getMessage(), ex.getCode()));
+    }
+
+    /** API-RD-11a: {@code data.code} only when the exception carries one; otherwise the historic {@code data: null}. */
+    private static CustomApiResponse<Object> coded(String message, String code) {
+        return code == null ? CustomApiResponse.error(message) : CustomApiResponse.error(message, Map.of("code", code));
     }
 
     @ExceptionHandler(RateLimitExceededException.class)
@@ -111,13 +116,13 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(DuplicateResourceException.class)
-    public ResponseEntity<CustomApiResponse<String>> handleDuplicateResourceException(DuplicateResourceException ex){
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(CustomApiResponse.error(ex.getMessage()));
+    public ResponseEntity<CustomApiResponse<Object>> handleDuplicateResourceException(DuplicateResourceException ex){
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(coded(ex.getMessage(), ex.getCode()));
     }
 
     @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<CustomApiResponse<String>> handleResourceNotFoundException(ResourceNotFoundException ex){
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(CustomApiResponse.error(ex.getMessage()));
+    public ResponseEntity<CustomApiResponse<Object>> handleResourceNotFoundException(ResourceNotFoundException ex){
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(coded(ex.getMessage(), ex.getCode()));
     }
 
     @ExceptionHandler(InvalidJWTTokenException.class)

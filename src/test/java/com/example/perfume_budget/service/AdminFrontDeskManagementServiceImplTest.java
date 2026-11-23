@@ -94,11 +94,11 @@ class AdminFrontDeskManagementServiceImplTest {
     @Test
     void createFrontDeskUser_CreatesEncodedLocalUser() {
         when(userRepository.existsByEmail("frontdesk@example.com")).thenReturn(false);
-        when(passwordEncoder.encode("secret123")).thenReturn("encoded");
+        when(passwordEncoder.encode("Secret123!")).thenReturn("encoded");
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         FrontDeskUserSummaryResponse response = service.createFrontDeskUser(
-                new CreateFrontDeskUserRequest("Front Desk", "frontdesk@example.com", "secret123", true)
+                new CreateFrontDeskUserRequest("Front Desk", "frontdesk@example.com", "Secret123!", true)
         );
 
         assertEquals(UserRole.FRONT_DESK, response.role());
@@ -113,7 +113,7 @@ class AdminFrontDeskManagementServiceImplTest {
         when(userRepository.existsByEmail("frontdesk@example.com")).thenReturn(true);
 
         assertThrows(DuplicateResourceException.class, () -> service.createFrontDeskUser(
-                new CreateFrontDeskUserRequest("Front Desk", "frontdesk@example.com", "secret123", true)
+                new CreateFrontDeskUserRequest("Front Desk", "frontdesk@example.com", "Secret123!", true)
         ));
     }
 
@@ -167,8 +167,77 @@ class AdminFrontDeskManagementServiceImplTest {
     }
 
     @Test
-    void updateUserPermissions_RejectsConflictingOverrides() {
+    void createFrontDeskUser_RejectsWeakPasswordsWithACode() {
+        for (String[] c : new String[][]{{"abcdefgh", "PASSWORD_TOO_WEAK"}, {"Ab1!", "PASSWORD_TOO_SHORT"},
+                {"Aa1!" + "x".repeat(70), "PASSWORD_TOO_LONG"}, {"alllower1!", "PASSWORD_TOO_WEAK"}, {"NoDigits!!", "PASSWORD_TOO_WEAK"},
+                {"NoSpecial12", "PASSWORD_TOO_WEAK"}}) {
+            BadRequestException e = assertThrows(BadRequestException.class, () -> service.createFrontDeskUser(
+                    new CreateFrontDeskUserRequest("Front Desk", "fd@example.com", c[0], true)), c[0]);
+            assertEquals(c[1], e.getCode(), c[0]);
+        }
+        verify(userRepository, never()).save(any(User.class));
+        verify(passwordEncoder, never()).encode(anyString());
+    }
+
+    @Test
+    void updateFrontDeskUser_ShortPasswordKeepsTheHistoricText() {
         when(userRepository.findById(5L)).thenReturn(Optional.of(frontDeskUser));
+        BadRequestException e = assertThrows(BadRequestException.class, () -> service.updateFrontDeskUser(
+                5L, new UpdateFrontDeskUserRequest("Desk User", null, "short", null)));
+        assertEquals("Password must be at least 8 characters long", e.getMessage());
+        assertEquals("PASSWORD_TOO_SHORT", e.getCode());
+    }
+
+    @Test
+    void updateDefaultTemplate_StaleIfMatchIsRefusedBeforeAnythingIsWritten() {
+        when(templateRepository.findAllByEnabledTrue()).thenReturn(List.of(
+                FrontDeskPermissionTemplate.builder().permission(FrontDeskPermission.CUSTOMER_SEARCH).enabled(true).build()));
+        String current = AdminFrontDeskManagementServiceImpl.templateVersion(Set.of(FrontDeskPermission.CUSTOMER_SEARCH));
+        String stale = AdminFrontDeskManagementServiceImpl.templateVersion(Set.of(FrontDeskPermission.STOCK_TRANSFER));
+        assertEquals(current, service.getDefaultTemplate().version());
+
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> service.updateDefaultTemplate(new FrontDeskPermissionTemplateUpdateRequest(Set.of()), "\"" + stale + "\""));
+        assertEquals("TEMPLATE_VERSION_CONFLICT", e.getCode());
+        assertEquals(current, e.body().get("currentVersion"));
+        verify(templateRepository, never()).save(any(FrontDeskPermissionTemplate.class));
+        verify(templateRepository).lockTemplateSaves();
+    }
+
+    @Test
+    void overridesVersionCoversUserAndBothSides() {
+        var allow = List.of(FrontDeskUserPermissionOverride.builder().permission(FrontDeskPermission.STOCK_TRANSFER).allowed(true).build());
+        var deny = List.of(FrontDeskUserPermissionOverride.builder().permission(FrontDeskPermission.STOCK_TRANSFER).allowed(false).build());
+        String base = AdminFrontDeskManagementServiceImpl.overridesVersion(5L, allow);
+        assertNotEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(6L, allow));
+        assertNotEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(5L, deny));
+        assertNotEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(5L, List.of()));
+        assertEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(5L, allow));
+    }
+
+    @Test
+    void getFrontDeskUsers_SummarisesEveryUserWithoutPerUserQueries() {
+        User other = User.builder().id(6L).fullName("Another").email("a@example.com").roles(UserRole.FRONT_DESK).isActive(true).build();
+        when(userRepository.findAllByRoles(UserRole.FRONT_DESK)).thenReturn(List.of(frontDeskUser, other));
+        when(templateRepository.findAllByEnabledTrue()).thenReturn(List.of(
+                FrontDeskPermissionTemplate.builder().permission(FrontDeskPermission.CUSTOMER_SEARCH).enabled(true).build(),
+                FrontDeskPermissionTemplate.builder().permission(FrontDeskPermission.WALK_IN_ORDER_VIEW).enabled(true).build()));
+        when(overrideRepository.findAllByUserIds(List.of(6L, 5L))).thenReturn(List.of(
+                FrontDeskUserPermissionOverride.builder().user(frontDeskUser).permission(FrontDeskPermission.STOCK_TRANSFER).allowed(true).build(),
+                FrontDeskUserPermissionOverride.builder().user(frontDeskUser).permission(FrontDeskPermission.CUSTOMER_SEARCH).allowed(false).build(),
+                FrontDeskUserPermissionOverride.builder().user(other).permission(FrontDeskPermission.CUSTOMER_SEARCH).allowed(true).build()));
+
+        List<FrontDeskUserSummaryResponse> list = service.getFrontDeskUsers();
+
+        assertEquals("Another", list.get(0).fullName());
+        assertEquals(new FrontDeskUserSummaryResponse.PermissionSummary(2, 8, 0, 0, false), list.get(0).permissionSummary());
+        assertEquals(new FrontDeskUserSummaryResponse.PermissionSummary(2, 8, 1, 1, true), list.get(1).permissionSummary());
+        verify(overrideRepository, never()).findAllByUser(any(User.class));
+    }
+
+    @Test
+    void updateUserPermissions_RejectsConflictingOverrides() {
+        when(userRepository.lockById(5L)).thenReturn(Optional.of(frontDeskUser));
 
         assertThrows(BadRequestException.class, () -> service.updateUserPermissions(
                 5L,

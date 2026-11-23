@@ -19,6 +19,7 @@ import com.example.perfume_budget.repository.CouponRepository;
 import com.example.perfume_budget.repository.TaxRepository;
 import com.example.perfume_budget.service.interfaces.OrderService;
 import com.example.perfume_budget.service.interfaces.TaxService;
+import com.example.perfume_budget.utils.ConcurrencyTag;
 import com.example.perfume_budget.utils.DiscountCalculationUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -46,10 +47,10 @@ public class TaxServiceImpl implements TaxService {
     @Transactional
     public TaxResponse createTax(TaxRequest request) {
         if (taxRepository.existsByName(request.name())) {
-            throw new DuplicateResourceException("Tax already exists with name: " + request.name());
+            throw new DuplicateResourceException("Tax already exists with name: " + request.name(), "TAX_NAME_EXISTS");
         }
         if (taxRepository.existsByCode(request.code())) {
-            throw new DuplicateResourceException("Tax already exists with code: " + request.code());
+            throw new DuplicateResourceException("Tax already exists with code: " + request.code(), "TAX_CODE_EXISTS");
         }
         Tax tax = TaxMapper.toTax(request);
         return TaxMapper.toTaxResponse(taxRepository.save(tax));
@@ -58,14 +59,24 @@ public class TaxServiceImpl implements TaxService {
     @Override
     @Transactional
     public TaxResponse updateTax(Long id, TaxRequest request) {
-        Tax tax = taxRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Tax not found with id: " + id));
+        return updateTax(id, request, null);
+    }
+
+    @Override
+    @Transactional
+    public TaxResponse updateTax(Long id, TaxRequest request, String ifMatch) {
+        String expected = ConcurrencyTag.parseIfMatch(ifMatch);
+        // API-RD-11c: row lock, then compare the caller's ETag with the state read under the lock
+        Tax tax = taxRepository.lockById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Tax not found with id: " + id, "TAX_NOT_FOUND"));
+        ConcurrencyTag.require(expected, TaxMapper.versionOf(tax), "TAX_VERSION_CONFLICT",
+                "This tax was changed by someone else. Reload and try again.");
 
         if (!tax.getName().equals(request.name()) && taxRepository.existsByName(request.name())) {
-            throw new DuplicateResourceException("Tax already exists with name: " + request.name());
+            throw new DuplicateResourceException("Tax already exists with name: " + request.name(), "TAX_NAME_EXISTS");
         }
         if (!tax.getCode().equals(request.code()) && taxRepository.existsByCode(request.code())) {
-            throw new DuplicateResourceException("Tax already exists with code: " + request.code());
+            throw new DuplicateResourceException("Tax already exists with code: " + request.code(), "TAX_CODE_EXISTS");
         }
 
         TaxMapper.updateTax(tax, request);
@@ -76,7 +87,7 @@ public class TaxServiceImpl implements TaxService {
     public TaxResponse getTaxById(Long id) {
         return taxRepository.findById(id)
                 .map(TaxMapper::toTaxResponse)
-                .orElseThrow(() -> new ResourceNotFoundException("Tax not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Tax not found with id: " + id, "TAX_NOT_FOUND"));
     }
 
     @Override
@@ -90,7 +101,7 @@ public class TaxServiceImpl implements TaxService {
     @Transactional
     public void deleteTax(Long id) {
         if (!taxRepository.existsById(id)) {
-            throw new ResourceNotFoundException("Tax not found with id: " + id);
+            throw new ResourceNotFoundException("Tax not found with id: " + id, "TAX_NOT_FOUND");
         }
         taxRepository.deleteById(id);
     }
