@@ -17,6 +17,8 @@ import com.example.perfume_budget.dto.analytics.ProfitDataPointResponse;
 import com.example.perfume_budget.dto.analytics.RevenueDataPointResponse;
 import com.example.perfume_budget.dto.analytics.SalesAnalyticsResponse;
 import com.example.perfume_budget.enums.CurrencyCode;
+import com.example.perfume_budget.enums.CustomerSortField;
+import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.enums.OrderProcessingStatus;
 import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.enums.SalesAnalyticsGranularity;
@@ -33,6 +35,7 @@ import com.example.perfume_budget.projection.OnlineOrderStatusProjection;
 import com.example.perfume_budget.projection.RevenueAndCOGSBucketProjection;
 import com.example.perfume_budget.projection.WalkInOrderStatusProjection;
 import com.example.perfume_budget.repository.*;
+import com.example.perfume_budget.repository.CustomerMetricsQueryRepository;
 import com.example.perfume_budget.repository.JournalEntryRepository;
 import com.example.perfume_budget.repository.WalkInOrderRepository;
 import com.example.perfume_budget.service.interfaces.AdminMetricService;
@@ -40,7 +43,9 @@ import com.example.perfume_budget.utils.PaginationUtil;
 import lombok.RequiredArgsConstructor;
 import org.jspecify.annotations.Nullable;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -69,17 +74,41 @@ public class AdminMetricServiceImpl implements AdminMetricService {
     private final UserRepository userRepository;
     private final JournalEntryRepository journalEntryRepository;
     private final WalkInOrderRepository walkInOrderRepository;
+    private final CustomerMetricsQueryRepository customerMetricsQueryRepository;
+
+    static final int MAX_SEARCH_LENGTH = 100;
+    static final int MAX_PAGE_SIZE = 50;
+    static final int DEFAULT_PAGE_SIZE = 20;
 
     @Override
-    public PageResponse<CustomerDataResponse> getCustomers(Pageable pageable) {
-        Page<CustomerOrderSummary> summaryPage = orderRepository.getCustomerOrderSummary(pageable);
+    public PageResponse<CustomerDataResponse> getCustomers(String search, String sortBy, Sort.Direction direction,
+                                                           Pageable pageable) {
+        String term = search == null ? null : search.trim();
+        if (term != null && term.length() > MAX_SEARCH_LENGTH) {
+            throw new BadRequestException("search must be at most " + MAX_SEARCH_LENGTH + " characters");
+        }
+        CustomerSortField field = CustomerSortField.parse(sortBy);
+        // DoS guard: never trust the client's page size (the prod profile caps at 50, other profiles do not)
+        int size = pageable.isPaged() ? Math.max(1, Math.min(pageable.getPageSize(), MAX_PAGE_SIZE)) : DEFAULT_PAGE_SIZE;
+        int page = pageable.isPaged() ? pageable.getPageNumber() : 0;
+        Page<CustomerOrderSummary> summaryPage = customerMetricsQueryRepository.findCustomers(
+                term, field, direction == null ? Sort.Direction.DESC : direction, PageRequest.of(page, size));
         Page<CustomerDataResponse> customerDataResponses = summaryPage.map(CustomerDataMapper::toCustomerDataResponse);
         return PaginationUtil.createPageResponse(customerDataResponses);
     }
 
     @Override
-    public PageResponse<CustomerDataResponse> searchCustomer(Pageable pageable, String keyword) {
-        return null;
+    public MostPurchaseProductResponse getProductMetrics(Long productId, LocalDate from, LocalDate to) {
+        if ((from == null) != (to == null)) {
+            throw new BadRequestException("Both 'from' and 'to' must be provided together");
+        }
+        if (from != null && from.isAfter(to)) {
+            throw new BadRequestException("'from' must not be after 'to'");
+        }
+        // The engagement counters are lifetime totals (no per-day events exist), so from/to are validated, not applied.
+        return productRepository.findEngagementById(productId)
+                .map(TopProductMapper::toMostPurchasedProduct)
+                .orElseThrow(() -> new ResourceNotFoundException("Product not found"));
     }
 
     @Override

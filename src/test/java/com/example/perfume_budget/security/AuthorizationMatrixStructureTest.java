@@ -83,7 +83,7 @@ class AuthorizationMatrixStructureTest {
         expect(ADMIN, "AdminFrontDeskManagementController", "getDefaultTemplate", "updateDefaultTemplate", "getFrontDeskUsers",
                 "createFrontDeskUser", "assignUserToFrontDesk", "updateFrontDeskUser", "getUserPermissions", "updateUserPermissions");
         expect(ADMIN, "AdminMetricController", "getCustomerData", "getCustomerDetails", "getCustomerOrders", "getCouponMetrics",
-                "getTopProducts", "getSiteMetric", "getDashboardMetric", "getLowStockProducts", "getTopCustomers", "getSalesAnalytics");
+                "getTopProducts", "getSiteMetric", "getDashboardMetric", "getLowStockProducts", "getTopCustomers", "getSalesAnalytics", "getProductMetrics");
         expect(ADMIN, "BookkeepingController", "recordManualEntry");
         expect(ADMIN, "CategoryController", "addCategory", "updateCategory", "getCategoryById", "deleteCategory");
         expect(ADMIN, "CouponController", "createCoupon", "getCouponById", "getAll",

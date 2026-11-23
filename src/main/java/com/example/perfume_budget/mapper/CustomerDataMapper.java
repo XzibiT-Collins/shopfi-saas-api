@@ -19,6 +19,7 @@ public class CustomerDataMapper {
                 .totalSpent(new Money(summary.getTotalAmountSpent(), CurrencyCode.GHS).toString())
                 .isActive(summary.getIsActive())
                 .dateJoined(summary.getCreatedAt() != null ? summary.getCreatedAt().toLocalDate() : null)
+                .lastOrderDate(summary.getLastOrderAt() != null ? summary.getLastOrderAt().toLocalDate() : null)
                 .build();
     }
 }
