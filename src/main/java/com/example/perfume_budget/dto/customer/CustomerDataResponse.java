@@ -12,5 +12,7 @@ public record CustomerDataResponse(
    Long orderCount,
    String totalSpent,
    boolean isActive,
-   LocalDate dateJoined
+   LocalDate dateJoined,
+   /** API-RD-10 (additive): date of the customer's newest order, null when they have none. */
+   LocalDate lastOrderDate
 ) {}

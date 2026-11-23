@@ -11,4 +11,6 @@ public interface CustomerOrderSummary {
     LocalDateTime getCreatedAt();
     Long getTotalOrders();
     BigDecimal getTotalAmountSpent();
+    /** API-RD-10: newest order of the customer (any status, like the count); null when there is none. */
+    default LocalDateTime getLastOrderAt() { return null; }
 }

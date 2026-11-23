@@ -65,22 +65,7 @@ public interface OrderRepository extends JpaRepository<Order, Long>, org.springf
         """)
     List<Order> findOpenByUser(@Param("user") User user, @Param("cutoff") LocalDateTime cutoff);
 
-    // ORD-02 rework (F5): totalAmountSpent counts paid (COMPLETED) orders that were not cancelled, like top customers
-    // and the customer details; totalOrders still counts every order of the customer. (ORD-02b: the unused per-user
-    // variant getCustomerOrderSummaryByUserId was removed; the customer details compute their own totals.)
-    @Query("""
-        SELECT u.id AS userId, u.fullName AS fullName, u.email AS email,
-               u.isActive AS isActive, u.createdAt AS createdAt,
-               COUNT(o.id) AS totalOrders,
-               COALESCE(SUM(CASE WHEN o.status = com.example.perfume_budget.enums.PaymentStatus.COMPLETED
-                                  AND (o.deliveryStatus IS NULL OR o.deliveryStatus NOT IN (com.example.perfume_budget.enums.OrderProcessingStatus.CANCELLED, com.example.perfume_budget.enums.OrderProcessingStatus.RETURNED))
-                                 THEN o.totalAmount.amount ELSE 0 END), 0) AS totalAmountSpent
-        FROM Order o
-        JOIN o.user u
-        GROUP BY u.id, u.fullName, u.email, u.isActive, u.createdAt
-        ORDER BY COUNT(o.id) DESC
-        """)
-    Page<CustomerOrderSummary> getCustomerOrderSummary(Pageable pageable);
+    // API-RD-10: the customer metrics list moved to CustomerMetricsQueryRepository (search, sort, tie-breaker).
 
     /**
      * Orders by this customer that still hold a LIVE redemption of the coupon: not released (API-04 rework) and not
