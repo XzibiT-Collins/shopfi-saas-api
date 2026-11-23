@@ -78,6 +78,22 @@ public class TokenBucketRateLimiter {
         }
     }
 
+    /**
+     * Non-consuming check: 0 if a token is available now, otherwise the seconds until one is. A key that was never
+     * seen (or is back to full) is available. Pair with {@link #tryAcquire} to charge only some outcomes.
+     */
+    public long peek(String key) {
+        long now = nanoClock.getAsLong();
+        synchronized (lock) {
+            Bucket b = buckets.get(key);
+            if (b == null) {
+                return 0;
+            }
+            double tokens = Math.min(capacity, b.tokens + (now - b.lastNanos) * refillPerNano);
+            return tokens >= 1.0 ? 0 : (long) Math.ceil((1.0 - tokens) / refillPerNano / 1_000_000_000.0);
+        }
+    }
+
     private long take(Bucket b, long now) {
         b.tokens = Math.min(capacity, b.tokens + (now - b.lastNanos) * refillPerNano);
         b.lastNanos = now;

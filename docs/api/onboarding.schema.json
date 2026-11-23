@@ -65,6 +65,23 @@
         "email": { "$ref": "#/$defs/Email" }
       }
     },
+    "StoreLookupRequest": {
+      "type": "object",
+      "required": ["slug"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "\\S" }
+      }
+    },
+    "StoreLookupEnvelope": {
+      "description": "Find-store always answers 202 with this exact body, whatever the store state (API-RD-04).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "const": "If a store with that name exists, we've emailed its owner a link to sign in." },
+        "data": { "type": "null" }
+      }
+    },
     "OnboardingStatus": {
       "description": "data of signup, verify and status responses. storefrontUrl and adminLoginUrl are present only when status is ACTIVE and tenant.base-domain is configured; they are omitted (not null) otherwise.",
       "type": "object",

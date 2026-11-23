@@ -63,6 +63,13 @@ public class User implements JwtUserDetails {
     @Column(name = "image_url", length = 512)
     private String imageUrl;
 
+    /**
+     * Session revocation counter (V50). Tokens carry it in the {@code tv} claim; bumping it on a password change
+     * invalidates every token minted before.
+     */
+    @Column(name = "token_version", nullable = false)
+    private int tokenVersion;
+
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<DeliveryDetail> deliveryAddresses = new ArrayList<>();
 

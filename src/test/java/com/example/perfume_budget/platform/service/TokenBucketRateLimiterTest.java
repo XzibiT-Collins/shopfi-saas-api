@@ -27,6 +27,23 @@ class TokenBucketRateLimiterTest {
     }
 
     @Test
+    void peekNeverConsumes_andReportsTheWaitOnceDrained() {
+        AtomicLong now = new AtomicLong();
+        TokenBucketRateLimiter l = new TokenBucketRateLimiter(2, Duration.ofSeconds(20), now::get);
+        for (int i = 0; i < 10; i++) {
+            assertThat(l.peek("k")).as("peek #" + i).isZero(); // unknown key, then a full bucket: nothing is taken
+        }
+        assertThat(l.tryAcquire("k")).isZero();
+        assertThat(l.peek("k")).isZero();
+        assertThat(l.tryAcquire("k")).isZero();
+        assertThat(l.peek("k")).isBetween(1L, 10L);
+        assertThat(l.peek("k")).isBetween(1L, 10L); // still drained: peeking did not change anything
+        now.addAndGet(Duration.ofSeconds(10).toNanos());
+        assertThat(l.peek("k")).isZero();
+        assertThat(l.tryAcquire("k")).isZero();
+    }
+
+    @Test
     void keysAreIndependent() {
         TokenBucketRateLimiter l = new TokenBucketRateLimiter(1, Duration.ofHours(1), () -> 0L);
         assertThat(l.tryAcquire("a")).isZero();

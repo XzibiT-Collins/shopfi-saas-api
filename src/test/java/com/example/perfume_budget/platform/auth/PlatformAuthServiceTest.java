@@ -27,7 +27,8 @@ class PlatformAuthServiceTest {
     void setUp() {
         when(encoder.encode(anyString())).thenReturn("DUMMY-HASH");
         svc = new PlatformAuthService(repo, encoder, new PlatformJwtService(PlatformJwtServiceTest.SECRET, props),
-                new PlatformAuthCookies(props, true, "None"), new PlatformLoginRateLimiter(props));
+                new PlatformAuthCookies(props, true, "None"), new PlatformLoginRateLimiter(props),
+                mock(org.springframework.transaction.PlatformTransactionManager.class));
     }
 
     private PlatformAdmin admin(boolean active) {

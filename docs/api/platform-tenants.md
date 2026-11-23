@@ -14,7 +14,7 @@ return tenant business data.
 
 | Status | Meaning |
 |---|---|
-| 400 | bad query parameter (`status`, `page`, `size`, `sort`, `direction`, `search`) |
+| 400 | bad query parameter (`status`, `page`, `size`, `sort`, `direction`, `search`, `customDomainStatus`, `hasCustomDomain`) |
 | 401 / 403 | not authenticated / not SUPER_ADMIN |
 | 404 | tenant not found (detail, audit and every action). An unknown slug and a malformed slug give the identical response |
 | 409 | illegal transition for the tenant's current status, or approve/reprovision without verified credentials (exact texts below) |
@@ -31,7 +31,8 @@ upper case** (`Acme` is not `acme`), is answered exactly like an unknown tenant:
 
 Query: `status` (optional, one of `PENDING|PROVISIONING|ACTIVE|SUSPENDED|FAILED`, case-insensitive), `page` (0-based, default 0),
 `size` (default 20, **capped at 100**: a larger value is silently reduced and the response reports the effective `size`),
-`sort` (`createdAt` default, `slug`, `displayName`, `status`), `direction` (`desc` default, `asc`), `search` (PLAT-04, see below). The unique id is always the
+`sort` (`createdAt` default, `slug`, `displayName`, `status`), `direction` (`desc` default, `asc`), `search` (PLAT-04, see below),
+`customDomainStatus` and `hasCustomDomain` (API-RD-07, see below). The unique id is always the
 final tiebreaker, so paging is stable.
 
 Fields are registry fields only. `schemaName`, `webhookToken` and anything from a tenant schema are never returned.
@@ -63,10 +64,25 @@ signup. It is personal data, so the console must not log it, cache it in shared 
     "totalElements": 1,
     "totalPages": 1,
     "sort": "createdAt",
-    "direction": "desc"
+    "direction": "desc",
+    "customDomainCounts": { "PENDING": 0, "VERIFIED": 0, "FAILED": 0, "NONE": 1 }
   }
 }
 ```
+
+### `customDomainStatus`, `hasCustomDomain` and `customDomainCounts` (API-RD-07 AC2)
+
+* `customDomainStatus=PENDING|VERIFIED|FAILED` (case-insensitive) keeps only tenants whose custom domain is in that state.
+  Anything else (including `NONE`, which is a count key and not a stored state) is `400` `Unknown customDomainStatus filter`.
+* `hasCustomDomain=true` keeps tenants that have a custom domain in any state; `false` keeps tenants without one. A value
+  that is not `true`/`false` is `400`.
+* All filters (`status`, `search`, `customDomainStatus`, `hasCustomDomain`) combine with AND, so
+  `customDomainStatus=VERIFIED&hasCustomDomain=false` is an empty page (`200`), not an error.
+* `customDomainCounts` is **always present** and is the page-header facet: the number of tenants per custom-domain state
+  (`PENDING`, `VERIFIED`, `FAILED`, and `NONE` = no custom domain) among the tenants that match `status` and `search`.
+  It deliberately **ignores** `customDomainStatus`, `hasCustomDomain`, `page` and `size`, so every count says how many rows
+  that filter would show and the chips do not change when one is selected. The four counts add up to the number of tenants
+  matching `status` and `search`. Reads `master.tenants` only, like the list.
 
 ### `search` (PLAT-04)
 

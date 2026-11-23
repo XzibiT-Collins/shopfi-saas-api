@@ -38,6 +38,17 @@
         },
         "type" : "object"
       },
+      "StoreLookupRequest" : {
+        "properties" : {
+          "slug" : {
+            "maxLength" : 64,
+            "minLength" : 0,
+            "type" : "string"
+          }
+        },
+        "required" : [ "slug" ],
+        "type" : "object"
+      },
       "TenantResendRequest" : {
         "properties" : {
           "email" : {
@@ -121,6 +132,41 @@
   },
   "openapi" : "3.1.0",
   "paths" : {
+    "/api/v1/platform/onboarding/find-store" : {
+      "post" : {
+        "operationId" : "findStore",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/StoreLookupRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "202" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/CustomApiResponseVoid"
+                }
+              }
+            },
+            "description" : "Always returned when the request is well-formed and not rate limited"
+          },
+          "400" : {
+            "description" : "Validation failure (missing or over-long slug)"
+          },
+          "429" : {
+            "description" : "Rate limited per IP or per store name (Retry-After)"
+          }
+        },
+        "summary" : "Find your store (non-enumerating: always 202 with the same body; the owner is e-mailed the sign-in link)",
+        "tags" : [ "Tenant onboarding" ]
+      }
+    },
     "/api/v1/platform/onboarding/resend" : {
       "post" : {
         "operationId" : "resend",

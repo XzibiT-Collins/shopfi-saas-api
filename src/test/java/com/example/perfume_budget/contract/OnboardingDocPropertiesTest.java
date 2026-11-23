@@ -43,6 +43,8 @@ class OnboardingDocPropertiesTest {
         expected.put("status-ip", props.getStatusIp());
         expected.put("resend-ip", props.getResendIp());
         expected.put("resend-email", props.getResendEmail());
+        expected.put("find-store-ip", props.getFindStoreIp());
+        expected.put("find-store-slug", props.getFindStoreSlug());
 
         Matcher m = Pattern.compile("(?m)^\\| `([a-z-]+)` \\|[^|]*\\| (\\d+) \\| (\\d+) s \\|$").matcher(DOC);
         Map<String, long[]> documented = new LinkedHashMap<>();

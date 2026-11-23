@@ -35,6 +35,9 @@ public class OnboardingProperties {
     private Limit statusIp = new Limit(60, 60);
     private Limit resendIp = new Limit(10, 3600);
     private Limit resendEmail = new Limit(3, 3600);
+    /** API-RD-04 find-store: per client IP, and per typed store name (bounds mail to one owner from any number of IPs). */
+    private Limit findStoreIp = new Limit(10, 600);
+    private Limit findStoreSlug = new Limit(3, 3600);
 
     /** {@code capacity} requests per {@code periodSeconds} (burst = capacity, continuous refill). */
     @Getter

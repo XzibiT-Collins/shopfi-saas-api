@@ -111,6 +111,46 @@ public class JWTUtil {
     public static final String TYPE_ACCESS = "access";
     public static final String TYPE_REFRESH = "refresh";
 
+    /**
+     * API-RD-08: session-revocation claim. A user's {@code token_version} is minted into every token; a token whose
+     * claim differs from the user's current version is refused everywhere (REST, refresh, STOMP CONNECT). A token
+     * without the claim is version 0, so tokens minted before the claim existed stay valid until the first bump.
+     */
+    public static final String TOKEN_VERSION_CLAIM = "tv";
+
+    /** The token's version claim, 0 when absent or not a whole number (fail towards the lowest version). */
+    public int extractTokenVersion(String token) {
+        Object v = parseToken(token).get(TOKEN_VERSION_CLAIM);
+        return v instanceof Number n ? n.intValue() : 0;
+    }
+
+    /** True when the token was minted at the user's current version (the revocation check). */
+    public boolean tokenVersionMatches(String token, int currentVersion) {
+        return extractTokenVersion(token) == currentVersion;
+    }
+
+    public String generateAccessToken(String email, String role, Long userId, String fullName, int tokenVersion){
+        Map<String, Object> claims = new HashMap<>();
+        claims.put(TYPE_CLAIM, TYPE_ACCESS);
+        claims.put("role", role);
+        claims.put("userId", userId);
+        claims.put("fullName", fullName);
+        claims.put(TOKEN_VERSION_CLAIM, tokenVersion);
+        putTenantClaim(claims);
+        return generateToken(email, jwtAccessExpirationMs, claims);
+    }
+
+    public String generateRefreshToken(String email, String role, Long userId, String fullName, int tokenVersion){
+        Map<String, Object> claims = new HashMap<>();
+        claims.put(TYPE_CLAIM, TYPE_REFRESH);
+        claims.put("userId", userId);
+        claims.put("role", role);
+        claims.put("fullName", fullName);
+        claims.put(TOKEN_VERSION_CLAIM, tokenVersion);
+        putTenantClaim(claims);
+        return generateToken(email, jwtRefreshExpirationMs, claims);
+    }
+
     public String generateAccessToken(JwtUserDetails user){
         Map<String, Object> claims = new HashMap<>();
         claims.put(TYPE_CLAIM, TYPE_ACCESS);

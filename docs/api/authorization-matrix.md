@@ -25,9 +25,9 @@ Verified against reflection and `SecurityConfig` (SEC-03b). `AuthorizationMatrix
 | Method + path | Why public |
 |---|---|
 | `GET /api/v1/category/all`, `GET /api/v1/product/{featured,listing,search}`, `GET /api/v1/product/{slug}`, `GET /api/v1/theme` | storefront reads (tenant from Origin) |
-| `POST /api/v1/auth/{register,verify-otp,verify-login-otp,resend-otp,resend-login-otp,login,logout,refresh,forgot-password,reset-password}` | sign-in flow; `GET /auth/me` is authenticated; any other `/auth/**` is authenticated |
+| `POST /api/v1/auth/{register,verify-otp,verify-login-otp,resend-otp,resend-login-otp,login,logout,refresh,forgot-password,reset-password}` | sign-in flow; `GET /auth/me`, `PATCH /auth/me` and `POST /auth/change-password` (API-RD-08) are authenticated; any other `/auth/**` is authenticated |
 | `POST /api/v1/webhook/{token}` | Paystack; per-tenant token + HMAC signature (TENANT-05). Other methods: 401 |
-| `POST /api/v1/platform/auth/{login,refresh,logout}`, `POST /api/v1/platform/onboarding/{signup,verify,resend}`, `GET /api/v1/platform/onboarding/status` | platform sign-in and public onboarding; every other `/platform/**` is `SUPER_ADMIN` |
+| `POST /api/v1/platform/auth/{login,refresh,logout}`, `POST /api/v1/platform/onboarding/{signup,verify,resend,find-store}`, `GET /api/v1/platform/onboarding/status` | platform sign-in and public onboarding (`find-store` is the non-enumerating "Find your store" lookup, API-RD-04); every other `/platform/**` is `SUPER_ADMIN` (including `POST /platform/auth/change-password`, API-RD-07) |
 | `/oauth2/**`, `/login/oauth2/**` | OAuth2 login redirects |
 | `/ws/**` | SockJS/STOMP handshake (HTTP level only; every STOMP frame is authorised, see section 2a): Origin checked by `TenantOriginHandshakeInterceptor`, tenant bound by `TenantHandshakeInterceptor` |
 | `GET /swagger-ui/**`, `/swagger-ui.html`, `/v3/api-docs/**` | dev/test only: permitted only while `springdoc.*.enabled` is true; the prod profile disables springdoc and the matchers then require authentication (anonymous 401) |
@@ -88,6 +88,8 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | AuthController | POST | `/api/v1/auth/resend-login-otp` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/login` | permitAll (explicit POST) | - | mutates |
 | AuthController | GET | `/api/v1/auth/me` | authenticated (explicit) | - | reads own profile; the `@PreAuthorize` in the source is commented out, so any signed-in tenant user (ADMIN, CUSTOMER, FRONT_DESK) passes; a platform token on this tenant route is anonymous -> 401 |
+| AuthController | PATCH | `/api/v1/auth/me` | authenticated (explicit) | `hasAnyRole('CUSTOMER','ADMIN','FRONT_DESK')` | mutates the caller's own full name (API-RD-08); any signed-in tenant role (ADMIN, CUSTOMER, FRONT_DESK); the target is always the principal; anonymous, platform and other-tenant tokens -> 401 |
+| AuthController | POST | `/api/v1/auth/change-password` | authenticated (explicit) | `hasAnyRole('CUSTOMER','ADMIN','FRONT_DESK')` | mutates the caller's own password and revokes their older tokens (API-RD-08); same role and target rules as `PATCH /auth/me`; rate limited |
 | AuthController | POST | `/api/v1/auth/logout` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/refresh` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/forgot-password` | permitAll (explicit POST) | - | mutates |
@@ -203,6 +205,7 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | PlatformAuthController | POST | `/api/v1/platform/auth/refresh` | permitAll (explicit POST) | - | mutates |
 | PlatformAuthController | POST | `/api/v1/platform/auth/logout` | permitAll (explicit POST) | - | mutates |
 | PlatformAuthController | GET | `/api/v1/platform/auth/me` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` | reads tenant data |
+| PlatformAuthController | POST | `/api/v1/platform/auth/change-password` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` | mutates the caller's own password and revokes their older tokens (API-RD-07); tenant tokens of any role -> 401; rate limited |
 | PlatformTenantController | GET | `/api/v1/platform/tenants` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data |
 | PlatformTenantController | GET | `/api/v1/platform/tenants/{slug}` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data |
 | PlatformTenantController | GET | `/api/v1/platform/tenants/{slug}/audit` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads tenant data |
@@ -217,6 +220,7 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | TenantOnboardingController | POST | `/api/v1/platform/onboarding/verify` | permitAll (explicit) | - | mutates |
 | TenantOnboardingController | GET | `/api/v1/platform/onboarding/status` | permitAll (explicit) | - | reads tenant data |
 | TenantOnboardingController | POST | `/api/v1/platform/onboarding/resend` | permitAll (explicit) | - | mutates |
+| TenantOnboardingController | POST | `/api/v1/platform/onboarding/find-store` | permitAll (explicit) | - | non-enumerating lookup (API-RD-04): identical 202 for every input, mails only the owner of an ACTIVE store; rate limited per IP and per typed name |
 
 Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant user, decided in SEC-03b): `AuthController` `GET /auth/me`, `TaxController` `GET /tax` (tax calculation for a subtotal and coupon) and `GET /tax/all` (rate list). **Tax policy:** the storefront frontend calls neither (checkout totals come from `POST /cart/preview`), but rates are not secret (every checkout total shows them), the calculation is the same one a customer already triggers through checkout, and an API client may rely on it, so the routes stay open to signed-in users while the rate administration (`add-tax`, `update`, `{taxId}`, `delete`) is `ADMIN`. Revisit if rates ever become confidential.
 

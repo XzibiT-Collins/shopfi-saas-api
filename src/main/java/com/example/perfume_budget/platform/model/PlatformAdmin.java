@@ -40,6 +40,10 @@ public class PlatformAdmin {
     @Column(name = "is_active", nullable = false)
     private boolean isActive;
 
+    /** Session revocation counter (master V50): tokens carry it in the {@code tv} claim; a password change bumps it. */
+    @Column(name = "token_version", nullable = false)
+    private int tokenVersion;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
