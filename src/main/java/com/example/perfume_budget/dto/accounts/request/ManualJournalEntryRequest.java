@@ -10,5 +10,5 @@ import java.util.List;
 public record ManualJournalEntryRequest(
         @NotBlank String description,
         @NotNull JournalEntryType type,
-        @NotNull @NotEmpty List<JournalEntryLineRequest> lines
+        @NotNull @NotEmpty List<@NotNull @jakarta.validation.Valid JournalEntryLineRequest> lines
 ) {}

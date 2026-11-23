@@ -39,6 +39,8 @@ class BookkeepingServiceTest {
     private JournalEntryNumberGenerator entryNumberGenerator;
     @Mock
     private AuthUserUtil authUserUtil;
+    @Mock
+    private com.example.perfume_budget.repository.UserRepository userRepository;
 
     @InjectMocks
     private BookkeepingService bookkeepingService;
@@ -280,6 +282,77 @@ class BookkeepingServiceTest {
         verify(journalEntryRepository).save(any(JournalEntry.class));
         assertEquals(new BigDecimal("100.00"), cashAccount.getBalance());
         assertEquals(new BigDecimal("100.00"), revenueAccount.getBalance());
+    }
+
+    private ManualJournalEntryRequest manualRequest(String type, String amount) {
+        return new ManualJournalEntryRequest("Rent", JournalEntryType.valueOf(type), List.of(
+                new JournalEntryLineRequest(AccountCategory.CASH, EntryType.DEBIT, new BigDecimal(amount), "in"),
+                new JournalEntryLineRequest(AccountCategory.SALES_REVENUE, EntryType.CREDIT, new BigDecimal(amount), "out")));
+    }
+
+    @Test
+    @DisplayName("Manual entry refuses zero, negative and over-precise amounts before touching the ledger")
+    void recordManualEntry_RejectsNonPositiveAmounts() {
+        when(authUserUtil.getCurrentUser()).thenReturn(User.builder().id(1L).fullName("Admin").build());
+        for (String bad : new String[]{"0", "-1.00", "1.005"}) {
+            com.example.perfume_budget.exception.ApiCodeException e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                    () -> bookkeepingService.recordManualEntry(manualRequest("EXPENSE", bad), null), bad);
+            assertEquals("INVALID_AMOUNT", e.getCode(), bad);
+        }
+        verify(journalEntryRepository, never()).save(any(JournalEntry.class));
+        verify(ledgerAccountRepository, never()).applyBalanceDelta(any(), any());
+    }
+
+    @Test
+    @DisplayName("Manual entry amount ceiling: the ledger maximum is accepted, one cent more is refused")
+    void recordManualEntry_MaxAmountBoundary() {
+        when(authUserUtil.getCurrentUser()).thenReturn(User.builder().id(1L).fullName("Admin").build());
+        when(ledgerAccountRepository.findByCategory(AccountCategory.CASH)).thenReturn(Optional.of(cashAccount));
+        when(ledgerAccountRepository.findByCategory(AccountCategory.SALES_REVENUE)).thenReturn(Optional.of(revenueAccount));
+        bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "99999999999999999.99"), null);
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "100000000000000000.00"), null));
+        assertEquals("INVALID_AMOUNT", e.getCode());
+    }
+
+    @Test
+    @DisplayName("Manual entry replay: same admin + key + body posts nothing; another body is 409")
+    void recordManualEntry_KeyedReplayAndReuse() {
+        User admin = User.builder().id(1L).fullName("Admin").build();
+        when(authUserUtil.getCurrentUser()).thenReturn(admin);
+        when(userRepository.lockById(1L)).thenReturn(Optional.of(admin));
+        ManualJournalEntryRequest original = manualRequest("EXPENSE", "25.00");
+        JournalEntry stored = JournalEntry.builder().entryNumber("JE-OLD").idempotencyUserId(1L).idempotencyKey("key-12345678")
+                .requestFingerprint(com.example.perfume_budget.utils.ManualEntryFingerprint.of(original)).build();
+        when(journalEntryRepository.findByIdempotencyUserIdAndIdempotencyKey(1L, "key-12345678")).thenReturn(Optional.of(stored));
+
+        assertEquals(true, bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "25.000"), " key-12345678 "));
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "26.00"), "key-12345678"));
+        assertEquals("IDEMPOTENCY_KEY_REUSED", e.getCode());
+        verify(journalEntryRepository, never()).save(any(JournalEntry.class));
+        assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> bookkeepingService.recordManualEntry(original, "bad key!"));
+    }
+
+    @Test
+    @DisplayName("Manual entry with a fresh key stores key, admin and fingerprint on the entry")
+    void recordManualEntry_FreshKeyIsStored() {
+        User admin = User.builder().id(1L).fullName("Admin").build();
+        when(authUserUtil.getCurrentUser()).thenReturn(admin);
+        when(userRepository.lockById(1L)).thenReturn(Optional.of(admin));
+        when(journalEntryRepository.findByIdempotencyUserIdAndIdempotencyKey(1L, "key-12345678")).thenReturn(Optional.empty());
+        when(ledgerAccountRepository.findByCategory(AccountCategory.CASH)).thenReturn(Optional.of(cashAccount));
+        when(ledgerAccountRepository.findByCategory(AccountCategory.SALES_REVENUE)).thenReturn(Optional.of(revenueAccount));
+
+        assertEquals(false, bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "25.00"), "key-12345678"));
+
+        org.mockito.ArgumentCaptor<JournalEntry> c = org.mockito.ArgumentCaptor.forClass(JournalEntry.class);
+        verify(journalEntryRepository).save(c.capture());
+        assertEquals("key-12345678", c.getValue().getIdempotencyKey());
+        assertEquals(1L, c.getValue().getIdempotencyUserId());
+        assertEquals(JournalEntryType.EXPENSE, c.getValue().getType());
+        assertEquals(64, c.getValue().getRequestFingerprint().length());
     }
 
     @Test

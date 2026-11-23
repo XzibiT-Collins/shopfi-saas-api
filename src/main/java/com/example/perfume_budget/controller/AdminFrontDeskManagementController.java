@@ -9,6 +9,7 @@ import com.example.perfume_budget.dto.front_desk.response.FrontDeskPermissionTem
 import com.example.perfume_budget.dto.front_desk.response.FrontDeskUserPermissionsResponse;
 import com.example.perfume_budget.dto.front_desk.response.FrontDeskUserSummaryResponse;
 import com.example.perfume_budget.service.interfaces.AdminFrontDeskManagementService;
+import com.example.perfume_budget.utils.ConcurrencyTag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -27,13 +28,25 @@ public class AdminFrontDeskManagementController {
 
     @GetMapping("/template")
     public ResponseEntity<CustomApiResponse<FrontDeskPermissionTemplateResponse>> getDefaultTemplate() {
-        return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.getDefaultTemplate()));
+        FrontDeskPermissionTemplateResponse response = adminFrontDeskManagementService.getDefaultTemplate();
+        return templateEtag(response);
     }
 
     @PutMapping("/template")
     public ResponseEntity<CustomApiResponse<FrontDeskPermissionTemplateResponse>> updateDefaultTemplate(
+            @RequestHeader(value = "If-Match", required = false) String ifMatch,
             @Valid @RequestBody FrontDeskPermissionTemplateUpdateRequest request) {
-        return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.updateDefaultTemplate(request)));
+        return templateEtag(adminFrontDeskManagementService.updateDefaultTemplate(request, ifMatch));
+    }
+
+    private static ResponseEntity<CustomApiResponse<FrontDeskPermissionTemplateResponse>> templateEtag(
+            FrontDeskPermissionTemplateResponse response) {
+        return ResponseEntity.ok().eTag(ConcurrencyTag.header(response.version())).body(CustomApiResponse.success(response));
+    }
+
+    private static ResponseEntity<CustomApiResponse<FrontDeskUserPermissionsResponse>> permissionsEtag(
+            FrontDeskUserPermissionsResponse response) {
+        return ResponseEntity.ok().eTag(ConcurrencyTag.header(response.version())).body(CustomApiResponse.success(response));
     }
 
     @GetMapping("/users")
@@ -61,13 +74,14 @@ public class AdminFrontDeskManagementController {
 
     @GetMapping("/users/{userId}/permissions")
     public ResponseEntity<CustomApiResponse<FrontDeskUserPermissionsResponse>> getUserPermissions(@PathVariable Long userId) {
-        return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.getUserPermissions(userId)));
+        return permissionsEtag(adminFrontDeskManagementService.getUserPermissions(userId));
     }
 
     @PutMapping("/users/{userId}/permissions")
     public ResponseEntity<CustomApiResponse<FrontDeskUserPermissionsResponse>> updateUserPermissions(
             @PathVariable Long userId,
+            @RequestHeader(value = "If-Match", required = false) String ifMatch,
             @Valid @RequestBody FrontDeskUserPermissionOverrideUpdateRequest request) {
-        return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.updateUserPermissions(userId, request)));
+        return permissionsEtag(adminFrontDeskManagementService.updateUserPermissions(userId, request, ifMatch));
     }
 }

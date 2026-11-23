@@ -62,6 +62,9 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
 
+    /** API-RD-12d: the manual entry an admin already recorded under an Idempotency-Key. */
+    java.util.Optional<JournalEntry> findByIdempotencyUserIdAndIdempotencyKey(Long idempotencyUserId, String idempotencyKey);
+
     // manual entries only
     @EntityGraph(attributePaths = {"lines", "lines.account"})
     List<JournalEntry> findByIsManualTrueOrderByTransactionDateDesc();
@@ -71,6 +74,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
     List<JournalEntry> findByReferenceTypeAndReferenceId(
             String referenceType, String referenceId);
 
+    // API-RD-12a: total for an account in [start, end): end is the start of the day AFTER the last day, like the journal list
     // total debits for an account within a date range
     @Query("""
             SELECT COALESCE(SUM(l.amount), 0)
@@ -78,7 +82,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             JOIN l.journalEntry j
             WHERE l.account.id = :accountId
             AND l.entryType = :entryType
-            AND j.transactionDate BETWEEN :start AND :end
+            AND j.transactionDate >= :start AND j.transactionDate < :end
             """)
     BigDecimal sumByAccountAndEntryType(
             @Param("accountId") Long accountId,
@@ -86,7 +90,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
 
-    // daily cash flows
+    // daily cash flows over [start, end) (API-RD-12a)
     @Query("""
             SELECT CAST(j.transactionDate AS date) AS date,
                    l.entryType AS entryType,
@@ -94,7 +98,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntry, Long
             FROM JournalEntryLine l
             JOIN l.journalEntry j
             WHERE l.account.category = :category
-            AND j.transactionDate BETWEEN :start AND :end
+            AND j.transactionDate >= :start AND j.transactionDate < :end
             GROUP BY CAST(j.transactionDate AS date), l.entryType
             ORDER BY CAST(j.transactionDate AS date) ASC
             """)

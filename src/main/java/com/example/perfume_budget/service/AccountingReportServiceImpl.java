@@ -37,6 +37,13 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AccountingReportServiceImpl implements AccountingReportService {
 
+    /**
+     * API-RD-12f: presentation code of the balance sheet's virtual Retained Earnings row. It used to be "3200", which is
+     * the real account Inventory Revaluation, so two equity rows shared a code. This one is not a ledger code (no
+     * numeric chart-of-accounts code can ever equal it) and no account can be posted to it.
+     */
+    static final String RETAINED_EARNINGS_CODE = "RETAINED_EARNINGS";
+
     private final JournalEntryRepository journalEntryRepository;
     private final LedgerAccountRepository ledgerAccountRepository;
 
@@ -68,7 +75,8 @@ public class AccountingReportServiceImpl implements AccountingReportService {
     public IncomeStatementResponse getIncomeStatement(DateRangeRequest dateRange) {
         requireValidRange(dateRange);
         LocalDateTime start = dateRange.startDate().atStartOfDay();
-        LocalDateTime end = dateRange.endDate().atTime(23, 59, 59);
+        // API-RD-12a: [start, end + 1 day), exactly the journal list's window (was <= endDate 23:59:59, which missed the last second's fractions)
+        LocalDateTime end = dateRange.endDate().plusDays(1).atStartOfDay();
 
         List<LedgerAccount> revenueAccounts = ledgerAccountRepository
                 .findAllByTypeAndIsActiveTrueOrderByCodeAsc(AccountType.REVENUE);
@@ -140,7 +148,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
         // build the equity list and inject retained earnings as a virtual entry
         List<AccountBalanceResponse> equity = new ArrayList<>(getAccountsByType(AccountType.EQUITY));
         equity.add(new AccountBalanceResponse(
-                "3200",
+                RETAINED_EARNINGS_CODE,
                 "Retained Earnings",
                 AccountType.EQUITY,
                 AccountCategory.RETAINED_EARNINGS,
@@ -173,7 +181,8 @@ public class AccountingReportServiceImpl implements AccountingReportService {
     public CashFlowResponse getCashFlow(DateRangeRequest dateRange) {
         requireValidRange(dateRange);
         LocalDateTime start = dateRange.startDate().atStartOfDay();
-        LocalDateTime end = dateRange.endDate().atTime(23, 59, 59);
+        // API-RD-12a: [start, end + 1 day), exactly the journal list's window (was <= endDate 23:59:59, which missed the last second's fractions)
+        LocalDateTime end = dateRange.endDate().plusDays(1).atStartOfDay();
 
         List<DailyCashFlowProjection> projections = journalEntryRepository
                 .getDailyCashFlows(AccountCategory.CASH, start, end);

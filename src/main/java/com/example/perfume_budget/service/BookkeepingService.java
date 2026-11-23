@@ -16,6 +16,7 @@ import com.example.perfume_budget.repository.LedgerAccountRepository;
 import com.example.perfume_budget.repository.ProductRepository;
 import com.example.perfume_budget.utils.AuthUserUtil;
 import com.example.perfume_budget.utils.JournalEntryNumberGenerator;
+import com.example.perfume_budget.utils.ManualEntryFingerprint;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -40,6 +41,7 @@ public class BookkeepingService {
     private final JournalEntryNumberGenerator entryNumberGenerator;
     private final AuthUserUtil authUserUtil;
     private final ProductRepository productRepository;
+    private final com.example.perfume_budget.repository.UserRepository userRepository;
 
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
@@ -577,10 +579,45 @@ public class BookkeepingService {
     }
 
 
+    /** Keyless manual entry (kept for callers that do not send an Idempotency-Key). */
     @Transactional
     public void recordManualEntry(ManualJournalEntryRequest request){
+        recordManualEntry(request, null);
+    }
+
+    /**
+     * Manual journal entry. API-RD-12d: every line amount must be positive with at most two decimals (before, a negative
+     * amount silently flipped the side), and an optional {@code Idempotency-Key} makes a retry safe: same admin + key +
+     * body replays (nothing posted, returns {@code true}); same key + other body is 409 IDEMPOTENCY_KEY_REUSED. Keyed
+     * requests of one admin are serialised on the admin's user row, so a double submit posts once.
+     *
+     * @return {@code true} when this call was a replay of an entry already recorded under the key
+     */
+    @Transactional
+    public boolean recordManualEntry(ManualJournalEntryRequest request, String idempotencyKey){
         User user = authUserUtil.getCurrentUser();
+        requirePositiveAmounts(request);
+        String key = normalizeIdempotencyKey(idempotencyKey);
+        String fingerprint = null;
+        if (key != null) {
+            Long userId = user.getId();
+            userRepository.lockById(userId).orElseThrow(() -> new BadRequestException("User not found."));
+            fingerprint = ManualEntryFingerprint.of(request);
+            java.util.Optional<JournalEntry> existing = journalEntryRepository
+                    .findByIdempotencyUserIdAndIdempotencyKey(userId, key);
+            if (existing.isPresent()) {
+                if (!fingerprint.equals(existing.get().getRequestFingerprint())) {
+                    throw new ApiCodeException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
+                            "This Idempotency-Key was already used for a different journal entry.");
+                }
+                log.info("Manual journal entry {} replayed", existing.get().getEntryNumber());
+                return true;
+            }
+        }
         JournalEntry entry = JournalEntry.builder()
+                .idempotencyKey(key)
+                .idempotencyUserId(key == null ? null : user.getId())
+                .requestFingerprint(fingerprint)
                 .entryNumber(entryNumberGenerator.generate())
                 .description(request.description())
                 .type(request.type())
@@ -605,6 +642,36 @@ public class BookkeepingService {
         updateAccountBalances(lines, true);
 
         log.info("Manual journal entry recorded by user: {} - {}", user.getFullName(), entry.getEntryNumber());
+        return false;
+    }
+
+    /** Largest amount a line can carry: the column is DECIMAL(19, 2). */
+    private static final BigDecimal MAX_MANUAL_AMOUNT = new BigDecimal("99999999999999999.99");
+
+    private static void requirePositiveAmounts(ManualJournalEntryRequest request) {
+        for (var line : request.lines()) {
+            BigDecimal amount = line.amount();
+            if (amount.signum() <= 0) {
+                throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_AMOUNT",
+                        "Each line amount must be greater than zero. Use the DEBIT / CREDIT side to express direction.");
+            }
+            if (amount.stripTrailingZeros().scale() > 2 || amount.compareTo(MAX_MANUAL_AMOUNT) > 0) {
+                throw new ApiCodeException(HttpStatus.BAD_REQUEST, "INVALID_AMOUNT",
+                        "Each line amount must have at most 2 decimal places and fit the ledger's range.");
+            }
+        }
+    }
+
+    private static String normalizeIdempotencyKey(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String key = raw.strip();
+        if (!com.example.perfume_budget.utils.CheckoutFingerprint.IDEMPOTENCY_KEY.matcher(key).matches()) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_INVALID",
+                    "Idempotency-Key must be 8-64 characters of letters, digits, '.', '_', ':' or '-'.");
+        }
+        return key;
     }
 
     @Transactional

@@ -6,6 +6,7 @@ import com.example.perfume_budget.dto.tax.request.TaxRequest;
 import com.example.perfume_budget.dto.tax.response.TaxAndDiscountCalculationResponse;
 import com.example.perfume_budget.dto.tax.response.TaxResponse;
 import com.example.perfume_budget.service.interfaces.TaxService;
+import com.example.perfume_budget.utils.ConcurrencyTag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -35,17 +36,16 @@ public class TaxController {
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/add-tax")
     public ResponseEntity<CustomApiResponse<TaxResponse>> addTax(@Valid @RequestBody TaxRequest request) {
-        return ResponseEntity.ok().body(
-                CustomApiResponse.success(taxService.createTax(request))
-        );
+        return withEtag(taxService.createTax(request));
     }
 
     @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/update/{taxId}")
-    public ResponseEntity<CustomApiResponse<TaxResponse>> updateTax(@PathVariable Long taxId, @Valid @RequestBody TaxRequest request) {
-        return ResponseEntity.ok().body(
-                CustomApiResponse.success(taxService.updateTax(taxId, request))
-        );
+    public ResponseEntity<CustomApiResponse<TaxResponse>> updateTax(
+            @PathVariable Long taxId,
+            @RequestHeader(value = "If-Match", required = false) String ifMatch,
+            @Valid @RequestBody TaxRequest request) {
+        return withEtag(taxService.updateTax(taxId, request, ifMatch));
     }
 
     @GetMapping("/all")
@@ -58,9 +58,12 @@ public class TaxController {
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{taxId}")
     public ResponseEntity<CustomApiResponse<TaxResponse>> getTaxById(@PathVariable Long taxId) {
-        return ResponseEntity.ok().body(
-                CustomApiResponse.success(taxService.getTaxById(taxId))
-        );
+        return withEtag(taxService.getTaxById(taxId));
+    }
+
+    /** API-RD-11c: the tax's concurrency token is also the ETag; send it back as {@code If-Match} on the update. */
+    private static ResponseEntity<CustomApiResponse<TaxResponse>> withEtag(TaxResponse tax) {
+        return ResponseEntity.ok().eTag(ConcurrencyTag.header(tax.version())).body(CustomApiResponse.success(tax));
     }
 
     @PreAuthorize("hasRole('ADMIN')")
