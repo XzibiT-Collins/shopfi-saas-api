@@ -13,6 +13,11 @@ import java.util.List;
 
 public interface StockTransferRepository extends JpaRepository<StockTransfer, Long> {
 
+    /** API-RD-03 AC3: the location-ledger moves of one sale (a walk-in restore puts units back where they left). */
+    @Query("select t from StockTransfer t left join fetch t.fromLocation left join fetch t.toLocation " +
+            "where t.referenceType = :refType and t.referenceId = :refId order by t.id asc")
+    List<StockTransfer> findByReference(@Param("refType") InventoryReferenceType refType, @Param("refId") String refId);
+
     @Query("select t from StockTransfer t " +
             "where (:productId is null or t.product.id = :productId) " +
             "and (:locationId is null or t.fromLocation.id = :locationId or t.toLocation.id = :locationId) " +

@@ -38,7 +38,13 @@ import com.example.perfume_budget.pricing.EffectivePrice;
 import com.example.perfume_budget.repository.ProductRepository;
 import com.example.perfume_budget.repository.UserRepository;
 import com.example.perfume_budget.repository.WalkInCustomerRepository;
+import com.example.perfume_budget.repository.WalkInOrderAuditEventRepository;
 import com.example.perfume_budget.repository.WalkInOrderRepository;
+import com.example.perfume_budget.dto.walk_in.request.WalkInReversalRequest;
+import com.example.perfume_budget.enums.WalkInAuditEventType;
+import com.example.perfume_budget.model.WalkInOrderAuditEvent;
+import com.example.perfume_budget.utils.WalkInReversalFingerprint;
+import java.util.Map;
 import com.example.perfume_budget.service.interfaces.FrontDeskAccessService;
 import com.example.perfume_budget.service.interfaces.TaxService;
 import com.example.perfume_budget.service.interfaces.WalkInOrderService;
@@ -69,6 +75,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     private static final String WALK_IN_ORDER_NOT_FOUND = "Walk-in order not found.";
 
     private final WalkInOrderRepository walkInOrderRepository;
+    private final WalkInOrderAuditEventRepository walkInOrderAuditEventRepository;
     private final WalkInCustomerRepository walkInCustomerRepository;
     private final UserRepository userRepository;
     private final ProductRepository productRepository;
@@ -282,6 +289,104 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
             order.setReceiptPrinted(true);
             walkInOrderRepository.save(order);
         }
+    }
+
+    @Override
+    public WalkInOrderResponse cancelWalkInOrder(String orderNumber, WalkInReversalRequest request, String idempotencyKey) {
+        return reverse(orderNumber, request, idempotencyKey, WalkInAuditEventType.CANCELLED);
+    }
+
+    @Override
+    public WalkInOrderResponse refundWalkInOrder(String orderNumber, WalkInReversalRequest request, String idempotencyKey) {
+        return reverse(orderNumber, request, idempotencyKey, WalkInAuditEventType.REFUNDED);
+    }
+
+    /**
+     * API-RD-03 AC3: the one path of cancel and refund (they differ only in the target status and the error code).
+     * Order of events, all in this transaction (any failure rolls ALL of it back, so nothing is half done):
+     * ADMIN check, key check, order row lock, replay / state guard under the lock, stock back, sale reversed, status,
+     * audit row. Lock order: order row -> products (id order) -> location rows -> ledger accounts (id order), the
+     * same direction as the sale, so a sale and a reversal of the same product cannot deadlock.
+     */
+    private WalkInOrderResponse reverse(String orderNumber, WalkInReversalRequest request, String rawKey,
+                                        WalkInAuditEventType type) {
+        User actor = requireAdmin();
+        String key = requireIdempotencyKey(rawKey);
+        String reason = request.reason().strip();
+        String fingerprint = WalkInReversalFingerprint.of(type.name(), reason);
+
+        WalkInOrder order = walkInOrderRepository.lockByOrderNumber(orderNumber.trim().toUpperCase())
+                .orElseThrow(() -> new ResourceNotFoundException(WALK_IN_ORDER_NOT_FOUND));
+
+        Optional<WalkInOrderAuditEvent> prior = walkInOrderAuditEventRepository
+                .findByWalkInOrderIdAndIdempotencyKey(order.getId(), key);
+        if (prior.isPresent()) {
+            if (!fingerprint.equals(prior.get().getRequestFingerprint())) {
+                throw new ApiCodeException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
+                        "This Idempotency-Key was already used for a different request on this walk-in order.");
+            }
+            log.info("Walk-in order {} {} replayed", order.getOrderNumber(), type);
+            return WalkInOrderMapper.toResponse(order).toBuilder().idempotentReplay(true).build();
+        }
+
+        WalkInOrderStatus target = type == WalkInAuditEventType.CANCELLED ? WalkInOrderStatus.CANCELLED : WalkInOrderStatus.REFUNDED;
+        if (order.getStatus() != WalkInOrderStatus.COMPLETED) {
+            String code = type == WalkInAuditEventType.CANCELLED ? "WALK_IN_ORDER_NOT_CANCELLABLE" : "WALK_IN_ORDER_NOT_REFUNDABLE";
+            throw new ApiCodeException(HttpStatus.CONFLICT, code,
+                    "Only a COMPLETED walk-in order can be " + (type == WalkInAuditEventType.CANCELLED ? "cancelled" : "refunded")
+                            + ". This order is " + order.getStatus() + ".",
+                    Map.of("currentStatus", order.getStatus().name()));
+        }
+
+        int unitsRestored = inventoryManagementService.restoreWalkInInventory(order.getOrderNumber());
+        if (unitsRestored == 0) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, "WALK_IN_STOCK_NOT_RESTORABLE",
+                    "This sale has no recorded stock movements to put back, so it cannot be reversed automatically.",
+                    Map.of("currentStatus", order.getStatus().name()));
+        }
+        bookkeepingService.recordWalkInReversal(order, actor.getFullName());
+
+        WalkInOrderStatus from = order.getStatus();
+        order.setStatus(target);
+        walkInOrderRepository.save(order);
+        walkInOrderAuditEventRepository.save(WalkInOrderAuditEvent.builder()
+                .walkInOrderId(order.getId())
+                .eventType(type)
+                .fromStatus(from)
+                .toStatus(target)
+                .actorId(actor.getId())
+                .actorEmail(actor.getEmail())
+                .reason(reason)
+                .refundAmount(order.getTotalAmount().getAmount())
+                .idempotencyKey(key)
+                .requestFingerprint(fingerprint)
+                .createdAt(LocalDateTime.now())
+                .build());
+        // no reason text and no customer data in the log
+        log.info("Walk-in order {} {} by user {}", order.getOrderNumber(), target, actor.getId());
+        return WalkInOrderMapper.toResponse(order).toBuilder().idempotentReplay(false).build();
+    }
+
+    /** Cancel / refund are ADMIN-only: no FrontDeskPermission exists for them and none can be granted through the API. */
+    private User requireAdmin() {
+        User currentUser = authUserUtil.getCurrentUser();
+        if (currentUser == null) {
+            throw new BadRequestException("Authenticated user is required.");
+        }
+        if (currentUser.getRoles() != UserRole.ADMIN) {
+            throw new ForbiddenException("Only an administrator can cancel or refund a walk-in order.");
+        }
+        return currentUser;
+    }
+
+    /** Unlike the sale, cancel and refund move money and stock, so the key is mandatory. */
+    private String requireIdempotencyKey(String raw) {
+        String key = normalizeIdempotencyKey(raw);
+        if (key == null) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED",
+                    "The Idempotency-Key header is required to cancel or refund a walk-in order.");
+        }
+        return key;
     }
 
     private User requireWalkInAccess(FrontDeskPermission permission) {

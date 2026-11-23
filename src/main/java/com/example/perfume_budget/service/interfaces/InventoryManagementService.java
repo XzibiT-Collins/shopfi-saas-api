@@ -47,6 +47,16 @@ public interface InventoryManagementService {
     void consumeWalkInInventory(String orderNumber, List<WalkInOrderItem> items);
 
     /**
+     * API-RD-03 AC3: puts the units of a cancelled / refunded walk-in sale back into the layers they were taken from
+     * (RETURN movements), at the location they left (SALE_RETURN) and takes them off the sold count. Idempotent by
+     * construction: it restores what the order's SALE movements took MINUS what its RETURN movements already gave
+     * back, so a second call restores nothing.
+     *
+     * @return the units put back (0 when everything was already returned)
+     */
+    int restoreWalkInInventory(String orderNumber);
+
+    /**
      * API-05: row-locks the products (id order) for the rest of the caller's transaction before their stock changes.
      * Every stock-changing method here takes it itself; a caller that changes several products in one transaction
      * (stock conversion) takes them all first so two such transactions lock in the same order.

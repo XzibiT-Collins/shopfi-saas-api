@@ -5,6 +5,7 @@ import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.walk_in.request.CustomerSearchRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInOrderRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInQuoteRequest;
+import com.example.perfume_budget.dto.walk_in.request.WalkInReversalRequest;
 import com.example.perfume_budget.dto.walk_in.response.CustomerSearchResponse;
 import com.example.perfume_budget.dto.walk_in.response.WalkInOrderResponse;
 import com.example.perfume_budget.dto.walk_in.response.WalkInQuoteResponse;
@@ -81,5 +82,25 @@ public class WalkInOrderController {
     public ResponseEntity<CustomApiResponse<Void>> markReceiptPrinted(@PathVariable String orderNumber) {
         walkInOrderService.markReceiptPrinted(orderNumber);
         return ResponseEntity.ok(CustomApiResponse.success(null));
+    }
+
+    /** API-RD-03 AC3: ADMIN only (no front-desk permission exists for it), Idempotency-Key required. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/orders/{orderNumber}/cancel")
+    public ResponseEntity<CustomApiResponse<WalkInOrderResponse>> cancelWalkInOrder(
+            @PathVariable String orderNumber,
+            @Valid @RequestBody WalkInReversalRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.cancelWalkInOrder(orderNumber, request, idempotencyKey)));
+    }
+
+    /** API-RD-03 AC3: full refund, ADMIN only, Idempotency-Key required. */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/orders/{orderNumber}/refund")
+    public ResponseEntity<CustomApiResponse<WalkInOrderResponse>> refundWalkInOrder(
+            @PathVariable String orderNumber,
+            @Valid @RequestBody WalkInReversalRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.refundWalkInOrder(orderNumber, request, idempotencyKey)));
     }
 }
