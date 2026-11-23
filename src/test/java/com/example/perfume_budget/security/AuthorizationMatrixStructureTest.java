@@ -76,6 +76,8 @@ class AuthorizationMatrixStructureTest {
 
     static {
         // --- ADMIN only
+        // API-RD-03 AC3: cancel / refund of a walk-in sale are ADMIN only (FRONT_DESK gets 403)
+        expect(ADMIN, "WalkInOrderController", "cancelWalkInOrder", "refundWalkInOrder");
         expect(ADMIN, "AccountingController", "getLedgerSummary", "getIncomeStatement", "getBalanceSheet", "getCashFlow",
                 "getJournalEntries", "getEntriesByReference", "getManualEntries", "getMetadata");
         expect(ADMIN, "AdminFrontDeskManagementController", "getDefaultTemplate", "updateDefaultTemplate", "getFrontDeskUsers",

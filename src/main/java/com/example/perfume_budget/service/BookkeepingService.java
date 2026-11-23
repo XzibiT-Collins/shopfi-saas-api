@@ -374,6 +374,67 @@ public class BookkeepingService {
         log.info("Walk-in journal entry recorded for order: {}", order.getOrderNumber());
     }
 
+    /**
+     * API-RD-03 AC3: reverses the walk-in sale of a cancelled / refunded order, once, as one WALK_IN_REVERSAL entry
+     * dated now (closed periods stay untouched): every line of the WALK_IN_SALE entry on the same account with the
+     * opposite side and the same amount, so the books net to zero for the order. A walk-in is paid at the counter, so
+     * unlike an online paid cancel the cash / mobile-money line is paid back at once (credit cash) instead of parking in
+     * Refunds Payable. The caller holds the order row lock; account rows are locked last, in id order.
+     *
+     * @throws AccountingException when there is no sale entry to reverse or the order was already reversed (500, the
+     *                             transaction rolls back: a sale that cannot be reversed is never cancelled)
+     * @throws ApiCodeException    409 INSUFFICIENT_CASH when Cash / Mobile Money would go negative (nothing posted)
+     */
+    @Transactional
+    public void recordWalkInReversal(WalkInOrder order, String recordedBy) {
+        String orderNumber = order.getOrderNumber();
+        List<JournalEntry> sales = journalEntryRepository.findByReferenceTypeAndReferenceIdAndTypeOrderByIdAsc(
+                "WALK_IN_ORDER", orderNumber, JournalEntryType.WALK_IN_SALE);
+        if (sales.isEmpty()) {
+            throw new AccountingException("No sale entry to reverse for walk-in order: " + orderNumber);
+        }
+        if (!journalEntryRepository.findByReferenceTypeAndReferenceIdAndTypeOrderByIdAsc(
+                "WALK_IN_ORDER", orderNumber, JournalEntryType.WALK_IN_REVERSAL).isEmpty()) {
+            throw new AccountingException("Walk-in order already reversed: " + orderNumber);
+        }
+        JournalEntry entry = JournalEntry.builder()
+                .entryNumber(entryNumberGenerator.generate())
+                .description("Walk-in sale reversed for order: " + orderNumber)
+                .type(JournalEntryType.WALK_IN_REVERSAL)
+                .referenceType("WALK_IN_ORDER")
+                .referenceId(orderNumber)
+                .isManual(false)
+                .recordedBy(recordedBy == null ? "System" : recordedBy)
+                .transactionDate(LocalDateTime.now())
+                .build();
+        List<JournalEntryLine> lines = new ArrayList<>();
+        for (JournalEntry sale : sales) {
+            for (JournalEntryLine line : sale.getLines()) {
+                EntryType opposite = line.getEntryType() == EntryType.DEBIT ? EntryType.CREDIT : EntryType.DEBIT;
+                lines.add(buildLines(entry, line.getAccount(), opposite, line.getAmount(), "Reversal: " + line.getDescription()));
+            }
+        }
+        entry.setLines(lines);
+        validateEntry(lines, false);
+        journalEntryRepository.save(entry);
+        try {
+            updateAccountBalances(lines, false);
+        } catch (NegativeBalanceException e) {
+            if (e.getCategory() != AccountCategory.CASH && e.getCategory() != AccountCategory.MOBILE_MONEY) {
+                throw e;
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("orderNumber", orderNumber);
+            data.put("currentBalance", e.getBalanceBefore().toPlainString());
+            data.put("attemptedAmount", e.getAttemptedDeduction().toPlainString());
+            throw new ApiCodeException(HttpStatus.CONFLICT, "INSUFFICIENT_CASH",
+                    "The account is too low to pay this walk-in sale back. Current balance: "
+                            + e.getBalanceBefore().toPlainString() + ", needed: " + e.getAttemptedDeduction().toPlainString(),
+                    data);
+        }
+        log.info("Walk-in sale reversal recorded for order {}", orderNumber);
+    }
+
     /** Null-safe amount accessor (older orders may have no automatic-discount value). */
     private static BigDecimal moneyAmount(Money money) {
         return money != null && money.getAmount() != null ? money.getAmount() : BigDecimal.ZERO;

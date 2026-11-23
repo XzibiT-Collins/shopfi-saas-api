@@ -24,5 +24,7 @@ public enum JournalEntryType {
      * / failure without stock to revive it): debit Cash and Bank, credit Refunds Payable. No revenue is recognised; the
      * refund acknowledgement ({@link #REFUND}) clears both.
      */
-    LATE_PAYMENT
+    LATE_PAYMENT,
+    /** API-RD-03 AC3: reversal of a walk-in sale (cancel or refund): every line of the WALK_IN_SALE entry, opposite side. */
+    WALK_IN_REVERSAL
 }
