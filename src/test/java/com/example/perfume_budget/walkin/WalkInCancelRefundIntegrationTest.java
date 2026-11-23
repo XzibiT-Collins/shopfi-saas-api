@@ -46,6 +46,7 @@ class WalkInCancelRefundIntegrationTest extends AbstractCheckoutIntegrationTest 
 
     @Autowired private InventoryManagementService inventory;
     @Autowired private TenantSchemaMigrator migrator;
+    @Autowired private com.example.perfume_budget.repository.InventoryMovementRepository movementRepository;
 
     private Cookie acmeAdmin;
     private Cookie bravoAdmin;
@@ -632,6 +633,99 @@ class WalkInCancelRefundIntegrationTest extends AbstractCheckoutIntegrationTest 
         assertThat(stock(p)).isEqualTo(36);   // 40 - 4 new sales, the first sale's 5 are back
         assertThat(layerRemaining(acme, p)).isEqualTo(36);
         assertThat(sold(p)).isEqualTo(4);
+    }
+
+    // ---- reviewer gaps (mutants R4, R6, R8a, R13, R20)
+
+    @Test
+    void notEnoughMobileMoneyToPayBackIs409AndNothingChanges() throws Exception {
+        long p = product(acme, "Momo Perfume", "50.00", 10);
+        Map<String, Object> req = sale(p, 1);
+        req.put("paymentMethod", "MOBILE_MONEY");
+        req.put("amountPaid", "55.00");
+        MvcResult placed = send(post(ORDER), acmeAdmin, acme, req, null);
+        status(placed, 200);
+        String number = body(placed).at("/data/orderNumber").asText();
+        jdbc.update("UPDATE tenant_acme.ledger_accounts SET balance = 0 WHERE category = 'MOBILE_MONEY'");
+        String before = snapshot(p);
+        MvcResult r = cancel(number, "momo-key-0001");
+        status(r, 409);
+        assertThat(code(r, body(r))).isEqualTo("INSUFFICIENT_CASH");
+        assertThat(snapshot(p)).isEqualTo(before);
+        assertThat(orderStatusOf(number)).isEqualTo("COMPLETED");
+    }
+
+    @Test
+    void theStoredReasonIsTheStrippedOne() throws Exception {
+        long p = product(acme, "Strip Perfume", "50.00", 10);
+        String number = sell(p, 1);
+        status(cancel(acmeAdmin, acme, number, "strip-key-0001", "   padded reason \t "), 200);
+        assertThat(jdbc.queryForObject("SELECT a.reason FROM tenant_acme.walk_in_order_audit_events a JOIN tenant_acme.walk_in_orders o ON o.id = a.walk_in_order_id "
+                + "WHERE o.order_number = ?", String.class, number)).isEqualTo("padded reason");
+    }
+
+    @Test
+    void theReversalIsDatedNowNotAtTheSaleDate() throws Exception {
+        long p = product(acme, "Dated Perfume", "50.00", 10);
+        String number = sell(p, 1);
+        jdbc.update("UPDATE tenant_acme.journal_entries SET transaction_date = now() - interval '30 days' WHERE reference_id = ?", number);
+        jdbc.update("UPDATE tenant_acme.walk_in_orders SET created_at = now() - interval '30 days' WHERE order_number = ?", number);
+        status(cancel(number, "dated-key-0001"), 200);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.journal_entries WHERE reference_id = ? AND type = 'WALK_IN_REVERSAL' "
+                + "AND transaction_date > now() - interval '5 minutes'", Integer.class, number)).isEqualTo(1);
+    }
+
+    @Test
+    void earlierLocationReturnsAreNettedAndOnlyTheRestGoesBack() throws Exception {
+        long p = product(acme, "Netted Perfume", "50.00", 10);
+        List<Long> priorSources = jdbc.queryForList("SELECT id FROM tenant_acme.storage_locations WHERE is_walk_in_sale_source", Long.class);
+        jdbc.update("UPDATE tenant_acme.storage_locations SET is_walk_in_sale_source = false");
+        Long location = jdbc.queryForObject("INSERT INTO tenant_acme.storage_locations (name, type, active, is_walk_in_sale_source, is_ecommerce_fulfilment_source, is_default_receiving, version, created_at) "
+                + "VALUES ('WCR Net Floor', 'SHOP_FLOOR', true, true, false, false, 0, now()) RETURNING id", Long.class);
+        try {
+            String number = sell(p, 3);
+            // one unit already went back to the location by an earlier partial return
+            jdbc.update("INSERT INTO tenant_acme.stock_transfers (product_id, to_location_id, quantity, transfer_type, balance_after, reference_type, reference_id, created_at) "
+                    + "VALUES (?, ?, 1, 'SALE_RETURN', -2, 'WALK_IN_ORDER', ?, now())", p, location, number);
+            jdbc.update("UPDATE tenant_acme.location_stock SET quantity_on_hand = -2 WHERE product_id = ? AND location_id = ?", p, location);
+            status(cancel(number, "netted-key-0001"), 200);
+            assertThat(jdbc.queryForObject("SELECT quantity_on_hand FROM tenant_acme.location_stock WHERE product_id = ? AND location_id = ?", Integer.class, p, location))
+                    .as("2 units come back, not 3").isZero();
+        } finally {
+            jdbc.update("DELETE FROM tenant_acme.stock_transfers WHERE from_location_id = ? OR to_location_id = ?", location, location);
+            jdbc.update("DELETE FROM tenant_acme.location_stock WHERE location_id = ?", location);
+            jdbc.update("DELETE FROM tenant_acme.storage_locations WHERE id = ?", location);
+            for (Long id : priorSources) jdbc.update("UPDATE tenant_acme.storage_locations SET is_walk_in_sale_source = true WHERE id = ?", id);
+        }
+    }
+
+    @Test
+    void refundedAndCancelledWalkInsLeaveAllSixItemsSoldQueries() throws Exception {
+        long live1 = product(acme, "Live One", "10.00", 10);
+        long live2 = product(acme, "Live Two", "10.00", 10);
+        long refunded = product(acme, "Refunded Item", "10.00", 10);
+        long cancelled = product(acme, "Cancelled Item", "10.00", 10);
+        var start = java.time.LocalDateTime.now().minusSeconds(1);
+        sell(live1, 1);
+        sell(live2, 1);
+        String refNo = sell(refunded, 2);
+        String canNo = sell(cancelled, 3);
+        var refTypes = List.of(com.example.perfume_budget.enums.InventoryReferenceType.WALK_IN_ORDER);
+        var end = java.time.LocalDateTime.now().plusDays(1);
+        java.util.function.Supplier<String> probe = () -> tenants.runAs(acme, () -> {
+            var page = movementRepository.findSoldProductAggregates(refTypes, start, end, org.springframework.data.domain.PageRequest.of(0, 1));
+            var totals = movementRepository.sumSales(refTypes, start, end);
+            return page.getTotalElements() + "|" + totals.getTotalQuantity() + "|"
+                    + movementRepository.sumSalesForProduct(refunded, refTypes, start, end).getTotalQuantity() + "|"
+                    + movementRepository.sumSalesForProduct(cancelled, refTypes, start, end).getTotalQuantity() + "|"
+                    + movementRepository.sumSaleAmountsByReference(refunded, refTypes, start, end).size() + "|"
+                    + movementRepository.sumSaleAmountsByReference(cancelled, refTypes, start, end).size() + "|"
+                    + movementRepository.findSaleCurrencies(List.of(com.example.perfume_budget.enums.InventoryReferenceType.WALK_IN_ORDER), start, end).size();
+        });
+        assertThat(probe.get()).as("before: 4 products, 7 units, both reversible lines present").isEqualTo("4|7|2|3|1|1|1");
+        status(refund(refNo, "six-key-refund-1"), 200);
+        status(cancel(canNo, "six-key-cancel-1"), 200);
+        assertThat(probe.get()).as("after: only the two live products, 2 units, no reference rows for the reversed sales").isEqualTo("2|2|0|0|0|0|1");
     }
 
     // ------------------------------------------------------------------------------------------ migration

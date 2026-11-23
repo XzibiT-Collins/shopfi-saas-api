@@ -315,7 +315,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
         String reason = request.reason().strip();
         String fingerprint = WalkInReversalFingerprint.of(type.name(), reason);
 
-        WalkInOrder order = walkInOrderRepository.lockByOrderNumber(orderNumber.trim().toUpperCase())
+        WalkInOrder order = walkInOrderRepository.lockByOrderNumber(orderNumber.trim().toUpperCase(java.util.Locale.ROOT))
                 .orElseThrow(() -> new ResourceNotFoundException(WALK_IN_ORDER_NOT_FOUND));
 
         Optional<WalkInOrderAuditEvent> prior = walkInOrderAuditEventRepository
@@ -566,7 +566,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     }
 
     private WalkInOrder getWalkInOrderEntity(String orderNumber) {
-        return walkInOrderRepository.findByOrderNumber(orderNumber.trim().toUpperCase())
+        return walkInOrderRepository.findByOrderNumber(orderNumber.trim().toUpperCase(java.util.Locale.ROOT))
                 .orElseThrow(() -> new ResourceNotFoundException(WALK_IN_ORDER_NOT_FOUND));
     }
 
