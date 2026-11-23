@@ -312,23 +312,126 @@ class AccountSelfServiceIntegrationTest extends AbstractTenantWebTest {
     // ---------------------------------------------------------------- rate limit
 
     @Test
-    void changePasswordIsRateLimitedPerUser_everyAttemptCounts_andTheRightPasswordIsRefusedWhileLimited() throws Exception {
+    void failuresFromOneAddressAreThrottled_theOwnerOnAnotherAddressIsNotLockedOut() throws Exception {
         String e = email("rl");
         customer("acme", e);
         Session s = login("acme", e, PW);
+        String attacker = nextIp();
         for (int i = 0; i < 5; i++) {
-            assertThat(changePassword("acme", "Guess-" + i + "-Passw0rd!", NEW_PW, nextIp(), s.both()).getStatus()).isEqualTo(400);
+            assertThat(changePassword("acme", "Guess-" + i + "-Passw0rd!", NEW_PW, attacker, s.both()).getStatus()).isEqualTo(400);
         }
-        MockHttpServletResponse limited = changePassword("acme", "Guess-6-Passw0rd!", NEW_PW, nextIp(), s.both());
+        MockHttpServletResponse limited = changePassword("acme", "Guess-6-Passw0rd!", NEW_PW, attacker, s.both());
         assertThat(limited.getStatus()).isEqualTo(429);
         assertThat(limited.getHeader("Retry-After")).isNotNull();
-        assertThat(changePassword("acme", PW, NEW_PW, nextIp(), s.both()).getStatus()).as("right password while limited").isEqualTo(429);
+        assertThat(changePassword("acme", PW, NEW_PW, attacker, s.both()).getStatus()).as("same address, right password").isEqualTo(429);
         assertThat(encoder.matches(PW, hash("tenant_acme", e))).isTrue();
-        // another user (same tenant, other IP) has an independent budget
+        // the attacker's failures did not spend the owner's budget: the owner's own address succeeds
+        assertThat(changePassword("acme", PW, NEW_PW, nextIp(), s.both()).getStatus()).isEqualTo(200);
+        // another user (same tenant, same attacker address) has an independent budget
         String e2 = email("rl2");
         customer("acme", e2);
         Session s2 = login("acme", e2, PW);
-        assertThat(changePassword("acme", "Nope-Passw0rd!1", NEW_PW, nextIp(), s2.both()).getStatus()).isEqualTo(400);
+        assertThat(changePassword("acme", "Nope-Passw0rd!1", NEW_PW, attacker, s2.both()).getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void perUserCeiling_boundsGuessingFromManyAddresses_andForgotPasswordStillRecovers() throws Exception {
+        String e = email("ce");
+        customer("acme", e);
+        Session s = login("acme", e, PW);
+        for (int ipN = 0; ipN < 6; ipN++) {
+            String ip = nextIp();
+            for (int i = 0; i < 5; i++) {
+                assertThat(changePassword("acme", "Guess-" + ipN + i + "-Pw0rd!", NEW_PW, ip, s.both()).getStatus()).isEqualTo(400);
+            }
+        }
+        // 30 failures from six addresses used the ceiling: even the right password from a fresh address is refused
+        assertThat(changePassword("acme", PW, NEW_PW, nextIp(), s.both()).getStatus()).isEqualTo(429);
+        // recovery path: forgot-password then reset still works and revokes the thief's session
+        resetPasswordViaToken("acme", e, NEW_PW);
+        assertThat(me("acme", s.access).getStatus()).isEqualTo(401);
+        assertThat(refresh("acme", s.refresh)).isEqualTo(401);
+        login("acme", e, NEW_PW);
+    }
+
+    @Test
+    void successfulChangesDoNotConsumeTheUserBudget() throws Exception {
+        String e = email("sc");
+        customer("acme", e);
+        Session s = login("acme", e, PW);
+        String ip = nextIp();
+        String cur = PW;
+        Cookie[] cookies = s.both();
+        for (int i = 0; i < 8; i++) { // more than the 5-failure cap
+            String next = "Rot4te-Pass-" + i + "!";
+            MockHttpServletResponse r = changePassword("acme", cur, next, ip, cookies);
+            assertThat(r.getStatus()).as("change #" + i).isEqualTo(200);
+            cookies = new Cookie[]{cookie("accessToken", r.getCookie("accessToken").getValue()),
+                    cookie("refreshToken", r.getCookie("refreshToken").getValue())};
+            cur = next;
+        }
+        assertThat(tokenVersion("tenant_acme", e)).isEqualTo(8);
+    }
+
+    @Test
+    void theUserBudgetIsPerTenant_sameUserIdAndAddressInAcmeAndBravoDoNotShareABucket() throws Exception {
+        String e = email("tb");
+        User a = customer("acme", e);
+        User b = customer("bravo", e);
+        if (!a.getId().equals(b.getId())) {
+            jdbc.update("UPDATE tenant_bravo.users SET id = ? WHERE email = ?", a.getId(), e);
+        }
+        Session sa = login("acme", e, PW);
+        Session sb = login("bravo", e, PW);
+        String ip = nextIp();
+        for (int i = 0; i < 5; i++) {
+            assertThat(changePassword("acme", "Guess-" + i + "-Passw0rd!", NEW_PW, ip, sa.both()).getStatus()).isEqualTo(400);
+        }
+        assertThat(changePassword("acme", "Guess-x-Passw0rd!", NEW_PW, ip, sa.both()).getStatus()).isEqualTo(429);
+        assertThat(changePassword("bravo", "Guess-y-Passw0rd!", NEW_PW, ip, sb.both()).getStatus()).as("bravo has its own bucket").isEqualTo(400);
+    }
+
+    // ---------------------------------------------------------------- password reset revokes too
+
+    /** forgot-password, then reset-password with the token the (in-memory) store holds for this e-mail. */
+    private void resetPasswordViaToken(String slug, String email, String newPassword) throws Exception {
+        assertThat(call(HttpMethod.POST, "/api/v1/auth/forgot-password", slug, Map.of("email", email), nextIp()).getStatus()).isEqualTo(200);
+        String token = redis.entrySet().stream().filter(en -> en.getKey().contains("reset") && email.equals(en.getValue()))
+                .map(Map.Entry::getKey).map(k -> k.substring(k.lastIndexOf(':') + 1)).findFirst().orElseThrow();
+        MockHttpServletResponse r = call(HttpMethod.POST, "/api/v1/auth/reset-password?resetPasswordToken=" + token, slug,
+                Map.of("password", newPassword, "confirmPassword", newPassword), nextIp());
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(200);
+    }
+
+    @Test
+    void passwordReset_revokesEveryOlderAccessAndRefreshToken() throws Exception {
+        String e = email("rs");
+        customer("acme", e);
+        Session phone = login("acme", e, PW);
+        Session laptop = login("acme", e, PW);
+        String legacy = tenants.runAs(acme, () -> jwtUtil.generateAccessToken(e, "CUSTOMER", 1L, "Original Name"));
+        assertThat(me("acme", laptop.both()).getStatus()).isEqualTo(200);
+
+        resetPasswordViaToken("acme", e, NEW_PW);
+
+        assertThat(tokenVersion("tenant_acme", e)).isEqualTo(1);
+        assertThat(me("acme", phone.access).getStatus()).isEqualTo(401);
+        assertThat(me("acme", laptop.access).getStatus()).isEqualTo(401);
+        assertThat(me("acme", cookie("accessToken", legacy)).getStatus()).isEqualTo(401);
+        assertThat(refresh("acme", phone.refresh)).isEqualTo(401);
+        assertThat(refresh("acme", laptop.refresh)).isEqualTo(401);
+        Session fresh = login("acme", e, NEW_PW);
+        assertThat(me("acme", fresh.both()).getStatus()).isEqualTo(200);
+        // same e-mail in bravo: untouched
+    }
+
+    @Test
+    void currentPasswordIsComparedStripped_likeLogin() throws Exception {
+        String e = email("st");
+        customer("acme", e);
+        Session s = login("acme", e, PW);
+        MockHttpServletResponse r = changePassword("acme", "  " + PW + "  ", NEW_PW, nextIp(), s.both());
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(200);
     }
 
     @Test

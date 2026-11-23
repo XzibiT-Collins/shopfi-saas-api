@@ -102,6 +102,7 @@ public class PlatformAuthService {
                     .orElseThrow(() -> new BadCredentialsException(SESSION_FAILURE));
             // Exactly one BCrypt compare, then the policy: a wrong current password never reveals policy details.
             if (!passwordEncoder.matches(request.currentPassword(), locked.getPassword())) {
+                limiter.recordChangePasswordFailure(ipKey, actor.id());
                 throw new com.example.perfume_budget.exception.ApiCodeException(
                         org.springframework.http.HttpStatus.BAD_REQUEST, "CURRENT_PASSWORD_INCORRECT", WRONG_CURRENT);
             }
@@ -113,8 +114,8 @@ public class PlatformAuthService {
                 throw new com.example.perfume_budget.exception.BadRequestException(
                         "New password cannot be same as current password");
             }
-            locked.setPassword(passwordEncoder.encode(
-                    com.example.perfume_budget.validation.PasswordPolicy.normalize(request.newPassword())));
+            // Platform login does not strip, so the password is stored exactly as typed (no normalisation either way).
+            locked.setPassword(passwordEncoder.encode(request.newPassword()));
             locked.setTokenVersion(locked.getTokenVersion() + 1);
             return admins.saveAndFlush(locked);
         });

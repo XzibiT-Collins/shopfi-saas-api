@@ -79,17 +79,19 @@ class AccountAuthDocContractTest {
         PlatformAuthProperties p = new PlatformAuthProperties();
         String platform = read("platform-auth.md");
         assertThat(platform).contains("default 10 per " + p.getChangePasswordIp().getPeriodSeconds() + " s")
-                .contains("default 5 per " + p.getChangePasswordAdmin().getPeriodSeconds() + " s");
+                .contains("default 5 per " + p.getChangePasswordAdmin().getPeriodSeconds() + " s")
+                .contains("default 30 per " + p.getChangePasswordAdminCeiling().getPeriodSeconds() + " s");
         assertThat(p.getChangePasswordIp().getCapacity()).isEqualTo(10);
         assertThat(p.getChangePasswordAdmin().getCapacity()).isEqualTo(5);
+        assertThat(p.getChangePasswordAdminCeiling().getCapacity()).isEqualTo(30);
         // tenant side: documented 20 / 5 per 600 s; the properties' defaults live in the @Value annotations
         String auth = read("auth-behaviour.md");
-        assertThat(auth).contains("default\n  **20** per 600 s").contains("default **5** per 600 s");
+        assertThat(auth).contains("default\n  **20** per 600 s").contains("default **5** per 600 s").contains("default **30** per 600 s");
         var ctor = com.example.perfume_budget.security.AuthRateLimiter.class.getDeclaredConstructors();
         String defaults = java.util.Arrays.stream(ctor).flatMap(c -> java.util.Arrays.stream(c.getParameters()))
                 .map(par -> par.getAnnotation(org.springframework.beans.factory.annotation.Value.class))
                 .filter(java.util.Objects::nonNull).map(v -> v.value()).reduce("", (a, b) -> a + "\n" + b);
-        assertThat(defaults).contains("change-password-ip.capacity:20").contains("change-password-user.capacity:5")
+        assertThat(defaults).contains("change-password-ip.capacity:20").contains("change-password-user.capacity:5").contains("change-password-user-ceiling.capacity:30")
                 .contains("resend-otp-ip.period-seconds:600");
         OnboardingProperties o = new OnboardingProperties();
         assertThat(o.getFindStoreSlug().getCapacity()).isEqualTo(3);

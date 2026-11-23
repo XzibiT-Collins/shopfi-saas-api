@@ -22,6 +22,7 @@ public class PlatformLoginRateLimiter {
     private final TokenBucketRateLimiter refreshIp;
     private final TokenBucketRateLimiter changePasswordIp;
     private final TokenBucketRateLimiter changePasswordAdmin;
+    private final TokenBucketRateLimiter changePasswordAdminCeiling;
 
     public PlatformLoginRateLimiter(PlatformAuthProperties p) {
         this.loginIp = build(p.getLoginIp(), p.getMaxTrackedKeys());
@@ -29,6 +30,7 @@ public class PlatformLoginRateLimiter {
         this.refreshIp = build(p.getRefreshIp(), p.getMaxTrackedKeys());
         this.changePasswordIp = build(p.getChangePasswordIp(), p.getMaxTrackedKeys());
         this.changePasswordAdmin = build(p.getChangePasswordAdmin(), p.getMaxTrackedKeys());
+        this.changePasswordAdminCeiling = build(p.getChangePasswordAdminCeiling(), p.getMaxTrackedKeys());
     }
 
     private static TokenBucketRateLimiter build(Limit l, int maxKeys) {
@@ -47,10 +49,30 @@ public class PlatformLoginRateLimiter {
         check(refreshIp, ipKey);
     }
 
-    /** API-RD-07: change-password guesses the CURRENT password, so it is throttled per client IP and per admin. */
+    /**
+     * API-RD-07: change-password guesses the CURRENT password. Every attempt consumes the per-IP bucket; the per-admin+IP
+     * bucket and the per-admin ceiling are only PEEKED here and charged by {@link #recordChangePasswordFailure} for a wrong
+     * current password, so a stolen-session attacker's failures from his address never spend the real admin's budget.
+     * Trade-off: an attacker with many addresses can still exhaust the ceiling (30 failures per window) and block
+     * change-password for the admin until it refills (platform admins have no self-service reset).
+     */
     public void checkChangePassword(String ipKey, Long adminId) {
         check(changePasswordIp, ipKey);
-        check(changePasswordAdmin, "admin:" + adminId);
+        String ip = ipKey == null ? "unknown" : ipKey;
+        peek(changePasswordAdmin, "admin:" + adminId + "|" + ip);
+        peek(changePasswordAdminCeiling, "admin:" + adminId);
+    }
+
+    public void recordChangePasswordFailure(String ipKey, Long adminId) {
+        changePasswordAdmin.tryAcquire("admin:" + adminId + "|" + (ipKey == null ? "unknown" : ipKey));
+        changePasswordAdminCeiling.tryAcquire("admin:" + adminId);
+    }
+
+    private static void peek(TokenBucketRateLimiter limiter, String key) {
+        long retry = limiter.peek(key);
+        if (retry > 0) {
+            throw new RateLimitExceededException(MESSAGE, retry);
+        }
     }
 
     private static void check(TokenBucketRateLimiter limiter, String key) {

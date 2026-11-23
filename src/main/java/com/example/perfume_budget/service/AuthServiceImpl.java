@@ -213,6 +213,8 @@ public class AuthServiceImpl implements AuthService {
         User user = getActiveUserByEmail(email.strip().toLowerCase());
         checkDuplicatePassword(user.getPassword(), newPassword);
         user.setPassword(passwordEncoder.encode(newPassword));
+        // A reset is how an owner evicts a stolen session: every token minted before it stops working (same save as the hash).
+        user.setTokenVersion(user.getTokenVersion() + 1);
         userRepository.save(user);
 
         log.info("Password reset successful for user {}", user.getId());

@@ -96,7 +96,15 @@ public class AuthController {
             throw new org.springframework.security.authentication.BadCredentialsException("Not authenticated");
         }
         authRateLimiter.checkChangePassword(ClientIps.rateLimitKey(httpRequest), current.getId());
-        authService.changePassword(request, response);
+        try {
+            authService.changePassword(request, response);
+        } catch (com.example.perfume_budget.exception.ApiCodeException e) {
+            // only a wrong CURRENT password helps a guesser, so only that is charged to the per-user buckets
+            if (com.example.perfume_budget.service.AccountSelfService.CODE_CURRENT_PASSWORD_INCORRECT.equals(e.getCode())) {
+                authRateLimiter.recordChangePasswordFailure(ClientIps.rateLimitKey(httpRequest), current.getId());
+            }
+            throw e;
+        }
         return ResponseEntity.ok(CustomApiResponse.success("Password changed successfully"));
     }
 

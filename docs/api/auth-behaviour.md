@@ -153,13 +153,20 @@ name from the database.
   `POST /auth/refresh`, and `STOMP CONNECT` with it is refused (a socket that is already open ends with its access token's
   expiry). The response `Set-Cookie` re-issues `accessToken` and `refreshToken` at the new version, so the calling browser stays
   signed in. Sign-in with the old password fails; with the new one it works.
-  Password **reset** (`/auth/reset-password`) does not bump the version yet (open item, same effect available by calling this endpoint).
+  Password **reset** (`/auth/reset-password`) bumps the version in the same save as the new hash, so a reset also revokes every
+  older access and refresh token (this is how an owner evicts a stolen session when change-password is rate limited).
 * **Concurrency.** The user row is locked, so two simultaneous changes serialise: exactly one wins (`200`) and the other is
   checked against the new hash (`400 CURRENT_PASSWORD_INCORRECT`); the version goes up by one.
-* **Rate limit** (the endpoint guesses the current password with a session that may be stolen): every attempt, success or
-  failure, consumes a token from two buckets: per client IP (`application.auth.rate-limit.change-password-ip.capacity`, default
-  **20** per 600 s) and per tenant + user (`...change-password-user.capacity`, default **5** per 600 s). Over the limit:
-  `429`, `Retry-After`, and the right password is refused too while limited.
+* **Rate limit** (the endpoint guesses the current password with a session that may be stolen). Three buckets:
+  per client IP, every attempt (`application.auth.rate-limit.change-password-ip.capacity`, default
+  **20** per 600 s); per tenant + user + IP, **failed current-password attempts only**
+  (`...change-password-user.capacity`, default **5** per 600 s); and a looser per tenant + user ceiling over all addresses,
+  failed attempts only (`...change-password-user-ceiling.capacity`, default **30** per 600 s). Successful changes and
+  policy/reuse refusals (made with the right current password) never consume the per-user buckets, and a user's failures from
+  one address do not spend what the same user gets from another address, so a thief holding a stolen session cannot lock the
+  owner out from his own address. Over the limit: `429`, `Retry-After`, and the right password is refused too while limited.
+  Trade-off: a thief with at least six addresses can exhaust the ceiling and block change-password for the owner for a
+  while; the owner then recovers with "Forgot password", which revokes every older token (below).
 
 | Status | When |
 |---|---|

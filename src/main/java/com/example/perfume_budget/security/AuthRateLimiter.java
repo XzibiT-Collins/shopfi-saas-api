@@ -42,7 +42,8 @@ public class AuthRateLimiter {
     private final Throttle forgotPassword;
     private final TokenBucketRateLimiter resendLoginOtpIp;
     private final TokenBucketRateLimiter changePasswordIp;
-    private final TokenBucketRateLimiter changePasswordUser;
+    private final TokenBucketRateLimiter changePasswordUserIp;
+    private final TokenBucketRateLimiter changePasswordUserCeiling;
 
     @Autowired
     public AuthRateLimiter(
@@ -56,7 +57,8 @@ public class AuthRateLimiter {
             @Value("${application.auth.rate-limit.forgot-password-email.capacity:3}") int forgotEmailCapacity,
             @Value("${application.auth.rate-limit.resend-login-otp-ip.capacity:10}") int loginOtpIpCapacity,
             @Value("${application.auth.rate-limit.change-password-ip.capacity:20}") int changePasswordIpCapacity,
-            @Value("${application.auth.rate-limit.change-password-user.capacity:5}") int changePasswordUserCapacity) {
+            @Value("${application.auth.rate-limit.change-password-user.capacity:5}") int changePasswordUserCapacity,
+            @Value("${application.auth.rate-limit.change-password-user-ceiling.capacity:30}") int changePasswordUserCeilingCapacity) {
         this.resendOtp = new Throttle(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, ceilingCapacity, maxKeys);
         this.forgotPassword = new Throttle(forgotIpCapacity, ipPeriodSeconds, forgotEmailCapacity, emailPeriodSeconds,
                 ceilingCapacity, maxKeys);
@@ -64,19 +66,21 @@ public class AuthRateLimiter {
                 System::nanoTime);
         this.changePasswordIp = new TokenBucketRateLimiter(changePasswordIpCapacity, Duration.ofSeconds(ipPeriodSeconds), maxKeys,
                 System::nanoTime);
-        this.changePasswordUser = new TokenBucketRateLimiter(changePasswordUserCapacity, Duration.ofSeconds(ipPeriodSeconds),
+        this.changePasswordUserIp = new TokenBucketRateLimiter(changePasswordUserCapacity, Duration.ofSeconds(ipPeriodSeconds),
                 maxKeys, System::nanoTime);
+        this.changePasswordUserCeiling = new TokenBucketRateLimiter(changePasswordUserCeilingCapacity,
+                Duration.ofSeconds(ipPeriodSeconds), maxKeys, System::nanoTime);
     }
 
     /** Test/compat constructor: the change-password buckets take their defaults. */
     public AuthRateLimiter(int ipCapacity, int ipPeriodSeconds, int emailCapacity, int emailPeriodSeconds, int maxKeys,
                            int ceilingCapacity, int forgotIpCapacity, int forgotEmailCapacity, int loginOtpIpCapacity) {
         this(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, maxKeys, ceilingCapacity, forgotIpCapacity,
-                forgotEmailCapacity, loginOtpIpCapacity, 20, 5);
+                forgotEmailCapacity, loginOtpIpCapacity, 20, 5, 30);
     }
 
     public AuthRateLimiter(int ipCapacity, int ipPeriodSeconds, int emailCapacity, int emailPeriodSeconds, int maxKeys) {
-        this(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, maxKeys, 10, 10, 3, 10, 20, 5);
+        this(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, maxKeys, 10, 10, 3, 10, 20, 5, 30);
     }
 
     /** @param ipKey {@link ClientIps#rateLimitKey}; @throws RateLimitExceededException (429 + Retry-After) */
@@ -95,13 +99,43 @@ public class AuthRateLimiter {
     }
 
     /**
-     * API-RD-08: {@code POST /auth/change-password} guesses the CURRENT password with a session that may be stolen, so
-     * it is throttled per client IP and per tenant+user (every attempt, success or failure, consumes a token).
+     * API-RD-08: {@code POST /auth/change-password} guesses the CURRENT password with a session that may be stolen.
+     * <ul>
+     *   <li>per client IP: every attempt (success or failure) consumes a token;</li>
+     *   <li>per tenant + user + IP: only FAILED current-password attempts consume ({@link #recordChangePasswordFailure}),
+     *       so an attacker's failures from his address never use up the owner's own budget;</li>
+     *   <li>per tenant + user CEILING (looser, failures from any address): bounds guessing by an attacker with many
+     *       addresses. Trade-off: such an attacker can still block change-password for the owner after
+     *       {@code ceiling} failures per window; the owner recovers through "forgot password", which revokes every
+     *       older token.</li>
+     * </ul>
+     * Successful changes consume nothing per user. The checks only peek the per-user buckets.
      */
     public void checkChangePassword(String ipKey, Long userId) {
-        check(changePasswordIp, ipKey == null ? "unknown" : ipKey);
+        String ip = ipKey == null ? "unknown" : ipKey;
+        check(changePasswordIp, ip);
+        String user = userKey(userId);
+        peek(changePasswordUserIp, user + "|" + ip);
+        peek(changePasswordUserCeiling, user);
+    }
+
+    /** Charges one wrong-current-password attempt to the per-user+IP bucket and to the per-user ceiling. */
+    public void recordChangePasswordFailure(String ipKey, Long userId) {
+        String user = userKey(userId);
+        changePasswordUserIp.tryAcquire(user + "|" + (ipKey == null ? "unknown" : ipKey));
+        changePasswordUserCeiling.tryAcquire(user);
+    }
+
+    private static String userKey(Long userId) {
         String slug = TenantContext.getSlug();
-        check(changePasswordUser, (slug == null ? "-" : slug) + "|" + userId);
+        return (slug == null ? "-" : slug) + "|" + userId;
+    }
+
+    private static void peek(TokenBucketRateLimiter limiter, String key) {
+        long retry = limiter.peek(key);
+        if (retry > 0) {
+            throw new RateLimitExceededException("Too many requests. Please try again later.", retry);
+        }
     }
 
     private static void check(Throttle t, String ipKey, String email) {

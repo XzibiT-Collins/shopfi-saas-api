@@ -46,8 +46,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "platform.auth.refresh-ip.capacity=1000",
         "platform.auth.change-password-ip.capacity=6",
         "platform.auth.change-password-ip.period-seconds=3600",
-        "platform.auth.change-password-admin.capacity=12",
-        "platform.auth.change-password-admin.period-seconds=3600"
+        "platform.auth.change-password-admin.capacity=3",
+        "platform.auth.change-password-admin.period-seconds=3600",
+        "platform.auth.change-password-admin-ceiling.capacity=6",
+        "platform.auth.change-password-admin-ceiling.period-seconds=3600"
 })
 class PlatformChangePasswordIntegrationTest extends AbstractPostgresIntegrationTest {
 
@@ -123,6 +125,21 @@ class PlatformChangePasswordIntegrationTest extends AbstractPostgresIntegrationT
         }).cookie(refresh)).andReturn().getResponse().getStatus();
     }
 
+    /** A token exactly as minted before the tv claim existed: no tv at all (absent = version 0). */
+    private static String claimlessAccessToken(PlatformAdmin a) {
+        java.util.Date now = new java.util.Date();
+        return io.jsonwebtoken.Jwts.builder().subject(a.getEmail()).claim("tenant", "__platform__").claim("role", "SUPER_ADMIN")
+                .claim("typ", "access").claim("userId", a.getId()).claim("fullName", "Root").issuedAt(now)
+                .expiration(new java.util.Date(now.getTime() + 600_000))
+                .signWith(PlatformJwtService.deriveKey("404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970")).compact();
+    }
+
+    @Test
+    void aClaimlessLegacyToken_staysValidForAnAdminAtVersionZero() throws Exception {
+        PlatformAdmin a = newAdmin(true);
+        assertThat(meStatus(new Cookie("platformAccessToken", claimlessAccessToken(a)))).isEqualTo(200);
+    }
+
     private int version(PlatformAdmin a) {
         return admins.findById(a.getId()).orElseThrow().getTokenVersion();
     }
@@ -171,7 +188,7 @@ class PlatformChangePasswordIntegrationTest extends AbstractPostgresIntegrationT
         Session laptop = session(a, PW);
         Session othersSession = session(other, PW);
         // a token minted before the tv claim existed counts as version 0: valid until the first change
-        Cookie legacyAccess = new Cookie("platformAccessToken", platformJwt.issueAccess(a.getId(), a.getEmail(), "Root"));
+        Cookie legacyAccess = new Cookie("platformAccessToken", claimlessAccessToken(a));
         assertThat(meStatus(legacyAccess)).isEqualTo(200);
 
         MockHttpServletResponse r = change(PW, NEW_PW, nextIp(), phone.both());
@@ -229,17 +246,64 @@ class PlatformChangePasswordIntegrationTest extends AbstractPostgresIntegrationT
     // ---- rate limit ------------------------------------------------------------------------------------------
 
     @Test
-    void perAdminThrottle_everyAttemptCounts_andTheRightPasswordIsRefusedWhileLimited() throws Exception {
+    void failuresFromOneAddressAreThrottled_butTheRealAdminOnAnotherAddressIsNotLockedOut() throws Exception {
         PlatformAdmin a = newAdmin(true);
         Session s = session(a, PW);
-        for (int i = 0; i < 12; i++) {
-            assertThat(change("Guess-" + i + "-Passw0rd!", NEW_PW, nextIp(), s.both()).getStatus()).isEqualTo(400);
+        String attacker = nextIp();
+        for (int i = 0; i < 3; i++) {
+            assertThat(change("Guess-" + i + "-Passw0rd!", NEW_PW, attacker, s.both()).getStatus()).isEqualTo(400);
         }
-        MockHttpServletResponse limited = change("Guess-4-Passw0rd!", NEW_PW, nextIp(), s.both());
+        MockHttpServletResponse limited = change("Guess-4-Passw0rd!", NEW_PW, attacker, s.both());
         assertThat(limited.getStatus()).isEqualTo(429);
         assertThat(limited.getHeader("Retry-After")).isNotNull();
+        assertThat(change(PW, NEW_PW, attacker, s.both()).getStatus()).as("same address, right password").isEqualTo(429);
+        assertThat(encoder.matches(PW, admins.findById(a.getId()).orElseThrow().getPassword())).isTrue();
+        // the admin (own address) still gets through: the attacker's failures did not spend the admin's budget
+        assertThat(change(PW, NEW_PW, nextIp(), s.both()).getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    void perAdminCeiling_boundsGuessingFromManyAddresses() throws Exception {
+        PlatformAdmin a = newAdmin(true);
+        Session s = session(a, PW);
+        for (int i = 0; i < 6; i++) {
+            assertThat(change("Guess-" + i + "-Passw0rd!", NEW_PW, "10.99.0." + (i / 3 + 1), s.both()).getStatus()).isEqualTo(400);
+        }
+        // 6 failures over two addresses used the ceiling: a third, fresh address is refused even with the right password
         assertThat(change(PW, NEW_PW, nextIp(), s.both()).getStatus()).isEqualTo(429);
         assertThat(encoder.matches(PW, admins.findById(a.getId()).orElseThrow().getPassword())).isTrue();
+    }
+
+    @Test
+    void successfulChangesAndPolicyRefusalsDoNotConsumeTheAdminBudget() throws Exception {
+        PlatformAdmin a = newAdmin(true);
+        Session s = session(a, PW);
+        String ip = nextIp();
+        // policy / reuse refusals happen with the right current password: not charged
+        for (int i = 0; i < 5; i++) {
+            assertThat(change(PW, "weak", nextIp(), s.both()).getStatus()).isEqualTo(400);
+        }
+        // five successful changes in a row (each re-issues the session) from one address
+        String cur = PW;
+        Cookie[] cookies = s.both();
+        for (int i = 0; i < 4; i++) {
+            String next = "Rot4te-Pass-" + i + "!";
+            MockHttpServletResponse r = change(cur, next, ip, cookies);
+            assertThat(r.getStatus()).as("change #" + i).isEqualTo(200);
+            cookies = new Cookie[]{new Cookie("platformAccessToken", r.getCookie("platformAccessToken").getValue()),
+                    new Cookie("platformRefreshToken", r.getCookie("platformRefreshToken").getValue())};
+            cur = next;
+        }
+        assertThat(version(a)).isEqualTo(4);
+    }
+
+    @Test
+    void thePasswordIsStoredExactlyAsTyped_soItCanBeTypedBackAtLogin() throws Exception {
+        PlatformAdmin a = newAdmin(true);
+        Session s = session(a, PW);
+        String padded = " Sp4ce-Padded-Pass! ";
+        assertThat(change(PW, padded, nextIp(), s.both()).getStatus()).isEqualTo(200);
+        assertThat(login(a.getEmail(), padded).getStatus()).isEqualTo(200);
     }
 
     @Test

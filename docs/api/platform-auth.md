@@ -34,9 +34,14 @@ Success: `200` `{"description": "Password changed", "data": {"email": "...", "fu
   new hash, with the row locked, so **every access and refresh token minted before the change stops working on every browser**:
   `401` on every platform route and on `POST /refresh`. Other admins' sessions are unaffected. Concurrent changes serialise:
   exactly one wins.
-* **Rate limit** (guesses the current password): every attempt consumes a token from a per-IP bucket
-  (`platform.auth.change-password-ip`, default 10 per 900 s) and a per-admin bucket (`platform.auth.change-password-admin`,
-  default 5 per 900 s). Over the limit: `429` + `Retry-After` (also for the right password).
+* **Rate limit** (guesses the current password): every attempt consumes a per-IP bucket
+  (`platform.auth.change-password-ip`, default 10 per 900 s). Only a **wrong current password** is charged to the per-admin+IP bucket
+  (`platform.auth.change-password-admin`, default 5 per 900 s) and to a per-admin ceiling over all addresses
+  (`platform.auth.change-password-admin-ceiling`, default 30 per 900 s); successes and policy refusals are free, and failures from
+  one address do not spend the admin's budget at another. Over the limit: `429` + `Retry-After` (also for the right password).
+  Trade-off: an attacker with six or more addresses can exhaust the ceiling and block change-password until it refills; platform
+  admins have no self-service reset (the first admin is bootstrapped from configuration), so recovery is operational.
+* The new password is stored exactly as typed (platform login does not strip), so a value with edge spaces can be typed back.
 * CSRF: the call needs the current password, which a cross-site request cannot know, in addition to the origin allow-list.
 
 | Status | When |
