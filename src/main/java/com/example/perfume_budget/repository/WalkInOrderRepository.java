@@ -44,4 +44,8 @@ public interface WalkInOrderRepository extends JpaRepository<WalkInOrder, Long> 
     List<WalkInOrderStatusProjection> countWalkInOrdersByStatus(
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
+
+    /** WALKIN-BE: the sale this cashier already made with this Idempotency-Key (tenant = current schema). */
+    java.util.Optional<com.example.perfume_budget.model.WalkInOrder> findByProcessedByAndIdempotencyKey(
+            com.example.perfume_budget.model.User processedBy, String idempotencyKey);
 }

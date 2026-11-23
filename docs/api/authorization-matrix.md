@@ -189,6 +189,8 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | TaxController | GET | `/api/v1/tax/{taxId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | TaxController | DELETE | `/api/v1/tax/delete/{taxId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | WalkInOrderController | POST | `/api/v1/admin/walk-in/order` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | mutates |
+| WalkInOrderController | POST | `/api/v1/admin/walk-in/quote` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
+| WalkInOrderController | POST | `/api/v1/admin/walk-in/customers/search` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | WalkInOrderController | GET | `/api/v1/admin/walk-in/customers/search` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | WalkInOrderController | GET | `/api/v1/admin/walk-in/orders` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | WalkInOrderController | GET | `/api/v1/admin/walk-in/orders/{orderNumber}` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |

@@ -22,7 +22,7 @@ public class WalkInOrderMapper {
                 .customerPhone(resolveCustomerPhone(order))
                 .processedBy(order.getProcessedBy().getFullName())
                 .discountType(order.getDiscountType())
-                .discountValue(order.getDiscountValue() != null ? formatMoney(order.getDiscountValue()) : formatMoney(BigDecimal.ZERO))
+                .discountValue(formatDiscountValue(order.getDiscountType(), order.getDiscountValue()))
                 .paymentMethod(order.getPaymentMethod())
                 .status(order.getStatus())
                 .subtotal(formatMoney(order.getSubtotal().getAmount()))
@@ -87,7 +87,18 @@ public class WalkInOrderMapper {
                 : BigDecimal.ZERO;
     }
 
-    private static String formatMoney(BigDecimal amount) {
+    /** A percentage discount is printed as a percentage ("10.00%"), not as money. */
+    public static String formatDiscountValue(com.example.perfume_budget.enums.DiscountType type, BigDecimal value) {
+        if (value == null) {
+            return formatMoney(BigDecimal.ZERO);
+        }
+        if (type == com.example.perfume_budget.enums.DiscountType.PERCENTAGE) {
+            return value.setScale(2, RoundingMode.HALF_EVEN).toPlainString() + "%";
+        }
+        return formatMoney(value);
+    }
+
+    public static String formatMoney(BigDecimal amount) {
         return "GHS " + amount.setScale(2, RoundingMode.HALF_EVEN).toPlainString();
     }
 }

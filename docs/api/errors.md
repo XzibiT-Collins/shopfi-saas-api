@@ -13,6 +13,7 @@ business messages and are kept. Status codes and `data.code`s did not change.
 | Status | Thrown | `description` (exact) | Before SEC-01d |
 |---|---|---|---|
 | 500 | `TransactionSystemException` (not transient) | `Transaction failed` | the root cause's message |
+| 500 | `AccountingException` (ledger could not record the operation; the transaction rolled back, nothing saved) | `The operation could not be recorded in the ledger and was not saved. Nothing was changed; try again or contact support.` with `data.code` `ACCOUNTING_ERROR` | HTTP 200 with an empty body (API-RD-13a) |
 | 500 | anything unhandled | `Unexpected error occurred` | unchanged |
 | 500 | `InputOutputException` | `File processing failed` | its message |
 | 500 | `ServiceCommunicationException` | `Interservice communication failed` | unchanged |

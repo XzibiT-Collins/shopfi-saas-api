@@ -2,9 +2,12 @@ package com.example.perfume_budget.controller;
 
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.PageResponse;
+import com.example.perfume_budget.dto.walk_in.request.CustomerSearchRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInOrderRequest;
+import com.example.perfume_budget.dto.walk_in.request.WalkInQuoteRequest;
 import com.example.perfume_budget.dto.walk_in.response.CustomerSearchResponse;
 import com.example.perfume_budget.dto.walk_in.response.WalkInOrderResponse;
+import com.example.perfume_budget.dto.walk_in.response.WalkInQuoteResponse;
 import com.example.perfume_budget.service.interfaces.WalkInOrderService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -27,14 +30,36 @@ public class WalkInOrderController {
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @PostMapping("/order")
     public ResponseEntity<CustomApiResponse<WalkInOrderResponse>> placeWalkInOrder(
-            @Valid @RequestBody WalkInOrderRequest request) {
-        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.placeWalkInOrder(request)));
+            @Valid @RequestBody WalkInOrderRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.placeWalkInOrder(request, idempotencyKey)));
+    }
+
+    /** API-RD-03 AC1: server-computed totals of a draft; writes nothing. */
+    @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
+    @PostMapping("/quote")
+    public ResponseEntity<CustomApiResponse<WalkInQuoteResponse>> quoteWalkInOrder(
+            @Valid @RequestBody WalkInQuoteRequest request) {
+        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.quote(request)));
+    }
+
+    /** API-RD-13(b): the search text travels in the body, so it never reaches an access log or browser history. */
+    @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
+    @PostMapping("/customers/search")
+    public ResponseEntity<CustomApiResponse<List<CustomerSearchResponse>>> searchCustomersByBody(
+            @Valid @RequestBody CustomerSearchRequest request) {
+        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.searchCustomers(request.query())));
     }
 
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @GetMapping("/customers/search")
+    @Deprecated
     public ResponseEntity<CustomApiResponse<List<CustomerSearchResponse>>> searchCustomers(@RequestParam String query) {
-        return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.searchCustomers(query)));
+        // DEPRECATED (API-RD-13b): the query string lands in access logs. Kept only until the register moves to POST.
+        return ResponseEntity.ok()
+                .header("Deprecation", "true")
+                .header("Link", "</api/v1/admin/walk-in/customers/search>; rel=\"successor-version\"; title=\"POST with a JSON body\"")
+                .body(CustomApiResponse.success(walkInOrderService.searchCustomers(query)));
     }
 
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")

@@ -51,6 +51,7 @@ public class GlobalExceptionHandler {
 
     public static final String UNEXPECTED_ERROR = "Unexpected error occurred";
     public static final String TRANSACTION_FAILED = "Transaction failed";
+    public static final String ACCOUNTING_FAILED = "The operation could not be recorded in the ledger and was not saved. Nothing was changed; try again or contact support.";
     public static final String CONSTRAINT_VIOLATION = "A constraint violation occurred";
     public static final String OPERATION_NOT_SUPPORTED = "Operation not supported";
     public static final String UNSUPPORTED_MEDIA_TYPE_TEXT = "Unsupported content type";
@@ -233,8 +234,14 @@ public class GlobalExceptionHandler {
 
     // Accounting Exception
     @ExceptionHandler(AccountingException.class)
-    public void handleAccountingException(AccountingException ex){
+    public ResponseEntity<CustomApiResponse<Object>> handleAccountingException(AccountingException ex){
+        // API-RD-13a: this used to return void, i.e. HTTP 200 with an empty body although the transaction had rolled
+        // back. A ledger fault is a server fault: 500 with a stable code and a fixed text (the exception message names
+        // ledger accounts and amounts, SEC-01d). The failed operation saved nothing, so a retry with the same
+        // Idempotency-Key is safe.
         log.error("Accounting Exception: {}", ex.getClass().getName());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(CustomApiResponse.error(ACCOUNTING_FAILED, java.util.Map.of("code", "ACCOUNTING_ERROR")));
     }
 
 

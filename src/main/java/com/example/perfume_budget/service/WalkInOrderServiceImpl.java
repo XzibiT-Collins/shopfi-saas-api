@@ -6,7 +6,15 @@ import com.example.perfume_budget.dto.walk_in.request.WalkInCustomerRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInOrderItemRequest;
 import com.example.perfume_budget.dto.walk_in.request.WalkInOrderRequest;
 import com.example.perfume_budget.dto.walk_in.response.CustomerSearchResponse;
+import com.example.perfume_budget.dto.walk_in.request.WalkInQuoteRequest;
 import com.example.perfume_budget.dto.walk_in.response.WalkInOrderResponse;
+import com.example.perfume_budget.dto.walk_in.response.WalkInQuoteItemResponse;
+import com.example.perfume_budget.dto.walk_in.response.WalkInQuoteResponse;
+import com.example.perfume_budget.dto.walk_in.response.WalkInQuoteTaxResponse;
+import com.example.perfume_budget.exception.ApiCodeException;
+import com.example.perfume_budget.utils.CheckoutFingerprint;
+import com.example.perfume_budget.utils.WalkInFingerprint;
+import org.springframework.http.HttpStatus;
 import com.example.perfume_budget.enums.CurrencyCode;
 import com.example.perfume_budget.enums.DiscountType;
 import com.example.perfume_budget.enums.FrontDeskPermission;
@@ -73,27 +81,29 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     private final EffectivePriceService effectivePriceService;
 
     @Override
-    public WalkInOrderResponse placeWalkInOrder(WalkInOrderRequest request) {
+    public WalkInOrderResponse placeWalkInOrder(WalkInOrderRequest request, String idempotencyKey) {
         User currentUser = requireWalkInAccess(FrontDeskPermission.WALK_IN_ORDER_CREATE);
-        CustomerResolution customerResolution = resolveCustomer(request);
-        WalkInItemsResult itemsResult = buildOrderItems(request.items());
-        List<WalkInOrderItem> orderItems = itemsResult.items();
-
-        // No stacking: a manual discount cannot be applied when items are already on sale.
-        if (itemsResult.anyOnSale() && (request.discountType() != null || request.discountValue() != null)) {
-            throw new BadRequestException("Manual discount cannot be combined with active product discounts.");
+        String key = normalizeIdempotencyKey(idempotencyKey);
+        String fingerprint = null;
+        if (key != null) {
+            // Serialise this cashier's keyed sales in this tenant (double submit, browser re-send racing the original):
+            // the second request waits here and then finds the first request's committed order instead of selling twice.
+            currentUser = userRepository.lockById(currentUser.getId())
+                    .orElseThrow(() -> new ResourceNotFoundException("User not found."));
+            fingerprint = WalkInFingerprint.of(request);
+            Optional<WalkInOrder> existing = walkInOrderRepository.findByProcessedByAndIdempotencyKey(currentUser, key);
+            if (existing.isPresent()) {
+                return replay(existing.get(), fingerprint);
+            }
         }
-
-        BigDecimal subtotal = orderItems.stream()
-                .map(WalkInOrderItem::getTotalPrice)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-        DiscountApplication discountApplication = applyWalkInDiscount(request.discountType(), request.discountValue(), subtotal);
-        BigDecimal finalPrice = discountApplication.finalPrice();
-
-        TaxCalculationResult taxResult = taxService.calculateTaxes(finalPrice);
-        BigDecimal discountAmount = discountApplication.discountAmount();
-        BigDecimal totalAmount = finalPrice.add(taxResult.totalTaxAmount().getAmount()).setScale(2, RoundingMode.HALF_EVEN);
+        CustomerResolution customerResolution = resolveCustomer(request);
+        Pricing pricing = price(request.items(), request.discountType(), request.discountValue());
+        List<WalkInOrderItem> orderItems = pricing.items();
+        BigDecimal subtotal = pricing.subtotal();
+        BigDecimal discountAmount = pricing.discount().discountAmount();
+        TaxCalculationResult taxResult = pricing.tax();
+        BigDecimal totalAmount = pricing.totalAmount();
+        DiscountApplication discountApplication = pricing.discount();
         PaymentValidation paymentValidation = validatePayment(request, totalAmount);
         BigDecimal changeGiven = calculateChange(request.paymentMethod(), paymentValidation.amountPaid(), totalAmount);
 
@@ -104,7 +114,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
                 .processedBy(currentUser)
                 .subtotal(new Money(subtotal, CurrencyCode.GHS))
                 .discountAmount(new Money(discountAmount, CurrencyCode.GHS))
-                .automaticDiscountAmount(new Money(itemsResult.automaticDiscount(), CurrencyCode.GHS))
+                .automaticDiscountAmount(new Money(pricing.automaticDiscount(), CurrencyCode.GHS))
                 .totalTaxAmount(new Money(taxResult.totalTaxAmount().getAmount(), CurrencyCode.GHS))
                 .totalAmount(new Money(totalAmount, CurrencyCode.GHS))
                 .amountPaid(new Money(paymentValidation.amountPaid(), CurrencyCode.GHS))
@@ -116,6 +126,8 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
                 .splitMobileAmount(paymentValidation.splitMobileAmount())
                 .status(WalkInOrderStatus.COMPLETED)
                 .receiptPrinted(false)
+                .idempotencyKey(key)
+                .requestFingerprint(fingerprint)
                 .build();
 
         orderItems.forEach(item -> item.setWalkInOrder(order));
@@ -130,7 +142,98 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
         bookkeepingService.recordWalkInSale(savedOrder);
 
         log.info("Walk-in order {} placed by user {}", savedOrder.getOrderNumber(), currentUser.getId());
-        return WalkInOrderMapper.toResponse(savedOrder);
+        return WalkInOrderMapper.toResponse(savedOrder).toBuilder().idempotentReplay(false).build();
+    }
+
+    /**
+     * API-RD-03 AC1: prices a draft exactly like {@link #placeWalkInOrder} does (same code path) without writing
+     * anything: no customer row, no stock, no sold count, no ledger entry. Read-only transaction.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public WalkInQuoteResponse quote(WalkInQuoteRequest request) {
+        requireWalkInAccess(FrontDeskPermission.WALK_IN_ORDER_CREATE);
+        Pricing pricing = price(request.items(), request.discountType(), request.discountValue());
+        BigDecimal total = pricing.totalAmount();
+        BigDecimal paid = request.amountPaid() == null ? null : scale(request.amountPaid());
+        if (paid != null && paid.compareTo(BigDecimal.ZERO) < 0) {
+            throw new BadRequestException("Amount paid cannot be negative.");
+        }
+        BigDecimal change = paid != null && request.paymentMethod() == WalkInPaymentMethod.CASH
+                ? calculateChange(WalkInPaymentMethod.CASH, paid, total) : null;
+        BigDecimal balanceDue = paid == null ? null : total.subtract(paid).max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_EVEN);
+        DiscountApplication d = pricing.discount();
+        return WalkInQuoteResponse.builder()
+                .items(pricing.items().stream().map(i -> WalkInQuoteItemResponse.builder()
+                        .productId(i.getProductId())
+                        .productName(i.getProductName())
+                        .sku(i.getSku())
+                        .quantity(i.getQuantity())
+                        .unitPrice(WalkInOrderMapper.formatMoney(i.getUnitPrice()))
+                        .totalPrice(WalkInOrderMapper.formatMoney(i.getTotalPrice()))
+                        .build()).toList())
+                .originalSubtotal(WalkInOrderMapper.formatMoney(pricing.subtotal().add(pricing.automaticDiscount())))
+                .automaticDiscountAmount(WalkInOrderMapper.formatMoney(pricing.automaticDiscount()))
+                .subtotal(WalkInOrderMapper.formatMoney(pricing.subtotal()))
+                .discountType(d.discountType())
+                .discountValue(WalkInOrderMapper.formatDiscountValue(d.discountType(), d.discountValue()))
+                .discountAmount(WalkInOrderMapper.formatMoney(d.discountAmount()))
+                .taxes(pricing.tax().orderTaxes().stream().map(t -> WalkInQuoteTaxResponse.builder()
+                        .taxName(t.getTaxName())
+                        .taxCode(t.getTaxCode())
+                        .taxRate(t.getTaxRate())
+                        .taxableAmount(WalkInOrderMapper.formatMoney(t.getTaxableAmount().getAmount()))
+                        .taxAmount(WalkInOrderMapper.formatMoney(t.getTaxAmount().getAmount()))
+                        .build()).toList())
+                .totalTaxAmount(WalkInOrderMapper.formatMoney(pricing.tax().totalTaxAmount().getAmount()))
+                .totalAmount(WalkInOrderMapper.formatMoney(total))
+                .paymentMethod(request.paymentMethod())
+                .amountPaid(paid == null ? null : WalkInOrderMapper.formatMoney(paid))
+                .changeGiven(change == null ? null : WalkInOrderMapper.formatMoney(change))
+                .balanceDue(balanceDue == null ? null : WalkInOrderMapper.formatMoney(balanceDue))
+                .build();
+    }
+
+    /** Items, discounts, tax and total of a draft: the one pricing path shared by the quote and the sale. */
+    private Pricing price(List<WalkInOrderItemRequest> items, DiscountType discountType, BigDecimal discountValue) {
+        WalkInItemsResult itemsResult = buildOrderItems(items);
+        List<WalkInOrderItem> orderItems = itemsResult.items();
+
+        // No stacking: a manual discount cannot be applied when items are already on sale.
+        if (itemsResult.anyOnSale() && (discountType != null || discountValue != null)) {
+            throw new BadRequestException("Manual discount cannot be combined with active product discounts.");
+        }
+
+        BigDecimal subtotal = orderItems.stream()
+                .map(WalkInOrderItem::getTotalPrice)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        DiscountApplication discountApplication = applyWalkInDiscount(discountType, discountValue, subtotal);
+        BigDecimal finalPrice = discountApplication.finalPrice();
+        TaxCalculationResult taxResult = taxService.calculateTaxes(finalPrice);
+        BigDecimal totalAmount = finalPrice.add(taxResult.totalTaxAmount().getAmount()).setScale(2, RoundingMode.HALF_EVEN);
+        return new Pricing(orderItems, subtotal, itemsResult.automaticDiscount(), discountApplication, taxResult, totalAmount);
+    }
+
+    /** Same key + same body: the original sale; same key + other body: 409. Nothing is written either way. */
+    private WalkInOrderResponse replay(WalkInOrder existing, String fingerprint) {
+        if (!fingerprint.equals(existing.getRequestFingerprint())) {
+            throw new ApiCodeException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
+                    "This Idempotency-Key was already used for a different walk-in sale.");
+        }
+        log.info("Walk-in order {} replayed for user {}", existing.getOrderNumber(), existing.getProcessedBy().getId());
+        return WalkInOrderMapper.toResponse(existing).toBuilder().idempotentReplay(true).build();
+    }
+
+    private String normalizeIdempotencyKey(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String key = raw.strip();
+        if (!CheckoutFingerprint.IDEMPOTENCY_KEY.matcher(key).matches()) {
+            throw new ApiCodeException(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_INVALID",
+                    "Idempotency-Key must be 8-64 characters of letters, digits, '.', '_', ':' or '-'.");
+        }
+        return key;
     }
 
     @Override
@@ -384,6 +487,10 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
                                        BigDecimal discountValue,
                                        BigDecimal discountAmount,
                                        BigDecimal finalPrice) {
+    }
+
+    private record Pricing(List<WalkInOrderItem> items, BigDecimal subtotal, BigDecimal automaticDiscount,
+                           DiscountApplication discount, TaxCalculationResult tax, BigDecimal totalAmount) {
     }
 
     private record WalkInItemsResult(List<WalkInOrderItem> items, boolean anyOnSale, BigDecimal automaticDiscount) {

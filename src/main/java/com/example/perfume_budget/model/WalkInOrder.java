@@ -115,6 +115,14 @@ public class WalkInOrder {
     @Builder.Default
     private Boolean receiptPrinted = false;
 
+    /** Client-supplied Idempotency-Key of the sale (null for keyless sales); unique per (processedBy, key). */
+    @Column(name = "idempotency_key", length = 64, updatable = false)
+    private String idempotencyKey;
+
+    /** SHA-256 of the normalised request that created this order (null for keyless sales). */
+    @Column(name = "request_fingerprint", length = 64, updatable = false)
+    private String requestFingerprint;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
