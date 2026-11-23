@@ -80,6 +80,7 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | AdminMetricController | GET | `/api/v1/admin/metrics/low-stock-products` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | AdminMetricController | GET | `/api/v1/admin/metrics/top-customers` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | AdminMetricController | GET | `/api/v1/admin/metrics/sales-analytics` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
+| AdminMetricController | GET | `/api/v1/admin/metrics/products/{productId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data (API-RD-01) |
 | AuthController | POST | `/api/v1/auth/register` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/verify-otp` | permitAll (explicit POST) | - | mutates |
 | AuthController | POST | `/api/v1/auth/verify-login-otp` | permitAll (explicit POST) | - | mutates |

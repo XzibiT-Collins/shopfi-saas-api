@@ -16,13 +16,14 @@ import com.example.perfume_budget.projection.LowStockProduct;
 import com.example.perfume_budget.projection.TopCustomer;
 import jakarta.annotation.Nullable;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 import java.time.LocalDate;
 import java.util.List;
 
 public interface AdminMetricService {
-    PageResponse<CustomerDataResponse> getCustomers(Pageable pageable);
-    PageResponse<CustomerDataResponse> searchCustomer(Pageable pageable, String keyword);
+    PageResponse<CustomerDataResponse> getCustomers(String search, String sortBy, Sort.Direction direction, Pageable pageable);
+    MostPurchaseProductResponse getProductMetrics(Long productId, @Nullable LocalDate from, @Nullable LocalDate to);
     CouponMetricResponse getCouponMetrics();
     List<MostPurchaseProductResponse> getMostPurchasedProduct();
     SiteVisitMetric getSiteVisitMetric(@Nullable LocalDate from, @Nullable LocalDate to);

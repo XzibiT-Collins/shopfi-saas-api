@@ -18,6 +18,7 @@ import com.example.perfume_budget.projection.TopCustomer;
 import com.example.perfume_budget.service.interfaces.AdminMetricService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -33,9 +34,29 @@ public class AdminMetricController {
     private final AdminMetricService adminMetricService;
 
     @GetMapping("/customers")
-    public ResponseEntity<CustomApiResponse<PageResponse<CustomerDataResponse>>> getCustomerData(Pageable pageable){
+    public ResponseEntity<CustomApiResponse<PageResponse<CustomerDataResponse>>> getCustomerData(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(defaultValue = "desc") String direction,
+            Pageable pageable){
         return ResponseEntity.ok().body(
-                CustomApiResponse.success(adminMetricService.getCustomers(pageable))
+                CustomApiResponse.success(adminMetricService.getCustomers(search, sortBy, parseDirection(direction), pageable))
+        );
+    }
+
+    private static Sort.Direction parseDirection(String direction) {
+        return Sort.Direction.fromOptionalString(direction)
+                .orElseThrow(() -> new BadRequestException("direction must be asc or desc"));
+    }
+
+    /** API-RD-01: engagement counters of one product, same shape and definitions as one /top-products row. */
+    @GetMapping("/products/{productId}")
+    public ResponseEntity<CustomApiResponse<MostPurchaseProductResponse>> getProductMetrics(
+            @PathVariable Long productId,
+            @RequestParam(name = "from", required = false) LocalDate from,
+            @RequestParam(name = "to", required = false) LocalDate to){
+        return ResponseEntity.ok().body(
+                CustomApiResponse.success(adminMetricService.getProductMetrics(productId, from, to))
         );
     }
 
