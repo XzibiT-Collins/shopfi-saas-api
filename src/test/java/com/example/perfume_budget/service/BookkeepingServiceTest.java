@@ -304,6 +304,18 @@ class BookkeepingServiceTest {
     }
 
     @Test
+    @DisplayName("Manual entry amount ceiling: the ledger maximum is accepted, one cent more is refused")
+    void recordManualEntry_MaxAmountBoundary() {
+        when(authUserUtil.getCurrentUser()).thenReturn(User.builder().id(1L).fullName("Admin").build());
+        when(ledgerAccountRepository.findByCategory(AccountCategory.CASH)).thenReturn(Optional.of(cashAccount));
+        when(ledgerAccountRepository.findByCategory(AccountCategory.SALES_REVENUE)).thenReturn(Optional.of(revenueAccount));
+        bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "99999999999999999.99"), null);
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(com.example.perfume_budget.exception.ApiCodeException.class,
+                () -> bookkeepingService.recordManualEntry(manualRequest("EXPENSE", "100000000000000000.00"), null));
+        assertEquals("INVALID_AMOUNT", e.getCode());
+    }
+
+    @Test
     @DisplayName("Manual entry replay: same admin + key + body posts nothing; another body is 409")
     void recordManualEntry_KeyedReplayAndReuse() {
         User admin = User.builder().id(1L).fullName("Admin").build();

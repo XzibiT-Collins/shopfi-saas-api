@@ -120,7 +120,7 @@ class TeamTaxAccountingDocContractTest {
         m = Pattern.compile("\"([A-Z][A-Z_]{5,})\"").matcher(taxSvc);
         while (m.find()) assertThat(tax).as(m.group(1)).contains(m.group(1));
         // the migration the manual-entry idempotency docs name exists
-        assertThat(Files.exists(Path.of("src/main/resources/db/migrations/tenant/V40__manual_entry_idempotency.sql"))).isTrue();
+        assertThat(Files.exists(Path.of("src/main/resources/db/migrations/tenant/V20__manual_entry_idempotency.sql"))).isTrue();
         assertThat(acct).contains("RETAINED_EARNINGS").contains("INVALID_PAGE");
     }
 }

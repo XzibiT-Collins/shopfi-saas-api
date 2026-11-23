@@ -31,7 +31,7 @@ validation (blank fields, bad e-mail, unknown permission name, unreadable body) 
 | 409 | `EMAIL_ALREADY_EXISTS` | `An account with this email already exists.` | create, or PATCH to another account's e-mail |
 | 400 | `FULL_NAME_REQUIRED` | `Full name is required.` (create) / `Full name cannot be blank.` (PATCH) | blank name |
 | 400 | `EMAIL_REQUIRED` | `Email is required.` | blank e-mail |
-| 400 | `PASSWORD_TOO_SHORT` | `Password must be at least 8 characters long` (no full stop, historic) | see policy |
+| 400 | `PASSWORD_TOO_SHORT` | `Password must be at least 8 characters long` (no full stop, historic) | PATCH, or a create password that is 8+ raw characters but shorter after stripping spaces |
 | 400 | `PASSWORD_TOO_WEAK` | `Password must contain at least one uppercase letter, one number, and one special character.` | see policy |
 | 400 | `PASSWORD_TOO_LONG` | `Password must be at most 72 bytes long.` | see policy |
 | 400 | `NOT_FRONT_DESK_USER` | `Selected user is not a front desk user.` | PATCH / permissions of a non-front-desk user |
@@ -46,7 +46,7 @@ validation (blank fields, bad e-mail, unknown permission name, unreadable body) 
 Staff accounts (`POST /users`, `PATCH /users/{id}` with a non-blank `password`) now use **the same policy as customer
 registration and password reset** (`PasswordPolicy`): evaluated on the stripped password (the value that is stored and
 that login compares): at least 8 characters, at most 72 UTF-8 bytes (BCrypt ignores the rest), at least one ASCII
-uppercase letter, one digit and one special character from `!@#$%^&*()_+-=[]{};':"\|,.<>/?`. A refused password writes
+uppercase letter, one digit and one special character from `!@#$%^&*()_+-=[]{};':"\|,.<>/?`. **Exception, unchanged shape:** on `POST /users` a password shorter than 8 raw characters is still refused by bean validation (`"Validation failed"`, `data.password`, no `code`), exactly as before. A refused password writes
 nothing. A blank `password` on PATCH still means "leave it unchanged". **Behaviour change:** before, any 8-character
 string was accepted; existing staff passwords are not re-checked until they are changed. The frontend's staff form hint
 ("Use at least 8 characters") should show the full rule.
@@ -98,7 +98,7 @@ one would need a migration for three differently shaped records. The contract th
 ## Per-user permission summary (API-RD-11d)
 
 `GET /users` (and the other single-user answers) now carry `permissionSummary`, so the list can show "Custom 6 of 8"
-without one call per user. The list costs two queries (template once, every user's overrides once), not one per user.
+without one call per user. The list costs three queries (the staff, the template once, every user's overrides once), not one per user.
 
 | Field | Meaning |
 |---|---|

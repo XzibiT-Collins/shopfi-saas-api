@@ -148,7 +148,7 @@ a posting that would take an account below zero `400` (`<account> cannot go nega
 
 * Scope: tenant + admin + key. The key, the admin's id and a SHA-256 fingerprint of the normalised body (line order and
   amount scale ignored) are stored on the entry (`journal_entries.idempotency_key`, `idempotency_user_id`,
-  `request_fingerprint`, Flyway `V40`, unique per admin and key); the body itself is not kept.
+  `request_fingerprint`, Flyway `V20`, unique per admin and key); the body itself is not kept.
 * Same key + same body: `200`, **nothing is posted** (no second entry, no second balance change), response header
   `Idempotency-Replayed: true`. The first call answers `Idempotency-Replayed: false`. The body stays `data: null`.
 * Same key + different body: `409 IDEMPOTENCY_KEY_REUSED`, nothing written.

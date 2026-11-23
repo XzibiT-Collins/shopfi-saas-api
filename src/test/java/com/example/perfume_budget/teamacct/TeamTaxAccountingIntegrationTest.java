@@ -196,8 +196,13 @@ class TeamTaxAccountingIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(desc(weak)).isEqualTo("Password must contain at least one uppercase letter, one number, and one special character.");
         MvcResult shortPw = acmeCall(post(TEAM + "/users"), newStaff("tt-short@acme.test", "Ab1!"), null);
         status(shortPw, 400);
-        assertThat(code(shortPw)).isEqualTo("PASSWORD_TOO_SHORT");
-        assertThat(desc(shortPw)).isEqualTo("Password must be at least 8 characters long");
+        // unchanged contract: bean-validation shape, no data.code
+        assertThat(desc(shortPw)).isEqualTo("Validation failed");
+        assertThat(body(shortPw).at("/data/password").asText()).isEqualTo("Password must be at least 8 characters long");
+        assertThat(body(shortPw).at("/data/code").isMissingNode()).isTrue();
+        MvcResult paddedShort = acmeCall(post(TEAM + "/users"), newStaff("tt-pad@acme.test", "  Ab1!xy  "), null);
+        status(paddedShort, 400);
+        assertThat(code(paddedShort)).isEqualTo("PASSWORD_TOO_SHORT");
         MvcResult longPw = acmeCall(post(TEAM + "/users"), newStaff("tt-long@acme.test", "Aa1!" + "x".repeat(70)), null);
         status(longPw, 400);
         assertThat(code(longPw)).isEqualTo("PASSWORD_TOO_LONG");
@@ -435,6 +440,18 @@ class TeamTaxAccountingIntegrationTest extends AbstractCheckoutIntegrationTest {
         assertThat(cash()).isEqualByComparingTo(before);
         status(send(post(MANUAL), acmeAdmin, acme, manual("ADJUSTMENT", "10.50"), null, null), 200);
         assertThat(cash()).isEqualByComparingTo(before.add(new BigDecimal("10.50")));
+    }
+
+    @Test
+    void manualEntryBodyShapeErrorsAre400Not500() throws Exception {
+        Map<String, Object> nullLine = manual("EXPENSE", "1.00");
+        nullLine.put("lines", java.util.Arrays.asList(null, Map.of("accountCategory", "CASH", "entryType", "DEBIT", "amount", "1.00")));
+        status(send(post(MANUAL), acmeAdmin, acme, nullLine, null, null), 400);
+        Map<String, Object> noAmount = manual("EXPENSE", "1.00");
+        noAmount.put("lines", List.of(Map.of("accountCategory", "CASH", "entryType", "DEBIT"),
+                Map.of("accountCategory", "OWNERS_CAPITAL", "entryType", "CREDIT", "amount", "1.00")));
+        status(send(post(MANUAL), acmeAdmin, acme, noAmount, null, null), 400);
+        assertThat(manualEntries()).isZero();
     }
 
     @Test

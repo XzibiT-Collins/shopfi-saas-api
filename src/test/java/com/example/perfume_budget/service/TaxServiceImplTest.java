@@ -179,6 +179,24 @@ class TaxServiceImplTest {
     }
 
     @Test
+    void taxVersionCoversEveryField() {
+        String base = com.example.perfume_budget.mapper.TaxMapper.versionOf(testTax);
+        java.util.function.Consumer<java.util.function.Consumer<Tax>> changed = m -> {
+            Tax t = Tax.builder().id(testTax.getId()).name(testTax.getName()).code(testTax.getCode()).rate(testTax.getRate())
+                    .isActive(testTax.getIsActive()).isCompound(testTax.getIsCompound()).applyOrder(testTax.getApplyOrder()).build();
+            m.accept(t);
+            assertNotEquals(base, com.example.perfume_budget.mapper.TaxMapper.versionOf(t));
+        };
+        changed.accept(t -> t.setId(99L));
+        changed.accept(t -> t.setName(t.getName() + "x"));
+        changed.accept(t -> t.setCode(t.getCode() + "x"));
+        changed.accept(t -> t.setRate(t.getRate().add(BigDecimal.ONE)));
+        changed.accept(t -> t.setIsActive(!t.getIsActive()));
+        changed.accept(t -> t.setIsCompound(!t.getIsCompound()));
+        changed.accept(t -> t.setApplyOrder(t.getApplyOrder() + 1));
+    }
+
+    @Test
     void taxErrorsCarryCodes() {
         when(taxRepository.existsByName("VAT")).thenReturn(true);
         assertEquals("TAX_NAME_EXISTS", assertThrows(DuplicateResourceException.class, () -> taxService.createTax(taxRequest)).getCode());

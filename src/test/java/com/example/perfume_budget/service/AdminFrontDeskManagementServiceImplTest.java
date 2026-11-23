@@ -205,7 +205,18 @@ class AdminFrontDeskManagementServiceImplTest {
     }
 
     @Test
-    void getFrontDeskUsers_SummarisesEveryUserWithTwoQueries() {
+    void overridesVersionCoversUserAndBothSides() {
+        var allow = List.of(FrontDeskUserPermissionOverride.builder().permission(FrontDeskPermission.STOCK_TRANSFER).allowed(true).build());
+        var deny = List.of(FrontDeskUserPermissionOverride.builder().permission(FrontDeskPermission.STOCK_TRANSFER).allowed(false).build());
+        String base = AdminFrontDeskManagementServiceImpl.overridesVersion(5L, allow);
+        assertNotEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(6L, allow));
+        assertNotEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(5L, deny));
+        assertNotEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(5L, List.of()));
+        assertEquals(base, AdminFrontDeskManagementServiceImpl.overridesVersion(5L, allow));
+    }
+
+    @Test
+    void getFrontDeskUsers_SummarisesEveryUserWithoutPerUserQueries() {
         User other = User.builder().id(6L).fullName("Another").email("a@example.com").roles(UserRole.FRONT_DESK).isActive(true).build();
         when(userRepository.findAllByRoles(UserRole.FRONT_DESK)).thenReturn(List.of(frontDeskUser, other));
         when(templateRepository.findAllByEnabledTrue()).thenReturn(List.of(
