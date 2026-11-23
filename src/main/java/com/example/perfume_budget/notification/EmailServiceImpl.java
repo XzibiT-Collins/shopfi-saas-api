@@ -106,6 +106,22 @@ public class EmailServiceImpl implements EmailService{
     }
 
     @Override
+    public void sendStoreLoginLinkEmail(String ownerEmail, String storeName, String tenantSlug) {
+        try{
+            Context context = new Context();
+            context.setVariable("storeName", storeName);
+            context.setVariable("loginLink", tenantLinkBuilder.adminLoginLink(tenantSlug)
+                    .orElseThrow(() -> new IllegalStateException("No tenant origin for tenant " + tenantSlug)));
+
+            String htmlContent = templateEngine.process("store-login-link", context);
+            sendEmail(htmlContent, ownerEmail, "Your store sign-in link");
+            log.info("Store sign-in link e-mail sent (tenant {})", tenantSlug);
+        }catch (Exception e){
+            logLost("Store sign-in link e-mail", "tenant " + tenantSlug, e);
+        }
+    }
+
+    @Override
     public void sendOtpEmail(String recipientEmail, String otpCode) {
         try{
             Context context = new Context();

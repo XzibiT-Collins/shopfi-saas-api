@@ -87,6 +87,11 @@ public class TenantLinkBuilder {
         return builder.queryParam("resetPasswordToken", token).build().toUriString();
     }
 
+    /** API-RD-04: the sign-in page of the tenant's admin area ({@code onboarding.admin-login-path}) on its own origin. */
+    public Optional<String> adminLoginLink(String slug) {
+        return origin(slug).map(o -> o + normalizePath(onboardingProps.getAdminLoginPath()));
+    }
+
     /** Where to send the browser after a failed OAuth2 login when the tenant is known: its login page. */
     public Optional<String> oauth2FailureRedirect(String slug) {
         return origin(slug).map(o -> o + oauth2FailurePath);

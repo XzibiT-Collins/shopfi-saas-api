@@ -230,6 +230,12 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
             assertEquals(400, replay.getResponse().getStatus());
             assertEquals("Invalid or expired verification code", body(replay).get("description").asText());
 
+            // find-store (API-RD-04): the same 202 body for an existing store and an unknown one
+            MvcResult found = postJson("/find-store", "{\"slug\":\"" + DOC_SLUG + "\"}", ip);
+            MvcResult notFound = postJson("/find-store", "{\"slug\":\"nobody-here-at-all\"}", ip);
+            assertEquals(found.getResponse().getContentAsString(), notFound.getResponse().getContentAsString(),
+                    "find-store must not reveal whether a store exists");
+            record("find-store-accepted", found, DOC_SLUG);
             // resend: identical 202 body for in-flight, unknown slug and wrong e-mail (enumeration-safe)
             ObjectNode resend = payload("resend-request");
             MvcResult inFlight = postJson("/resend", resend.toString(), ip);
@@ -337,6 +343,7 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
                 case "TenantSignupRequest" -> "/signup";
                 case "TenantVerifyRequest" -> "/verify";
                 case "TenantResendRequest" -> "/resend";
+                case "StoreLookupRequest" -> "/find-store";
                 default -> throw new AssertionError("no endpoint for " + ex.schema());
             };
             MvcResult r = postJson(endpoint, ex.json().toString(), "203.0.113." + (20 + n++));
@@ -451,7 +458,10 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
         // content checks independent of the committed file
         JsonNode paths = filtered.get("paths");
         assertEquals(Set.of("/api/v1/platform/onboarding/signup", "/api/v1/platform/onboarding/verify",
-                "/api/v1/platform/onboarding/resend", "/api/v1/platform/onboarding/status"), fieldNames(paths));
+                "/api/v1/platform/onboarding/resend", "/api/v1/platform/onboarding/status",
+                "/api/v1/platform/onboarding/find-store"), fieldNames(paths));
+        assertTrue(paths.get(BASE + "/find-store").get("post").get("responses").has("202"));
+        assertTrue(paths.get(BASE + "/find-store").get("post").get("responses").has("429"));
         assertTrue(paths.get(BASE + "/signup").get("post").get("responses").has("201"));
         assertTrue(paths.get(BASE + "/signup").get("post").get("responses").has("409"));
         assertTrue(paths.get(BASE + "/verify").get("post").get("responses").has("202"));
@@ -459,7 +469,7 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
         assertTrue(paths.get(BASE + "/status").get("get").get("responses").has("404"));
         assertTrue(paths.get(BASE + "/status").get("get").get("responses").has("429"));
         JsonNode schemas = filtered.get("components").get("schemas");
-        for (String s : List.of("TenantSignupRequest", "TenantVerifyRequest", "TenantResendRequest")) {
+        for (String s : List.of("TenantSignupRequest", "TenantVerifyRequest", "TenantResendRequest", "StoreLookupRequest")) {
             assertTrue(schemas.has(s), s);
         }
         assertFalse(generated.contains("password\" : \"") , "no example secrets");

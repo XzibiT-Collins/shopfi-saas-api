@@ -12,5 +12,7 @@ public interface EmailService {
     /** Sends the reset link for the tenant identified by {@code tenantSlug} (its own storefront origin). */
     void sendForgotPasswordEmail(String recipientEmail, String recipientName, String token, String tenantSlug);
     void sendOtpEmail(String email, String otp);
+    /** API-RD-04: mails a store OWNER the sign-in link of their store (links are built from the registry, never from input). */
+    void sendStoreLoginLinkEmail(String ownerEmail, String storeName, String tenantSlug);
     void notifyCustomerOnOrderStatusChange(OrderStatusChangeEvent event);
 }

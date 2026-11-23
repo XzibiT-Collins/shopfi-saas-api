@@ -60,6 +60,8 @@ class AuthorizationMatrixStructureTest {
     static final String CUSTOMER = "hasRole('CUSTOMER')";
     static final String FRONT_DESK = "hasAnyRole('ADMIN','FRONT_DESK')";
     static final String SUPER_ADMIN = "hasRole('SUPER_ADMIN')";
+    /** API-RD-08 self-service: every tenant role, own record only. */
+    static final String ANY_TENANT_ROLE = "hasAnyRole('CUSTOMER','ADMIN','FRONT_DESK')";
     /** No @PreAuthorize and permitAll in SecurityConfig. */
     static final String PUBLIC = "PUBLIC";
     /** No @PreAuthorize, any signed-in user of the tenant (matcher authenticated()/anyRequest). */
@@ -123,7 +125,7 @@ class AuthorizationMatrixStructureTest {
 
         // --- platform control plane
         expect(SUPER_ADMIN, "PlatformTenantController", "list", "detail", "audit", "approve", "suspend", "reactivate", "reprovision");
-        expect(SUPER_ADMIN, "PlatformAuthController", "me");
+        expect(SUPER_ADMIN, "PlatformAuthController", "me", "changePassword"); // API-RD-07 AC1
         expect(SUPER_ADMIN, "PlatformTenantDomainController", "getTenantCustomDomain", "verifyTenantCustomDomain",
                 "removeTenantCustomDomain"); // DOMAIN-02
 
@@ -133,7 +135,7 @@ class AuthorizationMatrixStructureTest {
         expect(PUBLIC, "WebhookController", "processWebhook");                       // per-tenant token + HMAC signature
         expect(PUBLIC, "DevTenantController", "createTenant");                       // bean only when dev flag; matcher denyAll otherwise
         expect(PUBLIC, "PlatformAuthController", "login", "refresh", "logout");
-        expect(PUBLIC, "TenantOnboardingController", "signup", "verify", "resend", "status");
+        expect(PUBLIC, "TenantOnboardingController", "signup", "verify", "resend", "status", "findStore"); // API-RD-04
         expect(PUBLIC, "CategoryController", "getCategories");
         expect(PUBLIC, "ProductController", "getFeaturedProducts", "getProductListings", "searchProducts", "getProductDetailsPage",
                 "getProductsByIds", "recordView"); // CAT-07 by-ids read; VIEW-01 view beacon (public mutation, a counter)
@@ -144,6 +146,9 @@ class AuthorizationMatrixStructureTest {
         // access could break API clients; the admin-only rate administration (add/update/get-by-id/delete) is ADMIN above.
         expect(AUTHENTICATED, "TaxController", "calculateTaxes", "getAllTaxes");
         expect(AUTHENTICATED, "AuthController", "getAuthenticatedUser");                // GET /auth/me (annotation is commented out in source)
+        // API-RD-08: self-service on the caller's OWN record (the target is the principal, never a request value), so any
+        // signed-in tenant role (CUSTOMER, ADMIN, FRONT_DESK) may call them; anonymous and platform credentials get 401.
+        expect(ANY_TENANT_ROLE, "AuthController", "updateProfile", "changePassword");
     }
 
     /** Public mutations (kept for CatalogAuthorizationMatrixIntegrationTest's anonymous sweep). */
@@ -154,7 +159,7 @@ class AuthorizationMatrixStructureTest {
             "AuthController#resetPassword", "WebhookController#processWebhook", "DevTenantController#createTenant",
             "PlatformAuthController#login", "PlatformAuthController#refresh", "PlatformAuthController#logout",
             "TenantOnboardingController#signup", "TenantOnboardingController#verify", "TenantOnboardingController#resend",
-            "ProductController#recordView");
+            "TenantOnboardingController#findStore", "ProductController#recordView");
 
     /** Public reads. */
     static final Set<String> PUBLIC_READS = Set.of(
@@ -237,7 +242,7 @@ class AuthorizationMatrixStructureTest {
 
     @Test
     void theTableCanNeverBlessAWeakExpression() {
-        Set<String> allowed = Set.of(ADMIN, CUSTOMER, FRONT_DESK, SUPER_ADMIN, "hasAnyRole('CUSTOMER','ADMIN')", PUBLIC, AUTHENTICATED);
+        Set<String> allowed = Set.of(ADMIN, CUSTOMER, FRONT_DESK, SUPER_ADMIN, "hasAnyRole('CUSTOMER','ADMIN')", ANY_TENANT_ROLE, PUBLIC, AUTHENTICATED);
         assertThat(EXPECTED.values()).isSubsetOf(allowed);
         // every non-public, non-authenticated expression names a role
         EXPECTED.values().stream().filter(v -> !v.equals(PUBLIC) && !v.equals(AUTHENTICATED))
@@ -579,6 +584,7 @@ class AuthorizationMatrixStructureTest {
             }
         });
         assertThat(frontDesk).containsExactlyInAnyOrder(
+                "AuthController#updateProfile", "AuthController#changePassword", // API-RD-08 self-service, every tenant role
                 "InventoryManagementController#getProductStockByLocation",
                 "NotificationController#getNotifications", "NotificationController#getUnreadCount",
                 "NotificationController#markAsRead", "NotificationController#markAllAsRead",
