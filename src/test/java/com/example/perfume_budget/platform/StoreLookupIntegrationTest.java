@@ -8,6 +8,7 @@ import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
 import com.example.perfume_budget.support.AbstractPostgresIntegrationTest;
 import com.example.perfume_budget.support.TestTenants;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -67,6 +68,7 @@ class StoreLookupIntegrationTest extends AbstractPostgresIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired TestTenants tenants;
 
+    String prefix;
     String active;
     String pending;
     String suspended;
@@ -78,12 +80,18 @@ class StoreLookupIntegrationTest extends AbstractPostgresIntegrationTest {
         Mockito.clearInvocations(emailService, mailDispatcher, tenantRepository);
         tenants.acme();
         String n = "sl" + SEQ.incrementAndGet() + (System.nanoTime() % 10000);
+        prefix = n;
         active = tenantRow(n + "-act", TenantStatus.ACTIVE);
         pending = tenantRow(n + "-pen", TenantStatus.PENDING);
         suspended = tenantRow(n + "-sus", TenantStatus.SUSPENDED);
         failed = tenantRow(n + "-fai", TenantStatus.FAILED);
         provisioning = tenantRow(n + "-pro", TenantStatus.PROVISIONING);
         Mockito.clearInvocations(emailService, mailDispatcher, tenantRepository);
+    }
+
+    @AfterEach
+    void removeSeededTenants() {
+        tenantRepository.findAll().stream().filter(t -> t.getSlug().startsWith(prefix)).forEach(tenantRepository::delete);
     }
 
     private String tenantRow(String slug, TenantStatus status) {

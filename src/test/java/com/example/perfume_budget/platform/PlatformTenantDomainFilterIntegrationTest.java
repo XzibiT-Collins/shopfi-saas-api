@@ -14,6 +14,7 @@ import com.example.perfume_budget.support.TestTenants;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,6 +73,12 @@ class PlatformTenantDomainFilterIntegrationTest extends AbstractPostgresIntegrat
                 .andReturn().getResponse();
         assertThat(login.getStatus()).isEqualTo(200);
         platform = new Cookie("platformAccessToken", login.getCookie("platformAccessToken").getValue());
+    }
+
+    /** The registry is shared with other test classes: VERIFIED domains would be picked up by the re-verify job tests. */
+    @AfterEach
+    void removeSeededTenants() {
+        tenantRepository.findAll().stream().filter(t -> t.getSlug().startsWith(prefix)).forEach(tenantRepository::delete);
     }
 
     private void tenant(String key, TenantStatus status, CustomDomainStatus domain) {
