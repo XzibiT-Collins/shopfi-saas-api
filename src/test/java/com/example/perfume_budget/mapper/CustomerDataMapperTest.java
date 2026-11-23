@@ -52,4 +52,14 @@ class CustomerDataMapperTest {
         assertNotNull(response);
         assertNull(response.dateJoined());
     }
+
+    @Test
+    void toCustomerDataResponse_LastOrderDateIsTheDateOfTheNewestOrderOrNull() {
+        when(summary.getTotalAmountSpent()).thenReturn(new BigDecimal("0"));
+        when(summary.getLastOrderAt()).thenReturn(LocalDateTime.of(2026, 3, 4, 23, 59));
+        assertEquals(java.time.LocalDate.of(2026, 3, 4), CustomerDataMapper.toCustomerDataResponse(summary).lastOrderDate());
+
+        when(summary.getLastOrderAt()).thenReturn(null);
+        assertNull(CustomerDataMapper.toCustomerDataResponse(summary).lastOrderDate());
+    }
 }

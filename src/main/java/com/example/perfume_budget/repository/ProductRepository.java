@@ -103,6 +103,16 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
         """)
     List<TopProduct> findTopSixMostSoldProducts();
 
+    /** API-RD-01: the same counters as {@link #findTopSixMostSoldProducts()} for one product (current tenant schema). */
+    @Query("""
+        SELECT p.id AS id, p.name AS productName,
+               COALESCE(p.viewCount, 0L) AS viewCount, COALESCE(p.soldCount, 0) AS soldCount,
+               COALESCE(p.addToCartCount, 0L) AS addToCartCount
+        FROM Product p
+        WHERE p.id = :productId
+        """)
+    Optional<TopProduct> findEngagementById(@Param("productId") Long productId);
+
     @Query("""
         SELECT p.id AS id, p.name AS productName,
                p.imageUrl AS productImage, p.stockQuantity AS stockQuantity

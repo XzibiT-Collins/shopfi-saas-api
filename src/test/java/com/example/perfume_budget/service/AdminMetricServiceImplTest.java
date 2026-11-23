@@ -12,6 +12,7 @@ import com.example.perfume_budget.enums.PaymentStatus;
 import com.example.perfume_budget.enums.UserRole;
 import com.example.perfume_budget.dto.customer.CustomerFullDetailsResponse;
 import com.example.perfume_budget.enums.CurrencyCode;
+import com.example.perfume_budget.dto.product.response.MostPurchaseProductResponse;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.model.Money;
 import com.example.perfume_budget.model.Order;
@@ -59,19 +60,88 @@ class AdminMetricServiceImplTest {
     @InjectMocks
     private AdminMetricServiceImpl adminMetricService;
 
+    @Mock
+    private com.example.perfume_budget.repository.CustomerMetricsQueryRepository customerMetricsQueryRepository;
+
     @Test
     void getCustomers_Success() {
         CustomerOrderSummary summary = mock(CustomerOrderSummary.class);
         when(summary.getFullName()).thenReturn("John Doe");
         when(summary.getTotalAmountSpent()).thenReturn(new BigDecimal("100.00"));
         when(summary.getCreatedAt()).thenReturn(java.time.LocalDateTime.now());
+        when(summary.getLastOrderAt()).thenReturn(java.time.LocalDateTime.of(2026, 3, 4, 10, 0));
         Page<CustomerOrderSummary> page = new PageImpl<>(List.of(summary));
-        when(orderRepository.getCustomerOrderSummary(any(Pageable.class))).thenReturn(page);
+        when(customerMetricsQueryRepository.findCustomers(any(), any(), any(), any(Pageable.class))).thenReturn(page);
 
-        PageResponse<CustomerDataResponse> result = adminMetricService.getCustomers(Pageable.unpaged());
+        PageResponse<CustomerDataResponse> result = adminMetricService.getCustomers(null, null, org.springframework.data.domain.Sort.Direction.DESC, Pageable.unpaged());
 
         assertNotNull(result);
         assertEquals(1, result.content().size());
+        assertEquals(java.time.LocalDate.of(2026, 3, 4), result.content().get(0).lastOrderDate());
+    }
+
+    @Test
+    void getCustomers_capsPageSizeTrimsSearchAndDefaultsToOrdersDesc() {
+        when(customerMetricsQueryRepository.findCustomers(any(), any(), any(), any(Pageable.class))).thenReturn(Page.empty());
+        adminMetricService.getCustomers("  jane  ", null, null, org.springframework.data.domain.PageRequest.of(2, 100000));
+
+        org.mockito.ArgumentCaptor<Pageable> pageable = org.mockito.ArgumentCaptor.forClass(Pageable.class);
+        org.mockito.Mockito.verify(customerMetricsQueryRepository).findCustomers(
+                org.mockito.ArgumentMatchers.eq("jane"),
+                org.mockito.ArgumentMatchers.eq(com.example.perfume_budget.enums.CustomerSortField.ORDERS),
+                org.mockito.ArgumentMatchers.eq(org.springframework.data.domain.Sort.Direction.DESC), pageable.capture());
+        assertEquals(50, pageable.getValue().getPageSize());
+        assertEquals(2, pageable.getValue().getPageNumber());
+    }
+
+    @Test
+    void getCustomers_unpagedUsesDefaultSize() {
+        when(customerMetricsQueryRepository.findCustomers(any(), any(), any(), any(Pageable.class))).thenReturn(Page.empty());
+        adminMetricService.getCustomers(null, "lastOrder", org.springframework.data.domain.Sort.Direction.ASC, Pageable.unpaged());
+        org.mockito.ArgumentCaptor<Pageable> pageable = org.mockito.ArgumentCaptor.forClass(Pageable.class);
+        org.mockito.Mockito.verify(customerMetricsQueryRepository).findCustomers(any(),
+                org.mockito.ArgumentMatchers.eq(com.example.perfume_budget.enums.CustomerSortField.LAST_ORDER),
+                org.mockito.ArgumentMatchers.eq(org.springframework.data.domain.Sort.Direction.ASC), pageable.capture());
+        assertEquals(20, pageable.getValue().getPageSize());
+    }
+
+    @Test
+    void getCustomers_rejectsOverlongSearchAndUnknownSort() {
+        String tooLong = "a".repeat(101);
+        assertThrows(com.example.perfume_budget.exception.BadRequestException.class,
+                () -> adminMetricService.getCustomers(tooLong, null, null, Pageable.unpaged()));
+        assertThrows(com.example.perfume_budget.exception.BadRequestException.class,
+                () -> adminMetricService.getCustomers(null, "email; DROP TABLE users", null, Pageable.unpaged()));
+        // exactly the cap is fine
+        when(customerMetricsQueryRepository.findCustomers(any(), any(), any(), any(Pageable.class))).thenReturn(Page.empty());
+        assertNotNull(adminMetricService.getCustomers("a".repeat(100), null, null, Pageable.unpaged()));
+    }
+
+    @Test
+    void getProductMetrics_usesTheTopProductDefinitions() {
+        TopProduct p = mock(TopProduct.class);
+        when(p.getId()).thenReturn(7L);
+        when(p.getProductName()).thenReturn("Oud");
+        when(p.getViewCount()).thenReturn(200L);
+        when(p.getAddToCartCount()).thenReturn(8L);
+        when(p.getSoldCount()).thenReturn(2L);
+        when(productRepository.findEngagementById(7L)).thenReturn(java.util.Optional.of(p));
+
+        MostPurchaseProductResponse r = adminMetricService.getProductMetrics(7L, null, null);
+
+        assertEquals(200L, r.viewCount());
+        assertEquals(8L, r.addToCartCount());
+        assertEquals(2L, r.soldCount());
+        assertEquals(new BigDecimal("25.00"), r.conversionRate());
+    }
+
+    @Test
+    void getProductMetrics_unknownProductIs404AndBadRangeIs400() {
+        when(productRepository.findEngagementById(99L)).thenReturn(java.util.Optional.empty());
+        assertThrows(ResourceNotFoundException.class, () -> adminMetricService.getProductMetrics(99L, null, null));
+        LocalDate d = LocalDate.of(2026, 1, 1);
+        assertThrows(com.example.perfume_budget.exception.BadRequestException.class, () -> adminMetricService.getProductMetrics(1L, d, null));
+        assertThrows(com.example.perfume_budget.exception.BadRequestException.class, () -> adminMetricService.getProductMetrics(1L, d.plusDays(1), d));
     }
 
     @Test
