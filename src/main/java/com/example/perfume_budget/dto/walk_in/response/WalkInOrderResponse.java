@@ -8,7 +8,7 @@ import lombok.Builder;
 import java.time.LocalDateTime;
 import java.util.List;
 
-@Builder
+@Builder(toBuilder = true)
 public record WalkInOrderResponse(
         String orderNumber,
         String customerName,
@@ -28,6 +28,8 @@ public record WalkInOrderResponse(
         String changeGiven,
         Boolean receiptPrinted,
         LocalDateTime createdAt,
-        List<WalkInOrderItemResponse> items
+        List<WalkInOrderItemResponse> items,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        Boolean idempotentReplay      // only on POST /order: true when the answer is the original sale of this Idempotency-Key
 ) {
 }

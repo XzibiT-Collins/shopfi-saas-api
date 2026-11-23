@@ -118,7 +118,7 @@ class AuthorizationMatrixStructureTest {
         expect(FRONT_DESK, "StockConversionController", "getReverseConversionTargetVariants", "convertForward", "convertReverse");
         expect(FRONT_DESK, "StockTransferController", "transfer", "history");
         expect(FRONT_DESK, "StorageLocationController", "list", "get");
-        expect(FRONT_DESK, "WalkInOrderController", "placeWalkInOrder", "searchCustomers", "getWalkInOrders", "getWalkInOrder",
+        expect(FRONT_DESK, "WalkInOrderController", "placeWalkInOrder", "quoteWalkInOrder", "searchCustomersByBody", "searchCustomers", "getWalkInOrders", "getWalkInOrder",
                 "markReceiptPrinted");
 
         // --- platform control plane
@@ -587,7 +587,8 @@ class AuthorizationMatrixStructureTest {
                 "StockConversionController#convertReverse",
                 "StockTransferController#transfer", "StockTransferController#history",
                 "StorageLocationController#list", "StorageLocationController#get",
-                "WalkInOrderController#placeWalkInOrder", "WalkInOrderController#searchCustomers",
+                "WalkInOrderController#placeWalkInOrder", "WalkInOrderController#quoteWalkInOrder",
+                "WalkInOrderController#searchCustomersByBody", "WalkInOrderController#searchCustomers",
                 "WalkInOrderController#getWalkInOrders", "WalkInOrderController#getWalkInOrder",
                 "WalkInOrderController#markReceiptPrinted");
     }
