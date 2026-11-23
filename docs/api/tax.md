@@ -49,6 +49,40 @@ before; deprecated.** `version` is additive in `TaxResponse`, so existing reader
 }
 ```
 
+## GET /?subtotal=&couponCode= (calculation)
+
+Any signed-in tenant user. `subtotal` is required (a number; missing or not a number is `400`). Returns the active taxes
+(ascending `applyOrder`) charged on `subtotal`, after the coupon discount when `couponCode` is given. `discount` is the
+coupon amount taken off (`0` without a coupon). It is a **calculator over the number you send**: it does not know the
+caller's cart, so it does **not** apply the "no coupon on a sale item" rule ([discount-stacking.md](discount-stacking.md));
+the cart preview and checkout are the authority for a real cart.
+
+```json tax-calculation-response
+{
+  "description": null,
+  "data": {
+    "orderTaxes": [
+      { "id": null, "taxName": "VAT", "taxAmount": 15.00, "taxRate": 15.00, "taxCode": "VAT", "currency": "GHS",
+        "taxAmountFormatted": "GHS 15.00", "taxRatePercent": 15.00 }
+    ],
+    "totalTaxAmount": "GHS 15.00", "totalAmountAfterTax": "GHS 115.00", "discount": 0
+  }
+}
+```
+
+## Request body (API-RD-02)
+
+`POST /add-tax` and `PUT /update/{taxId}` take the same body (JSON). `rate` is a percentage (`15.00` = 15%, not 0.15) and may
+be `0`; it must not be negative. Missing `name` / `code` / `rate` / `applyOrder` and a negative `rate` are `400`
+`"Validation failed"` with `data.<field>` (`Tax name is required`, `Tax code is required`, `Tax rate is required`,
+`Tax rate cannot be negative`, `Apply order is required`). `isActive` and `isCompound` are optional booleans.
+`applyOrder` decides the order taxes are applied in; a compound tax is charged on the amount plus the earlier taxes. Responses
+are `tax-response` above (`POST` carries the new `ETag`); `DELETE` answers `204` with no body.
+
+```json tax-request
+{ "name": "VAT", "code": "VAT", "rate": 15.00, "isActive": true, "isCompound": false, "applyOrder": 1 }
+```
+
 ## Frontend follow-up
 
 `src/lib/admin/taxes/errors.ts` (matches the duplicate and not-found descriptions) can switch to `data.code`;
