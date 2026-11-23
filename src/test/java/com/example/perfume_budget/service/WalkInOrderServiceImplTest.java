@@ -275,7 +275,7 @@ class WalkInOrderServiceImplTest {
         WalkInOrderResponse response = walkInOrderService.placeWalkInOrder(request);
 
         assertEquals(DiscountType.PERCENTAGE, response.discountType());
-        assertEquals("GHS 10.00", response.discountValue());
+        assertEquals("10.00%", response.discountValue());
         assertEquals("GHS 20.00", response.discountAmount());
         assertEquals("GHS 198.00", response.totalAmount());
     }
