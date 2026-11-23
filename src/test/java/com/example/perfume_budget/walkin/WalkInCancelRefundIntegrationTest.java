@@ -732,7 +732,7 @@ class WalkInCancelRefundIntegrationTest extends AbstractCheckoutIntegrationTest 
 
     @Test
     void v19IsReRunnable() {
-        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version = '19'");
+        jdbc.update("DELETE FROM tenant_acme.flyway_schema_history WHERE version IS NOT NULL AND CAST(version AS INTEGER) >= 19");
         migrator.migrateTenant("tenant_acme");
         assertThat(jdbc.queryForObject("SELECT success FROM tenant_acme.flyway_schema_history WHERE version = '19'", Boolean.class)).isTrue();
         migrator.migrateTenant("tenant_acme"); // no-op
