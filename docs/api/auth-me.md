@@ -52,6 +52,10 @@ Rules a client must follow:
    A shell that cached the set should refetch `/me` on focus or after a `403`.
 5. The set is per tenant: the same e-mail in another shop has its own role and permissions.
 
+Related, unchanged by this page: `PATCH /auth/me` (own full name only) and `POST /auth/change-password` work for any signed-in
+role including `FRONT_DESK` and answer the same `AuthResponse`; a password change signs the account's other sessions out
+([auth-behaviour.md](auth-behaviour.md), section 8, API-RD-08).
+
 ## What a `FRONT_DESK` session can reach (derived from the code)
 
 Two layers: the **role** gate (`hasAnyRole('ADMIN','FRONT_DESK')`, a `403` for everyone else) and, on some routes, a

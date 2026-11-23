@@ -160,6 +160,10 @@ class AuthMeDocContractTest {
             assertThat(sql.toLowerCase()).doesNotContainPattern("insert\\s+into\\s+front_desk_permission_templates");
         }
         assertThat(doc).contains("Nothing is seeded");
+        // rule 4: permissions are never a token claim, they are resolved per call
+        String jwt = Files.readString(Path.of(SRC + "filter/JWTUtil.java"));
+        assertThat(jwt.toLowerCase()).doesNotContain("permissions");
+        assertThat(doc).contains("Permissions are read from the database on every call, not stored in the token.");
     }
 
     private static String read(Path p) {
