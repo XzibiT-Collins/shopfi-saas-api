@@ -30,6 +30,16 @@ business messages and are kept. Status codes and `data.code`s did not change.
 | 403 | `AuthorizationDeniedException` | `Access Denied` | its message (Spring's own was already `Access Denied`) |
 | any | Spring Boot `/error` (filter errors, `sendError`) | Boot's default body without `message`, `errors`, `exception`, `trace` | same (now pinned, see below). The container's `/error` dispatch is permitted for every caller (SEC-01f), so the original status reaches the client: a filter exception is `500`, no tenant `400`, unknown tenant `404`, suspended tenant `423`. Before, all of them were rewritten to `401` by the anonymous `/error` dispatch. |
 
+## Walk-in cancel / refund codes (API-RD-03 AC3)
+
+`POST /api/v1/admin/walk-in/orders/{orderNumber}/cancel|refund` answer with `ApiCodeException` bodies
+(`{"description", "data": {"code", ...}}`): `400 IDEMPOTENCY_KEY_REQUIRED` / `IDEMPOTENCY_KEY_INVALID`,
+`409 IDEMPOTENCY_KEY_REUSED`, `409 WALK_IN_ORDER_NOT_CANCELLABLE` / `WALK_IN_ORDER_NOT_REFUNDABLE` (with
+`data.currentStatus`), `409 INSUFFICIENT_CASH`, `409 WALK_IN_STOCK_NOT_RESTORABLE`, and the existing `500 ACCOUNTING_ERROR`.
+Plain `400` (bad or extra body property), `403` (not ADMIN) and `404` (unknown order, or another tenant's) carry no code.
+Full table and semantics: [walk-in.md](walk-in.md#cancel-and-refund-api-rd-03-ac3). The reason text typed by the admin
+is stored in the audit table and never appears in logs or error bodies.
+
 ## Kept: business messages (our own exception types)
 
 `ApiCodeException` (with `data.code`), `BadRequestException`, `CouponRejectedException`, `ValidationException`,

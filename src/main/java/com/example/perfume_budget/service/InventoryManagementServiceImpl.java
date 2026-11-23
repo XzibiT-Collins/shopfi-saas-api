@@ -19,6 +19,7 @@ import com.example.perfume_budget.repository.InventoryLayerRepository;
 import com.example.perfume_budget.repository.InventoryMovementRepository;
 import com.example.perfume_budget.repository.LocationStockRepository;
 import com.example.perfume_budget.repository.ProductRepository;
+import com.example.perfume_budget.repository.StockTransferRepository;
 import com.example.perfume_budget.service.interfaces.InventoryManagementService;
 import com.example.perfume_budget.service.interfaces.LocationLedgerSync;
 import com.example.perfume_budget.utils.AuthUserUtil;
@@ -50,6 +51,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     private final BookkeepingService bookkeepingService;
     private final LocationLedgerSync locationLedgerSync;
     private final ProductStockLocks stockLocks;
+    private final StockTransferRepository stockTransferRepository;
 
     @Override
     @Transactional
@@ -399,6 +401,82 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
         // Legacy rows (consumed before ORD-02, no matching deduction found by V14): the current fulfilment source
         legacyReturns.forEach((productId, quantity) ->
                 locationLedgerSync.returnForEcommerceSale(productById.get(productId), quantity, order.getOrderNumber(), note));
+        refreshProducts(new ArrayList<>(quantityByProduct.keySet()));
+        // After the refresh: the loaded Product entities carry the old soldCount and would overwrite a bulk update.
+        quantityByProduct.forEach((productId, quantity) -> productRepository.incrementSoldCount(productId, -quantity));
+        return units;
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
+    public int restoreWalkInInventory(String orderNumber) {
+        List<InventoryMovement> movements = inventoryMovementRepository
+                .findByReferenceTypeAndReferenceIdOrderByIdAsc(InventoryReferenceType.WALK_IN_ORDER, orderNumber);
+        stockLocks.lock(movements.stream().map(m -> m.getProduct().getId()).toList());
+
+        // net still out per layer: SALE minus RETURN. The first movement of a layer supplies the unit cost / price.
+        Map<Long, Integer> netByLayer = new LinkedHashMap<>();
+        Map<Long, InventoryMovement> sampleByLayer = new LinkedHashMap<>();
+        for (InventoryMovement m : movements) {
+            if (m.getLayer() == null) {
+                continue;
+            }
+            int signed = switch (m.getMovementType()) {
+                case SALE -> m.getQuantity();
+                case RETURN -> -m.getQuantity();
+                default -> 0;
+            };
+            if (signed != 0) {
+                netByLayer.merge(m.getLayer().getId(), signed, Integer::sum);
+                sampleByLayer.putIfAbsent(m.getLayer().getId(), m);
+            }
+        }
+
+        Map<Long, Integer> quantityByProduct = new LinkedHashMap<>();
+        int units = 0;
+        for (Map.Entry<Long, Integer> e : netByLayer.entrySet()) {
+            int net = e.getValue();
+            if (net <= 0) {
+                continue;
+            }
+            InventoryMovement sample = sampleByLayer.get(e.getKey());
+            InventoryLayer layer = stockLocks.fresh(sample.getLayer());
+            layer.setRemainingQuantity(layer.getRemainingQuantity() + net);
+            inventoryLayerRepository.save(layer);
+            recordMovement(layer.getProduct(), layer, InventoryMovementType.RETURN, InventoryReferenceType.WALK_IN_ORDER,
+                    orderNumber, sample.getReferenceLineKey(), net, sample.getUnitCost(), sample.getUnitSellingPrice(),
+                    "Returned to stock: walk-in order " + orderNumber + " cancelled or refunded");
+            quantityByProduct.merge(layer.getProduct().getId(), net, Integer::sum);
+            units += net;
+        }
+        if (units == 0) {
+            return 0;
+        }
+
+        // Location ledger: back to the location each unit left (per product and location, net of earlier returns).
+        Map<String, Integer> netByProductAndLocation = new LinkedHashMap<>();
+        Map<String, Product> productByKey = new LinkedHashMap<>();
+        Map<String, StorageLocation> locationByKey = new LinkedHashMap<>();
+        for (StockTransfer t : stockTransferRepository.findByReference(InventoryReferenceType.WALK_IN_ORDER, orderNumber)) {
+            if (t.getTransferType() == StockTransferType.SALE_DEDUCTION && t.getFromLocation() != null) {
+                String key = t.getProduct().getId() + ":" + t.getFromLocation().getId();
+                netByProductAndLocation.merge(key, t.getQuantity(), Integer::sum);
+                productByKey.putIfAbsent(key, t.getProduct());
+                locationByKey.putIfAbsent(key, t.getFromLocation());
+            } else if (t.getTransferType() == StockTransferType.SALE_RETURN && t.getToLocation() != null) {
+                String key = t.getProduct().getId() + ":" + t.getToLocation().getId();
+                netByProductAndLocation.merge(key, -t.getQuantity(), Integer::sum);
+            }
+        }
+        netByProductAndLocation.forEach((key, net) -> {
+            if (net > 0) {
+                locationLedgerSync.applyDelta(productByKey.get(key), locationByKey.get(key), net, StockTransferType.SALE_RETURN,
+                        InventoryReferenceType.WALK_IN_ORDER, orderNumber, "Returned walk-in order " + orderNumber,
+                        authUserUtil.getCurrentUser());
+            }
+        });
+
         refreshProducts(new ArrayList<>(quantityByProduct.keySet()));
         // After the refresh: the loaded Product entities carry the old soldCount and would overwrite a bulk update.
         quantityByProduct.forEach((productId, quantity) -> productRepository.incrementSoldCount(productId, -quantity));

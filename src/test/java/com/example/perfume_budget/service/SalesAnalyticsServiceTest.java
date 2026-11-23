@@ -91,19 +91,19 @@ class SalesAnalyticsServiceTest {
     }
 
     @Test
-    void source_WALK_IN_passesOnlyWalkInSaleType() {
+    void source_WALK_IN_passesTheWalkInSaleAndItsReversal() {
         stubAllReposEmpty();
         service.getSalesAnalytics(SalesAnalyticsSource.WALK_IN, SalesAnalyticsGranularity.DAY, null, null);
         verify(journalEntryRepository, atLeastOnce()).getRevenueAndCOGSByBucket(
-                eq(List.of("WALK_IN_SALE")), any(), any(), anyString());
+                eq(List.of("WALK_IN_SALE", "WALK_IN_REVERSAL")), any(), any(), anyString()); // API-RD-03 AC3
     }
 
     @Test
-    void source_ALL_passesBothSaleTypesAndTheOnlineReversal() {
+    void source_ALL_passesBothSaleTypesAndBothReversals() {
         stubAllReposEmpty();
         service.getSalesAnalytics(SalesAnalyticsSource.ALL, SalesAnalyticsGranularity.DAY, null, null);
         verify(journalEntryRepository, atLeastOnce()).getRevenueAndCOGSByBucket(
-                eq(List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL")), any(), any(), anyString()); // ORD-02
+                eq(List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL", "WALK_IN_REVERSAL")), any(), any(), anyString()); // ORD-02, AC3
     }
 
     // ----- granularity bucket label tests -----

@@ -443,8 +443,8 @@ public class AdminMetricServiceImpl implements AdminMetricService {
         return switch (source) {
             // ORD-02: SALE_REVERSAL (paid online order cancelled) nets the online sale back out
             case ONLINE  -> List.of("SALE", "SALE_REVERSAL");
-            case WALK_IN -> List.of("WALK_IN_SALE");
-            case ALL     -> List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL");
+            case WALK_IN -> List.of("WALK_IN_SALE", "WALK_IN_REVERSAL"); // AC3: a cancelled / refunded walk-in nets back out
+            case ALL     -> List.of("SALE", "WALK_IN_SALE", "SALE_REVERSAL", "WALK_IN_REVERSAL");
         };
     }
 
