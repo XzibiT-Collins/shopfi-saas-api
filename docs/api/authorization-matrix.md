@@ -252,3 +252,25 @@ No route, verb or role changed. New behaviour sits behind the same `ADMIN` rules
 `Idempotency-Key` with the key scoped to tenant + admin ([accounting.md](accounting.md)); the staff password policy
 ([team-staff.md](team-staff.md)) now applies to the staff credentials an ADMIN sets. A FRONT_DESK user still cannot read or
 change permissions, taxes or the ledger.
+
+## API-RD-02 / API-RD-06 / API-RD-09 (contract docs)
+
+No route, verb or role changed (docs and tests only). Where each admin row of section 3 is now documented, with request /
+response shapes, error codes and a contract test (`*DocContractTest`):
+
+| Area (rows of section 3) | Contract |
+|---|---|
+| `AdminFrontDeskManagementController` (template, users, assign, permissions) | [team-staff.md](team-staff.md) (request bodies added) |
+| `TaxController` | [tax.md](tax.md) (request body and calculation response added) |
+| `AdminMetricController` (all 11 rows, incl. `/customers/{userId}`, `/customers/{userId}/orders`, `/coupons`, `/low-stock-products`, `/top-customers`) | [metrics.md](metrics.md) |
+| `NotificationController` (`ADMIN`, `FRONT_DESK`, personal inbox) | [notifications.md](notifications.md) |
+| `FeatureFlagController` | [feature-flags.md](feature-flags.md) |
+| `AuthController` `GET /auth/me` (role + effective permissions of `ADMIN` / `FRONT_DESK`) and the permission to route table | [auth-me.md](auth-me.md) |
+| product sale vs store-wide sale, coupons and manual discounts | [discount-stacking.md](discount-stacking.md) |
+
+Still without a dedicated contract doc (rows of section 3, not touched here): the inventory admin area
+(`InventoryManagementController`, `StorageLocationController`, `StockTransferController`, `StockConversionController`,
+`ProductFamilyController`, `SalesReportController`), `PaymentSettingsController` (partly in checkout.md), the coupon admin
+CRUD (`CouponController`, in checkout.md / `DISCOUNTS_FRONTEND_INTEGRATION.md`), the authenticated customer cart / delivery
+rows (checkout.md), and the platform / onboarding rows (their own docs). Finding recorded in [auth-me.md](auth-me.md):
+the front-desk permissions `PRODUCT_VIEW_ADMIN_CATALOG` and `PRODUCT_VIEW_STOCK_SUMMARY` are granted in the UI but checked nowhere.

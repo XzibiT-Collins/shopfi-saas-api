@@ -123,6 +123,40 @@ so a user is "Default" until their effective set really differs. Only front-desk
 }
 ```
 
+## Request bodies (API-RD-02)
+
+Every body is JSON. Missing required fields and bad e-mails are `400` `"Validation failed"` with `data.<field>` (see
+"Error codes" above for the exact shapes); an unreadable body or an unknown permission name is `400`.
+
+```json create-staff-request
+{ "fullName": "Ama Desk", "email": "ama@shop.example", "password": "Str0ng!pass", "isActive": true }
+```
+
+`POST /users`: all four fields required; success is `200` with the new staff row (`staff-list` below shows the row shape; the
+single-user answers are the same object). `PATCH /users/{userId}/assign` has **no body**: it turns an existing user of the
+tenant into a front-desk account and returns the staff row (`404 USER_NOT_FOUND` for an unknown id).
+
+```json update-staff-request
+{ "fullName": "Ama D.", "email": "ama.d@shop.example", "password": "", "isActive": false }
+```
+
+`PATCH /users/{userId}`: every field optional; `null` or absent (and a blank `password`) leaves it unchanged, so a
+deactivation is just `{ "isActive": false }`. A deactivated account's sessions stop working on their next request.
+
+```json template-request
+{ "permissions": ["WALK_IN_ORDER_CREATE", "WALK_IN_ORDER_VIEW", "CUSTOMER_SEARCH"] }
+```
+
+`PUT /template`: the **full** enabled set (anything not listed becomes disabled; `[]` disables all). Response is
+`template-response` above.
+
+```json user-permissions-request
+{ "allowedPermissions": ["STOCK_TRANSFER"], "deniedPermissions": ["CUSTOMER_SEARCH"] }
+```
+
+`PUT /users/{userId}/permissions`: both sets required (use `[]`), replaces the user's overrides; a name in both is
+`400 PERMISSION_CONFLICT`. Response is `user-permissions-response` above. The permission names are the eight listed at the top.
+
 ## Frontend follow-up
 
 `src/lib/admin/team/errors.ts` (description matching) can switch to `data.code`; `StaffModal.tsx` password hint should

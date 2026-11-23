@@ -1,4 +1,4 @@
-# Admin metrics API (METRICS-BE: API-RD-02 metrics part, API-RD-10, API-RD-05, API-RD-01)
+# Admin metrics API (METRICS-BE: API-RD-02 metrics part, API-RD-10, API-RD-05, API-RD-01, API-RD-02 remainder)
 
 Read-only dashboards for the shop owner. Base path `/api/v1/admin/metrics`. Every endpoint is `ADMIN` only
 (`@PreAuthorize("hasRole('ADMIN')")` on the controller): anonymous gets `401`, `CUSTOMER` and `FRONT_DESK` get `403`.
@@ -15,9 +15,13 @@ Money fields are strings in the form `GHS 220.00`; counts and ids are numbers. E
 | GET | `/site-metric?from&to` | visits and the visit-to-order rate |
 | GET | `/sales-analytics?source&granularity&from&to` | revenue, profit, order mix over time |
 | GET | `/customers?search&sortBy&direction&page&size` | customer list with order totals (API-RD-10, API-RD-05) |
+| GET | `/customers/{userId}` | one customer with addresses and totals (API-RD-02) |
+| GET | `/customers/{userId}/orders?page&size` | that customer's orders, paged (API-RD-02) |
+| GET | `/coupons` | coupon list with redemption totals (API-RD-02) |
+| GET | `/low-stock-products` | the ten products closest to (or under) their low-stock threshold (API-RD-02) |
+| GET | `/top-customers` | the ten best customers by completed orders (API-RD-02) |
 
-Not covered here (documented elsewhere or unchanged): `/coupons`, `/low-stock-products`, `/top-customers`,
-`/customers/{userId}`, `/customers/{userId}/orders`; all of them are rows in [authorization-matrix.md](authorization-matrix.md).
+The last five are described at the end of this file ("Customer detail, coupons, low stock, top customers").
 
 ## GET /dashboard-metric
 
@@ -191,3 +195,132 @@ The response is backward compatible: the previous fields keep their names and me
   expression is chosen from an enum, user text only ever travels as a bind parameter).
 * The search text is never logged and never put in a URL by the server; note that it is a query parameter, so it can reach
   access logs of a proxy in front of the API (staff-typed customer names / e-mails): keep these logs restricted.
+
+## Customer detail, coupons, low stock, top customers (API-RD-02 remainder)
+
+Same rules as above: `ADMIN` only, tenant scoped, envelope `{"description", "data"}`. They are read-only and write nothing.
+These five routes existed before; this section documents what they already return, nothing changed in behaviour.
+
+### GET /customers/{userId}
+
+`userId` is a number; anything else answers `400` (`Invalid parameter type`). An id that does not exist in this tenant
+(including an id that only exists in another tenant) answers `404` `User not found`.
+
+**Not limited to customers (documented, unchanged):** the lookup is by user id only, so the id of an `ADMIN` or `FRONT_DESK`
+account of the same tenant also answers `200` with that account's data. The list (`GET /customers`) never shows staff, so
+the UI only reaches this route with customer ids it got from the list.
+
+| Field | Meaning |
+|---|---|
+| `id`, `fullName`, `email` | the account |
+| `dateJoined` | account creation, zone-less server-local `yyyy-MM-ddTHH:mm:ss` |
+| `isActive` | the account's active flag |
+| `addresses` | the customer's saved delivery details (`DeliveryDetailResponse`, same shape as `GET /delivery-detail`); `[]` when none |
+| `totalSpent` | `GHS 0.00` style string: COMPLETED orders that were not cancelled or returned (same rule as the list) |
+| `orderCount` | all orders of the customer, any status |
+
+```json customer-detail-response
+{
+  "description": null,
+  "data": {
+    "id": 41, "fullName": "Ama Mensah", "email": "ama@example.com", "dateJoined": "2026-01-15T09:30:00", "isActive": true,
+    "addresses": [
+      { "id": 7, "recipientName": "Ama Mensah", "phoneNumber": "0240000000", "alternatePhoneNumber": null,
+        "addressLine1": "12 Palm Street", "addressLine2": null, "city": "Accra", "region": "Greater Accra",
+        "landmark": "Opposite the pharmacy", "label": "HOME", "isDefault": true }
+    ],
+    "totalSpent": "GHS 100.00", "orderCount": 2
+  }
+}
+```
+
+The response carries a name, e-mail, phone numbers and street addresses: PII. The route never puts them in a URL or a log.
+
+### GET /customers/{userId}/orders
+
+Paged list of the customer's orders (`PageResponse`, the same envelope as `GET /customers`: `content`, `totalPages`,
+`totalElements`, `size`, `number` (**one-based**), `numberOfElements`, `isFirst`, `isLast`, `isEmpty`). Each row is the
+`OrderListResponse` of `GET /order/all` ([orders.md](orders.md)).
+
+| Parameter | Meaning | Default / limits |
+|---|---|---|
+| `page`, `size` | paging, `page` zero-based in the request | `size` default 20; the dev and prod profiles cap it at **50** (a larger value is lowered, never an error) |
+| `sort` | Spring paging sort, e.g. `createdAt,desc`. There is **no default order** (the database order is not guaranteed), so send a sort for a stable listing | an unknown property answers `400` with `data.code` `INVALID_SORT` |
+
+An unknown `userId` answers `404` `User not found`; a customer with no orders is `200` with an empty `content`. Money is the
+`GHS 220.00` string, `orderedAt` is the UTC instant, `orderDate` is deprecated (see orders.md).
+
+```json customer-orders-response
+{
+  "description": null,
+  "data": {
+    "content": [
+      { "orderId": 301, "orderNumber": "ORD-20260304-0001", "reference": "ref_abc123", "refundRequired": false,
+        "cancellable": false, "paymentStatus": "COMPLETED", "deliveryStatus": "DELIVERED", "totalAmount": "GHS 100.00",
+        "orderDate": "2026-03-04T10:15:00", "orderedAt": "2026-03-04T10:15:00Z", "version": 3 }
+    ],
+    "totalPages": 1, "totalElements": 1, "size": 20, "number": 1, "numberOfElements": 1,
+    "isFirst": true, "isLast": true, "isEmpty": false
+  }
+}
+```
+
+### GET /coupons
+
+No parameters, **not paged**: `coupons` holds every coupon of the tenant (active or not), so the response grows with the
+coupon count (a shop has tens, not thousands). The totals are over COMPLETED payments only.
+
+| Field | Meaning |
+|---|---|
+| `totalCreated` | the number of coupons in `coupons` |
+| `totalUsage` | number of such orders that used a coupon |
+| `totalDiscountGiven`, `totalRevenueGenerated` | `GHS 0.00` strings, sums over those orders (`totalRevenueGenerated` is the order totals, discount already taken off) |
+| `coupons[]` | `CouponListResponse`: `couponId`, `couponCode`, `isActive`, `discountType` (`PERCENTAGE` or `FLAT`), `usageLimit`, `usageCount` (live redemptions, see checkout.md, so it can differ from `totalUsage`), `discountValue`, `maximumDiscountAmount`, `minimumCartAmountForDiscount`, `perUserUsageLimit`, `startDate`, `expirationDate` (`yyyy-MM-dd`) |
+
+Nullable: `usageLimit`, `maximumDiscountAmount`, `minimumCartAmountForDiscount`, `perUserUsageLimit`, `startDate`,
+`expirationDate` (no limit / no window). With no coupon at all the totals are `GHS 0.00` / `0` and `coupons` is `[]`.
+
+```json coupons-response
+{
+  "description": null,
+  "data": {
+    "totalCreated": 1, "totalUsage": 4, "totalDiscountGiven": "GHS 40.00", "totalRevenueGenerated": "GHS 360.00",
+    "coupons": [
+      { "couponId": 5, "couponCode": "WELCOME10", "isActive": true, "discountType": "PERCENTAGE", "usageLimit": 100,
+        "usageCount": 4, "discountValue": 10.00, "maximumDiscountAmount": 20.00, "minimumCartAmountForDiscount": 50.00,
+        "perUserUsageLimit": 1, "startDate": "2026-01-01", "expirationDate": "2026-12-31" }
+    ]
+  }
+}
+```
+
+### GET /low-stock-products
+
+At most **10** rows, the products whose `stockQuantity` is at or below their own `lowStockThreshold`, lowest stock first
+(ties in database order). Not paged, no parameters. `productImage` may be `null`. Stock here is the product's total
+(`stockQuantity`), not a storage location's; per-location stock is `GET /admin/inventory/products/{id}/stock-by-location`.
+
+```json low-stock-response
+{
+  "description": null,
+  "data": [
+    { "id": 12, "productName": "Oud Noir 50ml", "productImage": "https://cdn.example.com/oud.png", "stockQuantity": 2 }
+  ]
+}
+```
+
+### GET /top-customers
+
+At most **10** rows, ordered by order count then total spent (both descending). Counted: COMPLETED payments whose order is
+not CANCELLED or RETURNED (the same rule as `totalSpent`). Customers without such an order are not listed. The row has **no
+id**, only name and e-mail (PII), so it cannot be linked to `/customers/{userId}` directly: match on `email` against the list.
+`totalAmountSpent` is a plain **number** (major units, currency GHS), unlike the `GHS 100.00` strings elsewhere.
+
+```json top-customers-response
+{
+  "description": null,
+  "data": [
+    { "fullName": "Ama Mensah", "email": "ama@example.com", "totalOrders": 2, "totalAmountSpent": 100.00 }
+  ]
+}
+```

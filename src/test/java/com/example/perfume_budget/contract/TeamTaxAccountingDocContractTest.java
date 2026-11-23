@@ -8,6 +8,12 @@ import com.example.perfume_budget.dto.accounts.response.LedgerSummaryResponse;
 import com.example.perfume_budget.dto.front_desk.response.FrontDeskPermissionTemplateResponse;
 import com.example.perfume_budget.dto.front_desk.response.FrontDeskUserPermissionsResponse;
 import com.example.perfume_budget.dto.front_desk.response.FrontDeskUserSummaryResponse;
+import com.example.perfume_budget.dto.front_desk.request.CreateFrontDeskUserRequest;
+import com.example.perfume_budget.dto.front_desk.request.FrontDeskPermissionTemplateUpdateRequest;
+import com.example.perfume_budget.dto.front_desk.request.FrontDeskUserPermissionOverrideUpdateRequest;
+import com.example.perfume_budget.dto.front_desk.request.UpdateFrontDeskUserRequest;
+import com.example.perfume_budget.dto.tax.request.TaxRequest;
+import com.example.perfume_budget.dto.tax.response.TaxAndDiscountCalculationResponse;
 import com.example.perfume_budget.dto.tax.response.TaxResponse;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -50,7 +56,8 @@ class TeamTaxAccountingDocContractTest {
     @Test
     void teamExamplesMatchTheRecords() throws Exception {
         Map<String, String> ex = examples("team-staff.md");
-        assertThat(ex.keySet()).containsExactly("template-response", "user-permissions-response", "staff-list");
+        assertThat(ex.keySet()).containsExactly("template-response", "user-permissions-response", "staff-list",
+                "create-staff-request", "update-staff-request", "template-request", "user-permissions-request");
         FrontDeskPermissionTemplateResponse t = STRICT.treeToValue(data(ex.get("template-response")), FrontDeskPermissionTemplateResponse.class);
         assertThat(t.permissions()).hasSize(3);
         assertThat(t.version()).hasSize(32);
@@ -65,10 +72,32 @@ class TeamTaxAccountingDocContractTest {
     @Test
     void taxExampleMatchesTheRecord() throws Exception {
         Map<String, String> ex = examples("tax.md");
-        assertThat(ex.keySet()).containsExactly("tax-response");
+        assertThat(ex.keySet()).containsExactly("tax-response", "tax-calculation-response", "tax-request");
         TaxResponse t = STRICT.treeToValue(data(ex.get("tax-response")), TaxResponse.class);
         assertThat(t.version()).hasSize(32);
         assertThat(t.isActive()).isTrue();
+        // API-RD-02: request body and the calculation response
+        TaxRequest req = STRICT.readValue(ex.get("tax-request"), TaxRequest.class);
+        assertThat(req.rate()).isEqualByComparingTo("15.00");
+        assertThat(req.applyOrder()).isEqualTo(1);
+        TaxAndDiscountCalculationResponse calc = STRICT.treeToValue(data(ex.get("tax-calculation-response")), TaxAndDiscountCalculationResponse.class);
+        assertThat(calc.orderTaxes()).hasSize(1);
+        assertThat(calc.totalAmountAfterTax()).isEqualTo("GHS 115.00");
+    }
+
+    @Test
+    void teamRequestExamplesMatchTheRequestRecords() throws Exception {
+        Map<String, String> ex = examples("team-staff.md");
+        CreateFrontDeskUserRequest create = STRICT.readValue(ex.get("create-staff-request"), CreateFrontDeskUserRequest.class);
+        assertThat(create.isActive()).isTrue();
+        assertThat(create.password()).hasSizeGreaterThanOrEqualTo(8);
+        UpdateFrontDeskUserRequest update = STRICT.readValue(ex.get("update-staff-request"), UpdateFrontDeskUserRequest.class);
+        assertThat(update.isActive()).isFalse();
+        FrontDeskPermissionTemplateUpdateRequest template = STRICT.readValue(ex.get("template-request"), FrontDeskPermissionTemplateUpdateRequest.class);
+        assertThat(template.permissions()).hasSize(3);
+        FrontDeskUserPermissionOverrideUpdateRequest overrides = STRICT.readValue(ex.get("user-permissions-request"), FrontDeskUserPermissionOverrideUpdateRequest.class);
+        assertThat(overrides.allowedPermissions()).containsExactly(com.example.perfume_budget.enums.FrontDeskPermission.STOCK_TRANSFER);
+        assertThat(overrides.deniedPermissions()).containsExactly(com.example.perfume_budget.enums.FrontDeskPermission.CUSTOMER_SEARCH);
     }
 
     @Test
