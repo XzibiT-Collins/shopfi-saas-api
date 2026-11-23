@@ -29,7 +29,7 @@ public final class WalkInFingerprint {
                 .collect(Collectors.joining(","));
         WalkInCustomerRequest c = r.walkInCustomer();
         String canonical = "v1|registered=" + r.registeredUserId()
-                + "|customer=" + (c == null ? "" : blank(c.name()) + "/" + blank(c.phone()) + "/" + blank(c.email()))
+                + "|customer=" + (c == null ? "" : lp(c.name()) + lp(c.phone()) + lp(c.email()))
                 + "|items=" + lines
                 + "|discountType=" + r.discountType()
                 + "|discountValue=" + money(r.discountValue())
@@ -43,6 +43,12 @@ public final class WalkInFingerprint {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /** Length-prefixed, so no field value can bleed into its neighbour ("a","b/c" vs "a/b","c"). */
+    private static String lp(String v) {
+        String n = blank(v);
+        return n.length() + ":" + n + ";";
     }
 
     private static String blank(String v) {

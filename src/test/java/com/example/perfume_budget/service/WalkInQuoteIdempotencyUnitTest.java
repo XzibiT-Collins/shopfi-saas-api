@@ -205,4 +205,38 @@ class WalkInQuoteIdempotencyUnitTest {
         assertThat(WalkInFingerprint.of(new WalkInOrderRequest(7L, null, a.items(), null, null,
                 WalkInPaymentMethod.CASH, new BigDecimal("300"), null, null))).isNotEqualTo(WalkInFingerprint.of(a));
     }
+
+    private WalkInOrderRequest base() {
+        return new WalkInOrderRequest(null, null, List.of(new WalkInOrderItemRequest(1L, 1)), null, null,
+                WalkInPaymentMethod.SPLIT, new BigDecimal("100.00"), new BigDecimal("60.00"), new BigDecimal("40.00"));
+    }
+
+    @Test
+    void eachPaymentAndCustomerFieldChangesTheFingerprint() {
+        WalkInOrderRequest b = base();
+        String fp = WalkInFingerprint.of(b);
+        assertThat(WalkInFingerprint.of(new WalkInOrderRequest(b.registeredUserId(), b.walkInCustomer(), b.items(), null, null,
+                b.paymentMethod(), new BigDecimal("101.00"), b.splitCashAmount(), b.splitMobileAmount()))).as("amountPaid").isNotEqualTo(fp);
+        assertThat(WalkInFingerprint.of(new WalkInOrderRequest(b.registeredUserId(), b.walkInCustomer(), b.items(), null, null,
+                b.paymentMethod(), b.amountPaid(), new BigDecimal("61.00"), b.splitMobileAmount()))).as("splitCashAmount").isNotEqualTo(fp);
+        assertThat(WalkInFingerprint.of(new WalkInOrderRequest(b.registeredUserId(), b.walkInCustomer(), b.items(), null, null,
+                b.paymentMethod(), b.amountPaid(), b.splitCashAmount(), new BigDecimal("41.00")))).as("splitMobileAmount").isNotEqualTo(fp);
+        assertThat(WalkInFingerprint.of(new WalkInOrderRequest(5L, b.walkInCustomer(), b.items(), null, null,
+                b.paymentMethod(), b.amountPaid(), b.splitCashAmount(), b.splitMobileAmount()))).as("registeredUserId").isNotEqualTo(fp);
+        assertThat(WalkInFingerprint.of(new WalkInOrderRequest(null, b.walkInCustomer(), b.items(), null, null,
+                WalkInPaymentMethod.CASH, b.amountPaid(), b.splitCashAmount(), b.splitMobileAmount()))).as("paymentMethod").isNotEqualTo(fp);
+    }
+
+    @Test
+    void customerFieldsCannotCollideAcrossTheSeparator() {
+        WalkInOrderRequest x = new WalkInOrderRequest(null, new WalkInCustomerRequest("a", "b/c", ""), base().items(), null, null,
+                WalkInPaymentMethod.CASH, new BigDecimal("1"), null, null);
+        WalkInOrderRequest y = new WalkInOrderRequest(null, new WalkInCustomerRequest("a/b", "c", ""), base().items(), null, null,
+                WalkInPaymentMethod.CASH, new BigDecimal("1"), null, null);
+        WalkInOrderRequest z = new WalkInOrderRequest(null, new WalkInCustomerRequest("a", "b", "c"), base().items(), null, null,
+                WalkInPaymentMethod.CASH, new BigDecimal("1"), null, null);
+        WalkInOrderRequest w = new WalkInOrderRequest(null, new WalkInCustomerRequest("a", "", "b;1:c"), base().items(), null, null,
+                WalkInPaymentMethod.CASH, new BigDecimal("1"), null, null);
+        assertThat(java.util.Set.of(WalkInFingerprint.of(x), WalkInFingerprint.of(y), WalkInFingerprint.of(z), WalkInFingerprint.of(w))).hasSize(4);
+    }
 }

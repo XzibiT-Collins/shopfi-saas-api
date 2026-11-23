@@ -268,6 +268,26 @@ class WalkInQuoteIdempotencyIntegrationTest extends AbstractCheckoutIntegrationT
     }
 
     @Test
+    void sameKeyWithAChangedAmountPaidOrCustomerIsAConflict() throws Exception {
+        long p = product(acme, "Idem Fields", "50.00", 10);
+        status(place(sale(p, 1), "walkin-key-0003"), 200);
+        String after = snapshot(p);
+        Map<String, Object> morePaid = sale(p, 1);
+        morePaid.put("amountPaid", "2000.00");
+        MvcResult r = place(morePaid, "walkin-key-0003");
+        status(r, 409);
+        assertThat(body(r).at("/data/code").asText()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
+
+        Customer registered = customer(acme, "idem-reg@acme.test");
+        Map<String, Object> other = sale(p, 1);
+        other.put("registeredUserId", registered.id());
+        MvcResult r2 = place(other, "walkin-key-0003");
+        status(r2, 409);
+        assertThat(body(r2).at("/data/code").asText()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
+        assertThat(snapshot(p)).isEqualTo(after);
+    }
+
+    @Test
     void invalidKeyIs400AndMissingKeyKeepsTheKeylessBehaviour() throws Exception {
         long p = product(acme, "Idem Three", "10.00", 10);
         for (String bad : new String[]{"short", "has space in it!", "x".repeat(65)}) {
