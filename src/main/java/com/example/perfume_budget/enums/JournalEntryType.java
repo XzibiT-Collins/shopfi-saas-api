@@ -11,6 +11,11 @@ public enum JournalEntryType {
     INVENTORY_DECREASE,
     INVENTORY_INCREASE,
     ADJUSTMENT,
+    /**
+     * API-RD-12c: a manually recorded business expense (rent, utilities, ...). Stored as the same VARCHAR as the other
+     * types, so no migration; the ledger effect comes from the lines, as for every manual entry.
+     */
+    EXPENSE,
     INVENTORY_REVALUATION,
     /** ORD-02: reversal of an online SALE after a paid admin cancel (revenue part and/or returned-goods COGS part). */
     SALE_REVERSAL,

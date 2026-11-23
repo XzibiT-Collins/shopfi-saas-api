@@ -239,3 +239,13 @@ Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant use
 * STOMP (fixed in SEC-03c, see 2a): sessions are tenant-bound, anonymous and foreign-tenant CONNECTs are refused, SUBSCRIBE/SEND are default-deny. Remaining: a tenant suspended or a user disabled AFTER a session connected keeps that session until it closes or its token expires (SUBSCRIBE is refused after expiry; already-open subscriptions keep receiving until the socket closes). A refresh token is also accepted as the CONNECT bearer (no token-type claim). Both are follow-up SEC-03e. The refusal reason in the `ERROR` frame is best-effort (see 2a). The frontend does not use STOMP yet.
 * The prometheus scrape token is a shared secret in an env var; rotate it by changing the env var and the Prometheus credentials together. In `docker-compose.yml` Prometheus reads it from the untracked file `./prometheus-scrape-token`.
 * `GET /product/{slug}` is read only since VIEW-01 (it used to count every non-admin GET). Views are counted by the browser beacon `POST /product/{slug}/view` ([catalog-public-lookup-and-views.md](catalog-public-lookup-and-views.md)): the one public product mutation, anonymous by design, bounded by a per-client token bucket (across tenants), a 30 minute per tenant+product+client dedupe in a bounded in-memory store, a bot/prefetch/HEAD policy, and the tenant from the request origin (a tenant can never raise another tenant's counter). Residual: a botnet with many addresses can add one view per address, product and 30 minutes; per-instance state. `HEAD` never counts and the beacon is not recorded as a site visit. A scraper misconfigured with a wrong prometheus token produces a 401 per scrape (no ERROR log from the app).
+
+## API-RD-11 / API-RD-12 (team, tax, accounting)
+
+No route, verb or role changed. New behaviour sits behind the same `ADMIN` rules, covered by
+`TeamTaxAccountingIntegrationTest` (anonymous 401, CUSTOMER / FRONT_DESK 403, foreign tenant isolated):
+`PUT /admin/front-desk/template`, `PUT /admin/front-desk/users/{id}/permissions` and `PUT /tax/update/{id}` honour
+`If-Match` ([team-staff.md](team-staff.md), [tax.md](tax.md)); `POST /admin/bookkeeping/manual-entry` honours
+`Idempotency-Key` with the key scoped to tenant + admin ([accounting.md](accounting.md)); the staff password policy
+([team-staff.md](team-staff.md)) now applies to the staff credentials an ADMIN sets. A FRONT_DESK user still cannot read or
+change permissions, taxes or the ledger.

@@ -39,6 +39,11 @@ fixed since SEC-01d, see Paystack below), `PartialSuccessException`, `InvalidFil
 the platform `IllegalTenantTransitionException` / `TenantProvisioningFailedException` / `TenantMigrationFailedException`
 (slug only; the platform console matches the provisioning text), and the theme handler's own fixed texts.
 
+`BadRequestException`, `DuplicateResourceException` and `ResourceNotFoundException` may carry an optional stable code
+(API-RD-11a): then the body is `{"description": <same text as before>, "data": {"code": <CODE>}}`; without a code it
+stays `data: null`. Team and tax routes use it ([team-staff.md](team-staff.md), [tax.md](tax.md)); status and
+`description` of every case are unchanged.
+
 Also kept: `IllegalArgumentException` thrown by our own code (top stack frame in `com.example.perfume_budget`, no cause;
 e.g. `Invalid or expired token`, `Malformed ETag`); bean-validation messages (`ConstraintViolationException`,
 `HandlerMethodValidationException`, `BindException` validation errors: annotation texts); Spring Security's

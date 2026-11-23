@@ -139,7 +139,7 @@ class TaxServiceImplTest {
     @Test
     void updateTax_Success() {
         TaxRequest updateRequest = new TaxRequest("New VAT", "NVAT", new BigDecimal("17.5"), true, false, 1);
-        when(taxRepository.findById(1L)).thenReturn(Optional.of(testTax));
+        when(taxRepository.lockById(1L)).thenReturn(Optional.of(testTax));
         when(taxRepository.existsByName("New VAT")).thenReturn(false);
         when(taxRepository.existsByCode("NVAT")).thenReturn(false);
         when(taxRepository.save(any(Tax.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -150,6 +150,40 @@ class TaxServiceImplTest {
         assertEquals("New VAT", result.name());
         assertEquals("NVAT", result.code());
         assertEquals(new BigDecimal("17.5"), result.rate());
+    }
+
+    @Test
+    void updateTax_StaleIfMatchIsRefusedAndNothingIsSaved() {
+        when(taxRepository.lockById(1L)).thenReturn(Optional.of(testTax));
+        TaxRequest updateRequest = new TaxRequest("New VAT", "NVAT", new BigDecimal("17.5"), false, false, 1);
+        String stale = "\"" + "0".repeat(32) + "\"";
+
+        com.example.perfume_budget.exception.ApiCodeException e = assertThrows(
+                com.example.perfume_budget.exception.ApiCodeException.class, () -> taxService.updateTax(1L, updateRequest, stale));
+
+        assertEquals("TAX_VERSION_CONFLICT", e.getCode());
+        verify(taxRepository, never()).save(any(Tax.class));
+    }
+
+    @Test
+    void updateTax_MatchingIfMatchSaves() {
+        when(taxRepository.lockById(1L)).thenReturn(Optional.of(testTax));
+        when(taxRepository.save(any(Tax.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        String current = com.example.perfume_budget.mapper.TaxMapper.versionOf(testTax);
+
+        TaxResponse result = taxService.updateTax(1L, new TaxRequest(testTax.getName(), testTax.getCode(), testTax.getRate(), false, false, 1),
+                "\"" + current + "\"");
+
+        assertEquals(false, result.isActive());
+        assertNotEquals(current, result.version());
+    }
+
+    @Test
+    void taxErrorsCarryCodes() {
+        when(taxRepository.existsByName("VAT")).thenReturn(true);
+        assertEquals("TAX_NAME_EXISTS", assertThrows(DuplicateResourceException.class, () -> taxService.createTax(taxRequest)).getCode());
+        when(taxRepository.findById(9L)).thenReturn(Optional.empty());
+        assertEquals("TAX_NOT_FOUND", assertThrows(ResourceNotFoundException.class, () -> taxService.getTaxById(9L)).getCode());
     }
 
     @Test

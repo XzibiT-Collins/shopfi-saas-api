@@ -12,6 +12,8 @@ import java.util.List;
 public interface TaxService {
     TaxResponse createTax(TaxRequest request);
     TaxResponse updateTax(Long id, TaxRequest request);
+    /** @param ifMatch the tax's ETag from the last read ({@code null}: no check); stale: 409 {@code TAX_VERSION_CONFLICT} */
+    TaxResponse updateTax(Long id, TaxRequest request, String ifMatch);
     TaxResponse getTaxById(Long id);
     List<TaxResponse> getAllTaxes();
     void deleteTax(Long id);
