@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.*;
 public class AuthController {
     private final AuthService authService;
     private final AuthRateLimiter authRateLimiter;
+    private final com.example.perfume_budget.utils.AuthUserUtil authUserUtil;
 
     @PostMapping("/register")
     public ResponseEntity<Void> register(@Valid @RequestBody RegistrationRequest request){
@@ -72,6 +73,31 @@ public class AuthController {
     public ResponseEntity<CustomApiResponse<AuthResponse>> getAuthenticatedUser(){
         AuthResponse authResponse = authService.loggedInUser();
         return ResponseEntity.ok(CustomApiResponse.success("Authenticated user fetched successfully", authResponse));
+    }
+
+    /** API-RD-08: the caller edits their own full name (any signed-in tenant role; the target is always the principal). */
+    @PreAuthorize("hasAnyRole('CUSTOMER','ADMIN','FRONT_DESK')")
+    @PatchMapping("/me")
+    public ResponseEntity<CustomApiResponse<AuthResponse>> updateProfile(@Valid @RequestBody UpdateProfileRequest request){
+        return ResponseEntity.ok(CustomApiResponse.success("Profile updated successfully", authService.updateProfile(request)));
+    }
+
+    /**
+     * API-RD-08: change the caller's own password. Needs the current password, applies the signup/reset policy,
+     * revokes every older token (any device) and re-issues this session's cookies.
+     */
+    @PreAuthorize("hasAnyRole('CUSTOMER','ADMIN','FRONT_DESK')")
+    @PostMapping("/change-password")
+    public ResponseEntity<CustomApiResponse<Void>> changePassword(@Valid @RequestBody ChangePasswordRequest request,
+                                                                  HttpServletRequest httpRequest,
+                                                                  HttpServletResponse response){
+        com.example.perfume_budget.model.User current = authUserUtil.getCurrentUser();
+        if (current == null) {
+            throw new org.springframework.security.authentication.BadCredentialsException("Not authenticated");
+        }
+        authRateLimiter.checkChangePassword(ClientIps.rateLimitKey(httpRequest), current.getId());
+        authService.changePassword(request, response);
+        return ResponseEntity.ok(CustomApiResponse.success("Password changed successfully"));
     }
 
     @PostMapping("/logout")

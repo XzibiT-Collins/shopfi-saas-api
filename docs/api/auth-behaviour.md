@@ -112,6 +112,65 @@ at least 8 characters (UTF-16 units), at most 72 UTF-8 bytes, one `A-Z`, one `0-
 omitted); `landmark` is optional and stored as `null` (was `@NotNull`, 400). `PUT .../update/{id}` is unchanged
 (omitted fields are left as they are).
 
+## 8. Customer self-service: `PATCH /auth/me` and `POST /auth/change-password` (API-RD-08)
+
+Both are for the **signed-in caller's own account** and work for any tenant role (`CUSTOMER`, `ADMIN`, `FRONT_DESK`). The
+target is always the authenticated principal; there is no id in the path or body, and extra body properties (`role`, `email`,
+`isActive`, `password`, `id`, ...) are ignored. Anonymous, platform and other-tenant credentials, and a refresh token in the
+`accessToken` cookie, get `401`. The account is looked up in the caller's own tenant schema, so another tenant's user with the
+same e-mail is never touched.
+
+### `PATCH /api/v1/auth/me`
+
+```json example:update-profile-request
+{ "fullName": "Ama Mensah" }
+```
+
+`fullName` is trimmed, 1 to 100 characters, no control characters (`400` otherwise, also when the field is missing). The
+response is the same `AuthResponse` as `GET /auth/me` (message `Profile updated successfully`). It does **not** touch the
+session: no new cookies, no revocation (re-minting a longer-lived refresh token from an access token alone would defeat the
+short access lifetime). The `fullName` claim inside tokens issued earlier is only informational; the server always reads the
+name from the database.
+
+### `POST /api/v1/auth/change-password`
+
+```json example:change-password-request
+{ "currentPassword": "Cust0mer!pass", "newPassword": "N3w-Passw0rd!", "confirmPassword": "N3w-Passw0rd!" }
+```
+
+* `currentPassword` is required and verified first (compared stripped, like login). A wrong one is
+  `400` `{"description": "Current password is incorrect", "data": {"code": "CURRENT_PASSWORD_INCORRECT"}}` and changes
+  nothing. (The password policy of `newPassword` is public and is enforced by request validation first, so a weak new
+  password is a `400` with the policy text before the current password is looked at.) (`400`, not `401`, so the client does not treat it as an expired session and sign the user out.)
+* `newPassword` follows the policy of sign-up and reset (section 6; the stripped value is validated, compared and stored).
+  A weak value is `400` with the policy message. Reuse is `400` `New password cannot be same as current password`, also when
+  only surrounding whitespace differs. `confirmPassword` is optional; when sent it must equal `newPassword` (`400 Passwords do not match`).
+* An account without a local password (Google sign-in) gets `400` with `data.code` `NO_LOCAL_PASSWORD`: use "Forgot password"
+  to set one.
+* **Revocation.** Each tenant user has a `token_version` (migration V50). Every access and refresh token carries it in the `tv`
+  claim (a token without the claim counts as version 0). A successful change bumps the version in the same transaction as the
+  new hash, so **every token minted before the change stops working on every device**: `401` on any protected route and on
+  `POST /auth/refresh`, and `STOMP CONNECT` with it is refused (a socket that is already open ends with its access token's
+  expiry). The response `Set-Cookie` re-issues `accessToken` and `refreshToken` at the new version, so the calling browser stays
+  signed in. Sign-in with the old password fails; with the new one it works.
+  Password **reset** (`/auth/reset-password`) does not bump the version yet (open item, same effect available by calling this endpoint).
+* **Concurrency.** The user row is locked, so two simultaneous changes serialise: exactly one wins (`200`) and the other is
+  checked against the new hash (`400 CURRENT_PASSWORD_INCORRECT`); the version goes up by one.
+* **Rate limit** (the endpoint guesses the current password with a session that may be stolen): every attempt, success or
+  failure, consumes a token from two buckets: per client IP (`application.auth.rate-limit.change-password-ip.capacity`, default
+  **20** per 600 s) and per tenant + user (`...change-password-user.capacity`, default **5** per 600 s). Over the limit:
+  `429`, `Retry-After`, and the right password is refused too while limited.
+
+| Status | When |
+|---|---|
+| 200 | changed (cookies re-issued) |
+| 400 | validation, wrong current password, policy, reuse, mismatch, `NO_LOCAL_PASSWORD` |
+| 401 | no / invalid / revoked / foreign credentials |
+| 429 | rate limited |
+
+Frontend (account page): replace the "send me a reset link" button by a form (current, new, confirm) calling this endpoint, show
+"your other devices were signed out", and a name field calling `PATCH /auth/me`.
+
 ## SEC-03: deny by default, 401 vs 403
 
 `SecurityConfig` now permits anonymous access only through an explicit, method-specific allow-list (see

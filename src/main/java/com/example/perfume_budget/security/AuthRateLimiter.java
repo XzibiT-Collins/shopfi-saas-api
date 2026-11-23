@@ -41,6 +41,8 @@ public class AuthRateLimiter {
     private final Throttle resendOtp;
     private final Throttle forgotPassword;
     private final TokenBucketRateLimiter resendLoginOtpIp;
+    private final TokenBucketRateLimiter changePasswordIp;
+    private final TokenBucketRateLimiter changePasswordUser;
 
     @Autowired
     public AuthRateLimiter(
@@ -52,16 +54,29 @@ public class AuthRateLimiter {
             @Value("${application.auth.rate-limit.resend-otp-email-ceiling.capacity:10}") int ceilingCapacity,
             @Value("${application.auth.rate-limit.forgot-password-ip.capacity:10}") int forgotIpCapacity,
             @Value("${application.auth.rate-limit.forgot-password-email.capacity:3}") int forgotEmailCapacity,
-            @Value("${application.auth.rate-limit.resend-login-otp-ip.capacity:10}") int loginOtpIpCapacity) {
+            @Value("${application.auth.rate-limit.resend-login-otp-ip.capacity:10}") int loginOtpIpCapacity,
+            @Value("${application.auth.rate-limit.change-password-ip.capacity:20}") int changePasswordIpCapacity,
+            @Value("${application.auth.rate-limit.change-password-user.capacity:5}") int changePasswordUserCapacity) {
         this.resendOtp = new Throttle(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, ceilingCapacity, maxKeys);
         this.forgotPassword = new Throttle(forgotIpCapacity, ipPeriodSeconds, forgotEmailCapacity, emailPeriodSeconds,
                 ceilingCapacity, maxKeys);
         this.resendLoginOtpIp = new TokenBucketRateLimiter(loginOtpIpCapacity, Duration.ofSeconds(ipPeriodSeconds), maxKeys,
                 System::nanoTime);
+        this.changePasswordIp = new TokenBucketRateLimiter(changePasswordIpCapacity, Duration.ofSeconds(ipPeriodSeconds), maxKeys,
+                System::nanoTime);
+        this.changePasswordUser = new TokenBucketRateLimiter(changePasswordUserCapacity, Duration.ofSeconds(ipPeriodSeconds),
+                maxKeys, System::nanoTime);
+    }
+
+    /** Test/compat constructor: the change-password buckets take their defaults. */
+    public AuthRateLimiter(int ipCapacity, int ipPeriodSeconds, int emailCapacity, int emailPeriodSeconds, int maxKeys,
+                           int ceilingCapacity, int forgotIpCapacity, int forgotEmailCapacity, int loginOtpIpCapacity) {
+        this(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, maxKeys, ceilingCapacity, forgotIpCapacity,
+                forgotEmailCapacity, loginOtpIpCapacity, 20, 5);
     }
 
     public AuthRateLimiter(int ipCapacity, int ipPeriodSeconds, int emailCapacity, int emailPeriodSeconds, int maxKeys) {
-        this(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, maxKeys, 10, 10, 3, 10);
+        this(ipCapacity, ipPeriodSeconds, emailCapacity, emailPeriodSeconds, maxKeys, 10, 10, 3, 10, 20, 5);
     }
 
     /** @param ipKey {@link ClientIps#rateLimitKey}; @throws RateLimitExceededException (429 + Retry-After) */
@@ -77,6 +92,16 @@ public class AuthRateLimiter {
     /** AUTH-02 AC3: {@code POST /auth/resend-login-otp} (the challenge token names no email: per IP only). */
     public void checkResendLoginOtp(String ipKey) {
         check(resendLoginOtpIp, ipKey == null ? "unknown" : ipKey);
+    }
+
+    /**
+     * API-RD-08: {@code POST /auth/change-password} guesses the CURRENT password with a session that may be stolen, so
+     * it is throttled per client IP and per tenant+user (every attempt, success or failure, consumes a token).
+     */
+    public void checkChangePassword(String ipKey, Long userId) {
+        check(changePasswordIp, ipKey == null ? "unknown" : ipKey);
+        String slug = TenantContext.getSlug();
+        check(changePasswordUser, (slug == null ? "-" : slug) + "|" + userId);
     }
 
     private static void check(Throttle t, String ipKey, String email) {

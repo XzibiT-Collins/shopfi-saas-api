@@ -104,7 +104,8 @@ public class JWTFilter extends OncePerRequestFilter {
         }
         if (userDetailsService != null) {
             UserDetails userDetails = userDetailsService.loadUserByUsername(username);
-            if (jwtUtil.validateToken(token, userDetails)) {
+            // API-RD-08: a token minted before the user's last password change (older token_version) is refused.
+            if (jwtUtil.validateToken(token, userDetails) && tokenVersionCurrent(token, userDetails)) {
                 UsernamePasswordAuthenticationToken auth =
                         new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
                 auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
@@ -124,6 +125,13 @@ public class JWTFilter extends OncePerRequestFilter {
             auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
             SecurityContextHolder.getContext().setAuthentication(auth);
         }
+    }
+
+    private boolean tokenVersionCurrent(String token, UserDetails userDetails) {
+        if (userDetails instanceof com.example.perfume_budget.security.AuthUser au) {
+            return jwtUtil.tokenVersionMatches(token, au.getUser().getTokenVersion());
+        }
+        return true; // not a tenant AuthUser (unit-test doubles): no version to compare
     }
 
     /**
