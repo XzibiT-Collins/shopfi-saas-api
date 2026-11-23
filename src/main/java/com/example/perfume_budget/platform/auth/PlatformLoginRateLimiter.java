@@ -20,11 +20,15 @@ public class PlatformLoginRateLimiter {
     private final TokenBucketRateLimiter loginIp;
     private final TokenBucketRateLimiter loginEmail;
     private final TokenBucketRateLimiter refreshIp;
+    private final TokenBucketRateLimiter changePasswordIp;
+    private final TokenBucketRateLimiter changePasswordAdmin;
 
     public PlatformLoginRateLimiter(PlatformAuthProperties p) {
         this.loginIp = build(p.getLoginIp(), p.getMaxTrackedKeys());
         this.loginEmail = build(p.getLoginEmail(), p.getMaxTrackedKeys());
         this.refreshIp = build(p.getRefreshIp(), p.getMaxTrackedKeys());
+        this.changePasswordIp = build(p.getChangePasswordIp(), p.getMaxTrackedKeys());
+        this.changePasswordAdmin = build(p.getChangePasswordAdmin(), p.getMaxTrackedKeys());
     }
 
     private static TokenBucketRateLimiter build(Limit l, int maxKeys) {
@@ -41,6 +45,12 @@ public class PlatformLoginRateLimiter {
 
     public void checkRefreshIp(String ipKey) {
         check(refreshIp, ipKey);
+    }
+
+    /** API-RD-07: change-password guesses the CURRENT password, so it is throttled per client IP and per admin. */
+    public void checkChangePassword(String ipKey, Long adminId) {
+        check(changePasswordIp, ipKey);
+        check(changePasswordAdmin, "admin:" + adminId);
     }
 
     private static void check(TokenBucketRateLimiter limiter, String key) {

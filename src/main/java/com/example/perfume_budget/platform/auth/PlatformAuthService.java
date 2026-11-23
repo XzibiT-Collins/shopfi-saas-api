@@ -10,6 +10,9 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,9 +31,12 @@ public class PlatformAuthService {
     private final PlatformLoginRateLimiter limiter;
     /** Hash of a random value, same encoder/cost as real hashes: compared when no usable admin exists. */
     private final String dummyHash;
+    private final TransactionTemplate tx;
 
     public PlatformAuthService(PlatformAdminRepository admins, PasswordEncoder passwordEncoder, PlatformJwtService jwt,
-                               PlatformAuthCookies cookies, PlatformLoginRateLimiter limiter) {
+                               PlatformAuthCookies cookies, PlatformLoginRateLimiter limiter,
+                               PlatformTransactionManager txManager) {
+        this.tx = new TransactionTemplate(txManager);
         this.admins = admins;
         this.passwordEncoder = passwordEncoder;
         this.jwt = jwt;
@@ -65,9 +71,10 @@ public class PlatformAuthService {
     public PlatformAuthResponse refresh(HttpServletRequest request, String ipKey, HttpServletResponse response) {
         limiter.checkRefreshIp(ipKey);
         String token = PlatformAuthCookies.read(request, PlatformAuthCookies.REFRESH_COOKIE);
+        // API-RD-07: a refresh token minted before the admin's last password change (tv claim) is dead.
         Optional<PlatformAdmin> admin = jwt.verify(token, PlatformJwtService.TYPE_REFRESH)
-                .map(Claims::getSubject)
-                .flatMap(admins::findByEmailIgnoreCase)
+                .flatMap(c -> admins.findByEmailIgnoreCase(c.getSubject())
+                        .filter(a -> PlatformJwtService.tokenVersion(c) == a.getTokenVersion()))
                 .filter(PlatformAdmin::isActive);
         if (admin.isEmpty()) {
             cookies.clear(response);
@@ -77,14 +84,54 @@ public class PlatformAuthService {
         return toResponse(admin.get());
     }
 
+    static final String WRONG_CURRENT = "Current password is incorrect";
+
+    /**
+     * API-RD-07 AC1. Requires the CURRENT password (a stolen access cookie alone cannot take the account over),
+     * applies the signup/reset password policy, refuses reuse of the current password, then bumps the admin's
+     * {@code token_version} in the same transaction as the new hash: every access and refresh token minted before
+     * (any browser) stops working. The session that made the change is re-issued at the new version AFTER the commit.
+     * The admin row is locked, so two concurrent changes serialise and the second one sees the new hash.
+     */
+    public PlatformAuthResponse changePassword(PlatformPrincipal actor, PlatformChangePasswordRequest request,
+                                               String ipKey, HttpServletResponse response) {
+        limiter.checkChangePassword(ipKey, actor.id());
+        PlatformAdmin admin = tx.execute(status -> {
+            PlatformAdmin locked = admins.lockById(actor.id())
+                    .filter(PlatformAdmin::isActive)
+                    .orElseThrow(() -> new BadCredentialsException(SESSION_FAILURE));
+            // Exactly one BCrypt compare, then the policy: a wrong current password never reveals policy details.
+            if (!passwordEncoder.matches(request.currentPassword(), locked.getPassword())) {
+                throw new com.example.perfume_budget.exception.ApiCodeException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST, "CURRENT_PASSWORD_INCORRECT", WRONG_CURRENT);
+            }
+            String violation = com.example.perfume_budget.validation.PasswordPolicy.violation(request.newPassword());
+            if (violation != null) {
+                throw new com.example.perfume_budget.exception.BadRequestException(violation);
+            }
+            if (passwordEncoder.matches(request.newPassword(), locked.getPassword())) {
+                throw new com.example.perfume_budget.exception.BadRequestException(
+                        "New password cannot be same as current password");
+            }
+            locked.setPassword(passwordEncoder.encode(
+                    com.example.perfume_budget.validation.PasswordPolicy.normalize(request.newPassword())));
+            locked.setTokenVersion(locked.getTokenVersion() + 1);
+            return admins.saveAndFlush(locked);
+        });
+        issueSession(admin, response, true);
+        return toResponse(admin);
+    }
+
     public void logout(HttpServletResponse response) {
         cookies.clear(response);
     }
 
     private void issueSession(PlatformAdmin admin, HttpServletResponse response, boolean withRefresh) {
-        cookies.setAccess(response, jwt.issueAccess(admin.getId(), admin.getEmail(), admin.getFullName()));
+        cookies.setAccess(response, jwt.issueAccess(admin.getId(), admin.getEmail(), admin.getFullName(),
+                admin.getTokenVersion()));
         if (withRefresh) {
-            cookies.setRefresh(response, jwt.issueRefresh(admin.getId(), admin.getEmail(), admin.getFullName()));
+            cookies.setRefresh(response, jwt.issueRefresh(admin.getId(), admin.getEmail(), admin.getFullName(),
+                    admin.getTokenVersion()));
         }
     }
 

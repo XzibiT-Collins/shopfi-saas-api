@@ -38,8 +38,11 @@ public class PlatformTenantController {
             @RequestParam(required = false) Integer size,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String direction,
-            @RequestParam(required = false) String search) {
-        return ResponseEntity.ok(CustomApiResponse.success(service.list(status, page, size, sort, direction, search)));
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String customDomainStatus,
+            @RequestParam(required = false) Boolean hasCustomDomain) {
+        return ResponseEntity.ok(CustomApiResponse.success(
+                service.list(status, page, size, sort, direction, search, customDomainStatus, hasCustomDomain)));
     }
 
     /** Tenant detail (PLAT-04): the same registry fields as a list row. */

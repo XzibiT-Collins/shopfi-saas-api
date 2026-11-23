@@ -23,5 +23,8 @@ public class PlatformAuthProperties {
     private Limit loginIp = new Limit(10, 300);
     private Limit loginEmail = new Limit(5, 900);
     private Limit refreshIp = new Limit(30, 300);
+    /** API-RD-07: every change-password attempt (success or failure) consumes a token. */
+    private Limit changePasswordIp = new Limit(10, 900);
+    private Limit changePasswordAdmin = new Limit(5, 900);
     private int maxTrackedKeys = 10_000;
 }

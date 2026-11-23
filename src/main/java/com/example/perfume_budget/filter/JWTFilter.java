@@ -176,8 +176,10 @@ public class JWTFilter extends OncePerRequestFilter {
         }
         String token = PlatformAuthCookies.read(request, PlatformAuthCookies.ACCESS_COOKIE);
         if (token != null) {
+            // API-RD-07: also refused when the token was minted before the admin's last password change (tv claim).
             PlatformAdmin admin = platformJwtService.verify(token, PlatformJwtService.TYPE_ACCESS)
-                    .flatMap(c -> platformAdminRepository.findByEmailIgnoreCase(c.getSubject()))
+                    .flatMap(c -> platformAdminRepository.findByEmailIgnoreCase(c.getSubject())
+                            .filter(a -> PlatformJwtService.tokenVersion(c) == a.getTokenVersion()))
                     .filter(PlatformAdmin::isActive)
                     .orElse(null);
             if (admin == null) {

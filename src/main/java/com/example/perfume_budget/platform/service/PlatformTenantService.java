@@ -9,6 +9,7 @@ import com.example.perfume_budget.platform.dto.PlatformAuditRow;
 import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.PlatformTenantSummary;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
+import com.example.perfume_budget.platform.enums.CustomDomainStatus;
 import com.example.perfume_budget.platform.enums.TenantAction;
 import com.example.perfume_budget.platform.enums.TenantAuditPhase;
 import com.example.perfume_budget.platform.enums.TenantStatus;
@@ -162,6 +163,18 @@ public class PlatformTenantService {
     @Transactional(readOnly = true)
     public PlatformTenantPage list(String statusFilter, Integer page, Integer size, String sortKey, String direction,
                                    String search) {
+        return list(statusFilter, page, size, sortKey, direction, search, null, null);
+    }
+
+    /**
+     * API-RD-07 AC2: adds {@code customDomainStatus} (PENDING / VERIFIED / FAILED, case-insensitive; anything else is a
+     * 400) and {@code hasCustomDomain} (true: a domain is set; false: none). All filters AND together, so
+     * {@code customDomainStatus=VERIFIED&hasCustomDomain=false} is an empty page, not an error. The response always
+     * carries {@link PlatformTenantPage#customDomainCounts()}.
+     */
+    @Transactional(readOnly = true)
+    public PlatformTenantPage list(String statusFilter, Integer page, Integer size, String sortKey, String direction,
+                                   String search, String customDomainStatusFilter, Boolean hasCustomDomain) {
         TenantStatus status = null;
         if (statusFilter != null && !statusFilter.isBlank()) {
             try {
@@ -170,12 +183,20 @@ public class PlatformTenantService {
                 throw new BadRequestException("Unknown status filter");
             }
         }
+        CustomDomainStatus domainStatus = null;
+        if (customDomainStatusFilter != null && !customDomainStatusFilter.isBlank()) {
+            try {
+                domainStatus = CustomDomainStatus.valueOf(customDomainStatusFilter.strip().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException("Unknown customDomainStatus filter");
+            }
+        }
         Paging pg = paging(page, size, sortKey, direction, "createdAt", SORT_FIELDS, Sort.Direction.DESC);
         String term = normalizeSearch(search);
-        // Without a search term the pre-PLAT-04 queries are used unchanged.
+        // Without a search term or a custom-domain filter the pre-PLAT-04 queries are used unchanged.
         Page<Tenant> result;
-        if (term != null) {
-            result = tenantRepository.findAll(filter(status, term), pg.request());
+        if (term != null || domainStatus != null || hasCustomDomain != null) {
+            result = tenantRepository.findAll(filter(status, term, domainStatus, hasCustomDomain), pg.request());
         } else if (status == null) {
             result = tenantRepository.findAll(pg.request());
         } else {
@@ -183,7 +204,17 @@ public class PlatformTenantService {
         }
         List<PlatformTenantSummary> items = result.getContent().stream().map(PlatformTenantSummary::from).toList();
         return new PlatformTenantPage(items, pg.page(), pg.size(), result.getTotalElements(), result.getTotalPages(),
-                pg.key(), pg.dirName());
+                pg.key(), pg.dirName(), customDomainCounts(status, term));
+    }
+
+    /** Facet counts for the page header: the status/search filters apply, the custom-domain filters do not. */
+    private Map<String, Long> customDomainCounts(TenantStatus status, String term) {
+        Map<String, Long> counts = new java.util.LinkedHashMap<>();
+        for (CustomDomainStatus s : CustomDomainStatus.values()) {
+            counts.put(s.name(), tenantRepository.count(filter(status, term, s, null)));
+        }
+        counts.put("NONE", tenantRepository.count(filter(status, term, null, false)));
+        return counts;
     }
 
     /** Blank means no search. Control characters are a 400. Longer than {@link #MAX_SEARCH_LENGTH} is a 400 (never silently truncated). */
@@ -216,7 +247,8 @@ public class PlatformTenantService {
     }
 
     /** Status filter plus case-insensitive contains-search on slug, display name and owner email; all parameterised. */
-    private static Specification<Tenant> filter(TenantStatus status, String term) {
+    private static Specification<Tenant> filter(TenantStatus status, String term, CustomDomainStatus domainStatus,
+                                                Boolean hasCustomDomain) {
         return (root, query, cb) -> {
             List<Predicate> all = new java.util.ArrayList<>();
             if (status != null) {
@@ -228,6 +260,12 @@ public class PlatformTenantService {
                         cb.like(cb.lower(root.get("slug")), pattern, '\\'),
                         cb.like(cb.lower(root.get("displayName")), pattern, '\\'),
                         cb.like(cb.lower(root.get("ownerEmail")), pattern, '\\')));
+            }
+            if (domainStatus != null) {
+                all.add(cb.equal(root.get("customDomainStatus"), domainStatus));
+            }
+            if (hasCustomDomain != null) {
+                all.add(hasCustomDomain ? cb.isNotNull(root.get("customDomain")) : cb.isNull(root.get("customDomain")));
             }
             return cb.and(all.toArray(new Predicate[0]));
         };
