@@ -129,7 +129,7 @@ Every body is JSON. Missing required fields and bad e-mails are `400` `"Validati
 "Error codes" above for the exact shapes); an unreadable body or an unknown permission name is `400`.
 
 ```json create-staff-request
-{ "fullName": "Ama Desk", "email": "ama@shop.example", "password": "Str0ng!pass", "isActive": true }
+{ "fullName": "Ama Desk", "email": "ama@shop.example", "password": "<choose-a-strong-password>", "isActive": true }
 ```
 
 `POST /users`: all four fields required; success is `200` with the new staff row (`staff-list` below shows the row shape; the

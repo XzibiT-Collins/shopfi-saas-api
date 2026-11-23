@@ -242,6 +242,12 @@ class DiscountStackingDocContractTest {
         // product first, store-wide second (code order is what the doc's numbered list says)
         assertThat(eff.indexOf("isProductDiscountActive(product, now)")).isLessThan(eff.indexOf("activeShop != null"));
         assertThat(eff).contains("DiscountType.PERCENTAGE, activeShop.getDiscountPercentage()");
+        // rounding and bounds the prose states
+        String util = Files.readString(Path.of(SRC + "utils/DiscountCalculationUtil.java"));
+        assertThat(util).contains("RoundingMode.HALF_UP");
+        assertThat(eff).contains("RoundingMode.HALF_EVEN");
+        assertThat(doc).contains("percent discounts `HALF_UP`, the resulting price `HALF_EVEN`")
+                .contains("(`discountPercentage`, 0 < p <= 100)");
         assertThat(doc).contains("percentage only").contains("**not** \"the larger of the two\"");
         // store-wide request carries only a percentage (no type), in (0, 100]
         String req = Files.readString(Path.of(SRC + "dto/discount/request/ShopWideDiscountRequest.java"));

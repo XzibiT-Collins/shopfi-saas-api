@@ -86,6 +86,26 @@ class TeamTaxAccountingDocContractTest {
     }
 
     @Test
+    void requestProseIsPinnedToCode() throws Exception {
+        String team = Files.readString(Path.of("docs/api/team-staff.md"));
+        String tax = Files.readString(Path.of("docs/api/tax.md"));
+        // permission conflict: code, status and the doc's request-section sentence
+        assertThat(team).contains("`400 PERMISSION_CONFLICT`");
+        assertThat(Files.readString(Path.of(SRC + "service/AdminFrontDeskManagementServiceImpl.java")))
+                .contains("cannot be both allowed and denied.\", \"PERMISSION_CONFLICT\"");
+        // the example password is an obvious placeholder, not a plausible credential
+        assertThat(team).doesNotContain("Str0ng").contains("<choose-a-strong-password>");
+        // tax request validation messages and the percentage rule
+        String req = Files.readString(Path.of(SRC + "dto/tax/request/TaxRequest.java"));
+        for (String msg : new String[]{"Tax name is required", "Tax code is required", "Tax rate is required",
+                "Tax rate cannot be negative", "Apply order is required"}) {
+            assertThat(req).as(msg).contains("\"" + msg + "\"");
+            assertThat(tax).as(msg).contains("`" + msg + "`");
+        }
+        assertThat(req).contains("@DecimalMin(value = \"0.0\"");
+    }
+
+    @Test
     void teamRequestExamplesMatchTheRequestRecords() throws Exception {
         Map<String, String> ex = examples("team-staff.md");
         CreateFrontDeskUserRequest create = STRICT.readValue(ex.get("create-staff-request"), CreateFrontDeskUserRequest.class);

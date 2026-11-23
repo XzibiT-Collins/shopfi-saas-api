@@ -104,6 +104,10 @@ class NotificationsFeatureFlagsDocContractTest {
         // documented title / message text of the payment event
         assertThat(ws).contains("\"Payment received\"").contains("has been successfully paid.");
         assertThat(doc).contains("\"title\": \"Payment received\"").contains("has been successfully paid.");
+        // column lengths the docs state (title 128, message 512)
+        String ddl = read("src/main/resources/db/migrations/tenant/V1__initial_create_tables.sql");
+        assertThat(ddl).contains("type           VARCHAR(64)").contains("title          VARCHAR(128)").contains("message        VARCHAR(512)");
+        assertThat(doc).contains("at most 128 / 512 characters");
         // page cap named by the docs
         assertThat(read("src/main/resources/application-prod.properties")).contains("spring.data.web.pageable.max-page-size=50");
         assertThat(doc).contains("cap it at **50**");
@@ -136,6 +140,11 @@ class NotificationsFeatureFlagsDocContractTest {
                 .contains("FeatureAudience.CUSTOMER, request.customerEnabled()").contains(".orElse(false)");
         assertThat(doc).contains("reads as **off**").contains("All three booleans are **required**");
         assertThat(read(SRC + "dto/feature_flag/request/FeatureFlagUpdateRequest.java").split("@NotNull", -1)).hasSize(4);
+        // an unknown key in the path is a type mismatch, answered 400 "Invalid parameter type"
+        assertThat(controller).contains("@PathVariable FeatureFlagKey featureKey");
+        assertThat(read(SRC + "exception/handlers/GlobalExceptionHandler.java"))
+                .contains("handleMethodArgumentTypeMismatchException").contains("HttpStatus.BAD_REQUEST).body(CustomApiResponse.error(\"Invalid parameter type\"))");
+        assertThat(doc).contains("| 400 | an unknown `featureKey` (path) | `Invalid parameter type` |");
         // the login flow the table names
         assertThat(read(SRC + "service/AuthServiceImpl.java")).contains("featureFlagService.isEnabled(FeatureFlagKey.LOGIN_OTP, user.getRoles())");
     }

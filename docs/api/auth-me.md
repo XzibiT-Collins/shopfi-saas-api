@@ -66,11 +66,11 @@ walk-in action.` on the walk-in routes, `You do not have permission to perform t
 | Permission | Routes it gates | Notes |
 |---|---|---|
 | `WALK_IN_ORDER_CREATE` | `POST /admin/walk-in/quote`, `POST /admin/walk-in/order` | cancel and refund are `ADMIN` only |
-| `CUSTOMER_SEARCH` | `GET` and `POST /admin/walk-in/customers/search` | |
+| `CUSTOMER_SEARCH` | `GET /admin/walk-in/customers/search`, `POST /admin/walk-in/customers/search` | |
 | `WALK_IN_ORDER_VIEW` | `GET /admin/walk-in/orders`, `GET /admin/walk-in/orders/{orderNumber}` | |
 | `WALK_IN_ORDER_MARK_RECEIPT_PRINTED` | `PATCH /admin/walk-in/orders/{orderNumber}/receipt-printed` | |
-| `STOCK_TRANSFER` | `POST` and `GET /admin/inventory/transfers` | |
-| `STOCK_CONVERSION` | `POST /admin/stock-conversions/forward`, `.../reverse`, `GET .../reverse/{id}/variants` | |
+| `STOCK_TRANSFER` | `POST /admin/inventory/transfers`, `GET /admin/inventory/transfers` | |
+| `STOCK_CONVERSION` | `POST /admin/stock-conversions/forward`, `POST /admin/stock-conversions/reverse`, `GET /admin/stock-conversions/reverse/{id}/variants` | |
 | `PRODUCT_VIEW_ADMIN_CATALOG` | **nothing today** | the name exists and can be granted, but no code checks it. `GET /product/admin/search` is open to `FRONT_DESK` by role alone |
 | `PRODUCT_VIEW_STOCK_SUMMARY` | **nothing today** | same: `GET /admin/inventory/products/{id}/stock-by-location` and `GET /admin/inventory/locations[/{id}]` are role-gated only |
 

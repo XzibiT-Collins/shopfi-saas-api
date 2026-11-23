@@ -306,4 +306,58 @@ class StaffInboxAndAuthMeIntegrationTest extends AbstractCheckoutIntegrationTest
         assertThat(bravoRows.get(0).get("title").asText()).isEqualTo("Bravo only");
         assertThat(data(call(get(INBOX), admin, "acme", null)).get("content").get(0).get("title").asText()).isEqualTo("Acme only");
     }
+
+    // ------------------------------------------------------------------------------------------ route table matrix
+
+    private int routeStatus(String route, Cookie who) throws Exception {
+        String verb = route.substring(0, route.indexOf(' '));
+        String path = "/api/v1" + route.substring(route.indexOf(' ') + 1).replace("{orderNumber}", "WI-NONE").replace("{id}", "1");
+        Map<String, Object> items = Map.of("productId", 999999, "quantity", 1);
+        Object body = null;
+        MockHttpServletRequestBuilder b;
+        switch (verb) {
+            case "GET" -> b = get(path + (path.endsWith("customers/search") ? "?query=ab" : ""));
+            case "PATCH" -> b = patch(path);
+            default -> {
+                b = post(path);
+                if (path.endsWith("/walk-in/quote")) body = Map.of("items", List.of(items));
+                else if (path.endsWith("/walk-in/order")) {
+                    body = Map.of("walkInCustomer", Map.of("name", "A", "phone", "0200000000"), "items", List.of(items),
+                            "paymentMethod", "CASH", "amountPaid", 10);
+                    b.header("Idempotency-Key", "docs-matrix-key-0001");
+                } else if (path.endsWith("customers/search")) body = Map.of("query", "ab");
+                else if (path.endsWith("/transfers")) body = Map.of("productId", 999999, "fromLocationId", 1, "toLocationId", 2, "quantity", 1);
+                else body = Map.of("sourceProductId", 999999, "quantity", 1, "targetProductId", 999998);
+            }
+        }
+        return call(b, who, "acme", body).getResponse().getStatus();
+    }
+
+    /** The doc's permission to route table, proved: only the named permission opens a route, any other set does not. */
+    @Test
+    void everyRouteOfThePermissionTableIsGatedByExactlyItsPermission() throws Exception {
+        int checked = 0;
+        for (var e : FrontDeskRouteTable.ROUTES.entrySet()) {
+            if (e.getValue().isEmpty()) continue;
+            String[] others = FrontDeskRouteTable.ROUTES.keySet().stream().filter(k -> !k.equals(e.getKey())).toArray(String[]::new);
+            setTemplate(e.getKey());
+            for (String route : e.getValue()) {
+                assertThat(routeStatus(route, deskA)).as("only %s -> %s".formatted(e.getKey(), route)).isNotIn(401, 403);
+                checked++;
+            }
+            setTemplate(others);
+            for (String route : e.getValue()) {
+                assertThat(routeStatus(route, deskA)).as("everything but %s -> %s".formatted(e.getKey(), route)).isEqualTo(403);
+            }
+        }
+        assertThat(checked).isEqualTo(12);
+    }
+
+    @Test
+    void inbox_foreignTenantTokenWithAnAcmeRecipientIdIsNotFound() throws Exception {
+        List<Long> acmeRows = notify("tenant_acme", "PAYMENT_SUCCESS", "Acme only", "ORDER", "ORD-A", "2026-03-04 10:00:00", adminId);
+        Cookie bravoCookie = cookie("accessToken", setCookieValue(loginPassword("bravo", bravo.adminEmail(), TestTenants.ADMIN_PASSWORD), "accessToken"));
+        assertThat(call(patch(INBOX + "/" + acmeRows.get(0) + "/read"), bravoCookie, "bravo", null).getResponse().getStatus()).isEqualTo(404);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM tenant_acme.notification_recipients WHERE is_read", Integer.class)).isZero();
+    }
 }

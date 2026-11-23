@@ -130,6 +130,18 @@ class AuthMeDocContractTest {
             assertThat(row.find()).as("doc row for " + p).isTrue();
             assertThat(row.group(1).contains("**nothing today**")).as("nothing-today flag of " + p).isEqualTo(!enforced.contains(p.name()));
         }
+        // 2b. the ROUTES of every row are exactly the shared table (which the integration test proves against the services)
+        for (FrontDeskPermission p : FrontDeskPermission.values()) {
+            Matcher row = Pattern.compile("^\\| `" + p.name() + "` \\| ([^|]*)\\|", Pattern.MULTILINE).matcher(doc);
+            assertThat(row.find()).isTrue();
+            List<String> routes = new java.util.ArrayList<>();
+            Matcher span = Pattern.compile("`((?:GET|POST|PATCH|PUT|DELETE) /[^`]+)`").matcher(row.group(1));
+            while (span.find()) routes.add(span.group(1));
+            assertThat(routes).as("routes of " + p).containsExactlyInAnyOrderElementsOf(
+                    com.example.perfume_budget.staffinbox.FrontDeskRouteTable.ROUTES.get(p.name()));
+        }
+        assertThat(com.example.perfume_budget.staffinbox.FrontDeskRouteTable.ROUTES.keySet())
+                .containsExactlyInAnyOrderElementsOf(Arrays.stream(FrontDeskPermission.values()).map(Enum::name).toList());
         // 3. no other code reads the two decorative permissions
         try (Stream<Path> files = Files.walk(Path.of(SRC))) {
             String others = files.filter(p -> p.toString().endsWith(".java") && !p.endsWith("FrontDeskPermission.java"))
