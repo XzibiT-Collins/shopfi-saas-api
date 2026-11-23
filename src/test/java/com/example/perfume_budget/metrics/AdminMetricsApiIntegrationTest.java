@@ -255,7 +255,10 @@ class AdminMetricsApiIntegrationTest extends AbstractCheckoutIntegrationTest {
 
     @Test
     void productMetricsMatchTheTopProductDefinitions() throws Exception {
+        productWithCounters(acme, "Earlier Decoy", 1L, 1L, 1);
         long p = productWithCounters(acme, "Engaged", 200L, 8L, 2);
+        // decoys with a lower and a higher id must never leak into the answer
+        productWithCounters(acme, "Later Decoy", 7L, 3L, 1);
         JsonNode d = ok(PRODUCT + p);
         assertThat(d.fieldNames()).toIterable().containsExactlyInAnyOrder("productId", "productName", "viewCount", "addToCartCount", "soldCount", "conversionRate");
         assertThat(d.get("productId").asLong()).isEqualTo(p);
