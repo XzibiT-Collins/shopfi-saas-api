@@ -679,7 +679,7 @@ Two full, deliberately different themes used by UI-02 tests (`acme`: serif, warm
 
 ```
 PUT /api/v1/theme
-Origin: https://acme.shopfi.app
+Origin: https://acme.<TENANT_BASE_DOMAIN>
 Content-Type: multipart/form-data; boundary=X
 If-Match: W/"7"
 

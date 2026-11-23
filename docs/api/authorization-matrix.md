@@ -271,6 +271,7 @@ response shapes, error codes and a contract test (`*DocContractTest`):
 | `FeatureFlagController` | [feature-flags.md](feature-flags.md) |
 | `AuthController` `GET /auth/me` (role + effective permissions of `ADMIN` / `FRONT_DESK`) and the permission to route table | [auth-me.md](auth-me.md) |
 | product sale vs store-wide sale, coupons and manual discounts | [discount-stacking.md](discount-stacking.md) |
+| `AuthController` sign-in for `ADMIN` and `FRONT_DESK` (one login; role and permissions in the answer; no role widened) | [staff-login.md](staff-login.md) |
 
 Still without a dedicated contract doc (rows of section 3, not touched here): the inventory admin area
 (`InventoryManagementController`, `StorageLocationController`, `StockTransferController`, `StockConversionController`,

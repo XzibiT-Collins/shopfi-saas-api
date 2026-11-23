@@ -421,4 +421,16 @@ class TenantOnboardingServiceTest {
         tenantWith(TenantStatus.ACTIVE);
         assertThat(service.status("acme").storefrontUrl()).isNull();
     }
+
+    @Test
+    void status_urlsFollowTheConfiguredBaseDomain_notAnyLiteral() {
+        tenantWith(TenantStatus.ACTIVE);
+        tenantProps.setBaseDomain("  Shop.Other-Domain.TEST ");
+        OnboardingStatusResponse r = service.status("acme");
+        assertThat(r.storefrontUrl()).isEqualTo("https://acme.shop.other-domain.test");
+        assertThat(r.adminLoginUrl()).isEqualTo("https://acme.shop.other-domain.test/admin/login");
+        props.setPublicScheme("http");
+        props.setAdminLoginPath("/staff/in");
+        assertThat(service.status("acme").adminLoginUrl()).isEqualTo("http://acme.shop.other-domain.test/staff/in");
+    }
 }

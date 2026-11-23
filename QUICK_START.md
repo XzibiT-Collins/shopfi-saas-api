@@ -322,8 +322,8 @@ Required (no default):
 | Platform super-admin (first login) | `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD` (12 to 72 bytes, at least 5 different characters), optional `PLATFORM_ADMIN_FULL_NAME`. Insert-only: creates the first SUPER_ADMIN at boot if that email does not exist, never changes an existing one (rotate a password in the DB, not via env). Unset or empty = bootstrap skipped with one WARN (no DB access), same in dev and prod; after the first super-admin exists both variables can be removed from the environment, and changing them later never alters an existing admin. Login: `POST /api/v1/platform/auth/login`. |
 | URLs | `FRONTEND_CHANGE_PASSWORD_URL` |
 | CORS | `PLATFORM_CORS_ALLOWED_ORIGINS` (platform-admin console origin(s); empty = the platform API is unreachable from browsers), optional `CORS_ALLOWED_ORIGINS` (non-tenant origins only: tenant subdomains and custom domains are allowed automatically from the tenant registry). See `docs/api/cors.md`. |
-| Tenancy | `TENANT_BASE_DOMAIN` (e.g. `shopfi.app`, tenants are `<slug>.TENANT_BASE_DOMAIN`), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts) |
-| Custom domains (DOMAIN-02) | `TENANT_CUSTOM_DOMAIN_CNAME_TARGET` (the host tenants point their own domain at, e.g. `stores.shopfi.app`; shown to tenant admins). Not strictly required (empty = no CNAME hint), but set it before tenants onboard domains. See "Custom domains: DNS and TLS" below and `docs/api/custom-domains.md`. |
+| Tenancy | `TENANT_BASE_DOMAIN` (the production domain under which every tenant lives, e.g. `shop.example.com`: tenants are `<slug>.TENANT_BASE_DOMAIN`; it is the ONLY place the domain is configured for tenant links, CORS and tenant resolution, there is no default and no domain literal in the code), `TENANT_PLATFORM_DOMAINS` (comma-separated API/apex hosts, e.g. `api.shop.example.com`) |
+| Custom domains (DOMAIN-02) | `TENANT_CUSTOM_DOMAIN_CNAME_TARGET` (the host tenants point their own domain at, e.g. `stores.example.com`; shown to tenant admins). Not strictly required (empty = no CNAME hint), but set it before tenants onboard domains. See "Custom domains: DNS and TLS" below and `docs/api/custom-domains.md`. |
 
 Optional (safe defaults): `TENANT_CUSTOM_DOMAIN_DNS_SERVERS` (empty = system resolver), `TENANT_CUSTOM_DOMAIN_DNS_TIMEOUT_MILLIS` (2000),
 `TENANT_CUSTOM_DOMAIN_DNS_RETRIES` (1), `TENANT_CUSTOM_DOMAIN_VERIFY_PER_TENANT_PER_HOUR` (10), `TENANT_CUSTOM_DOMAIN_VERIFY_GLOBAL_PER_MINUTE` (60),
@@ -333,6 +333,27 @@ Optional (safe defaults): `TENANT_CUSTOM_DOMAIN_DNS_SERVERS` (empty = system res
 `NOTIFICATION_EMAIL_FROM_ADDRESS`, `NOTIFICATION_EMAIL_FROM_NAME`, `RESEND_API_KEY`, `RESEND_BASE_URL`,
 `MANAGEMENT_HEALTH_MAIL_ENABLED`, `REDIS_CACHE_TTL_MINUTES`, `INVENTORY_RESERVATION_EXPIRY_HOURS`,
 `INVENTORY_RESERVATION_CLEANUP_INTERVAL_MS`, `DISCOUNT_CACHE_EVICT_INTERVAL_MS`.
+
+### Changing the production domain
+
+The domain is configuration, never code. To move the platform to another domain, change these together and restart
+(one instance, see `render.yaml`), then fix DNS and certificates:
+
+| Env var | What to set |
+|---|---|
+| `TENANT_BASE_DOMAIN` | the new tenant base domain: drives `<slug>.<base>` storefront/admin origins, e-mailed sign-in and reset links, the find-store link, onboarding `storefrontUrl`/`adminLoginUrl`, the Paystack callback URL, OAuth2 redirect checks and the CORS decision for tenant subdomains |
+| `TENANT_PLATFORM_DOMAINS` | the API host(s) on the new domain (and apex if it serves the platform) |
+| `PLATFORM_API_BASE_URL` | public API origin on the new domain (payment webhook URLs) |
+| `OAUTH2_CALLBACK_BASE_URL`, `OAUTH2_REDIRECT_URIS` | same API origin / allowed redirect list, and the Google console callback |
+| `FRONTEND_CHANGE_PASSWORD_URL` | a placeholder origin (only a dev fallback while the base domain is blank; never used with a base domain) |
+| `PLATFORM_CORS_ALLOWED_ORIGINS` | the platform-admin console origin(s) on the new domain |
+| `TENANT_CUSTOM_DOMAIN_CNAME_TARGET` | the new CNAME target shown to tenants (empty = no hint) |
+| `CORS_ALLOWED_ORIGINS` | optional, non-tenant origins only |
+
+Cookies carry no `Domain` attribute (host-only), so there is no cookie-domain setting. Existing VERIFIED custom domains
+that now fall under the new platform names are downgraded by the re-verification job. The frontend has its own
+`NEXT_PUBLIC_TENANT_BASE_DOMAIN`, which must match `TENANT_BASE_DOMAIN`. Behaviour for each value is pinned by
+`DomainConfigurationTest` and `NoHardCodedDomainTest`.
 
 ### Custom domains: DNS and TLS (DOMAIN-02)
 
