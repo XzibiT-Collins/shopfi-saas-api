@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.enums.FrontDeskPermission;
+import com.example.perfume_budget.service.interfaces.FrontDeskAccessService;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.product.request.ProductDiscountRequest;
 import com.example.perfume_budget.dto.product.request.ProductRequest;
@@ -74,6 +76,7 @@ public class ProductServiceImpl implements ProductService {
     private final PlatformTransactionManager transactionManager;
     private final ProductViewRateLimiter viewRateLimiter;
     private final ProductViewDeduper viewDeduper;
+    private final FrontDeskAccessService frontDeskAccessService;
 
     /**
      * ORD-02c: not one big transaction any more. The image is uploaded once, then the rows are written in a
@@ -374,6 +377,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public PageResponse<ProductListing> getAdminProductListings(Pageable pageable) {
+        frontDeskAccessService.requireAccess(FrontDeskPermission.PRODUCT_VIEW_ADMIN_CATALOG);
         Page<ProductListing> productListings = productRepository.findAll(pageable).map(listingMapper());
         return PaginationUtil.createPageResponse(productListings);
     }
@@ -425,6 +429,7 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public ProductDetails getProductDetails(Long productId) {
+        frontDeskAccessService.requireAccess(FrontDeskPermission.PRODUCT_VIEW_ADMIN_CATALOG);
         log.info("Product details requested");
         // CAT-01: the category is fetched with the product (the mapper reads it after the session closed)
         Product product = productRepository.findWithCategoryById(productId).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));

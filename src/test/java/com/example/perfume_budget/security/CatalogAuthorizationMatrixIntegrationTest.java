@@ -286,7 +286,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
         for (String p : adminOnly) {
             assertThat(status(req(HttpMethod.GET, p, "acme"))).as("%s anonymous", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(customer))).as("%s customer", p).isEqualTo(403);
-            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("%s FRONT_DESK", p).isEqualTo(403);
+            assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("%s FRONT_DESK without PRODUCT_VIEW_ADMIN_CATALOG (empty template)", p).isEqualTo(403);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(foreignAdmin))).as("%s foreign", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(platformAsTenant))).as("%s platform", p).isEqualTo(401);
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(admin))).as("%s admin", p).isEqualTo(200);
@@ -309,7 +309,8 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
     void frontDesk_hasOnlyProductAdminSearch_andTheOperationalRoutes() throws Exception {
         // allowed: 200 on the admin product search (matcher AND annotation allow ADMIN, FRONT_DESK)
         assertThat(status(req(HttpMethod.GET, "/api/v1/product/admin/search", "acme").cookie(frontDesk))).isEqualTo(200);
-        // denied on every other product/category admin read and mutation (403, signed in but wrong role)
+        // admin listing / detail need the permission PRODUCT_VIEW_ADMIN_CATALOG (PERM-BE; the template is empty here, so 403);
+        // the category read and every mutation stay ADMIN only (403, signed in but wrong role)
         for (String p : List.of("/api/v1/product/admin/listing", "/api/v1/product/main/" + productId, "/api/v1/category/" + categoryId)) {
             assertThat(status(req(HttpMethod.GET, p, "acme").cookie(frontDesk))).as("GET " + p).isEqualTo(403);
         }

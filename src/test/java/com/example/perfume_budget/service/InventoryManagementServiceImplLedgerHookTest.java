@@ -79,6 +79,8 @@ class InventoryManagementServiceImplLedgerHookTest {
     private LocationLedgerSync locationLedgerSync;
     @Mock
     private ProductStockLocks stockLocks;
+    @Mock
+    private com.example.perfume_budget.service.interfaces.FrontDeskAccessService frontDeskAccessService;
 
     @InjectMocks
     private InventoryManagementServiceImpl inventoryManagementService;

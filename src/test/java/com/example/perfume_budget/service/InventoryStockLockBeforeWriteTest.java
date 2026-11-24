@@ -60,6 +60,7 @@ class InventoryStockLockBeforeWriteTest {
     @Mock private BookkeepingService bookkeepingService;
     @Mock private LocationLedgerSync locationLedgerSync;
     @Mock private ProductStockLocks stockLocks;
+    @Mock private com.example.perfume_budget.service.interfaces.FrontDeskAccessService frontDeskAccessService;
 
     @InjectMocks private InventoryManagementServiceImpl service;
 
@@ -329,5 +330,18 @@ class InventoryStockLockBeforeWriteTest {
         service.receiveStock(new InventoryReceiptRequest(1L, 5, new BigDecimal("10.00"), new BigDecimal("20.00"),
                 before.plusDays(3), "PO-1", "n"));
         assertThat(savedLegacyLayer().getReceivedAt()).isBetween(before, LocalDateTime.now());
+    }
+
+    @Test
+    void summaryIsGatedByProductViewStockSummaryBeforeAnyLockOrWrite() {
+        org.mockito.Mockito.when(frontDeskAccessService.requireAccess(
+                com.example.perfume_budget.enums.FrontDeskPermission.PRODUCT_VIEW_STOCK_SUMMARY))
+                .thenThrow(new com.example.perfume_budget.exception.ForbiddenException("no"));
+        org.junit.jupiter.api.Assertions.assertThrows(com.example.perfume_budget.exception.ForbiddenException.class,
+                () -> service.getProductInventorySummary(1L));
+        assertThat(calls).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(productRepository);
+        org.mockito.Mockito.verify(frontDeskAccessService)
+                .requireAccess(com.example.perfume_budget.enums.FrontDeskPermission.PRODUCT_VIEW_STOCK_SUMMARY);
     }
 }

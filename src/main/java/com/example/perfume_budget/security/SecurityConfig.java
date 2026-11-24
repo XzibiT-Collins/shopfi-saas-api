@@ -106,12 +106,16 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/theme").permitAll()
                         .requestMatchers(HttpMethod.PUT, "/api/v1/theme").hasRole("ADMIN")
                         // Catalog: storefront reads are public; every other category/product route is ADMIN
-                        // (FRONT_DESK may also search the admin product list).
+                        // (FRONT_DESK may also search the admin product list; listing and detail need PRODUCT_VIEW_ADMIN_CATALOG, PERM-BE).
                         .requestMatchers(HttpMethod.GET, "/api/v1/category/all").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/category/all").permitAll()
                         .requestMatchers("/api/v1/category/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/product/admin/search").hasAnyRole("ADMIN", "FRONT_DESK")
+                        // PERM-BE: the admin listing and the admin detail are also open to FRONT_DESK by role here; the service then
+                        // requires PRODUCT_VIEW_ADMIN_CATALOG (ADMIN passes by role). Exactly these two GET/HEAD routes.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product/admin/listing", "/api/v1/product/main/*").hasAnyRole("ADMIN", "FRONT_DESK")
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/product/admin/listing", "/api/v1/product/main/*").hasAnyRole("ADMIN", "FRONT_DESK")
                         .requestMatchers(HttpMethod.GET, "/api/v1/product/featured", "/api/v1/product/listing",
                                 "/api/v1/product/search", "/api/v1/product/by-ids", "/api/v1/product/*").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/product/featured", "/api/v1/product/listing",

@@ -60,7 +60,7 @@ role including `FRONT_DESK` and answer the same `AuthResponse`; a password chang
 
 Two layers: the **role** gate (`hasAnyRole('ADMIN','FRONT_DESK')`, a `403` for everyone else) and, on some routes, a
 **permission** gate inside the service (`403` for a front-desk account without it: `You do not have permission to perform this
-walk-in action.` on the walk-in routes, `You do not have permission to perform this action.` on stock transfer and conversion;
+walk-in action.` on the walk-in routes, `You do not have permission to perform this action.` on stock transfer, stock conversion and the three product-view routes;
 `ADMIN` always passes).
 
 | Permission | Routes it gates | Notes |
@@ -71,17 +71,20 @@ walk-in action.` on the walk-in routes, `You do not have permission to perform t
 | `WALK_IN_ORDER_MARK_RECEIPT_PRINTED` | `PATCH /admin/walk-in/orders/{orderNumber}/receipt-printed` | |
 | `STOCK_TRANSFER` | `POST /admin/inventory/transfers`, `GET /admin/inventory/transfers` | |
 | `STOCK_CONVERSION` | `POST /admin/stock-conversions/forward`, `POST /admin/stock-conversions/reverse`, `GET /admin/stock-conversions/reverse/{id}/variants` | |
-| `PRODUCT_VIEW_ADMIN_CATALOG` | **nothing today** | the name exists and can be granted, but no code checks it. `GET /product/admin/search` is open to `FRONT_DESK` by role alone |
-| `PRODUCT_VIEW_STOCK_SUMMARY` | **nothing today** | same: `GET /admin/inventory/products/{id}/stock-by-location` and `GET /admin/inventory/locations[/{id}]` are role-gated only |
+| `PRODUCT_VIEW_ADMIN_CATALOG` | `GET /product/admin/listing`, `GET /product/main/{id}` | enforced since PERM-BE (product decision 2026-11-23); before that these two were `ADMIN` only. `GET /product/admin/search` stays open to `FRONT_DESK` by role alone (not gated by this permission) |
+| `PRODUCT_VIEW_STOCK_SUMMARY` | `GET /admin/inventory/products/{id}/summary` | enforced since PERM-BE; before that `ADMIN` only. `GET /admin/inventory/products/{id}/stock-by-location` and `GET /admin/inventory/locations[/{id}]` stay role-gated only (not gated by this permission) |
 
 Role-only routes (no permission needed): `GET /admin/notifications` and the other three notification routes
 ([notifications.md](notifications.md)), `GET /product/admin/search`, `GET /admin/inventory/locations`, `GET
 /admin/inventory/locations/{id}`, `GET /admin/inventory/products/{id}/stock-by-location`. Everything else under `/admin/**`
-(orders, metrics, accounting, tax, coupons, team, settings, product admin listing and writes) is `ADMIN` only and answers
+(orders, metrics, accounting, tax, coupons, team, settings, product writes) is `ADMIN` only and answers
 `403` to `FRONT_DESK`.
 
-The two `PRODUCT_VIEW_*` permissions being decorative is a **finding, not a change**: enforcing them now would lock out
-front-desk accounts that were created while they could reach those routes; the product owner decides (open item in the PR).
+Since PERM-BE (product decision 2026-11-23) every permission of the table is enforced. The two `PRODUCT_VIEW_*` permissions
+are the only change: their three routes were `ADMIN` only and are now open to `FRONT_DESK` accounts that hold the permission
+(role gate `hasAnyRole('ADMIN','FRONT_DESK')` plus the service check). `ADMIN` passes by role and sees the same answer as
+before; `CUSTOMER` and anonymous callers are unchanged (`403` / `401`). Nothing else was widened. Because the template is never
+seeded, a front-desk account holds the new permissions only if an admin grants them (template or per-user override).
 
 ## Missing fields? Assessed, none needed
 

@@ -91,14 +91,14 @@ class AuthorizationMatrixStructureTest {
         expect(ADMIN, "CouponController", "createCoupon", "getCouponById", "getAll",
                 "updateCoupon", "deactivateCoupon", "deleteCoupon");
         expect(ADMIN, "FeatureFlagController", "getAllFlags", "getFlag", "updateFlag");
-        expect(ADMIN, "InventoryManagementController", "receiveStock", "adjustInventory", "getProductInventorySummary",
+        expect(ADMIN, "InventoryManagementController", "receiveStock", "adjustInventory",
                 "getProductInventoryHistory", "legacyBalanceReport", "repairLegacyBalances");
         expect(ADMIN, "OrderController", "getAllOrders", "updateOrderStatus", "acknowledgeRefund", "receiveReturn", "returnDeliveredOrder",
                 "getAuditEvents");
         expect(ADMIN, "PaymentSettingsController", "get", "update", "rotateWebhookToken");
         expect(ADMIN, "TenantCustomDomainController", "getCustomDomain", "requestCustomDomain", "verifyCustomDomain",
                 "removeCustomDomain"); // DOMAIN-02
-        expect(ADMIN, "ProductController", "createProduct", "updateProduct", "getAdminProductListings", "getProductDetails",
+        expect(ADMIN, "ProductController", "createProduct", "updateProduct",
                 "setProductDiscount", "clearProductDiscount", "deleteProduct");
         expect(ADMIN, "ProductFamilyController", "getAllFamilies", "getAvailableUoms");
         expect(ADMIN, "SalesReportController", "getItemsSold", "getProductSales");
@@ -116,9 +116,11 @@ class AuthorizationMatrixStructureTest {
         expect("hasAnyRole('CUSTOMER','ADMIN')", "OrderController", "getOrder");
 
         // --- ADMIN or FRONT_DESK (the front desk works the till and the stock room)
-        expect(FRONT_DESK, "InventoryManagementController", "getProductStockByLocation");
+        expect(FRONT_DESK, "InventoryManagementController", "getProductStockByLocation",
+                "getProductInventorySummary"); // PERM-BE: also needs PRODUCT_VIEW_STOCK_SUMMARY (service check)
         expect(FRONT_DESK, "NotificationController", "getNotifications", "getUnreadCount", "markAsRead", "markAllAsRead");
-        expect(FRONT_DESK, "ProductController", "searchAdminProducts");
+        expect(FRONT_DESK, "ProductController", "searchAdminProducts", "getAdminProductListings",
+                "getProductDetails"); // PERM-BE: the last two also need PRODUCT_VIEW_ADMIN_CATALOG (service check)
         expect(FRONT_DESK, "StockConversionController", "getReverseConversionTargetVariants", "convertForward", "convertReverse");
         expect(FRONT_DESK, "StockTransferController", "transfer", "history");
         expect(FRONT_DESK, "StorageLocationController", "list", "get");
@@ -588,6 +590,9 @@ class AuthorizationMatrixStructureTest {
         assertThat(frontDesk).containsExactlyInAnyOrder(
                 "AuthController#updateProfile", "AuthController#changePassword", // API-RD-08 self-service, every tenant role
                 "InventoryManagementController#getProductStockByLocation",
+                // PERM-BE: the three routes of PRODUCT_VIEW_STOCK_SUMMARY / PRODUCT_VIEW_ADMIN_CATALOG (service check on top)
+                "InventoryManagementController#getProductInventorySummary",
+                "ProductController#getAdminProductListings", "ProductController#getProductDetails",
                 "NotificationController#getNotifications", "NotificationController#getUnreadCount",
                 "NotificationController#markAsRead", "NotificationController#markAllAsRead",
                 "ProductController#searchAdminProducts",
