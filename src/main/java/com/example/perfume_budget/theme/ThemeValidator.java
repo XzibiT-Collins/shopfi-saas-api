@@ -35,13 +35,13 @@ public class ThemeValidator {
     static final String SCHEMA_RESOURCE = "theme/theme.schema.json";
 
     private static final Map<String, Set<String>> SLOT_TYPES = Map.of(
-            "home", Set.of("hero", "featured-products", "category-grid", "banner", "rich-text"),
+            "home", Set.of("hero", "featured-products", "category-grid", "banner", "rich-text", "story"),
             "product", Set.of("featured-products", "banner", "rich-text"),
             "footer", Set.of("footer"));
     private static final Map<String, Integer> SLOT_MAX = Map.of("home", 12, "product", 6, "footer", 1);
     private static final Map<String, String> TYPE_DEF = Map.of(
             "hero", "hero", "featured-products", "featuredProducts", "category-grid", "categoryGrid",
-            "banner", "banner", "rich-text", "richText", "footer", "footer");
+            "banner", "banner", "rich-text", "richText", "footer", "footer", "story", "story");
     private static final String[][] CONTRAST_PAIRS = {
             {"text", "background"}, {"text", "surface"}, {"mutedText", "background"},
             {"mutedText", "surface"}, {"onPrimary", "primary"}, {"onAccent", "accent"}};
@@ -538,7 +538,7 @@ public class ThemeValidator {
 
         /** {code, message} for a value that failed (or, for line terminators, would have slipped through) a schema pattern. */
         static String[] patternFailure(String path, String value) {
-            if (path.endsWith("url") || path.endsWith("Url") || path.endsWith("href") || path.endsWith("Href")) {
+            if (path.endsWith("url") || path.endsWith("Url") || path.endsWith("href") || path.endsWith("Href") || path.startsWith("social.")) {
                 return new String[]{"URL_NOT_ALLOWED", "URL is not allowed"};
             } else if (value != null && UNSAFE_CHARS.matcher(value).find()) {
                 return new String[]{"UNSAFE_CONTENT", "must not contain angle brackets or control characters"};

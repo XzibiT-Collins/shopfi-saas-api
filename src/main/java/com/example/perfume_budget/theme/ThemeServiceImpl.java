@@ -33,11 +33,14 @@ public class ThemeServiceImpl implements ThemeService {
     private final BrandingUploadService uploads;
     private final CacheManager cacheManager;
     private final ObjectMapper mapper;
+    private final ThemeCanonicalizer canonicalizer;
 
     @Override
     @Cacheable(cacheNames = CACHE, key = CACHE_KEY)
     public ThemeSnapshot getActiveTheme() {
-        return store.read();
+        ThemeSnapshot raw = store.read();
+        ObjectNode resolved = canonicalizer.resolveStored((ObjectNode) raw.theme(), store.defaultDocument());
+        return new ThemeSnapshot(resolved.toString(), raw.version());
     }
 
     @Override
@@ -68,7 +71,10 @@ public class ThemeServiceImpl implements ThemeService {
             throw new ThemeConflictException("Theme was modified by someone else; reload and retry");
         }
         Set<String> storedUrls = imageUrls(current.theme());
-        ObjectNode working = normalize(theme);
+        ThemeCanonicalizer.Canonical canonical = canonicalizer.canonicalize(normalize(theme),
+                canonicalizer.resolveStored((ObjectNode) current.theme(), store.defaultDocument()));
+        ObjectNode working = canonical.document();
+        files = canonicalizer.adjust(files, canonical.submittedHeroId());
 
         // 1. cheap, network-free checks of every file, and placeholders so schema validation can run
         List<ThemeFieldError> pre = new ArrayList<>();
