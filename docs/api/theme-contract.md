@@ -1,15 +1,16 @@
 # Theme and Section Contract (THEME-03)
 
-Status: **v1 draft for backend and frontend sign-off.** Single source of truth for `GET/PUT /api/v1/theme`. Backend tickets THEME-01/02/04 and frontend tickets UI-02/UI-07 build against this file and the machine-readable schema.
+Status: **v1 (amended by SF-BE-01: curated theme catalog and light branding, see sections 2.5, 3.2 and 5.2).** Single source of truth for `GET/PUT /api/v1/theme`. Backend tickets THEME-01/02/04 and frontend tickets UI-02/UI-07 build against this file and the machine-readable schema.
 
 | Artifact | Path |
 |---|---|
 | This document | `backend/docs/api/theme-contract.md` |
 | JSON Schema (draft 2020-12), canonical | `backend/docs/api/theme.schema.json` |
 | Frontend-consumable copy (byte-identical, asserted by the contract test) | `backend/docs/api/frontend/theme.schema.json` |
+| Theme catalog (single source of truth for the selectable themes; the frontend vendors it byte-identical with a sha pin) | `backend/docs/api/frontend/theme-catalog.json` |
 | Contract test | `backend/src/test/java/com/example/perfume_budget/contract/ThemeContractTest.java` |
 
-The frontend repo should vendor `docs/api/frontend/theme.schema.json` (or generate TypeScript types from it, for example with `json-schema-to-typescript`). Never hand-edit the copy; edit the canonical file and the test fails until the copy is refreshed.
+The frontend repo should vendor `docs/api/frontend/theme.schema.json` and `docs/api/frontend/theme-catalog.json` (or generate TypeScript types from it, for example with `json-schema-to-typescript`). Never hand-edit the copy; edit the canonical file and the test fails until the copy is refreshed.
 
 All examples below tagged `<!-- example: ... -->` are extracted and validated by the contract test (valid ones must pass, ones tagged `invalid` must fail). Changing the doc and the schema out of step breaks the build.
 
@@ -22,7 +23,7 @@ All examples below tagged `<!-- example: ... -->` are extracted and validated by
 
 ## 2. Design tokens
 
-Tokens are the only styling inputs a tenant controls. Components consume them as CSS variables (`--color-primary`, `--radius`, ...) and must not hard-code tenant colours.
+Since SF-BE-01 a tenant does **not** edit tokens: it picks one theme from the curated catalog (section 2.5) and the server writes that theme's resolved tokens into the document. Components consume the tokens as CSS variables (`--color-primary`, `--radius`, ...) and must not hard-code tenant colours.
 
 ### 2.1 Colours (`tokens.colors`, all required, `#RRGGBB`)
 
@@ -67,14 +68,38 @@ Both keys are required and nullable.
 - `assets.logo`: `null` or `{ url, alt }`. `alt` is 1..80 plain-text chars. `url` is a Cloudinary URL (section 7.2).
 - `assets.background`: `null` or `{ url, overlayOpacity? }`. Page background image; `overlayOpacity` 0..0.8 (default 0) draws a `background`-coloured veil for legibility. `tokens.colors.background` is always the fallback colour.
 
+### 2.5 Theme catalog and `themeId` (SF-BE-01)
+
+The selectable themes live in ONE file, `docs/api/frontend/theme-catalog.json` (`{ catalogVersion, defaultThemeId, legacyThemeId, themes: [{ id, name, description, tokens }] }`). The backend loads a byte-identical classpath copy (a test keeps them equal); the frontend vendors the file with a sha pin. Every theme satisfies the six contrast pairs above, and additionally has `accent` >= 4.5:1 on `background` and on `surface`; a test runs the real validator over every theme. All themes share `radius: md`, `spacing: comfortable`, `baseSizePx: 16`, `bodyFont: Inter`; only the eight colours and, for `blush` (Playfair Display) and `sand` (Lora), the heading font differ.
+
+| id | Name | primary | onPrimary | accent | onAccent | background | surface | text | mutedText | headingFont |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `morrow` | Morrow | `#35432f` | `#ffffff` | `#8a4b1f` | `#ffffff` | `#faf7f0` | `#e8eadc` | `#1f2a1b` | `#4a5444` | Inter |
+| `classic` | Classic | `#111827` | `#ffffff` | `#b45309` | `#ffffff` | `#ffffff` | `#f3f4f6` | `#111827` | `#4b5563` | Inter |
+| `ocean` | Ocean | `#0f3d5c` | `#ffffff` | `#0b6e75` | `#ffffff` | `#f7fafc` | `#e3edf4` | `#10202d` | `#425666` | Inter |
+| `blush` | Blush | `#7a2e4a` | `#ffffff` | `#a24a1f` | `#ffffff` | `#fdf6f4` | `#f6e4e1` | `#2a1a1f` | `#5e4a50` | Playfair Display |
+| `sand` | Sand | `#5b3a1e` | `#ffffff` | `#9a3412` | `#ffffff` | `#fbf6ec` | `#efe3cd` | `#2b2013` | `#5a4b38` | Lora |
+| `slate` | Slate | `#1e293b` | `#ffffff` | `#2f5fd0` | `#ffffff` | `#f8fafc` | `#e8edf3` | `#0f172a` | `#475569` | Inter |
+| `plum` | Plum | `#4a2c6d` | `#ffffff` | `#8a3a8f` | `#ffffff` | `#faf7fc` | `#ece4f3` | `#1f1530` | `#554a66` | Inter |
+| `midnight` | Midnight | `#e8d9a8` | `#1a1a14` | `#f0b86a` | `#1a1a14` | `#14161a` | `#1f2329` | `#f2f2ee` | `#b6b9bf` | Inter |
+
+`themeId` (optional top-level string, `^[a-z0-9][a-z0-9-]{0,39}$`) names the selected theme:
+
+- **PUT.** `themeId` must be an id of the table above, otherwise `400` with `data: [{ "path": "themeId", "code": "NOT_ALLOWED_VALUE", ... }]` (a non-string is `WRONG_TYPE`; JSON `null` counts as absent). The server then stores that theme's tokens, **whatever `tokens` the request contained** (tokens are ignored, even malformed ones, and may be omitted). When `themeId` is absent, the tenant keeps its current theme and tokens (so an old client that never sends it cannot change the look).
+- **`custom-legacy`** is reserved: it is returned by GET for a tenant that saved its own colours before the catalog existed (the saved tokens are kept exactly) and is **never accepted on PUT** (`400 NOT_ALLOWED_VALUE`). A client editing such a tenant must omit `themeId` to keep the legacy colours, or send a catalog id to replace them (there is no way back).
+- **GET** always returns `themeId` (section 5.1 describes how a stored document without one is resolved, in memory, never written). A catalog edit never re-skins stored data: the stored tokens stay until the tenant saves again.
+
+
 ## 3. Theme document
 
 ```
 Theme {
   schemaVersion: 1                  // integer, const per schema version
+  themeId:       string             // optional on PUT, always present on GET (section 2.5)
   revision:      integer >= 0       // server-managed, readOnly, ignored on PUT
   updatedAt:     date-time          // server-managed, readOnly, ignored on PUT
-  tokens:        { colors, typography, radius, spacing }
+  tokens:        { colors, typography, radius, spacing }   // server-written from the catalog theme
+  social:        { instagram?, facebook?, x?, tiktok?, youtube?, whatsapp?, linkedin?, pinterest? }   // optional, section 3.3
   assets:        { logo, background }
   pages:         { home: Section[], product: Section[], footer: Section[] }
 }
@@ -93,11 +118,42 @@ Section { id: string, type: string, props: object, visible: boolean, order: inte
 
 | Slot | Rendered on | Allowed types | Max sections |
 |---|---|---|---|
-| `home` | Storefront home `/` | `hero`, `featured-products`, `category-grid`, `banner`, `rich-text` | 12 |
+| `home` | Storefront home `/` | `hero`, `featured-products`, `category-grid`, `banner`, `rich-text`, `story` | 12 |
 | `product` | Product detail page, below the product block | `featured-products`, `banner`, `rich-text` | 6 |
 | `footer` | Every page footer | `footer` | 1 |
 
-A type in a slot it is not allowed in: `400 SECTION_NOT_ALLOWED_IN_SLOT`. Document-wide cap 19 sections (12+6+1), duplicate ids `400 DUPLICATE_SECTION_ID`.
+**Canonical stored form (SF-BE-01, amended by the owner decisions of 2026-11-24).** The storefront layout is fixed in frontend code; the document only carries light branding. On every PUT the server canonicalizes `pages`, `assets` and `social` and returns the canonical document it stored:
+
+| Member | Canonical value | What happens to what the client sent |
+|---|---|---|
+| `pages.home` | in this order, each optional: `[hero, announcement, story]`. **hero**: id `hero`, `visible: true`, `order: 0`; props kept `heading`, `subheading`, `imageUrl`, `imageAlt`, `ctaLabel`; forced `ctaHref: "/products"` (only when `ctaLabel` is present) and `alignment: "left"`; `overlayOpacity` removed. **announcement** (the strip above the header, section 4.4): type `banner`, id `announcement`, props kept `message`, `linkLabel`, `linkHref`, `dismissible`; forced `tone: "primary"`; `visible` is the enabled flag (kept, default `true`). **story** ("Our story", section 4.7): type `story`, id `story`, props `heading`, `body`; `visible` is the enabled flag (kept, default `true`). `order` is the position (0, 1, 2) | the FIRST `hero`, the FIRST `banner` and the FIRST `story` found anywhere in `pages.home` are used; every other section (further banners/heroes/stories, rich-text, featured-products, category-grid) is dropped; other props are dropped; a type that was not sent is simply absent (`[]` if none) |
+| `pages.product` | `[]` | dropped |
+| `pages.footer` | `[]`, or one `footer` (id `footer`, `visible: true`, `order: 0`) whose props are ONLY `linkGroups` (section 4.6), present when at least one group was sent | the first `footer` section is used; `tagline`, `copyrightText` and the old `social` array are dropped; empty or missing `linkGroups` gives `[]` |
+| `social` | object, section 3.3 (always present, `{}` when none) | replaced when sent (a `null` entry means none and is dropped); when the key is absent from the PUT the stored value is kept (an old client cannot wipe it) |
+| `assets.background` | `null` | dropped; a `background` upload part is ignored (nothing is uploaded) |
+| `assets.logo` | as sent (validated as before) | unchanged rules |
+| `tokens` | the selected theme's tokens | ignored (section 2.5) |
+
+Forbidden fields are **dropped, not rejected**, so an old client keeps getting `200`; the response shows what was kept. The `image.<id>` hero upload part may carry the id the client gave its hero; the stored id is always `hero`. Everything that is kept is validated with the usual paths, where an index is the position in the canonical array: `pages.home[0]` is the hero when one is present, then the announcement, then the story (an absent type shifts the later indices up); `pages.footer[0]` is the footer. Idempotent: PUTting the returned document back stores the same document with `revision + 1`. The rules below still describe what a *legacy* stored document may contain (GET does not rewrite it) and what the validator accepts.
+
+### 3.3 Social links (`social`, optional top-level object)
+
+A fixed set of platforms, each an optional https URL, at most one per platform (it is an object, so a key occurs once), shown as fixed-design icons in the footer. Keys (enum): `instagram`, `facebook`, `x`, `tiktok`, `youtube`, `whatsapp`, `linkedin`, `pinterest`. Each value must be `https://<host>[/path]` on that platform's own hosts, with no userinfo, no port, no whitespace, no `<>"'\`, at most **256** characters:
+
+| Key | Allowed hosts |
+|---|---|
+| `instagram` | `instagram.com`, `www.instagram.com` |
+| `facebook` | `facebook.com`, `www.facebook.com`, `m.facebook.com` |
+| `x` | `x.com`, `www.x.com`, `twitter.com`, `www.twitter.com` |
+| `tiktok` | `tiktok.com`, `www.tiktok.com` |
+| `youtube` | `youtube.com`, `www.youtube.com`, `m.youtube.com`, `youtu.be` |
+| `whatsapp` | `wa.me`, `whatsapp.com`, `www.whatsapp.com`, `api.whatsapp.com`, `chat.whatsapp.com` |
+| `linkedin` | `linkedin.com`, `www.linkedin.com` |
+| `pinterest` | `pinterest.com`, `www.pinterest.com` |
+
+Errors (path `social.<key>`): a URL that is not https, is on another host (including another platform's), has userinfo or a port, or has a forbidden character is `URL_NOT_ALLOWED`; over 256 characters is `TOO_LONG`; a non-string is `WRONG_TYPE`; a key outside the enum is `UNKNOWN_PROPERTY`; `social` not an object is `WRONG_TYPE` (path `social`). The frontend renders only the icon for the key and `rel="noopener noreferrer"`; it never renders the URL as text.
+
+A type in a slot it is not allowed in: `400 SECTION_NOT_ALLOWED_IN_SLOT`. Document-wide cap 19 sections (12+6+1; a canonical document has at most 4), duplicate ids `400 DUPLICATE_SECTION_ID`.
 
 ## 4. v1 section types
 
@@ -143,6 +199,8 @@ Uses `CategoryResponse` (`categoryId`, `categoryName`, `description`, `slug`). T
 
 ### 4.4 `banner`
 
+SF-BE-01: the single announcement strip (id `announcement`). `message` 1..160 plain text (`TOO_LONG`), optional link (`linkLabel` 1..30 plus `linkHref` a link, both or neither; `javascript:`, `//host` and other shapes are `URL_NOT_ALLOWED`), `dismissible` kept as stored (a bool, default `false`), `tone` forced to `primary`, `visible` is the enabled flag.
+
 | Prop | Type | Required | Limits / default |
 |---|---|---|---|
 | `message` | text | yes | 1..160 |
@@ -164,12 +222,25 @@ The storefront's own list of supported and unsupported syntax is `docs/rich-text
 
 ### 4.6 `footer`
 
+SF-BE-01: only `linkGroups` is kept on write (caps: at most 3 groups, group title 1..30, 1..6 links per group, label 1..30, `href` a link; over-long lists are `TOO_LONG` at `pages.footer[0].props.linkGroups` or `...links`, labels `TOO_LONG` at the label path). The other props below remain valid for legacy documents. Social links moved to the top-level `social` object (section 3.3).
+
 | Prop | Type | Required | Limits / default |
 |---|---|---|---|
 | `tagline` | text | no | 0..160 |
 | `linkGroups` | `{title: text 1..30, links: {label: text 1..30, href: link}[1..6]}[]` | no | 0..3 groups |
 | `social` | `{network, url}[]` | no | 0..6; `network` in `facebook, instagram, x, tiktok, youtube, linkedin, whatsapp, pinterest`; `url` must be https on that network's host allow-list (section 7.3) |
 | `copyrightText` | text | no | 0..120; empty means render `(c) <year> <store name>` |
+
+### 4.7 `story` ("Our story" block, SF-BE-01)
+
+Plain text only, never Markdown or HTML. Allowed in `pages.home` only.
+
+| Prop | Type | Required | Limits |
+|---|---|---|---|
+| `heading` | text | yes | 1..80 (`TOO_LONG`, `TOO_SHORT`) |
+| `body` | multi-line plain text | yes | 1..**600** characters (`TOO_LONG` above, path `pages.home[i].props.body`); line breaks (`\n`, `\r`, `\t`) allowed and separate paragraphs; angle brackets and other control characters are `UNSAFE_CONTENT` |
+
+`visible: false` hides the block without deleting it (the enabled flag).
 
 ## 5. Endpoints
 
@@ -181,13 +252,15 @@ Request headers: `Origin` (or `Referer`) required; optional `If-None-Match`.
 
 | Status | When | Body |
 |---|---|---|
-| 200 | Theme returned (stored, or generated defaults for a fresh tenant, section 9) | `{ "description": null, "data": Theme }` |
+| 200 | Theme returned (stored, or generated defaults for a fresh tenant, section 9), always with `themeId` | `{ "description": null, "data": Theme }` |
 | 304 | `If-None-Match` matches current ETag | empty |
 | 400 | No tenant signal (no Origin/Referer) | `{ "description": "...", "data": null }` |
 | 404 | Unknown tenant | same |
 | 423 | Tenant suspended | same |
 
 Response headers (200 and 304): `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600`, `Vary: Origin, Referer`, `ETag: W/"<n>"`, a weak validator that carries the stored entity VERSION, which is `revision + 1` (a tenant that never saved has `revision` 0 and `ETag: W/"1"`; every successful PUT raises both by one). `If-Match` / `If-None-Match` accept `W/"<n>"` and `"<n>"` and nothing else: a made-up shape such as `"7-3f9a..."` is `400 INVALID_FORMAT`. Pinned against the running backend by the frontend real-stack suite (INTEG-01). Error responses carry `Cache-Control: no-store`.
+
+**Legacy resolution (SF-BE-01, in memory, GET never writes).** A stored document without `themeId` is returned with one: (1) the untouched default document (equal to the section 9 default, ignoring `revision`/`updatedAt`) is returned as `themeId: "morrow"` with morrow's tokens; (2) otherwise, if its eight colours and two fonts equal a catalog theme, that theme's id (stored tokens unchanged); (3) otherwise `custom-legacy` with the stored tokens unchanged. Pages and assets of a legacy document are returned as stored (inert: the new storefront ignores them); they are canonicalized on that tenant's next save. The ETag is still the stored entity version, so a legacy tenant's body gains `themeId` without its ETag changing: caches (CDN, browser) holding a pre-SF-BE-01 response for an unchanged version must be purged once at deploy.
 
 **Caching rules (security).** The tenant is resolved from the `Origin` header, falling back to `Referer`. The public `Cache-Control` above is sent ONLY when the tenant came from `Origin`. A GET with no (usable) `Origin` (Referer-only or no signal) gets `Cache-Control: private, no-store`, because a shared cache would file it under "Origin: absent" and could serve one tenant's theme to another tenant's Origin-less request. The SSR contract: always send `Origin: https://<tenant-host>`. A CDN/shared cache in front of this API MUST include the `Origin` request header in its cache key (and honour `Vary`); never strip or normalize it.
 
@@ -201,7 +274,7 @@ Response headers (200 and 304): `Cache-Control: public, max-age=60, s-maxage=300
 
 ### 5.2 `PUT /api/v1/theme`
 
-ADMIN of the resolved tenant (`@PreAuthorize("hasRole('ADMIN')")`). **Full replacement** of tokens, assets and pages (not a patch): the client sends the whole document it wants stored. Two accepted forms:
+ADMIN of the resolved tenant (`@PreAuthorize("hasRole('ADMIN')")`). **Full replacement** of the branding (`themeId`, `assets.logo`, the hero): the client sends the whole document it wants stored. The server canonicalizes it (sections 2.5 and 3.2) and the 200 response is the document as stored. Two accepted forms:
 
 1. **JSON only** (tokens/sections, no new files): `Content-Type: application/json`, body = Theme (without server-managed fields; if sent they are ignored).
 2. **Multipart** (any file upload): `Content-Type: multipart/form-data` with parts:
@@ -210,7 +283,7 @@ ADMIN of the resolved tenant (`@PreAuthorize("hasRole('ADMIN')")`). **Full repla
 |---|---|---|---|
 | `theme` | `application/json` | yes | Theme document |
 | `logo` | `image/png`, `image/jpeg`, `image/webp` | no | replaces `assets.logo.url`; `assets.logo.alt` must be in `theme` |
-| `background` | same | no | replaces `assets.background.url` |
+| `background` | same | no | **retired (SF-BE-01): accepted and ignored**, nothing is uploaded |
 | `image.<sectionId>` | same | no | replaces `props.imageUrl` of that `hero` section (`<sectionId>` must exist in `theme`) |
 
 Optional request header `If-Match: "<etag>"` (value from the last GET): a stale value returns `412` so concurrent admins do not silently overwrite each other. Omitted means last write wins, with one guard (THEME-06 AC2): if a concurrent write removed an image the submitted document still references (the document was validated while that image was stored, and the other writer's cleanup may already have deleted the asset), the save is refused with the same `412`-shape conflict instead of storing a dangling URL; unrelated concurrent edits remain last-write-wins.
@@ -245,7 +318,7 @@ Uses the existing envelope with `data` as a list of field errors (this is a deli
 }
 ```
 
-`path` is a dotted path into the submitted theme with `[index]` for array elements, for example `pages.home[2].props.ctaHref` or `tokens.colors.onPrimary`; it is NOT a JSON Pointer (no leading `/`, no `~0`/`~1` escapes). The root document is the empty path `""`. Upload problems use the part names instead of a theme path: `logo`, `background` and `image.<sectionId>` (a file that is empty, the wrong type, too large or too big in pixels), and a section id in an `image.<sectionId>` part that is not a valid id answers the CONSTANT path `image` (the client-supplied part name is never echoed); `image.<sectionId>` with an id that is valid but has no `hero` section in the theme is `UNKNOWN_REFERENCE`. A logo uploaded without `assets.logo.alt` reports `assets.logo.alt` `REQUIRED`. `code` is a stable machine string; `message` is English, for display only. Codes: `REQUIRED`, `WRONG_TYPE`, `INVALID_FORMAT`, `OUT_OF_RANGE`, `TOO_LONG`, `TOO_SHORT`, `NOT_ALLOWED_VALUE` (enum/font), `UNKNOWN_PROPERTY`, `UNKNOWN_SECTION_TYPE`, `SECTION_NOT_ALLOWED_IN_SLOT`, `TOO_MANY_SECTIONS`, `DUPLICATE_SECTION_ID`, `DUPLICATE_ORDER`, `CONTRAST_TOO_LOW`, `UNSAFE_CONTENT` (HTML/script/forbidden Markdown), `RICH_TEXT_TOO_DEEP`, `RICH_TEXT_TOO_MANY_LINES`, `RICH_TEXT_BUDGET_EXCEEDED`, `URL_NOT_ALLOWED`, `ASSET_URL_NOT_OWNED`, `UNKNOWN_REFERENCE`, `UNSUPPORTED_SCHEMA_VERSION`, `FILE_TYPE_NOT_ALLOWED`. The first 400 returns all errors found (cap 50), not just the first.
+`path` is a dotted path into the submitted theme with `[index]` for array elements, for example `pages.home[2].props.ctaHref` or `tokens.colors.onPrimary`; it is NOT a JSON Pointer (no leading `/`, no `~0`/`~1` escapes). The root document is the empty path `""`. Upload problems use the part names instead of a theme path: `logo`, `background` and `image.<sectionId>` (a file that is empty, the wrong type, too large or too big in pixels), and a section id in an `image.<sectionId>` part that is not a valid id answers the CONSTANT path `image` (the client-supplied part name is never echoed); `image.<sectionId>` with an id that is valid but has no `hero` section in the theme is `UNKNOWN_REFERENCE`. A logo uploaded without `assets.logo.alt` reports `assets.logo.alt` `REQUIRED`. `code` is a stable machine string; `message` is English, for display only. Codes: `REQUIRED`, `WRONG_TYPE`, `INVALID_FORMAT`, `OUT_OF_RANGE`, `TOO_LONG`, `TOO_SHORT`, `NOT_ALLOWED_VALUE` (enum/font), `UNKNOWN_PROPERTY`, `UNKNOWN_SECTION_TYPE`, `SECTION_NOT_ALLOWED_IN_SLOT`, `TOO_MANY_SECTIONS`, `DUPLICATE_SECTION_ID`, `DUPLICATE_ORDER`, `CONTRAST_TOO_LOW`, `UNSAFE_CONTENT` (HTML/script/forbidden Markdown), `RICH_TEXT_TOO_DEEP`, `RICH_TEXT_TOO_MANY_LINES`, `RICH_TEXT_BUDGET_EXCEEDED`, `URL_NOT_ALLOWED`, `ASSET_URL_NOT_OWNED`, `UNKNOWN_REFERENCE`, `UNSUPPORTED_SCHEMA_VERSION`, `FILE_TYPE_NOT_ALLOWED`. SF-BE-01: an unknown or reserved `themeId` is `NOT_ALLOWED_VALUE` at path `themeId` (stable; the only error returned in that case). The first 400 returns all errors found (cap 50), not just the first.
 
 413, 401, 403, 412, 415 and 502 use the existing envelope with a plain-string `description` and `data: null`.
 
@@ -256,6 +329,7 @@ Uses the existing envelope with `data` as a list of field errors (this is a deli
 - **Breaking (bump):** removing/renaming a prop or type, new required prop, changed meaning or tightened limits of a stored value, new required token.
 - **Server (write path):** `PUT` accepts the current version and the previous one (N-1) migrated up through registered pure functions `migrate(vN -> vN+1)`; anything else is `400 UNSUPPORTED_SCHEMA_VERSION` (path `schemaVersion`). The stored document always carries its version; **GET migrates stored older documents in memory to the current version** (and lazily persists on next write), so the frontend never sees an old version from a current server.
 - **Server (read path, e.g. a rollback):** the server never emits a version it does not know.
+- **SF-BE-01:** `themeId` is a new optional top-level member and the canonical stored shape is narrower, but every canonical document is still a valid v1 document: no bump. A client that does not know `themeId` keeps working because the server writes the resolved tokens into the document.
 - **Client rules:** (1) a renderer must ignore unknown section `type`s and unknown `props`, log a warning and skip rendering that section; never throw. (2) If `schemaVersion` is greater than the client knows, render tokens and any sections whose type it knows, and log; if `tokens` cannot be read, use the built-in default theme (section 9). (3) Missing optional props take the defaults in section 4. (4) The client must not send a `schemaVersion` it does not know; the admin editor loads the document, edits it and sends it back with the same version, otherwise the editor is read-only and prompts to upgrade.
 
 ## 7. Safety
@@ -304,12 +378,12 @@ External links render with `rel="noopener noreferrer nofollow"`.
 
 1. Fetch `GET /theme` server-side in the root layout with the explicit `Origin` header; inject tokens as CSS variables before first paint (no flash).
 2. Validate nothing at runtime beyond a cheap `schemaVersion` check; the server already validated. Treat unknown values defensively (section 6 client rules).
-3. Sections per slot: filter `visible`, sort by `order`, map `type` to a component in a registry; unknown type renders nothing.
+3. SF-BE-01: the layout is fixed code. Render the designed composition for any document; read from the document only the theme (`themeId` / tokens), `assets.logo`, the hero's `heading`, `subheading`, `ctaLabel`, `imageUrl`, `imageAlt`, the announcement (`type: banner`), the story (`type: story`), the footer `linkGroups` and `social`. Each of announcement, story and link columns renders only when present and `visible`; the layout and the order of blocks are fixed. Any other section of a legacy document is ignored. Category tiles show no product counts. A missing `themeId` (older server) falls back to the stored tokens.
 4. Use the ETag with `fetch` revalidation; Next `revalidate: 60` matches `max-age`.
 
 ## 9. Defaults for a brand-new tenant
 
-Provisioning (THEME-01) seeds the default row (the singleton unique index `uq_store_settings_singleton`, migration V9, is created without `IF NOT EXISTS` on purpose: Flyway applies a migration once per tenant schema, and a repeat would be an error worth seeing, THEME-06 AC3); `GET` for a tenant with no stored theme returns the same document (`revision: 0`). Default tokens: `primary #111827`, `onPrimary #ffffff`, `accent #b45309`, `onAccent #ffffff`, `background #ffffff`, `surface #f9fafb`, `text #111827`, `mutedText #4b5563`, fonts `Inter`/`Inter`, `baseSizePx 16`, radius `md`, spacing `comfortable`, no logo, no background. Home: `hero` (heading is the store display name when known, else "Welcome to our store", truncated to 80), `featured-products` (source `featured`), `category-grid` (all categories). Product slot empty. Footer: one empty `footer` section. All default colour pairs meet the contrast rules (asserted by the contract test).
+Provisioning (THEME-01) seeds the default row (the singleton unique index `uq_store_settings_singleton`, migration V9, is created without `IF NOT EXISTS` on purpose: Flyway applies a migration once per tenant schema, and a repeat would be an error worth seeing, THEME-06 AC3); `GET` for a tenant with no stored theme returns the same document (`revision: 0`). The stored default row (migration V8, which is not edited) is the classic-coloured document below; since SF-BE-01 a stored document equal to it is **resolved on read to `themeId: "morrow"`** (section 5.1), so every new tenant, and every existing tenant that never customised, shows the `morrow` look. The stored default's tokens are: `primary #111827`, `onPrimary #ffffff`, `accent #b45309`, `onAccent #ffffff`, `background #ffffff`, `surface #f9fafb`, `text #111827`, `mutedText #4b5563`, fonts `Inter`/`Inter`, `baseSizePx 16`, radius `md`, spacing `comfortable`, no logo, no background. Home: `hero` (heading is the store display name when known, else "Welcome to our store", truncated to 80), `featured-products` (source `featured`), `category-grid` (all categories). Product slot empty. Footer: one empty `footer` section. All default colour pairs meet the contrast rules (asserted by the contract test).
 
 <!-- example: default-new-tenant valid -->
 ```json
@@ -675,6 +749,96 @@ Two full, deliberately different themes used by UI-02 tests (`acme`: serif, warm
 }
 ```
 
+The canonical stored form of a document (a `morrow` tenant with a hero; what GET returns after any PUT):
+
+<!-- example: morrow-canonical valid -->
+```json
+{
+  "schemaVersion": 1,
+  "revision": 3,
+  "updatedAt": "2026-11-24T09:00:00Z",
+  "themeId": "morrow",
+  "tokens": {
+    "colors": {
+      "primary": "#35432f",
+      "onPrimary": "#ffffff",
+      "accent": "#8a4b1f",
+      "onAccent": "#ffffff",
+      "background": "#faf7f0",
+      "surface": "#e8eadc",
+      "text": "#1f2a1b",
+      "mutedText": "#4a5444"
+    },
+    "typography": {
+      "headingFont": "Inter",
+      "bodyFont": "Inter",
+      "baseSizePx": 16
+    },
+    "radius": "md",
+    "spacing": "comfortable"
+  },
+  "assets": { "logo": null, "background": null },
+  "social": {
+    "instagram": "https://www.instagram.com/ourstore",
+    "whatsapp": "https://wa.me/233200000000"
+  },
+  "pages": {
+    "home": [
+      {
+        "id": "hero",
+        "type": "hero",
+        "props": {
+          "heading": "Welcome to our store",
+          "subheading": "Fragrances for every day",
+          "ctaLabel": "Shop now",
+          "ctaHref": "/products",
+          "alignment": "left"
+        },
+        "visible": true,
+        "order": 0
+      },
+      {
+        "id": "announcement",
+        "type": "banner",
+        "props": {
+          "message": "Free delivery over GHS 500",
+          "tone": "primary",
+          "linkLabel": "Shop now",
+          "linkHref": "/products",
+          "dismissible": true
+        },
+        "visible": true,
+        "order": 1
+      },
+      {
+        "id": "story",
+        "type": "story",
+        "props": {
+          "heading": "Our story",
+          "body": "We started in a small kitchen.\n\nToday we ship across Ghana."
+        },
+        "visible": true,
+        "order": 2
+      }
+    ],
+    "product": [],
+    "footer": [
+      {
+        "id": "footer",
+        "type": "footer",
+        "props": {
+          "linkGroups": [
+            { "title": "Help", "links": [ { "label": "Delivery", "href": "/delivery" }, { "label": "Contact", "href": "/contact" } ] }
+          ]
+        },
+        "visible": true,
+        "order": 0
+      }
+    ]
+  }
+}
+```
+
 ### 10.1 Multipart request shape (logo upload)
 
 ```
@@ -716,3 +880,4 @@ When a `logo` part is present, `assets.logo.url` in the JSON is ignored and may 
 ## 11. Changelog
 
 - v1 (THEME-03): initial contract.
+- SF-BE-01 (no schemaVersion bump): optional top-level `themeId`; theme catalog `docs/api/frontend/theme-catalog.json` (section 2.5); PUT ignores client tokens and canonicalizes `pages`/`assets`/`social` to the branding-only form: hero, announcement, story, footer link columns, social links (sections 3.2, 3.3, 4.7); new section type `story`; GET resolves legacy documents in memory (section 5.1); `background` upload part retired; unknown/reserved `themeId` is `400 NOT_ALLOWED_VALUE`; new example `morrow-canonical`.

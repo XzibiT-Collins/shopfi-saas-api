@@ -32,4 +32,18 @@ class StoreSettingsMigrationDefaultTest {
         assertThat(migration).isEqualTo(contract);
         assertThat(migration.get("schemaVersion").asInt()).isEqualTo(1);
     }
+
+    /** SF-BE-01 AC5: V8 is not edited; the resolver maps the stored default row (and so every new tenant) to morrow. */
+    @Test
+    void migrationDefaultRowResolvesToTheDefaultTheme() throws Exception {
+        JsonNode migration = extract(
+                Path.of("src/main/resources/db/migrations/tenant/V8__create_store_settings.sql"),
+                Pattern.compile("\\$theme\\$(.*?)\\$theme\\$", Pattern.DOTALL));
+        assertThat(migration.has("themeId")).isFalse();
+        var catalog = new com.example.perfume_budget.theme.ThemeCatalog(MAPPER);
+        var resolver = new com.example.perfume_budget.theme.ThemeCanonicalizer(catalog, MAPPER);
+        var resolved = resolver.resolveStored((com.fasterxml.jackson.databind.node.ObjectNode) migration.deepCopy(), migration);
+        assertThat(resolved.get("themeId").asText()).isEqualTo("morrow");
+        assertThat(resolved.get("tokens")).isEqualTo(catalog.tokens("morrow"));
+    }
 }

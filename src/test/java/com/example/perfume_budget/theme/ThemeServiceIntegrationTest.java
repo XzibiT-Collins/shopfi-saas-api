@@ -94,9 +94,21 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         return as(t, () -> themes.updateTheme(doc, expected, ThemeUploads.NONE, "admin@" + t.slug()));
     }
 
+    /** SF-BE-01: tokens come from the catalog, so each former colour literal selects a distinct theme. */
+    static String themeFor(String hex) {
+        return switch (hex.toLowerCase()) {
+            case "#111827" -> "classic";
+            case "#7c2d12" -> "blush";
+            case "#0b3d2e" -> "ocean";
+            case "#000000" -> "slate";
+            case "#0f172a" -> "plum";
+            default -> "morrow";
+        };
+    }
+
     private ObjectNode withPrimary(String hex, String onPrimary) {
         ObjectNode d = defaults();
-        ((ObjectNode) d.get("tokens").get("colors")).put("primary", hex).put("onPrimary", onPrimary);
+        d.put("themeId", themeFor(hex));
         return d;
     }
 
@@ -130,12 +142,12 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         ThemeSnapshot before = get(a);
         ThemeSnapshot saved = put(a, withPrimary("#0b3d2e", "#ffffff"), before.version());
         ThemeSnapshot after = get(a);
-        assertThat(primary(after)).isEqualTo("#0b3d2e");
+        assertThat(primary(after)).isEqualTo("#0f3d5c");
         assertThat(after).isNotSameAs(before);
         assertThat(after.version()).isEqualTo(before.version() + 1).isEqualTo(saved.version());
         assertThat(after.theme().get("revision").asLong()).isEqualTo(before.theme().get("revision").asLong() + 1);
         assertThat(get(a)).isSameAs(after); // and the fresh value is cached again
-        assertThat(dbPrimary(a)).isEqualTo("#0b3d2e");
+        assertThat(dbPrimary(a)).isEqualTo("#0f3d5c");
     }
 
     @Test
@@ -149,7 +161,7 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
 
         assertThat(get(b)).isSameAs(bCached); // B's cached entry untouched by A's update (not even evicted)
         assertThat(primary(get(b))).isEqualTo("#111827");
-        assertThat(primary(get(a))).isEqualTo("#7c2d12");
+        assertThat(primary(get(a))).isEqualTo("#7a2e4a");
         assertThat(dbPrimary(b)).isEqualTo("#111827");
         assertThat(cacheManager.getCacheNames()).contains("themea:theme", "themeb:theme");
 
@@ -157,15 +169,15 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         ThemeSnapshot aCached = get(a);
         put(b, withPrimary("#000000", "#ffffff"), bCached.version());
         assertThat(get(a)).isSameAs(aCached);
-        assertThat(primary(get(a))).isEqualTo("#7c2d12");
-        assertThat(primary(get(b))).isEqualTo("#000000");
+        assertThat(primary(get(a))).isEqualTo("#7a2e4a");
+        assertThat(primary(get(b))).isEqualTo("#1e293b");
     }
 
     @Test
     void failedUpdateDoesNotEvictOrChangeAnything() {
         ThemeSnapshot cached = get(a);
         ObjectNode bad = defaults();
-        ((ObjectNode) bad.get("tokens")).put("radius", "huge");
+        ((ObjectNode) section(bad, "hero").get("props")).put("heading", "h".repeat(81));
         assertThatThrownBy(() -> put(a, bad, null)).isInstanceOf(ThemeValidationException.class);
         assertThat(get(a)).isSameAs(cached);
         assertThat(dbVersion(a)).isEqualTo(cached.version());
@@ -183,7 +195,7 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         JsonNode stored = saved.theme();
         assertThat(stored.get("revision").asLong()).isEqualTo(saved.version() - 1).isEqualTo(before.version());
         assertThat(stored.get("updatedAt").asText()).isNotEqualTo("2000-01-01T00:00:00Z").endsWith("Z");
-        assertThat(stored.at("/tokens/colors/primary").asText()).isEqualTo("#0f172a");
+        assertThat(stored.at("/tokens/colors/primary").asText()).isEqualTo("#4a2c6d");
         assertThat(jdbc.queryForObject("SELECT schema_version FROM " + a.schemaName() + ".store_settings", Integer.class))
                 .isEqualTo(stored.get("schemaVersion").asInt());
         assertThat(jdbc.queryForObject("SELECT updated_by FROM " + a.schemaName() + ".store_settings", String.class)).isEqualTo("admin@themea");
@@ -210,7 +222,7 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         ThemeSnapshot s1 = put(a, withPrimary("#111827", "#ffffff"), ThemeSnapshot.parseEtag(v.etag()));
         ThemeSnapshot s2 = put(a, withPrimary("#7c2d12", "#ffffff"), null);
         assertThat(s2.version()).isEqualTo(s1.version() + 1);
-        assertThat(dbPrimary(a)).isEqualTo("#7c2d12");
+        assertThat(dbPrimary(a)).isEqualTo("#7a2e4a");
     }
 
     @Test
@@ -256,7 +268,8 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         assertThat(healed.version()).isEqualTo(1);
         assertThat(healed.theme().get("revision").asInt()).isZero();
         assertThat(healed.theme().at("/pages/home/0/type").asText()).isEqualTo("hero");
-        assertThat(healed.theme().at("/tokens/colors/primary").asText()).isEqualTo("#111827");
+        assertThat(healed.theme().at("/tokens/colors/primary").asText()).isEqualTo("#35432f"); // SF-BE-01: untouched default resolves to morrow
+        assertThat(healed.theme().get("themeId").asText()).isEqualTo("morrow");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + healer.schemaName() + ".store_settings", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT schema_version FROM " + healer.schemaName() + ".store_settings", Integer.class)).isEqualTo(1);
         // and the healed default is a valid document that can be updated
@@ -271,7 +284,7 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         ThemeSnapshot saved = put(healer, withPrimary("#0b3d2e", "#ffffff"), null);
         assertThat(saved.version()).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM " + healer.schemaName() + ".store_settings", Integer.class)).isEqualTo(1);
-        assertThat(dbPrimary(healer)).isEqualTo("#0b3d2e");
+        assertThat(dbPrimary(healer)).isEqualTo("#0f3d5c");
     }
 
 
@@ -326,12 +339,14 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
     void invalidDocumentReturnsFieldErrorsAndStoresNothing() {
         ThemeSnapshot before = get(a);
         ObjectNode bad = defaults();
-        ((ObjectNode) bad.get("tokens").get("colors")).put("primary", "red");
-        ((ObjectNode) bad.get("tokens").get("typography")).put("headingFont", "Papyrus");
-        ((ArrayNode) bad.get("pages").get("home")).add(json("{\"id\":\"x\",\"type\":\"carousel\",\"props\":{},\"visible\":true,\"order\":9}"));
+        ObjectNode props = (ObjectNode) section(bad, "hero").get("props");
+        props.put("heading", "h".repeat(81));
+        props.put("subheading", "s".repeat(201));
+        bad.with("assets").putObject("logo").put("alt", "x").put("url", "https://evil.example/logo.png");
+        bad.put("surprise", 1);
         assertThatThrownBy(() -> put(a, bad, null)).isInstanceOfSatisfying(ThemeValidationException.class, e ->
                 assertThat(e.getErrors()).extracting(ThemeFieldError::path)
-                        .contains("tokens.colors.primary", "tokens.typography.headingFont", "pages.home[3].type"));
+                        .contains("pages.home[0].props.heading", "pages.home[0].props.subheading", "assets.logo.url", "surprise"));
         assertThat(dbVersion(a)).isEqualTo(before.version());
     }
 
@@ -347,24 +362,26 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void xssPayloadsAreRejectedAndNeverPersisted() {
+    void xssPayloadsAreRejectedOrDroppedAndNeverPersisted() {
         ThemeSnapshot before = get(a);
-        String[] bodies = {"<script>alert(1)</script>", "[x](javascript:alert(1))", "[x](JaVa\nScRiPt:alert(1))",
-                "[x](&#106;avascript:alert(1))", "[x](data:text/html;base64,PHNjcmlwdD4=)", "![x](https://res.cloudinary.com/a/image/upload/b.png)",
-                "<img src=x onerror=alert(1)>", "&lt;script&gt;"};
-        for (String body : bodies) {
-            ObjectNode d = defaults();
-            ((ArrayNode) d.get("pages").get("home")).add(json("{\"id\":\"rt\",\"type\":\"rich-text\",\"props\":{\"body\":" + MAPPER.valueToTree(body) + "},\"visible\":true,\"order\":5}"));
-            assertThatThrownBy(() -> put(a, d, null)).as(body).isInstanceOf(ThemeValidationException.class);
-        }
         for (String text : new String[]{"<script>alert(1)</script>", "\"><img src=x onerror=alert(1)>", "x</style><script>"}) {
             ObjectNode d = defaults();
             ((ObjectNode) section(d, "hero").get("props")).put("heading", text);
             assertThatThrownBy(() -> put(a, d, null)).as(text).isInstanceOf(ThemeValidationException.class);
         }
         assertThat(dbVersion(a)).isEqualTo(before.version());
+        // SF-BE-01: rich-text sections are no longer storable at all: whatever the body, it is dropped, never persisted
+        String[] bodies = {"<script>alert(1)</script>", "[x](javascript:alert(1))", "[x](JaVa\nScRiPt:alert(1))",
+                "[x](&#106;avascript:alert(1))", "[x](data:text/html;base64,PHNjcmlwdD4=)", "![x](https://res.cloudinary.com/a/image/upload/b.png)",
+                "<img src=x onerror=alert(1)>", "&lt;script&gt;"};
+        for (String body : bodies) {
+            ObjectNode d = defaults();
+            ((ArrayNode) d.get("pages").get("home")).add(json("{\"id\":\"rt\",\"type\":\"rich-text\",\"props\":{\"body\":" + MAPPER.valueToTree(body) + "},\"visible\":true,\"order\":5}"));
+            ThemeSnapshot saved = put(a, d, null);
+            assertThat(saved.theme().toString()).as(body).doesNotContain("rich-text").doesNotContain("javascript").doesNotContain("<script");
+        }
         assertThat(jdbc.queryForObject("SELECT theme::text FROM " + a.schemaName() + ".store_settings", String.class))
-                .doesNotContain("<script").doesNotContain("javascript:");
+                .doesNotContain("<script").doesNotContain("javascript:").doesNotContain("rich-text");
     }
 
     // ---------------------------------------------------------------- references
@@ -388,32 +405,24 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
     }
 
     @Test
-    void existingReferencesAreAcceptedUnknownOnesAre400() {
+    void featuredAndCategorySectionsAreDroppedSoReferencesAreNeverStored_orLookedUp() {
         long cat = newCategory(a, "t02-cat-" + System.nanoTime());
         long prod = newProduct(a, "t02-prod-" + System.nanoTime());
-        assertThat(put(a, withRefs(cat, prod), null).version()).isGreaterThan(1);
-
-        assertThatThrownBy(() -> put(a, withRefs(cat + 1000, prod + 1000), null)).isInstanceOfSatisfying(ThemeValidationException.class, e -> {
-            assertThat(e.getErrors()).extracting(ThemeFieldError::code).containsOnly("UNKNOWN_REFERENCE");
-            assertThat(e.getErrors()).extracting(ThemeFieldError::path)
-                    .contains("pages.home[3].props.productIds[0]", "pages.home[4].props.categoryId");
-        });
+        ThemeSnapshot ok = put(a, withRefs(cat, prod), null);
+        assertThat(ok.theme().at("/pages/home")).hasSize(1);
+        assertThat(ok.theme().toString()).doesNotContain("featured-products").doesNotContain("productIds");
+        // ids that exist nowhere used to be 400 UNKNOWN_REFERENCE; the sections are dropped now, so the PUT is a plain 200
+        ThemeSnapshot unknown = put(a, withRefs(cat + 1000, prod + 1000), null);
+        assertThat(unknown.theme().toString()).doesNotContain("featured-products");
     }
 
     @Test
-    void referencesToAnotherTenantsProductsAreUnknown() {
+    void anotherTenantsProductIdsAreNeverStoredEither() {
         long cat = newCategory(a, "t02x-cat-" + System.nanoTime());
-        // products exist ONLY in tenant B; a product id valid there must not satisfy A's reference
-        long[] bProducts = new long[3];
-        for (int i = 0; i < 3; i++) {
-            bProducts[i] = newProduct(b, "t02x-prod-" + i + "-" + System.nanoTime());
-        }
-        long bOnly = java.util.Arrays.stream(bProducts).max().getAsLong();
-        boolean existsInA = tx(a, () -> products.existsById(bOnly));
-        assertThat(existsInA).isFalse();
-        assertThatThrownBy(() -> put(a, withRefs(cat, bOnly), null)).isInstanceOfSatisfying(ThemeValidationException.class, e ->
-                assertThat(e.getErrors()).extracting(ThemeFieldError::code).containsOnly("UNKNOWN_REFERENCE"));
-        assertThat(put(b, withRefs(newCategory(b, "t02x-bcat-" + System.nanoTime()), bOnly), null).version()).isGreaterThan(1);
+        long bOnly = newProduct(b, "t02x-prod-" + System.nanoTime());
+        ThemeSnapshot saved = put(a, withRefs(cat, bOnly), null);
+        assertThat(saved.theme().toString()).doesNotContain("featured-products").doesNotContain(String.valueOf(bOnly) + "]");
+        assertThat(saved.theme().at("/pages/home")).hasSize(1);
     }
 
     // ---------------------------------------------------------------- AC2 uploads end-to-end
@@ -511,7 +520,7 @@ class ThemeServiceIntegrationTest extends AbstractPostgresIntegrationTest {
         org.mockito.Mockito.doAnswer(inv -> {
             if (competed.compareAndSet(false, true)) {
                 ObjectNode w2 = withLogoUrl(logo);
-                ((ObjectNode) w2.get("tokens").get("colors")).put("primary", "#0b3d2e").put("onPrimary", "#ffffff");
+                w2.put("themeId", "ocean");
                 var w1Tenant = com.example.perfume_budget.tenancy.TenantContext.get();
                 put(a, w2, null); // W2 changes a colour and keeps the logo
                 com.example.perfume_budget.tenancy.TenantContext.set(w1Tenant); // runAs cleared W1's context; W1 goes on

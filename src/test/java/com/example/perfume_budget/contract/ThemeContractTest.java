@@ -81,8 +81,93 @@ class ThemeContractTest {
 
     @Test
     void docContainsExpectedExamples() {
-        assertTrue(validExamples.keySet().containsAll(Set.of("default-new-tenant", "acme-full", "bravo-minimal")), validExamples.keySet().toString());
+        assertTrue(validExamples.keySet().containsAll(Set.of("default-new-tenant", "acme-full", "bravo-minimal", "morrow-canonical")), validExamples.keySet().toString());
         assertFalse(invalidExamples.isEmpty());
+    }
+
+    // ---- SF-BE-01: theme catalog ----
+
+    private static JsonNode catalogFile() throws IOException {
+        return MAPPER.readTree(Files.readString(DOCS.resolve("frontend").resolve("theme-catalog.json")));
+    }
+
+    @Test
+    void schemaDeclaresOptionalThemeIdWithIdPattern() {
+        JsonNode props = schemaNodeProps();
+        assertEquals("string", props.get("themeId").get("type").asText());
+        assertFalse(((com.fasterxml.jackson.databind.node.ArrayNode) schemaRoot().get("required")).toString().contains("themeId"));
+        for (String ok : new String[]{"morrow", "custom-legacy", "a", "a1-b2"}) {
+            ObjectNode t = acme();
+            t.put("themeId", ok);
+            assertTrue(validate(t).isEmpty(), ok);
+        }
+        for (String bad : new String[]{"Morrow", "-x", "has space", "", "x".repeat(41), "a_b"}) {
+            ObjectNode t = acme();
+            t.put("themeId", bad);
+            assertFalse(validate(t).isEmpty(), bad);
+        }
+        ObjectNode notString = acme();
+        notString.put("themeId", 5);
+        assertFalse(validate(notString).isEmpty());
+    }
+
+    private static JsonNode schemaRoot() {
+        try {
+            return MAPPER.readTree(Files.readString(DOCS.resolve("theme.schema.json")));
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static JsonNode schemaNodeProps() {
+        return schemaRoot().get("properties");
+    }
+
+    @Test
+    void everyCatalogThemeYieldsASchemaValidDocument() throws IOException {
+        for (JsonNode t : catalogFile().get("themes")) {
+            ObjectNode doc = (ObjectNode) validExamples.get("morrow-canonical").deepCopy();
+            doc.put("themeId", t.get("id").asText());
+            doc.set("tokens", t.get("tokens"));
+            assertTrue(validate(doc).isEmpty(), t.get("id") + ": " + validate(doc));
+        }
+    }
+
+    @Test
+    void docSection33ListsEverySocialPlatformAndTheCapsMatchTheSchema() throws IOException {
+        String doc = Files.readString(DOCS.resolve("theme-contract.md"));
+        String section = doc.substring(doc.indexOf("### 3.3 "), doc.indexOf("## 4. v1 section types"));
+        JsonNode social = schemaRoot().at("/$defs/social/properties");
+        assertEquals(Set.of("instagram", "facebook", "x", "tiktok", "youtube", "whatsapp", "linkedin", "pinterest"),
+                Set.copyOf(java.util.stream.StreamSupport.stream(java.util.Spliterators.spliteratorUnknownSize(social.fieldNames(), 0), false).toList()));
+        social.fieldNames().forEachRemaining(k -> {
+            assertTrue(section.contains("| `" + k + "` |"), k);
+            assertEquals(256, social.get(k).get("maxLength").asInt(), k);
+        });
+        assertEquals(false, schemaRoot().at("/$defs/social/additionalProperties").asBoolean(true));
+        assertTrue(section.contains("**256**"));
+        // story caps documented and enforced by the schema
+        assertEquals(600, schemaRoot().at("/$defs/story/properties/props/properties/body/maxLength").asInt());
+        assertEquals(80, schemaRoot().at("/$defs/story/properties/props/properties/heading/maxLength").asInt());
+        assertTrue(doc.contains("1..**600** characters"));
+        assertEquals(160, schemaRoot().at("/$defs/banner/properties/props/properties/message/maxLength").asInt());
+        assertEquals(3, schemaRoot().at("/$defs/footer/properties/props/properties/linkGroups/maxItems").asInt());
+        assertEquals(6, schemaRoot().at("/$defs/footer/properties/props/properties/linkGroups/items/properties/links/maxItems").asInt());
+    }
+
+    @Test
+    void docSection25ListsEveryCatalogThemeAndColour_andTheCanonicalExampleIsMorrow() throws IOException {
+        String doc = Files.readString(DOCS.resolve("theme-contract.md"));
+        String section = doc.substring(doc.indexOf("### 2.5 "), doc.indexOf("## 3. Theme document"));
+        for (JsonNode t : catalogFile().get("themes")) {
+            assertTrue(section.contains("| `" + t.get("id").asText() + "` | " + t.get("name").asText() + " |"), t.get("id").asText());
+            t.at("/tokens/colors").forEach(c -> assertTrue(section.contains("`" + c.asText() + "`"), c.asText()));
+        }
+        assertEquals(catalogFile().get("defaultThemeId").asText(), "morrow");
+        JsonNode morrow = catalogFile().get("themes").get(0);
+        assertEquals("morrow", morrow.get("id").asText());
+        assertEquals(morrow.get("tokens"), validExamples.get("morrow-canonical").get("tokens"));
+        assertEquals("morrow", validExamples.get("morrow-canonical").get("themeId").asText());
     }
 
     @Test
@@ -99,7 +184,7 @@ class ThemeContractTest {
     void validExamplesCoverAllV1SectionTypesAndSlots() {
         Set<String> types = new java.util.TreeSet<>();
         validExamples.values().forEach(t -> t.get("pages").forEach(slot -> slot.forEach(s -> types.add(s.get("type").asText()))));
-        assertEquals(Set.of("hero", "featured-products", "category-grid", "banner", "rich-text", "footer"), types);
+        assertEquals(Set.of("hero", "featured-products", "category-grid", "banner", "rich-text", "footer", "story"), types);
     }
 
     @Test

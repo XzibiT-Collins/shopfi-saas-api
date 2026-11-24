@@ -183,8 +183,8 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | StorageLocationController | GET | `/api/v1/admin/inventory/locations` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | StorageLocationController | GET | `/api/v1/admin/inventory/locations/{id}` | authenticated (anyRequest) | `hasAnyRole('ADMIN', 'FRONT_DESK')` | reads tenant data |
 | StorageLocationController | PATCH | `/api/v1/admin/inventory/locations/{id}/defaults` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
-| StoreThemeController | GET | `/api/v1/theme` | permitAll (GET) | - | reads tenant data |
-| StoreThemeController | PUT | `/api/v1/theme` | ADMIN (PUT) | `hasRole('ADMIN')` | mutates |
+| StoreThemeController | GET | `/api/v1/theme` | permitAll (GET) | - | reads tenant data (SF-BE-01: response gains themeId; no authz change) |
+| StoreThemeController | PUT | `/api/v1/theme` | ADMIN (PUT) | `hasRole('ADMIN')` | mutates (SF-BE-01: no authz change; body is canonicalized, see theme-contract.md 2.5 and 3.2) |
 | TaxController | GET | `/api/v1/tax` | authenticated (anyRequest) | - | reads tax rates (any signed-in user) |
 | TaxController | POST | `/api/v1/tax/add-tax` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | TaxController | PUT | `/api/v1/tax/update/{taxId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |

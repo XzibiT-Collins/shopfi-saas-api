@@ -124,9 +124,10 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         return new Cookie("accessToken", token);
     }
 
+    /** SF-BE-01: tokens come from the catalog, so each former colour literal selects a distinct theme. */
     private ObjectNode doc(String primary) {
         ObjectNode d = defaults();
-        ((ObjectNode) d.get("tokens").get("colors")).put("primary", primary).put("onPrimary", "#ffffff");
+        d.put("themeId", ThemeServiceIntegrationTest.themeFor(primary));
         return d;
     }
 
@@ -193,8 +194,9 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         MvcResult r = fetch("https://thmctlf.shopfi.test");
         assertThat(r.getResponse().getStatus()).isEqualTo(200);
         assertSchemaValid(data(r));
-        assertThat(data(r).at("/tokens/colors/primary").asText())
-                .isEqualTo(defaults().at("/tokens/colors/primary").asText());
+        // SF-BE-01: an untouched default document resolves to the default theme (morrow), in memory
+        assertThat(data(r).at("/themeId").asText()).isEqualTo("morrow");
+        assertThat(data(r).at("/tokens/colors/primary").asText()).isEqualTo("#35432f");
         assertThat(data(r).at("/revision").asLong()).isZero();
     }
 
@@ -229,12 +231,12 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         MvcResult putB = mvc.perform(putJson(B, adminB, doc("#0b3d2e").toString())).andReturn();
         assertThat(putB.getResponse().getStatus()).isEqualTo(200);
 
-        assertThat(primaryOf(fetch(A))).isEqualTo("#7c2d12");
-        assertThat(primaryOf(fetch(B))).isEqualTo("#0b3d2e").isNotEqualTo(bBefore);
+        assertThat(primaryOf(fetch(A))).isEqualTo("#7a2e4a");
+        assertThat(primaryOf(fetch(B))).isEqualTo("#0f3d5c").isNotEqualTo(bBefore);
         // A again: B's write did not leak into A
-        assertThat(primaryOf(fetch(A))).isEqualTo("#7c2d12");
+        assertThat(primaryOf(fetch(A))).isEqualTo("#7a2e4a");
         // cache key discipline: same URL, only Origin differs
-        assertThat(primaryOf(mvc.perform(get(URL).header("Referer", B + "/x")).andReturn())).isEqualTo("#0b3d2e");
+        assertThat(primaryOf(mvc.perform(get(URL).header("Referer", B + "/x")).andReturn())).isEqualTo("#0f3d5c");
         assertThat(Long.parseLong(etagOf(B).replaceAll("\\D", ""))).isEqualTo(bVersion + 1);
     }
 
@@ -297,7 +299,7 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         MvcResult withForeignCookie = mvc.perform(get(URL).header("Origin", B).cookie(auth(adminA))).andReturn();
         assertThat(withForeignCookie.getResponse().getStatus()).isEqualTo(200);
         // only B's data: not A's colour, and byte-identical to what an anonymous caller of B gets (incl. ETag)
-        assertThat(primaryOf(withForeignCookie)).isNotEqualTo("#7c2d12").isEqualTo(primaryOf(anonymous));
+        assertThat(primaryOf(withForeignCookie)).isNotEqualTo("#7a2e4a").isEqualTo(primaryOf(anonymous));
         assertThat(withForeignCookie.getResponse().getContentAsString()).isEqualTo(anonymous.getResponse().getContentAsString());
         assertThat(withForeignCookie.getResponse().getHeader("ETag")).isEqualTo(anonymous.getResponse().getHeader("ETag"));
         assertThat(withForeignCookie.getResponse().getHeader("Set-Cookie")).isNull();
@@ -361,7 +363,7 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
         JsonNode body = json(r.getResponse().getContentAsString());
         assertThat(body.get("description").asText()).isEqualTo("Theme updated");
-        assertThat(body.at("/data/tokens/colors/primary").asText()).isEqualTo("#7c2d12");
+        assertThat(body.at("/data/tokens/colors/primary").asText()).isEqualTo("#7a2e4a");
         assertSchemaValid(body.get("data"));
         String etag = r.getResponse().getHeader("ETag");
         assertThat(Long.parseLong(etag.replaceAll("\\D", ""))).isEqualTo(Long.parseLong(before.replaceAll("\\D", "")) + 1);
@@ -381,13 +383,12 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
         JsonNode t = data(r);
         assertThat(t.at("/assets/logo/url").asText()).contains("/shopfi/thmctla/branding/logo");
-        assertThat(t.at("/assets/background/url").asText()).contains("/shopfi/thmctla/branding/background");
+        assertThat(t.at("/assets/background").isNull()).as("the background part is retired and ignored").isTrue();
         assertThat(t.at("/pages/home/0/props/imageUrl").asText()).contains("section-hero");
         assertSchemaValid(t);
         // every upload gets a unique public id (THEME-02b): <base>-<16 hex>
-        assertThat(storage.uploads).hasSize(3);
+        assertThat(storage.uploads).hasSize(2);
         assertThat(storage.uploads).anyMatch(k -> k.matches("shopfi/thmctla/branding/logo-[0-9a-f]{16}"));
-        assertThat(storage.uploads).anyMatch(k -> k.matches("shopfi/thmctla/branding/background-[0-9a-f]{16}"));
         assertThat(storage.uploads).anyMatch(k -> k.matches("shopfi/thmctla/branding/section-hero-[0-9a-f]{16}"));
         // a following public GET (other tenant untouched)
         assertThat(data(fetch(A)).at("/assets/logo/url").asText()).contains("thmctla");
@@ -443,7 +444,8 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         assertThat(storage.objects).isEmpty();
         assertThat(etagOf(A)).isEqualTo(current);
         // a stale If-Match with an invalid body is still a clean 4xx and still touches no asset
-        ObjectNode bad = doc("not-a-hex");
+        ObjectNode bad = doc("#7c2d12");
+        ((ObjectNode) section(bad, "hero").get("props")).put("heading", "h".repeat(81));
         MvcResult staleBad = mvc.perform(putMultipart(A, adminA).file(themePart(bad))
                 .file(new MockMultipartFile("logo", "l.png", "image/png", FakeBrandingStorage.png(5, 5)))
                 .header("If-Match", "W/\"" + (v + 7) + "\"")).andReturn();
@@ -463,8 +465,9 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
 
     @Test
     void put_validationErrors_returnStructuredList() throws Exception {
-        ObjectNode d = doc("not-a-hex");
+        ObjectNode d = doc("#7c2d12");
         ((ObjectNode) section(d, "hero").get("props")).put("heading", "<script>alert(1)</script>");
+        d.with("assets").putObject("logo").put("alt", "x").put("url", "https://evil.example/l.png");
         MvcResult r = mvc.perform(putJson(A, adminA, d.toString())).andReturn();
         assertThat(r.getResponse().getStatus()).isEqualTo(400);
         JsonNode body = json(r.getResponse().getContentAsString());
@@ -476,7 +479,7 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
             assertThat(e.get("code").asText()).matches("[A-Z_]+");
             assertThat(e.get("message").asText()).isNotBlank();
         }
-        assertThat(body.get("data").toString()).contains("tokens.colors.primary").contains("UNSAFE_CONTENT");
+        assertThat(body.get("data").toString()).contains("assets.logo.url").contains("UNSAFE_CONTENT");
         assertThat(r.getResponse().getHeader("Cache-Control")).contains("no-store");
     }
 
@@ -493,44 +496,21 @@ class StoreThemeControllerIntegrationTest extends AbstractPostgresIntegrationTes
         return d;
     }
 
-    private JsonNode errorFor(MvcResult r, String code) throws Exception {
-        assertThat(r.getResponse().getStatus()).isEqualTo(400);
-        JsonNode body = json(r.getResponse().getContentAsString());
-        assertThat(body.get("description").asText()).isEqualTo("Theme validation failed");
-        for (JsonNode e : body.get("data")) {
-            assertThat(e.get("path").asText()).isNotBlank();
-            assertThat(e.get("message").asText()).isNotBlank();
-            if (code.equals(e.get("code").asText())) {
-                return e;
-            }
-        }
-        throw new AssertionError("no " + code + " in " + body.get("data"));
-    }
-
+    /** SF-BE-01: rich-text sections can no longer be stored, so their bodies are never validated: dropped, 200. */
     @Test
-    void put_richTextTooManyLines_is400_withStructuredError_andNoChange() throws Exception {
-        String before = etagOf(A);
-        MvcResult r = mvc.perform(putJson(A, adminA, withRichText("- x\n".repeat(61)).toString())).andReturn();
-        JsonNode e = errorFor(r, "RICH_TEXT_TOO_MANY_LINES");
-        assertThat(e.get("path").asText()).endsWith(".props.body");
-        assertThat(r.getResponse().getHeader("Cache-Control")).contains("no-store");
-        assertThat(etagOf(A)).isEqualTo(before);
-        // 60 lines is fine
-        assertThat(mvc.perform(putJson(A, adminA, withRichText("- x\n".repeat(60)).toString())).andReturn().getResponse().getStatus()).isEqualTo(200);
-    }
-
-    @Test
-    void put_richTextBudgetExceeded_is400_withStructuredError_andNoChange() throws Exception {
+    void put_richTextSections_areDroppedNotValidated_evenWhenOversized() throws Exception {
         String before = etagOf(A);
         String four = "a".repeat(4000);
-        MvcResult r = mvc.perform(putJson(A, adminA, withRichText(four, four, "b").toString())).andReturn();
-        JsonNode e = errorFor(r, "RICH_TEXT_BUDGET_EXCEEDED");
-        assertThat(e.get("path").asText()).endsWith(".props.body");
-        assertThat(etagOf(A)).isEqualTo(before);
-        // multipart goes through the same mapping, and uploads nothing
+        for (ObjectNode d : new ObjectNode[]{withRichText("- x\n".repeat(61)), withRichText(four, four, "b"), withRichText("<script>x</script>")}) {
+            MvcResult r = mvc.perform(putJson(A, adminA, d.toString())).andReturn();
+            assertThat(r.getResponse().getStatus()).as(r.getResponse().getContentAsString()).isEqualTo(200);
+            assertThat(data(r).at("/pages/home")).hasSize(1);
+            assertThat(r.getResponse().getContentAsString()).doesNotContain("rich-text").doesNotContain("<script");
+        }
         MvcResult mp = mvc.perform(putMultipart(A, adminA).file(themePart(withRichText(four, four, "b")))).andReturn();
-        errorFor(mp, "RICH_TEXT_BUDGET_EXCEEDED");
+        assertThat(mp.getResponse().getStatus()).isEqualTo(200);
         assertThat(storage.uploads).isEmpty();
+        assertThat(etagOf(A)).isNotEqualTo(before);
     }
 
     @Test

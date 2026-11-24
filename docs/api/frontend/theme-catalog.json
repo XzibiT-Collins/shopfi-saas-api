@@ -1,0 +1,199 @@
+{
+  "catalogVersion": 1,
+  "defaultThemeId": "morrow",
+  "legacyThemeId": "custom-legacy",
+  "themes": [
+    {
+      "id": "morrow",
+      "name": "Morrow",
+      "description": "Sage and cream: the original Shopfi storefront look.",
+      "tokens": {
+        "colors": {
+          "primary": "#35432f",
+          "onPrimary": "#ffffff",
+          "accent": "#8a4b1f",
+          "onAccent": "#ffffff",
+          "background": "#faf7f0",
+          "surface": "#e8eadc",
+          "text": "#1f2a1b",
+          "mutedText": "#4a5444"
+        },
+        "typography": {
+          "headingFont": "Inter",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "classic",
+      "name": "Classic",
+      "description": "Ink and white with a warm amber accent.",
+      "tokens": {
+        "colors": {
+          "primary": "#111827",
+          "onPrimary": "#ffffff",
+          "accent": "#b45309",
+          "onAccent": "#ffffff",
+          "background": "#ffffff",
+          "surface": "#f3f4f6",
+          "text": "#111827",
+          "mutedText": "#4b5563"
+        },
+        "typography": {
+          "headingFont": "Inter",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "ocean",
+      "name": "Ocean",
+      "description": "Deep blue with a teal accent.",
+      "tokens": {
+        "colors": {
+          "primary": "#0f3d5c",
+          "onPrimary": "#ffffff",
+          "accent": "#0b6e75",
+          "onAccent": "#ffffff",
+          "background": "#f7fafc",
+          "surface": "#e3edf4",
+          "text": "#10202d",
+          "mutedText": "#425666"
+        },
+        "typography": {
+          "headingFont": "Inter",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "blush",
+      "name": "Blush",
+      "description": "Rose and plum with a serif heading.",
+      "tokens": {
+        "colors": {
+          "primary": "#7a2e4a",
+          "onPrimary": "#ffffff",
+          "accent": "#a24a1f",
+          "onAccent": "#ffffff",
+          "background": "#fdf6f4",
+          "surface": "#f6e4e1",
+          "text": "#2a1a1f",
+          "mutedText": "#5e4a50"
+        },
+        "typography": {
+          "headingFont": "Playfair Display",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "sand",
+      "name": "Sand",
+      "description": "Warm neutrals with a serif heading.",
+      "tokens": {
+        "colors": {
+          "primary": "#5b3a1e",
+          "onPrimary": "#ffffff",
+          "accent": "#9a3412",
+          "onAccent": "#ffffff",
+          "background": "#fbf6ec",
+          "surface": "#efe3cd",
+          "text": "#2b2013",
+          "mutedText": "#5a4b38"
+        },
+        "typography": {
+          "headingFont": "Lora",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "slate",
+      "name": "Slate",
+      "description": "Cool slate with a blue accent.",
+      "tokens": {
+        "colors": {
+          "primary": "#1e293b",
+          "onPrimary": "#ffffff",
+          "accent": "#2f5fd0",
+          "onAccent": "#ffffff",
+          "background": "#f8fafc",
+          "surface": "#e8edf3",
+          "text": "#0f172a",
+          "mutedText": "#475569"
+        },
+        "typography": {
+          "headingFont": "Inter",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "plum",
+      "name": "Plum",
+      "description": "Deep violet with an orchid accent.",
+      "tokens": {
+        "colors": {
+          "primary": "#4a2c6d",
+          "onPrimary": "#ffffff",
+          "accent": "#8a3a8f",
+          "onAccent": "#ffffff",
+          "background": "#faf7fc",
+          "surface": "#ece4f3",
+          "text": "#1f1530",
+          "mutedText": "#554a66"
+        },
+        "typography": {
+          "headingFont": "Inter",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    },
+    {
+      "id": "midnight",
+      "name": "Midnight",
+      "description": "Dark theme: charcoal with warm gold.",
+      "tokens": {
+        "colors": {
+          "primary": "#e8d9a8",
+          "onPrimary": "#1a1a14",
+          "accent": "#f0b86a",
+          "onAccent": "#1a1a14",
+          "background": "#14161a",
+          "surface": "#1f2329",
+          "text": "#f2f2ee",
+          "mutedText": "#b6b9bf"
+        },
+        "typography": {
+          "headingFont": "Inter",
+          "bodyFont": "Inter",
+          "baseSizePx": 16
+        },
+        "radius": "md",
+        "spacing": "comfortable"
+      }
+    }
+  ]
+}

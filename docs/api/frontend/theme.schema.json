@@ -27,6 +27,14 @@
       "readOnly": true,
       "description": "Server-managed; ignored on PUT."
     },
+    "themeId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$",
+      "description": "Id of the selected catalog theme (docs/api/frontend/theme-catalog.json), or the reserved read-only `custom-legacy` (a tenant that keeps colours saved before the catalog existed; never accepted on PUT). Optional on PUT: when absent the stored theme is kept. The server writes the selected theme's resolved `tokens` into the document, whatever `tokens` the client sent."
+    },
+    "social": {
+      "$ref": "#/$defs/social"
+    },
     "tokens": {
       "$ref": "#/$defs/tokens"
     },
@@ -279,6 +287,9 @@
               },
               {
                 "$ref": "#/$defs/richText"
+              },
+              {
+                "$ref": "#/$defs/story"
               }
             ]
           }
@@ -306,6 +317,100 @@
           "items": {
             "$ref": "#/$defs/footer"
           }
+        }
+      }
+    },
+    "social": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Social profile links shown as fixed icons in the footer: at most one https URL per platform (an object key can occur once), each on that platform's own host(s), no userinfo, no port, at most 256 characters. An absent key means none; the server drops a null sent on PUT and never returns one. Platforms: instagram, facebook, x (x.com or twitter.com), tiktok, youtube, whatsapp, linkedin, pinterest.",
+      "properties": {
+        "instagram": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(www\\.)?instagram\\.com(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "facebook": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://((www|m)\\.)?facebook\\.com(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "x": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(www\\.)?(x|twitter)\\.com(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "tiktok": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(www\\.)?tiktok\\.com(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "youtube": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(((www|m)\\.)?youtube\\.com|youtu\\.be)(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "whatsapp": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(wa\\.me|((www|api|chat)\\.)?whatsapp\\.com)(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "linkedin": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(www\\.)?linkedin\\.com(/[^\\s<>\"'\\\\]*)?$"
+        },
+        "pinterest": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^https://(www\\.)?pinterest\\.com(/[^\\s<>\"'\\\\]*)?$"
+        }
+      }
+    },
+    "story": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "props",
+        "visible",
+        "order"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sectionId"
+        },
+        "type": {
+          "const": "story"
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "heading": {
+              "$ref": "#/$defs/plainText",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 600,
+              "pattern": "^[^<>\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$",
+              "description": "Plain text, at most 600 characters; paragraphs separated by line breaks. No angle brackets or control characters other than \\n, \\r, \\t. Never Markdown, never HTML."
+            }
+          },
+          "required": [
+            "heading",
+            "body"
+          ]
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
         }
       }
     },
