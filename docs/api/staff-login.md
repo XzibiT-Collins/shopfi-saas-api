@@ -28,19 +28,20 @@ Details a shell needs ([auth-me.md](auth-me.md) has the field contract):
 * No role can be chosen or changed through these endpoints. `PATCH /auth/me` edits the full name only; roles, the
   template and the permissions are `ADMIN` only (`/admin/front-desk/**`).
 
-## Role boundaries are unchanged
+## Role boundaries
 
-Nothing under `/admin/**` was widened. A `FRONT_DESK` session reaches only the routes of [auth-me.md](auth-me.md)
-(walk-in register, stock transfer and conversion, notifications, product search, storage locations and stock per
-location), each behind its permission; everything else answers `403`.
+Since PERM-BE exactly three routes were widened (below); nothing else. A `FRONT_DESK` session reaches only the routes of
+[auth-me.md](auth-me.md) (walk-in register, stock transfer and conversion, notifications, product search, storage locations and
+stock per location, admin product listing / detail / stock summary), each behind its permission where the table names one;
+everything else answers `403`.
 
-### Candidates a front-desk screen may need (NOT changed, product decision)
+### Routes that were candidates, decided 2026-11-23 (PERM-BE)
 
-| Route | Today | Why it may matter |
+| Route | Now | Note |
 |---|---|---|
-| `GET /admin/inventory/products/{id}/summary` | `ADMIN` only | the permission `PRODUCT_VIEW_STOCK_SUMMARY` exists but no route checks it; the per-location stock route is already open to front desk |
-| `GET /product/admin/listing`, `GET /product/main/{id}` | `ADMIN` only | the permission `PRODUCT_VIEW_ADMIN_CATALOG` is likewise unchecked; front desk can use `GET /product/admin/search` |
-| `GET /admin/product-families`, `.../{id}/available-uoms` | `ADMIN` only | a stock-conversion screen that wanted to list families would need it; the shipped frontend does not call it |
+| `GET /admin/inventory/products/{id}/summary` | `ADMIN`, or `FRONT_DESK` holding `PRODUCT_VIEW_STOCK_SUMMARY` | enforced like the other permissions ([auth-me.md](auth-me.md)) |
+| `GET /product/admin/listing`, `GET /product/main/{id}` | `ADMIN`, or `FRONT_DESK` holding `PRODUCT_VIEW_ADMIN_CATALOG` | `GET /product/admin/search` is still open by role |
+| `GET /admin/product-families`, `.../{id}/available-uoms` | `ADMIN` only | unchanged: a stock-conversion screen that wanted to list families would need it; the shipped frontend does not call it |
 
 Validation note (existing behaviour, not changed): on a route with a required body, bean validation runs before the
 role check, so an unauthorised caller that sends an INVALID body sees `400` instead of `403`; nothing is executed.

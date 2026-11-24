@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.enums.FrontDeskPermission;
+import com.example.perfume_budget.service.interfaces.FrontDeskAccessService;
 import com.example.perfume_budget.dto.inventory.request.InventoryAdjustmentRequest;
 import com.example.perfume_budget.dto.inventory.request.InventoryReceiptRequest;
 import com.example.perfume_budget.dto.inventory.response.InventoryLayerResponse;
@@ -52,6 +54,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     private final LocationLedgerSync locationLedgerSync;
     private final ProductStockLocks stockLocks;
     private final StockTransferRepository stockTransferRepository;
+    private final FrontDeskAccessService frontDeskAccessService;
 
     @Override
     @Transactional
@@ -107,6 +110,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Override
     @Transactional
     public InventorySummaryResponse getProductInventorySummary(Long productId) {
+        frontDeskAccessService.requireAccess(FrontDeskPermission.PRODUCT_VIEW_STOCK_SUMMARY);
         Product product = bootstrapLegacyLayerUnderLock(productId);
         return buildSummary(product);
     }

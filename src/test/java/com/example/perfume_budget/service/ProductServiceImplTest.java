@@ -74,6 +74,8 @@ class ProductServiceImplTest {
     @Mock
     private EffectivePriceService effectivePriceService;
     @Mock
+    private com.example.perfume_budget.service.interfaces.FrontDeskAccessService frontDeskAccessService;
+    @Mock
     private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     @org.mockito.Spy
@@ -823,5 +825,20 @@ class ProductServiceImplTest {
                 false,
                 productImage
         );
+    }
+
+    @Test
+    void adminCatalogReadsAreGatedByProductViewAdminCatalogBeforeAnyRead() {
+        var denied = new com.example.perfume_budget.exception.ForbiddenException("no");
+        when(frontDeskAccessService.requireAccess(com.example.perfume_budget.enums.FrontDeskPermission.PRODUCT_VIEW_ADMIN_CATALOG))
+                .thenThrow(denied);
+        org.junit.jupiter.api.Assertions.assertThrows(com.example.perfume_budget.exception.ForbiddenException.class,
+                () -> productService.getAdminProductListings(org.springframework.data.domain.PageRequest.of(0, 10)));
+        org.junit.jupiter.api.Assertions.assertThrows(com.example.perfume_budget.exception.ForbiddenException.class,
+                () -> productService.getProductDetails(1L));
+        org.mockito.Mockito.verifyNoInteractions(productRepository);
+        org.mockito.Mockito.verify(frontDeskAccessService, org.mockito.Mockito.times(2))
+                .requireAccess(com.example.perfume_budget.enums.FrontDeskPermission.PRODUCT_VIEW_ADMIN_CATALOG);
+        org.mockito.Mockito.verifyNoMoreInteractions(frontDeskAccessService);
     }
 }

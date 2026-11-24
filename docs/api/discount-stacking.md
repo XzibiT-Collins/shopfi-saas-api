@@ -70,8 +70,11 @@ Product discount: `PUT /product/admin/{productId}/discount` (type, value > 0, st
 `PUT /admin/shop-discount` (percentage 0 < p <= 100, start, end), one at a time, a new one retires the old one at once;
 details and `status` values in [checkout.md](checkout.md#shop-wide-discount-admin-reads-api-06).
 
-## Open item for the product owner (not decided here)
+## Product decision, confirmed 2026-11-23 (no code change)
 
-"Product wins even when the store-wide one is better" and "no coupons during a store-wide sale" are today's behaviour. If the
-business wants best-of or a coupon exception, that is a one-place change in `EffectivePriceService` /
-`CheckoutPricingService`; the contract test will fail on purpose and must be updated with the doc.
+Both rules are the product owner's decision and are today's behaviour: **a coupon is not allowed when any item in the cart is on
+discount** (a product discount or the store-wide discount; checked on every line, before the coupon is looked up), and **the
+product's own discount wins over the store-wide one**. Pinned by `DiscountStackingDocContractTest`
+(`couponIsRefusedWhenAnyLineIsOnSaleFromEitherSource`, the `pricing-cases` table and `decisionsOfTheProductOwnerArePinned`).
+Changing either is a one-place change in `EffectivePriceService` / `CheckoutPricingService` and must update the test and this
+page together.

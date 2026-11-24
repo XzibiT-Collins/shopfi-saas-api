@@ -44,7 +44,7 @@ public class InventoryManagementController {
         ));
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @GetMapping("/products/{productId}/summary")
     public ResponseEntity<CustomApiResponse<InventorySummaryResponse>> getProductInventorySummary(
             @PathVariable Long productId) {

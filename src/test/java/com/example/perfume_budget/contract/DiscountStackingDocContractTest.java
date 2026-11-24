@@ -271,4 +271,24 @@ class DiscountStackingDocContractTest {
             assertThat(dtos).doesNotContain("DiscountSource");
         }
     }
+
+    /** Product decision 2026-11-23: no coupon when any item is on discount (either source); the product's own discount wins. */
+    @Test
+    void decisionsOfTheProductOwnerArePinned() throws Exception {
+        String doc = Files.readString(DOC);
+        assertThat(doc).contains("**a coupon is not allowed when any item in the cart is on\ndiscount**")
+                .contains("the\nproduct's own discount wins over the store-wide one");
+        Product own = product("100.00");
+        own.setDiscountType(DiscountType.PERCENTAGE);
+        own.setDiscountValue(new BigDecimal("10"));
+        own.setDiscountStartAt(NOW.minusHours(1));
+        own.setDiscountEndAt(NOW.plusHours(1));
+        // product wins over store-wide (90.00, not 80.00) ...
+        assertThat(prices.compute(own, shop("20"), NOW).effectiveAmount()).isEqualByComparingTo("90.00");
+        assertThat(prices.compute(own, shop("20"), NOW).source()).isEqualTo(DiscountSource.PRODUCT);
+        // ... and in that same situation (product discount AND store-wide sale) a coupon is still refused
+        assertThatThrownBy(() -> checkoutPricing(shop("20"), mock(Coupon.class)).quote(cartOf(own), "SAVE"))
+                .isInstanceOfSatisfying(CouponRejectedException.class,
+                        e -> assertThat(e.getReason()).isEqualTo(CouponRejectedException.Reason.WITH_SALE_ITEMS));
+    }
 }

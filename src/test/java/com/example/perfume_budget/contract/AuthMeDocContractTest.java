@@ -34,7 +34,7 @@ import static org.mockito.Mockito.when;
 /**
  * API-RD-06 (backend part): docs/api/auth-me.md. The examples parse into the real AuthResponse (unknown properties
  * rejected), the effective-permission rules it states are the code's, and the permission to route table is the set of
- * checks that really exist in the services (so the day a PRODUCT_VIEW_* permission is enforced this test fails on purpose).
+ * checks that really exist in the services (since PERM-BE all eight permissions are enforced).
  */
 class AuthMeDocContractTest {
 
@@ -123,12 +123,15 @@ class AuthMeDocContractTest {
             }
         }
         assertThat(enforced).containsExactlyInAnyOrder("WALK_IN_ORDER_CREATE", "CUSTOMER_SEARCH", "WALK_IN_ORDER_VIEW",
-                "WALK_IN_ORDER_MARK_RECEIPT_PRINTED", "STOCK_TRANSFER", "STOCK_CONVERSION");
-        // 2. the doc has a row for every permission; the two unenforced ones say "nothing today", the others do not
+                "WALK_IN_ORDER_MARK_RECEIPT_PRINTED", "STOCK_TRANSFER", "STOCK_CONVERSION",
+                "PRODUCT_VIEW_ADMIN_CATALOG", "PRODUCT_VIEW_STOCK_SUMMARY");
+        assertThat(enforced).as("every permission is enforced somewhere").containsExactlyInAnyOrderElementsOf(
+                Arrays.stream(FrontDeskPermission.values()).map(Enum::name).toList());
+        // 2. the doc has a row for every permission; none says "nothing today" (the flag is gone since PERM-BE)
         for (FrontDeskPermission p : FrontDeskPermission.values()) {
             Matcher row = Pattern.compile("^\\| `" + p.name() + "` \\|(.*)$", Pattern.MULTILINE).matcher(doc);
             assertThat(row.find()).as("doc row for " + p).isTrue();
-            assertThat(row.group(1).contains("**nothing today**")).as("nothing-today flag of " + p).isEqualTo(!enforced.contains(p.name()));
+            assertThat(row.group(1)).as("nothing-today flag of " + p).doesNotContain("nothing today");
         }
         // 2b. the ROUTES of every row are exactly the shared table (which the integration test proves against the services)
         for (FrontDeskPermission p : FrontDeskPermission.values()) {
@@ -142,16 +145,29 @@ class AuthMeDocContractTest {
         }
         assertThat(com.example.perfume_budget.staffinbox.FrontDeskRouteTable.ROUTES.keySet())
                 .containsExactlyInAnyOrderElementsOf(Arrays.stream(FrontDeskPermission.values()).map(Enum::name).toList());
-        // 3. no other code reads the two decorative permissions
-        try (Stream<Path> files = Files.walk(Path.of(SRC))) {
-            String others = files.filter(p -> p.toString().endsWith(".java") && !p.endsWith("FrontDeskPermission.java"))
-                    .map(p -> read(p)).collect(Collectors.joining("\n"));
-            assertThat(others).doesNotContain("PRODUCT_VIEW_ADMIN_CATALOG").doesNotContain("PRODUCT_VIEW_STOCK_SUMMARY");
-        }
         // 4. the 403 texts of the two gates
         assertThat(Files.readString(Path.of(SRC + "service/WalkInOrderServiceImpl.java"))).contains("You do not have permission to perform this walk-in action.");
         assertThat(Files.readString(Path.of(SRC + "service/FrontDeskAccessServiceImpl.java"))).contains("You do not have permission to perform this action.");
         assertThat(doc).contains("You do not have permission to perform this\nwalk-in action.").contains("You do not have permission to perform this action.");
+    }
+
+    /** PERM-BE: each route of the table is open to FRONT_DESK by role AND checks its permission in the service, on the first line. */
+    @Test
+    void everyRouteOfTheTableHasTheRoleGateAndItsPermissionCheckInTheService() throws Exception {
+        String product = Files.readString(Path.of(SRC + "controller/ProductController.java"));
+        String inventory = Files.readString(Path.of(SRC + "controller/InventoryManagementController.java"));
+        String gate = "@PreAuthorize(\"hasAnyRole('ADMIN','FRONT_DESK')\")\n    @GetMapping(\"%s\")";
+        assertThat(product).contains(gate.formatted("/admin/listing")).contains(gate.formatted("/main/{productId}"));
+        assertThat(inventory).contains(gate.formatted("/products/{productId}/summary"));
+        String products = Files.readString(Path.of(SRC + "service/ProductServiceImpl.java"));
+        String inv = Files.readString(Path.of(SRC + "service/InventoryManagementServiceImpl.java"));
+        for (String m : List.of("getAdminProductListings(Pageable pageable)", "getProductDetails(Long productId)")) {
+            assertThat(products).contains(m + " {\n        frontDeskAccessService.requireAccess(FrontDeskPermission.PRODUCT_VIEW_ADMIN_CATALOG);");
+        }
+        assertThat(inv).contains("getProductInventorySummary(Long productId) {\n        frontDeskAccessService.requireAccess(FrontDeskPermission.PRODUCT_VIEW_STOCK_SUMMARY);");
+        // nothing else was widened: the front-desk role gate appears exactly on the routes the doc lists (+ the older role-only ones)
+        assertThat(product.split("hasAnyRole\\('ADMIN','FRONT_DESK'\\)", -1)).as("ProductController front-desk routes").hasSize(1 + 3);
+        assertThat(inventory.split("hasAnyRole\\('ADMIN','FRONT_DESK'\\)", -1)).as("InventoryManagementController front-desk routes").hasSize(1 + 2);
     }
 
     @Test

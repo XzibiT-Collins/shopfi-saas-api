@@ -181,7 +181,7 @@ class StaffInboxAndAuthMeIntegrationTest extends AbstractCheckoutIntegrationTest
     void permissionTableOfTheDocMatchesTheEnforcedRoutes() throws Exception {
         setTemplate("WALK_IN_ORDER_CREATE");
         setOverrides(deskBId, List.of(), List.of("WALK_IN_ORDER_CREATE")); // deskB: no permission at all
-        // role-only routes work without any permission (this includes the two "nothing today" permissions' routes)
+        // role-only routes work without any permission (search and the per-location reads are not gated by a permission)
         assertThat(status(get(INBOX), deskB)).isEqualTo(200);
         assertThat(status(get("/api/v1/admin/inventory/locations"), deskB)).isEqualTo(200);
         // permission-gated routes answer 403 with the documented texts
@@ -350,7 +350,41 @@ class StaffInboxAndAuthMeIntegrationTest extends AbstractCheckoutIntegrationTest
                 assertThat(routeStatus(route, deskA)).as("everything but %s -> %s".formatted(e.getKey(), route)).isEqualTo(403);
             }
         }
-        assertThat(checked).isEqualTo(12);
+        assertThat(checked).isEqualTo(15);
+    }
+
+    private static final List<String> VIEW_ROUTES = List.of("GET /product/admin/listing", "GET /product/main/{id}",
+            "GET /admin/inventory/products/{id}/summary");
+
+    /** PERM-BE: the two PRODUCT_VIEW_* permissions are enforced; ADMIN behaves as before, CUSTOMER and anonymous are unchanged. */
+    @Test
+    void productViewRoutes_adminPassesByRoleCustomerAndAnonymousStayOut() throws Exception {
+        for (String route : VIEW_ROUTES) {
+            int adminStatus = routeStatus(route, admin);
+            assertThat(adminStatus).as("admin " + route).isNotIn(401, 403);
+            setTemplate(FrontDeskRouteTable.ROUTES.entrySet().stream().filter(e -> e.getValue().contains(route))
+                    .map(Map.Entry::getKey).toArray(String[]::new));
+            assertThat(routeStatus(route, deskA)).as("desk with permission = same URL as admin: " + route).isEqualTo(adminStatus);
+            assertThat(routeStatus(route, shopper)).as("customer " + route).isEqualTo(403);
+            assertThat(routeStatus(route, null)).as("anonymous " + route).isEqualTo(401);
+        }
+    }
+
+    @Test
+    void productViewRoutes_denyOverrideAndEmptyPermissionSetAnswer403WithTheDocumentedText() throws Exception {
+        setTemplate("PRODUCT_VIEW_ADMIN_CATALOG", "PRODUCT_VIEW_STOCK_SUMMARY");
+        for (String route : VIEW_ROUTES) assertThat(routeStatus(route, deskA)).as(route).isNotIn(401, 403);
+        setOverrides(deskAId, List.of(), List.of("PRODUCT_VIEW_ADMIN_CATALOG", "PRODUCT_VIEW_STOCK_SUMMARY"));
+        for (String route : VIEW_ROUTES) assertThat(routeStatus(route, deskA)).as("denied override " + route).isEqualTo(403);
+        MvcResult r = call(get("/api/v1/product/admin/listing"), deskA, "acme", null);
+        assertThat(body(r).get("description").asText()).isEqualTo("You do not have permission to perform this action.");
+        // deskB has the template only; a role-only grant of the OTHER view permission does not open the route
+        setTemplate("PRODUCT_VIEW_STOCK_SUMMARY");
+        assertThat(routeStatus("GET /product/admin/listing", deskB)).isEqualTo(403);
+        assertThat(routeStatus("GET /product/main/{id}", deskB)).isEqualTo(403);
+        assertThat(routeStatus("GET /admin/inventory/products/{id}/summary", deskB)).isNotIn(401, 403);
+        // other tenant: an acme front-desk token is anonymous on bravo
+        assertThat(call(get("/api/v1/product/admin/listing"), deskB, "bravo", null).getResponse().getStatus()).isEqualTo(401);
     }
 
     @Test

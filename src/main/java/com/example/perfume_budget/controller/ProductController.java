@@ -54,7 +54,7 @@ public class ProductController {
         return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductListings(pageable)));
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @GetMapping("/admin/listing")
     public ResponseEntity<CustomApiResponse<PageResponse<ProductListing>>> getAdminProductListings(Pageable pageable){
         return ResponseEntity.ok().body(CustomApiResponse.success(productService.getAdminProductListings(pageable)));
@@ -105,7 +105,7 @@ public class ProductController {
         return ResponseEntity.noContent().cacheControl(org.springframework.http.CacheControl.noStore()).build();
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @GetMapping("/main/{productId}")
     public ResponseEntity<CustomApiResponse<ProductDetails>> getProductDetails(@PathVariable Long productId){
         return ResponseEntity.ok().body(CustomApiResponse.success(productService.getProductDetails(productId)));

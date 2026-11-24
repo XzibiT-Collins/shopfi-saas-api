@@ -125,7 +125,7 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | FeatureFlagController | PATCH | `/api/v1/admin/feature-flags/{featureKey}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | InventoryManagementController | POST | `/api/v1/admin/inventory/receipts` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | InventoryManagementController | POST | `/api/v1/admin/inventory/adjustments` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
-| InventoryManagementController | GET | `/api/v1/admin/inventory/products/{productId}/summary` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
+| InventoryManagementController | GET | `/api/v1/admin/inventory/products/{productId}/summary` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data; FRONT_DESK also needs `PRODUCT_VIEW_STOCK_SUMMARY` (checked in the service, PERM-BE; ADMIN passes by role) |
 | InventoryManagementController | GET | `/api/v1/admin/inventory/products/{productId}/stock-by-location` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data |
 | InventoryManagementController | GET | `/api/v1/admin/inventory/legacy-balance-report` | authenticated (anyRequest) | `hasRole('ADMIN')` | reads tenant data |
 | InventoryManagementController | POST | `/api/v1/admin/inventory/legacy-balance-repair` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
@@ -155,13 +155,13 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | ProductController | PUT | `/api/v1/product/update/{productId}` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | GET | `/api/v1/product/featured` | permitAll (GET) | - | reads tenant data (public storefront data) |
 | ProductController | GET | `/api/v1/product/listing` | permitAll (GET) | - | reads tenant data (public storefront data) |
-| ProductController | GET | `/api/v1/product/admin/listing` | ADMIN | `hasRole('ADMIN')` | reads tenant data |
+| ProductController | GET | `/api/v1/product/admin/listing` | ADMIN, FRONT_DESK (GET) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data; FRONT_DESK also needs `PRODUCT_VIEW_ADMIN_CATALOG` (checked in the service, PERM-BE; ADMIN passes by role) |
 | ProductController | GET | `/api/v1/product/search` | permitAll (GET) | - | reads tenant data (public storefront data) |
 | ProductController | GET | `/api/v1/product/admin/search` | ADMIN, FRONT_DESK (GET) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data |
 | ProductController | GET | `/api/v1/product/by-ids` | permitAll (GET) | - | reads tenant data (public storefront data; CAT-07, [contract](catalog-public-lookup-and-views.md)) |
 | ProductController | GET | `/api/v1/product/{slug}` | permitAll (GET) | - | reads tenant data (public storefront data; read only since VIEW-01) |
 | ProductController | POST | `/api/v1/product/{slug}/view` | permitAll (POST, exactly this path) | - | mutates (a view counter; VIEW-01: per client rate limit, 30 min dedupe, tenant scoped, no body, always 204, [contract](catalog-public-lookup-and-views.md)) |
-| ProductController | GET | `/api/v1/product/main/{productId}` | ADMIN | `hasRole('ADMIN')` | reads tenant data |
+| ProductController | GET | `/api/v1/product/main/{productId}` | ADMIN, FRONT_DESK (GET) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads tenant data; FRONT_DESK also needs `PRODUCT_VIEW_ADMIN_CATALOG` (checked in the service, PERM-BE; ADMIN passes by role) |
 | ProductController | PUT | `/api/v1/product/admin/{productId}/discount` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | DELETE | `/api/v1/product/admin/{productId}/discount` | ADMIN | `hasRole('ADMIN')` | mutates |
 | ProductController | DELETE | `/api/v1/product/delete/{productId}` | ADMIN | `hasRole('ADMIN')` | mutates |
@@ -277,5 +277,5 @@ Still without a dedicated contract doc (rows of section 3, not touched here): th
 (`InventoryManagementController`, `StorageLocationController`, `StockTransferController`, `StockConversionController`,
 `ProductFamilyController`, `SalesReportController`), `PaymentSettingsController` (partly in checkout.md), the coupon admin
 CRUD (`CouponController`, in checkout.md / `DISCOUNTS_FRONTEND_INTEGRATION.md`), the authenticated customer cart / delivery
-rows (checkout.md), and the platform / onboarding rows (their own docs). Finding recorded in [auth-me.md](auth-me.md):
-the front-desk permissions `PRODUCT_VIEW_ADMIN_CATALOG` and `PRODUCT_VIEW_STOCK_SUMMARY` are granted in the UI but checked nowhere.
+rows (checkout.md), and the platform / onboarding rows (their own docs). Since PERM-BE (product decision 2026-11-23) all eight front-desk
+permissions are enforced, including `PRODUCT_VIEW_ADMIN_CATALOG` and `PRODUCT_VIEW_STOCK_SUMMARY` ([auth-me.md](auth-me.md)).

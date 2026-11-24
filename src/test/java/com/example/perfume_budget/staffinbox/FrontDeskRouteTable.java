@@ -20,6 +20,6 @@ public final class FrontDeskRouteTable {
             "STOCK_TRANSFER", List.of("POST /admin/inventory/transfers", "GET /admin/inventory/transfers"),
             "STOCK_CONVERSION", List.of("POST /admin/stock-conversions/forward", "POST /admin/stock-conversions/reverse",
                     "GET /admin/stock-conversions/reverse/{id}/variants"),
-            "PRODUCT_VIEW_ADMIN_CATALOG", List.of(),
-            "PRODUCT_VIEW_STOCK_SUMMARY", List.of());
+            "PRODUCT_VIEW_ADMIN_CATALOG", List.of("GET /product/admin/listing", "GET /product/main/{id}"),
+            "PRODUCT_VIEW_STOCK_SUMMARY", List.of("GET /admin/inventory/products/{id}/summary"));
 }
