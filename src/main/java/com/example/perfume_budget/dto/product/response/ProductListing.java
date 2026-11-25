@@ -22,7 +22,12 @@ public record ProductListing(
         boolean isActive,
         boolean isEnlisted,
         String slug,
-        Integer stockQuantity
+        Integer stockQuantity,
+        // SC-BE-01 (admin only, null when the product has no family): pack size info for the stock conversion screen
+        Long familyId,
+        Boolean isBaseUnit,
+        Integer conversionFactor,
+        String uomCode
 ) implements Serializable {
     private static final long serialVersionUID = 1L;
 }

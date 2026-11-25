@@ -34,5 +34,10 @@ public record ProductDetails(
         BigDecimal sellingPriceAmount,   // effective (discounted) price
         BigDecimal originalPriceAmount,  // pre-discount selling price
         BigDecimal costPriceAmount,      // null when the product has no cost price
-        CurrencyCode currency
+        CurrencyCode currency,
+        // SC-BE-01 (admin only, null when the product has no family): pack size info for the stock conversion screen
+        Long familyId,
+        Boolean isBaseUnit,
+        Integer conversionFactor,
+        String uomCode
 ) {}
