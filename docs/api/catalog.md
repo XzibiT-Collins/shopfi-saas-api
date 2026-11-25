@@ -66,6 +66,42 @@ pre-discount one; `costPrice` the cost). **Clients must not parse them**: the sa
 
 All other fields (`productId`, `productName`, `stockQuantity`, `isActive`, `slug`, ...) are as before.
 
+### Pack size fields (SC-BE-01, read only, admin only)
+
+For the Stock conversion screen. Added to the admin rows only: `ProductListing` (`GET /product/admin/listing`,
+`GET /product/admin/search`) and `ProductDetails` (`GET /product/main/{productId}`, which also is what `add-product`,
+`update/{id}` and the discount routes answer). **No migration and no behaviour change**: the values are the existing
+`products.family_id`, `is_base_unit`, `conversion_factor` and the code of `unit_of_measure_id`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `familyId` | number or `null` | id of the product family (the same value as `familyId` in `ProductRequest`) |
+| `isBaseUnit` | boolean or `null` | `true` for the family's base unit (UoM `EA`, factor 1), `false` for a bulk unit such as a BOX |
+| `conversionFactor` | integer or `null` | base units in one of this product (BOX of 6 = `6`; base unit = `1`), always `>= 1` when set |
+| `uomCode` | string or `null` | code of the product's unit of measure (`EA`, `BOX`, `DOZEN`, `PAIR`, ...); also `null` if a family member has no UoM row |
+
+All four keys are always present. **A product with no family reports all four as `null`** (even though the database
+holds the defaults `is_base_unit = true`, `conversion_factor = 1`): without a family there is no pack to convert.
+
+`GET /admin/stock-conversions/reverse/{sourceProductId}/variants` (ADMIN, FRONT_DESK with `STOCK_CONVERSION`) keeps
+`variantId`, `variantSku`, `variantName` and **adds** `conversionFactor` (integer, the target pack's factor, the number
+the reverse conversion's quantity must be a multiple of), `stockQuantity` (integer, never null) and `uomCode` (string or
+`null`). Unchanged errors: 400 for a source that is not a base unit or has no family, 404 for an unknown source.
+
+**Public responses are unchanged**: `GET /product/listing`, `/search`, `/featured`, `/by-ids` (`PublicProductListing`)
+and `GET /product/{slug}` (`ProductDetailsPageResponse`) do not carry these fields (pinned by exact key sets in
+`ProductPackSizeIntegrationTest`). Access rules are unchanged (see `authorization-matrix.md`; no row changes).
+
+Example, base unit and a BOX of 6 of the same family (listing / detail rows, other fields omitted):
+
+```json
+{ "productId": 12, "stockQuantity": 40, "familyId": 4, "isBaseUnit": true,  "conversionFactor": 1, "uomCode": "EA" }
+{ "productId": 13, "stockQuantity": 7,  "familyId": 4, "isBaseUnit": false, "conversionFactor": 6, "uomCode": "BOX" }
+{ "productId": 20, "stockQuantity": 3,  "familyId": null, "isBaseUnit": null, "conversionFactor": null, "uomCode": null }
+```
+
+Variants of base unit 12: `[{ "variantId": 13, "variantSku": "ORD-123-BOX", "variantName": "Oil Box", "conversionFactor": 6, "stockQuantity": 7, "uomCode": "BOX" }]`
+
 ### Deleting a product
 
 `DELETE /api/v1/product/delete/{productId}` answers `204`.

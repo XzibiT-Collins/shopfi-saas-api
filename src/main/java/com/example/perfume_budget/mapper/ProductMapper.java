@@ -32,6 +32,10 @@ public class ProductMapper {
                 .isEnlisted(Boolean.TRUE.equals(product.getIsEnlisted()))
                 .stockQuantity(stockQuantity)
                 .slug(product.getSlug())
+                .familyId(familyId(product))
+                .isBaseUnit(isBaseUnit(product))
+                .conversionFactor(conversionFactor(product))
+                .uomCode(uomCode(product))
                 .build();
     }
 
@@ -58,8 +62,28 @@ public class ProductMapper {
         return new ProductVariantSummaryResponse(
                 product.getId(),
                 product.getSku(),
-                product.getName()
+                product.getName(),
+                product.getConversionFactor(),
+                product.getStockQuantity() != null ? product.getStockQuantity() : 0,
+                product.getUnitOfMeasure() != null ? product.getUnitOfMeasure().getCode() : null
         );
+    }
+
+    // SC-BE-01: pack size info is only meaningful inside a family; a product without one reports all four as null.
+    private static Long familyId(Product product) {
+        return product.getFamily() != null ? product.getFamily().getId() : null;
+    }
+
+    private static Boolean isBaseUnit(Product product) {
+        return product.getFamily() != null ? product.getIsBaseUnit() : null;
+    }
+
+    private static Integer conversionFactor(Product product) {
+        return product.getFamily() != null ? product.getConversionFactor() : null;
+    }
+
+    private static String uomCode(Product product) {
+        return product.getFamily() != null && product.getUnitOfMeasure() != null ? product.getUnitOfMeasure().getCode() : null;
     }
 
     public static ProductDetails toProductDetails(Product product, EffectivePrice effectivePrice){
@@ -96,6 +120,10 @@ public class ProductMapper {
                 .originalPriceAmount(effectivePrice.originalAmount())
                 .costPriceAmount(product.getCostPrice() != null ? product.getCostPrice().getAmount() : null)
                 .currency(effectivePrice.currencyCode())
+                .familyId(familyId(product))
+                .isBaseUnit(isBaseUnit(product))
+                .conversionFactor(conversionFactor(product))
+                .uomCode(uomCode(product))
                 .build();
     }
 }

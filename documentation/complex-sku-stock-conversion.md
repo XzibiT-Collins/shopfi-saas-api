@@ -57,6 +57,10 @@ The refactor also changed the endpoint boundary so controllers no longer return 
 - Variant cost price is auto-calculated from `baseUnit.costPrice * conversionFactor`.
 - `DOZEN` and `PAIR` currently override the supplied conversion factor to `12` and `2` respectively.
 
+### Reading pack size (SC-BE-01)
+
+- Admin product rows (`/product/admin/listing`, `/product/admin/search`, `/product/main/{id}`) expose `familyId`, `isBaseUnit`, `conversionFactor`, `uomCode` (all `null` without a family); the reverse variants endpoint also returns `conversionFactor`, `stockQuantity`, `uomCode`. Public catalog responses are unchanged. See `docs/api/catalog.md`.
+
 ### Forward Conversion
 
 - Source product must be a non-base unit.

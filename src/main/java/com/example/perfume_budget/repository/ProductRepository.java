@@ -29,6 +29,8 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
      * Without it ProductMapper's getCategory().getName() throws LazyInitializationException (500).
      */
     String CATEGORY = "category";
+    /** SC-BE-01: the admin DTOs read the unit of measure code (the family id comes from the lazy reference, no load). */
+    String UOM = "unitOfMeasure";
 
     Optional<Product> findBySlug(String slug);
 
@@ -37,17 +39,17 @@ public interface ProductRepository extends JpaRepository<Product, Long>, JpaSpec
     Optional<Product> findBySlugAndIsActiveTrueAndIsEnlistedTrue(String slug);
 
     /** Admin detail ({@code GET /product/main/{id}}). */
-    @EntityGraph(attributePaths = CATEGORY)
+    @EntityGraph(attributePaths = {CATEGORY, UOM})
     Optional<Product> findWithCategoryById(Long id);
 
     /** Admin listing. */
     @Override
-    @EntityGraph(attributePaths = CATEGORY)
+    @EntityGraph(attributePaths = {CATEGORY, UOM})
     Page<Product> findAll(Pageable pageable);
 
     /** Public and admin search. */
     @Override
-    @EntityGraph(attributePaths = CATEGORY)
+    @EntityGraph(attributePaths = {CATEGORY, UOM})
     Page<Product> findAll(Specification<Product> spec, Pageable pageable);
 
     Optional<Product> findByIdAndIsActiveTrueAndIsEnlistedTrue(Long id);
