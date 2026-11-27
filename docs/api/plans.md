@@ -102,8 +102,8 @@ meets a `kind` it does not know must drop the row (and log), not render it.
 | `annualMonthlyEquivalentPesewas` | integer | **derived**, read-only (3.2) | yes | ignored |
 | `annualSavingPesewas` | integer | **derived**, read-only (3.2) | yes | ignored |
 | `currency` | `"GHS"` | constant | yes | ignored |
-| `trialDays` | integer | 0..365; 0 = no trial (new tenants start with `trialEndsAt` = provisioning time, i.e. already read-only until set `ACTIVE`) | yes | yes |
-| `transactionFeeBps` | integer | 0..10,000; display-only until PLAN-06 collects it | yes | yes |
+| `trialDays` | integer | 0..365; 0 = no trial. The default sign-up plan needs `trialDays >= 1` (section 7), so a new tenant is never read-only on arrival | yes | yes |
+| `transactionFeeBps` | integer | 0..1,000 (at most 10%, Security L6); display-only until PLAN-06 collects it. A change applies from the next billing cycle, like a price change (15) | yes | yes |
 | `isPublic` | boolean | listed on the public pricing page (when also `active`) | yes | yes |
 | `isDefaultForSignup` | boolean | exactly one plan is the default; every new tenant gets it (O1). Rules in section 7 | yes | yes |
 | `highlighted` | boolean | card styling only | yes | yes |
@@ -120,8 +120,10 @@ meets a `kind` it does not know must drop the row (and log), not render it.
 
 ### 3.2 Derived annual prices (owner O5)
 
-Computed by ONE server function, in integer / `BigDecimal` arithmetic, never floating point, and returned on every plan
-response (platform and public):
+Computed by ONE server function and returned on every plan response (platform and public). **Every intermediate is a
+`long` or a `BigDecimal`** with `RoundingMode.HALF_UP`, never an `int` and never floating point: at the documented bound
+`monthlyPricePesewas * 12 * 100` is 120,000,000,000, which overflows a 32-bit `int` (max 2,147,483,647) and would yield a
+wrong or negative price (Security M3). The results fit in `long` (and in a JSON number) with a wide margin.
 
 ```
 annualPricePesewas             = round_half_up(monthlyPricePesewas * 12 * (100 - annualDiscountPercent) / 100)
@@ -150,6 +152,10 @@ Worked values (the PLAN-01 unit test pins every row):
 | 14900 | 0 | 178800 | 178800 | 14900 | 14900 | 0 | no discount |
 | 14900 | 100 | 0 | 0 | 0 | 0 | 178800 | free annual |
 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | free plan |
+| 100000000 | 0 | 1200000000 | 1200000000 | 100000000 | 100000000 | 0 | bound; intermediate 120,000,000,000 overflows `int` |
+| 100000000 | 1 | 1188000000 | 1188000000 | 99000000 | 99000000 | 12000000 | bound; intermediate 118,800,000,000 |
+| 100000000 | 20 | 960000000 | 960000000 | 80000000 | 80000000 | 240000000 | bound |
+| 99999999 | 33 | 803999991.96 | 803999992 | 66999999.33... | 66999999 | 395999996 | near the bound, both roundings |
 
 The annual price itself can never land on exactly .5 pesewa: `monthly * 12 * (100 - p) / 100 = monthly * 3 * (100 - p) / 25`,
 so its fraction is a multiple of 1/25 (0.04) and never 0.5. Only the per-month equivalent can hit .5 (rows 14902/23 and 1/50).
@@ -622,6 +628,11 @@ Errors of both (and of the matrix):
 { "description": "Validation failed", "data": { "active": "the default sign-up plan cannot be deactivated" } }
 ```
 
+<!-- example: plan-default-trial-error response ValidationErrorEnvelope 400 -->
+```json
+{ "description": "Validation failed", "data": { "trialDays": "the default sign-up plan needs a trial of at least 1 day" } }
+```
+
 <!-- example: plan-code-taken response CodedErrorEnvelope 409 -->
 ```json
 { "description": "A plan with this code already exists", "data": { "code": "PLAN_CODE_TAKEN" } }
@@ -656,7 +667,7 @@ Rejected request examples (each fails the schema and the server answers `400`):
 
 <!-- example: plan-update-fee-too-high invalid PlanUpdateRequest 400 -->
 ```json
-{ "version": 3, "name": "Growth", "monthlyPricePesewas": 39900, "annualDiscountPercent": 20, "trialDays": 14, "transactionFeeBps": 10001, "isPublic": true, "isDefaultForSignup": false, "highlighted": true, "marketingBullets": [], "sortOrder": 20, "active": true }
+{ "version": 3, "name": "Growth", "monthlyPricePesewas": 39900, "annualDiscountPercent": 20, "trialDays": 14, "transactionFeeBps": 1001, "isPublic": true, "isDefaultForSignup": false, "highlighted": true, "marketingBullets": [], "sortOrder": 20, "active": true }
 ```
 
 <!-- example: plan-update-missing-version invalid PlanUpdateRequest 400 -->
@@ -674,6 +685,7 @@ Violations are `400 Validation failed` with the field named; nothing is written.
 | The default sign-up plan must be `active` | `active`: `the default sign-up plan cannot be deactivated` (or, when setting the flag on an inactive plan, `isDefaultForSignup`: `an inactive plan cannot be the default`) |
 | At least one plan must stay both `isPublic` and `active` | `isPublic` or `active`: `at least one public active plan must remain` |
 | In one matrix request, at most one item may set `isDefaultForSignup: true` | `plans[i].plan.isDefaultForSignup`: `only one plan can be the default` |
+| The default sign-up plan has `trialDays >= 1` (setting 0 on it, or making a 0-day plan the default, is refused) | `trialDays`: `the default sign-up plan needs a trial of at least 1 day` |
 
 The default plan does not have to be public (an unlisted "launch" plan is allowed). Deactivating a plan or making it
 non-public removes it from the public list at once; tenants on it keep working with its entitlements, and the platform
@@ -1051,7 +1063,9 @@ cache in shared storage), `action` (`PLAN_CREATE`, `PLAN_UPDATE`, `PLAN_MATRIX_U
   unlimited);
 - tenant changes as `planCode`, `trialEndsAt`, `subscriptionStatus`.
 
-Values are stored data: render them as text only. Derived fields are never audited (they follow from price and percent).
+The table also stores the immutable platform admin id of the actor next to `actorEmail` (not returned, like the tenant
+audit log), and it is append-only: no update or delete path exists in code (PLAN-01 tests it). Values are stored data:
+render them as text only. Derived fields are never audited (they follow from price and percent).
 Tenant plan changes ALSO appear in `GET /api/v1/platform/tenants/{slug}/audit` (platform-tenants.md).
 
 <!-- example: plan-audit-page response PlanAuditPageEnvelope 200 -->
@@ -1204,8 +1218,12 @@ onboarding CORS zone (onboarding.md section 11: GET allowed, credentials not all
 
 `data.plans`: plans that are `isPublic` **and** `active`, in `sortOrder` then `id`, in the public shape (no `version`,
 `updatedBy`, `tenantCounts`), with entitlements. `data.features`: the catalog. Zero public plans is a valid `200` with an
-empty list ("Plans coming soon", PLAN-05 AC7). Response header `Cache-Control: public, max-age=60`; a change made in the
-console may take up to 60 s to show here. No per-IP limiter (the body is identical for everyone and cacheable).
+empty list ("Plans coming soon", PLAN-05 AC7). Response headers `Cache-Control: public, max-age=60` and `Vary: Origin`
+(the CORS headers depend on the `Origin`); the response never sets a cookie. Server side it is served from a short cache
+(the master plan cache of 15.1, or an in-process cache of at most 60 s), never a master-DB read per hit, and it has a
+per-IP rate limiter like the other onboarding endpoints (`plans-ip`, 60 per 60 s, `429` + `Retry-After` with the standard
+body). A change made in the console may take up to 60 s to show here. If PLAN-05 ever puts plan text into JSON-LD or a
+`<meta>` tag, it must be serialised with `<` escaped.
 
 The default sign-up plan is the one with `isDefaultForSignup: true`; if it is not public it is absent from this list and
 the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial line uses `trialDays` (hidden when 0). The
@@ -2333,15 +2351,18 @@ validated first and an invalid body gets `400` even when the plan lacks the feat
   data; the gated routes answer 402 (reads included) until the feature is back.
 - **Trial length** (`trialDays`) affects only trials that start after the change; existing `trialEndsAt` values are not
   touched.
-- **Price or annual-discount changes** affect only the next billing cycle (there is no billing until PLAN-06); the
-  derived annual fields change at once in every response.
+- **Price, annual-discount or transaction-fee changes** affect only the next billing cycle (there is no billing until
+  PLAN-06); the derived annual fields and the shown fee change at once in every response. For PLAN-06: amounts are
+  charged from a server-side snapshot of the plan taken at the start of the cycle, never from a client value.
 - **Trial expired or `CANCELED`** (`readOnly`): reads allowed (GET/HEAD on gated routes of features in the plan), every
   gated write and every limit-checked create answers `402` reason `SUBSCRIPTION_INACTIVE`; core features (orders,
   checkout, storefront, products other than create, ...) are unaffected. The super-admin keeps a tenant going by
   extending the trial or setting it `ACTIVE` (11).
 - **Sign-up** (O1): every new tenant gets the `isDefaultForSignup` plan, `subscriptionStatus` `TRIALING`, and
-  `trialEndsAt` = the moment provisioning completes (tenant becomes `ACTIVE`) + that plan's `trialDays` at that moment.
-  Any `plan` value in the signup body is ignored (onboarding.md). Until provisioning completes `trialEndsAt` is `null`.
+  `trialEndsAt` = the moment provisioning first completes (tenant becomes `ACTIVE`) + that plan's `trialDays` at that
+  moment. It is set **only when it is `null`**: reactivate (`SUSPENDED -> ACTIVE`), reprovision and a re-approve never
+  reset it (Security L5). Any `plan` value in the signup body is ignored (onboarding.md). Until provisioning completes
+  `trialEndsAt` is `null`.
 - **Feature flags vs entitlements**: an entitlement decides whether the tenant MAY use a feature; the existing feature
   flags (feature-flags.md) decide whether it has turned it on.
 - **`LOGIN_OTP` is a request-content gate.** Only a `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` that changes at least
@@ -2352,7 +2373,28 @@ validated first and an invalid body gets `400` even when the plan lacks the feat
   `flag && entitlement`: a downgrade or an expired trial never removes OTP from an account that has it on; the tenant
   can only turn it off itself.
 
-### 15.1 Limits: counted set and every write that enters it
+### 15.1 Caching (requirements for PLAN-02)
+
+"Effective on the next request" only holds if the entitlement cache meets all of these (Security M1). The default
+`CacheManager` is `TenantAwareCacheManager`, which prefixes every cache name with the request's tenant: an entry written
+on a tenant request and an eviction fired from a platform request would hit different keys, and the default TTL is
+60 minutes, so a removed feature, a `CANCELED` status or a lowered limit would stay granted for an hour.
+
+1. A **dedicated** cache (its own `CacheManager` or `RedisTemplate`), **not** `TenantAwareCacheManager`.
+2. Fixed master keys, keyed by immutable ids: e.g. `plans:v1:entitlements:{planId}` and `plans:v1:tenant:{tenantId}`
+   (tenant -> plan id, status, `trialEndsAt`). Never keyed by slug (slugs can be reused after a purge).
+3. Values serialised as **JSON** (no JDK serialization, no default typing).
+4. **TTL at most 60 s** as a backstop.
+5. **Eviction after commit** (transaction-aware) on every plan create / update, matrix write, default-flag move and
+   tenant plan / status / trial change.
+6. On any cache (Redis) error, read the database; **never grant by default**.
+7. `readOnly` is **never cached** as a boolean: it is computed per request from the cached `status` / `trialEndsAt`
+   against the `Clock`.
+
+Tests: an eviction fired from a platform request is seen by the next tenant request; tenant A's entry is never served to
+tenant B.
+
+### 15.2 Limits: counted set and every write that enters it
 
 A limit applies to **every write that moves a row into the counted set**, not only to the obvious "create" endpoint
 (Security H1). The check runs inside the service that performs the write (so every controller and any later caller of
