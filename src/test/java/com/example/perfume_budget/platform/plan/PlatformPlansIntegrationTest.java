@@ -358,8 +358,11 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
         assertThat(p.get("annualPricePesewas").asLong()).isEqualTo(1_188_000_000L);   // derived at the bound (no int overflow)
         assertThat(p.get("annualMonthlyEquivalentPesewas").asLong()).isEqualTo(99_000_000L);
         assertThat(p.get("annualSavingPesewas").asLong()).isEqualTo(12_000_000L);
-        assertThat(body(asAdmin(get(PLANS), null)).get("data").get("plans").get(1).get("annualPricePesewas").asLong())
-                .isEqualTo(1_188_000_000L);
+        for (JsonNode listed : body(asAdmin(get(PLANS), null)).get("data").get("plans")) {
+            if (listed.get("id").asLong() == 2) {
+                assertThat(listed.get("annualPricePesewas").asLong()).isEqualTo(1_188_000_000L);
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------ rules (AC6)
@@ -571,5 +574,32 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
             assertThat(m.getName()).doesNotStartWith("delete").doesNotStartWith("update").doesNotStartWith("remove");
         }
         assertThat(com.example.perfume_budget.platform.plan.model.PlanAuditLog.class.isAnnotationPresent(org.hibernate.annotations.Immutable.class)).isTrue();
+    }
+
+    /**
+     * AC9 / Security requirement 11: the audit row is written IN the write's transaction. An injected failure of the
+     * audit insert rolls the plan change back (and no eviction event is delivered).
+     */
+    @Test
+    void aFailingAuditInsertRollsThePlanWriteBack() throws Exception {
+        exec("CREATE OR REPLACE FUNCTION master.plan01_audit_fail() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'injected'; END; $$ LANGUAGE plpgsql");
+        exec("CREATE TRIGGER plan01_audit_fail BEFORE INSERT ON master.plan_audit_log FOR EACH ROW EXECUTE FUNCTION master.plan01_audit_fail()");
+        try {
+            MockHttpServletResponse r = asAdmin(put(PLANS + "/2"), planBody(2).put("trialDays", 21).toString());
+            assertThat(r.getStatus()).isGreaterThanOrEqualTo(500);
+            MockHttpServletResponse m = matrix(matrixItem(2, 0, "[{\"featureKey\":\"WALK_IN_POS\",\"enabled\":false}]", null));
+            assertThat(m.getStatus()).isGreaterThanOrEqualTo(500);
+            tenants.ensureTenant("plans-a");
+            MockHttpServletResponse t = asAdmin(put("/api/v1/platform/tenants/plans-a/plan"), "{\"subscriptionStatus\":\"CANCELED\"}");
+            assertThat(t.getStatus()).isGreaterThanOrEqualTo(500);
+        } finally {
+            exec("DROP TRIGGER IF EXISTS plan01_audit_fail ON master.plan_audit_log");
+            exec("DROP FUNCTION IF EXISTS master.plan01_audit_fail()");
+        }
+        assertThat(version(2)).isZero();
+        assertThat(scalar("SELECT trial_days FROM master.plans WHERE id = 2")).isEqualTo(14);
+        assertThat(scalar("SELECT count(*) FROM master.plan_entitlements WHERE plan_id = 2 AND feature_key = 'WALK_IN_POS' AND enabled")).isEqualTo(1);
+        assertThat(string("SELECT subscription_status FROM master.tenants WHERE slug = 'plans-a'")).isNotEqualTo("CANCELED");
+        assertThat(EventCapture.COMMITTED).isEmpty();
     }
 }

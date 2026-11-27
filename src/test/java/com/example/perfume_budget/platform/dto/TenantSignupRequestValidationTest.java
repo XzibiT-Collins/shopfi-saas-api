@@ -34,4 +34,16 @@ class TenantSignupRequestValidationTest {
         assertThat(invalidFields("abc", "1234567")).containsExactly("password");
         assertThat(invalidFields("abc", "x".repeat(73))).containsExactly("password");
     }
+
+    /** PLAN-01 / Security requirement 3: neither the public signup body nor the saga input has a plan, status or trial field. */
+    @org.junit.jupiter.api.Test
+    void signupAndProvisioningRequestsHaveNoClientPlanStatusOrTrialField() {
+        for (Class<?> c : new Class<?>[]{TenantSignupRequest.class, com.example.perfume_budget.tenancy.ProvisioningRequest.class}) {
+            for (java.lang.reflect.RecordComponent rc : c.getRecordComponents()) {
+                org.assertj.core.api.Assertions.assertThat(rc.getName().toLowerCase(java.util.Locale.ROOT))
+                        .as(c.getSimpleName() + "." + rc.getName())
+                        .doesNotContain("plan").doesNotContain("status").doesNotContain("trial").doesNotContain("subscription");
+            }
+        }
+    }
 }

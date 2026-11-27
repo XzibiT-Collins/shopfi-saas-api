@@ -205,8 +205,12 @@ tenant JWTs of any role never authenticate (`401`), an authenticated non-SUPER_A
 
 <!-- example: platform-forbidden response ErrorEnvelope 403 -->
 ```json
-{ "description": "Access Denied", "data": null }
+{ "description": "Access Denied: You do not have permission to access this resource.", "data": null }
 ```
+
+(PLAN-01 correction: the `403` comes from the `SecurityConfig` matcher's access-denied handler, whose text is the one above
+for every route; it was documented as `Access Denied`, the text of a method-level `@PreAuthorize` refusal. Branch on
+the status, never on the text.)
 
 ## 5. `GET /api/v1/platform/plans`
 

@@ -644,4 +644,21 @@ class PlatformTenantServiceTest {
         assertThatThrownBy(() -> limited.suspend("acme", ADMIN)).isInstanceOf(RateLimitExceededException.class);
         limited.suspend("acme", new PlatformPrincipal(8L, "other@platform.test", "Other")); // separate budget
     }
+
+    /** PLAN-01 (plans.md section 11, Security requirement 12): the tenant plan action shares the per-admin budget. */
+    @Test
+    void tenantPlanAction_countsAgainstTheSamePerAdminThrottle_beforeAnyLookup() {
+        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
+        stub("acme", TenantStatus.SUSPENDED);
+        var req = new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(null, null, "ACTIVE", null);
+        limited.suspend("acme", ADMIN); // a lifecycle action spends from the same budget
+        when(tenants.lockById(1L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> limited.changePlan("acme", req, ADMIN))
+                .isInstanceOf(ResourceNotFoundException.class); // 2nd call: allowed (row vanished -> 404)
+        org.mockito.Mockito.clearInvocations(tenants);
+        assertThatThrownBy(() -> limited.changePlan("acme", req, ADMIN)).isInstanceOf(RateLimitExceededException.class);
+        verify(tenants, never()).findBySlug(any()); // throttled before any lookup
+    }
 }

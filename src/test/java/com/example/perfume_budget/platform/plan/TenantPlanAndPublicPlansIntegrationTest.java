@@ -137,7 +137,7 @@ class TenantPlanAndPublicPlansIntegrationTest extends AbstractPlansIntegrationTe
         assertThat(auditRows()).isEqualTo(audit);
         assertThat(string("SELECT subscription_status FROM master.tenants WHERE slug = 'tp-rules'")).isEqualTo("TRIALING");
         // unknown and malformed slugs: the platform 404, identical
-        for (String slug : List.of("no-such-shop", "Bad_Slug", "ab", "x'%3B--")) {
+        for (String slug : List.of("no-such-shop", "Bad_Slug", "ab", "a".repeat(41), "x'--")) {
             MockHttpServletResponse r = change(slug, "{\"planId\":2}");
             assertThat(r.getStatus()).as(slug).isEqualTo(404);
             assertThat(body(r).toString()).isEqualTo("{\"description\":\"Tenant not found\",\"data\":null}");
