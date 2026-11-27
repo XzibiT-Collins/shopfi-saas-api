@@ -5,6 +5,7 @@ Status: **contract, docs only.** Owner-approved plan: `.keep/plan-keep/PLAN.md`,
 plans API, the tenant plan action and the public list; PLAN-02 builds enforcement (the 402 bodies), the subscription
 endpoint and the trial on sign-up. Both implement this document exactly; a deviation is a change to this document first.
 Frontend: PLAN-04 (platform Plans page) and PLAN-05 (pricing page, paywall UX) build against the examples below.
+Requirements the PLAN-01 / PLAN-02 implementations must meet (Security sign-off checks them): section 18.
 
 | Artifact | Path |
 |---|---|
@@ -2466,19 +2467,73 @@ without a lock is not enough. PLAN-02's 402 tests have one row per write in the 
   changes entitlements of a plan that has bullets, the confirm dialog shows a non-blocking hint "Marketing bullets are
   not updated automatically; check the card text of <plan>".
 
-## 17. Open points for the PO (defaults chosen in this contract)
+## 17. Decisions and remaining defaults
 
-These are defaults this document picked where the AC were silent; change them here before PLAN-01/02 start if needed.
+Decided by the PO / orchestrator on the QA and Security review of PR #72 (2026-11-27):
 
-1. `trialEndsAt` "extend only" read literally: later than the current trial end; it revives `CANCELED` to `TRIALING`
-   and is refused for `ACTIVE` / `PAST_DUE` tenants (11).
-2. `isDefaultForSignup: true` on another plan moves the flag (bumping the other plan's version) rather than requiring
-   two steps (7).
+- The public plans endpoint stays in the onboarding CORS zone (no tenant origins); the admin shell gets the list as
+  `publicPlans` of `GET /admin/subscription` (13).
+- Check order 423 -> 401 -> 403 (incl. service-level permission checks) -> 402 -> 400, with the body-dependent exceptions
+  of 14.4; the gate runs in the service after authorization.
+- `LOGIN_OTP` is a request-content gate: only off -> on, also in read-only mode; login reads the flag only (15).
+- Limits apply to every write into the counted set (15.2). Caching rules (15.1).
+- Finishing work on existing orders is never gated; only starting new gated work is (2).
+- `THEME_ADVANCED` is an allowlist; the legacy balance report / repair is core (2).
+- `transactionFeeBps` <= 1000; fee changes apply from the next cycle; `trialEndsAt` is set once (3.1, 15).
+- The default sign-up plan needs `trialDays >= 1` (7).
+
+Defaults this document still picked where the AC are silent (change them here before PLAN-01/02 start if needed):
+
+1. `trialEndsAt` "extend only": later than the current trial end; it revives `CANCELED` to `TRIALING` and is refused for
+   `ACTIVE` / `PAST_DUE` tenants (11).
+2. `isDefaultForSignup: true` on another plan moves the flag (bumping the other plan's version) (7).
 3. Expired-but-active coupons count towards `MAX_ACTIVE_COUPONS`; inactive storage locations count towards
-   `MAX_LOCATIONS` (AC6 says "all") (15).
+   `MAX_LOCATIONS` (AC6), so activating a location is not limit-checked (15.2).
 4. Field limits the AC did not state: `name` <= 40, `bulletsHeading` <= 80, `monthlyPricePesewas` <= 100,000,000,
-   `sortOrder` 0..1000, matrix <= 50 items (3.1, 8).
+   `sortOrder` 0..1000, matrix <= 50 items (3.1, 8); public list limiter 60 per 60 s per IP (12).
 5. Tenant audit rows for a plan change use the new action `CHANGE_PLAN` with `previousStatus` = `newStatus` (the V6
    CHECK and the console's audit parser must accept it) (11).
-6. Precedence of 423 before 401 (14.4) and of limit-check 400 before 402: forced by the existing filter chain and
-   service-level limit checks; the AC order is kept for everything else.
+6. "Finishing existing orders" (PO decision on Security L7) is read as: walk-in reads, receipt-printed, cancel and
+   refund, and return-received / refund-acknowledgement of a return that exists, stay open; starting a return
+   (`POST /{orderNumber}/return`) and placing / quoting a walk-in sale are gated (2).
+
+## 18. Requirements for PLAN-01 / PLAN-02 implementations
+
+Security sign-off of PLAN-01 and PLAN-02 checks every item (Security review of PR #72).
+
+1. **Platform authz.** Every `/api/v1/platform/plans/**` handler and `PUT /platform/tenants/{slug}/plan`: class
+   `@PreAuthorize("hasRole('SUPER_ADMIN')")` plus the existing matcher. Authz matrix test: anonymous 401, every tenant
+   role token 401, non-SUPER_ADMIN platform 403. Writes accept `application/json` only and stay behind the platform
+   CORS / Origin guard (the CSRF guard). The public GET/HEAD matcher is the exact path, not `/onboarding/**`.
+2. **Separate public DTO.** The public list and the subscription response (`plan`, `publicPlans`) are built from a
+   separate public DTO, not a serializer filter on the platform DTO. A test asserts the exact key set: no `version`,
+   `updatedBy`, `tenantCounts`, audit data, and no non-public or inactive plans in the public list or `publicPlans`.
+   Public responses set no cookies.
+3. **Signup.** `TenantSignupRequest` / `ProvisioningRequest` have no plan, status or trial field the client can set; the
+   plan comes only from the `isDefaultForSignup` row at provisioning; `trialEndsAt` is set once (only when `null`).
+4. **Input bounds.** Every bound of 3.1 enforced server-side (bean validation), including the plain-text rule of section 1
+   (Cc / Cf / U+2028 / U+2029 rejected), `maxItems` on bullets (12) and matrix entitlements (17), and fractional numbers
+   rejected for integer fields. Derived prices use `long` / `BigDecimal` with HALF_UP; unit tests at the bound (3.2).
+5. **Entitlement cache** exactly as 15.1: dedicated non-`TenantAwareCacheManager` cache, fixed master keys by immutable
+   plan / tenant id, JSON values, TTL <= 60 s, after-commit eviction on every plan write, matrix write, default-flag move
+   and tenant plan / status / trial change, database fallback on a cache error (never grant by default), `readOnly`
+   never cached. Tests: a platform-side eviction is seen by the next tenant request; tenant A's entry never served to B.
+6. **Tenant from `TenantContext` only** in `EntitlementService`, the subscription endpoint and all usage counts (counts
+   run in the tenant schema; nothing in the request selects a tenant).
+7. **Limits** inside the services on every write into the counted set (15.2, including `assign`), serialized per tenant
+   and feature (`pg_advisory_xact_lock` or `SELECT ... FOR UPDATE` on a per-tenant row) so count and insert are atomic.
+   Concurrency test at `limit - 1` lets exactly one through.
+8. **Gate order** 14.4: tenant resolution -> 401 -> 403 (incl. service-level `FrontDeskAccessService` checks) -> 402 ->
+   400, body-dependent exceptions as listed. One test per gated route proves a FRONT_DESK user without the permission
+   gets 403. Request-content gates (`PRODUCT_FAMILIES` fields on the multipart product create / update,
+   `THEME_ADVANCED`, `LOGIN_OTP` off -> on) run in the service and count as gated writes for `SUBSCRIPTION_INACTIVE`.
+9. **`LOGIN_OTP`.** The login path reads the flag only; a downgrade never disables OTP; turning off or unchanged values
+   are never 402. Test: downgrade with the flag on -> login still asks for the OTP.
+10. **Never gated**, enforced by the allow-list scan test: auth, onboarding, platform, storefront, cart, checkout,
+    payment, webhook, notifications, metrics, ledger posting from orders, scheduled and async jobs, finishing work on
+    existing orders, the legacy balance report / repair. No gate check inside webhook or scheduled code paths.
+11. **Audit** rows in the same transaction for every plan create / update / matrix item / default-flag move / tenant plan
+    change, with the immutable admin id + e-mail and field-level before / after; no update or delete path for audit
+    rows; values rendered as text (PLAN-04).
+12. **Tenant plan action** `PUT /platform/tenants/{slug}/plan` uses the existing slug validation and per-admin throttle,
+    evicts the tenant's cache entry after commit, and refuses a `trialEndsAt` in the past or beyond now + 365 days.

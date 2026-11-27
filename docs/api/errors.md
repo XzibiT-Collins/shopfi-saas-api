@@ -48,14 +48,18 @@ All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 | Status | `data.code` | Extra `data` keys | When |
 |---|---|---|---|
 | 402 | `PLAN_UPGRADE_REQUIRED` | `feature`, `reason` (`NOT_IN_PLAN` \| `SUBSCRIPTION_INACTIVE`), `requiredPlans` (plan codes) | a tenant route needs a feature its plan lacks, or a gated write / limit-checked create while the trial has ended or the subscription is `CANCELED` |
-| 402 | `PLAN_LIMIT_REACHED` | `feature`, `limit`, `used`, `requiredPlans` | a limit-checked create (product, active coupon, front-desk user, storage location) at the plan's limit |
+| 402 | `PLAN_LIMIT_REACHED` | `feature`, `limit`, `used`, `requiredPlans` | any write that moves a row into a counted set (product create, coupon create or activation, front-desk user create / re-activation / assign, storage location create) at the plan's limit |
 | 409 | `PLAN_VERSION_CONFLICT` | `conflicts[]` = `{planId, expectedVersion, currentVersion}` | a platform plan write (PUT, matrix) carried a stale `version`; nothing was written. Plan writes never use the generic `503 TRY_AGAIN` optimistic-lock answer |
 | 409 | `PLAN_CODE_TAKEN` | | plan create with an existing code |
 | 404 | `PLAN_NOT_FOUND` | | unknown plan id |
 | 400 | `PLAN_INACTIVE` | | assigning an inactive plan to a tenant without `allowInactive: true` |
 
-402 is new in this API. Precedence on a tenant route: tenant resolution (400 / 404 / 423 suspended) -> 401 -> 403 -> 402 ->
-400 validation; limit checks run inside the create service, after validation ([plans.md](plans.md#144-precedence)).
+402 is new in this API. Precedence on a tenant route: tenant resolution (400 / 404 / 423 suspended) -> 401 -> 403
+(including the service-level front-desk permission checks) -> 402 -> 400 validation. The plan gate runs in the service
+after authorization. Exceptions where the body is validated (400) before the 402: the body-dependent gates
+(`THEME_ADVANCED`, `LOGIN_OTP` off -> on, `PRODUCT_FAMILIES` fields) and every limit check
+([plans.md](plans.md#144-precedence)). Finishing work on existing orders (walk-in cancel / refund, return-received,
+refund-acknowledgement) is never a 402.
 The admin frontend opens one upgrade modal for any 402 and never shows it as a generic error.
 
 ## Kept: business messages (our own exception types)

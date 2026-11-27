@@ -18,7 +18,7 @@ return tenant business data.
 | 401 / 403 | not authenticated / not SUPER_ADMIN |
 | 404 | tenant not found (detail, audit and every action). An unknown slug and a malformed slug give the identical response |
 | 409 | illegal transition for the tenant's current status, or approve/reprovision without verified credentials (exact texts below) |
-| 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30), `Retry-After` header (seconds) set. Standard error envelope, exactly `{"description": "Too many tenant actions, slow down", "data": null}` |
+| 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30) on the four POST actions and, from PLAN-01, on `PUT /tenants/{slug}/plan` ([plans.md](plans.md) section 11), `Retry-After` header (seconds) set. Standard error envelope, exactly `{"description": "Too many tenant actions, slow down", "data": null}` |
 | 500 | the provisioning saga failed; the tenant is now `FAILED` and may be reprovisioned |
 
 ## Slug path parameter
@@ -271,7 +271,7 @@ standard paging envelope (`page`, `size`, `totalElements`, `totalPages`, `sort`,
 
 Access and limits of the three read endpoints: SUPER_ADMIN only (class-level `@PreAuthorize` plus the `/platform/**` matcher),
 platform cookie required, same errors as above. They run in read-only transactions, never write an audit row and have no
-per-admin throttle (the `429` action throttle covers the four POST actions only, as the list always did).
+per-admin throttle (the `429` action throttle covers the four POST actions and, from PLAN-01, the plan action `PUT /tenants/{slug}/plan`).
 
 ## Actions
 

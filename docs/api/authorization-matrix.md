@@ -243,8 +243,9 @@ matchers. Contract: [plans.md](plans.md).
 
 Same actor rules as the rest of the platform: tenant tokens of any role on `/platform/**` are `401`, anonymous `401`. The
 public allow-list of section 2 gains `GET /api/v1/platform/onboarding/plans` when PLAN-01 ships. **New status 402**
-(PLAN-02): on gated tenant routes, after 401 and 403 (a role or permission failure is always reported as 403, never as
-a 402 that reveals the plan); see [plans.md](plans.md#144-precedence) and [errors.md](errors.md#plans-and-subscription-plan-03).
+(PLAN-02): on gated tenant routes, after 401 and 403 (a role or permission failure, including the service-level
+front-desk permission checks, is always reported as 403, never as a 402 that reveals the plan); the gate runs in the
+service after authorization, not in an interceptor before `@PreAuthorize`; see [plans.md](plans.md#144-precedence) and [errors.md](errors.md#plans-and-subscription-plan-03).
 
 ## 4. SEC-03b hardening
 
