@@ -42,7 +42,7 @@ is stored in the audit table and never appears in logs or error bodies.
 
 ## Plans and subscription (PLAN-03)
 
-Contract for PLAN-01 / PLAN-02 (not in the code yet); full rules, examples and precedence in [plans.md](plans.md#14-402-payment-required).
+The 404 / 409 / 400 plan codes below are implemented by PLAN-01 (platform plan API and tenant plan action); the two 402 codes are PLAN-02. Full rules, examples and precedence in [plans.md](plans.md#14-402-payment-required).
 All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 
 | Status | `data.code` | Extra `data` keys | When |
@@ -53,6 +53,7 @@ All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 | 409 | `PLAN_CODE_TAKEN` | | plan create with an existing code |
 | 404 | `PLAN_NOT_FOUND` | | unknown plan id |
 | 400 | `PLAN_INACTIVE` | | assigning an inactive plan to a tenant without `allowInactive: true` |
+| 400 | `TRIAL_NOT_STARTED` | | `trialEndsAt` sent for a tenant whose trial has not started (not provisioned yet, `trialEndsAt` null) |
 
 402 is new in this API. Precedence on a tenant route: tenant resolution (400 / 404 / 423 suspended) -> 401 -> 403
 (including the service-level front-desk permission checks) -> 400 body parsing / bean validation (`@Valid` runs at

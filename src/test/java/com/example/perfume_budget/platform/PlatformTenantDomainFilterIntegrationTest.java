@@ -2,7 +2,6 @@ package com.example.perfume_budget.platform;
 
 import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.platform.enums.CustomDomainStatus;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.PlatformAdmin;
 import com.example.perfume_budget.platform.model.Tenant;
@@ -84,7 +83,7 @@ class PlatformTenantDomainFilterIntegrationTest extends AbstractPostgresIntegrat
     private void tenant(String key, TenantStatus status, CustomDomainStatus domain) {
         String slug = prefix + key;
         Tenant t = Tenant.builder().slug(slug).displayName("Shop " + slug).schemaName("tenant_" + slug.replace('-', '_'))
-                .status(status).plan(TenantPlan.FREE).ownerEmail(slug + "@owner.test").build();
+                .status(status).planId(1L).ownerEmail(slug + "@owner.test").build();
         if (domain != null) {
             t.setCustomDomain(slug + ".example.com");
             t.setCustomDomainStatus(domain);

@@ -1,9 +1,9 @@
 # Plans, entitlements and subscription API (PLAN-03)
 
-Status: **contract, docs only.** Owner-approved plan: `.keep/plan-keep/PLAN.md`, board section "Paywall wave 2026-11-27"
-(owner answers O1-O5). Nothing in this document exists in the code yet: PLAN-01 builds the plan catalog, the platform
-plans API, the tenant plan action and the public list; PLAN-02 builds enforcement (the 402 bodies), the subscription
-endpoint and the trial on sign-up. Both implement this document exactly; a deviation is a change to this document first.
+Status: **contract; sections 2-12 implemented by PLAN-01.** Owner-approved plan: `.keep/plan-keep/PLAN.md`, board section
+"Paywall wave 2026-11-27" (owner answers O1-O5). PLAN-01 built the plan catalog (master V51), the platform plans API, the
+tenant plan action, the public list, signup on the default plan and the trial clock (set once when provisioning first
+completes); PLAN-02 builds enforcement (the 402 bodies), the subscription endpoint and the entitlement cache. Both implement this document exactly; a deviation is a change to this document first.
 Frontend: PLAN-04 (platform Plans page) and PLAN-05 (pricing page, paywall UX) build against the examples below.
 Requirements the PLAN-01 / PLAN-02 implementations must meet (Security sign-off checks them): section 18.
 
@@ -15,7 +15,7 @@ Requirements the PLAN-01 / PLAN-02 implementations must meet (Security sign-off 
 | Signup no longer chooses a plan | [onboarding.md](onboarding.md) section 3 |
 | 402 / 409 codes in the error catalogue | [errors.md](errors.md#plans-and-subscription-plan-03) |
 | Routes and roles | [authorization-matrix.md](authorization-matrix.md#3b-plans-and-subscription-plan-03-contract) |
-| Contract tests (to be written) | PLAN-01 `PlansDocContractTest`, PLAN-02 `SubscriptionDocContractTest` (they parse every example below) |
+| Contract tests | PLAN-01 `PlansDocSchemaTest` (every example vs the schema) and `PlansDocContractTest` (every PLAN-01 example vs the live server); PLAN-02 `SubscriptionDocContractTest` (the subscription and 402 examples) |
 
 Every example below is tagged `<!-- example: <name> <kind> <Schema> [status] -->`, with the grammar of
 [onboarding.md](onboarding.md): `valid` request examples must validate against `plans.schema.json` and be accepted by
@@ -42,8 +42,10 @@ examples must validate against the named `$defs` entry and equal what the server
 - Text fields are plain text, single line: the server rejects (`400`) any character of the Unicode general categories
   **Cc** (controls, incl. C1 U+0080-009F) and **Cf** (format characters: bidi overrides U+202A-202E and isolates
   U+2066-2069, zero-width characters U+200B-200F, soft hyphen, BOM, ...) and **U+2028 / U+2029** (Security L2). Text is
-  trimmed; a blank optional text is stored as `null`; a blank `name` or bullet is `400`. Clients render plan text as
-  text, never as HTML or Markdown.
+  trimmed of every Unicode space (Java whitespace and the general categories Zs / Zl / Zp: U+0020, NBSP U+00A0, em space
+  U+2003, ideographic space U+3000, ...). "Blank" means nothing is left after that trim: a blank optional text
+  (`tagline`, `description`, `badgeLabel`, `bulletsHeading`) is **stored as `null`** (not refused); a blank `name` or
+  bullet is `400` (`must not be blank`). Clients render plan text as text, never as HTML or Markdown.
 - Bean-validation and rule failures are the existing 400 shape `{"description": "Validation failed", "data": {"<field path>": "<message>"}}`.
   Field paths are the JSON property names; inside the matrix they are indexed: `plans[0].entitlements[1].limitValue`,
   `plans[1].plan.trialDays`. Messages are display text.
@@ -205,8 +207,12 @@ tenant JWTs of any role never authenticate (`401`), an authenticated non-SUPER_A
 
 <!-- example: platform-forbidden response ErrorEnvelope 403 -->
 ```json
-{ "description": "Access Denied", "data": null }
+{ "description": "Access Denied: You do not have permission to access this resource.", "data": null }
 ```
+
+(PLAN-01 correction: the `403` comes from the `SecurityConfig` matcher's access-denied handler, whose text is the one above
+for every route; it was documented as `Access Denied`, the text of a method-level `@PreAuthorize` refusal. Branch on
+the status, never on the text.)
 
 ## 5. `GET /api/v1/platform/plans`
 
@@ -239,7 +245,7 @@ catalog. Read-only transaction, no audit row.
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -709,10 +715,17 @@ Updates several plans in **one transaction, all-or-nothing**. Body `PlanMatrixRe
   LIMIT: `{ "featureKey", "limitValue" }` (`null` = unlimited). Rules in 3.3.
 - `plan`: optional full replacement of the plan's writable fields (same body as `PUT /{id}` without `version`).
 
-Every item's `version` is checked first. If ANY item is stale, nothing is written and the answer is
-`409 PLAN_VERSION_CONFLICT` listing **every** stale item (section 9). Then all validation and the rules of section 7 are
-checked on the final state; any failure is `400` and nothing is written. Unknown `id`: `404 PLAN_NOT_FOUND`, nothing
-written. An item whose values equal the stored ones is version-checked but writes nothing (no bump, no audit row).
+Checks run in this order; the first failure answers and nothing is written:
+
+1. **400 field validation**: bean validation of the body (bounds of 3.1, `limitValue >= 0`, 1..50 items, 1..16
+   entitlements) and the request content that needs no stored data: the same `id` twice, an item with neither
+   `entitlements` nor `plan`, an unknown or repeated `featureKey`, a `limitValue` on a BOOLEAN key, a LIMIT key without
+   `limitValue` (3.3).
+2. **404 `PLAN_NOT_FOUND`**: an item `id` that does not exist.
+3. **409 `PLAN_VERSION_CONFLICT`**: if ANY item's `version` is stale, listing **every** stale item (section 9).
+4. **400 plan rules** of section 7, checked on the final state of the whole catalog.
+
+An item whose values equal the stored ones is version-checked but writes nothing (no bump, no audit row).
 
 On success: `200` with the same body as `GET /platform/plans` (all plans, new versions, catalog), so the client replaces
 its whole state. Each changed plan gets one audit row (`PLAN_MATRIX_UPDATE`). Entitlement changes are effective for every
@@ -771,7 +784,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 100 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -811,7 +824,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 100 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1147,7 +1160,7 @@ per-admin action throttle of platform-tenants.md (`429`). Body `TenantPlanUpdate
 | Field | Rules |
 |---|---|
 | `planId` | an existing plan id (else `400`, `planId`: `unknown plan`). An inactive plan is refused with `400 PLAN_INACTIVE` unless `allowInactive: true` is also sent. Changing the plan keeps `subscriptionStatus` and `trialEndsAt` |
-| `trialEndsAt` | timestamp, **extend only**: strictly later than the current `trialEndsAt` (or than now, when it is `null` or past) and at most 365 days after now. Allowed only while the tenant's status is `TRIALING` or `CANCELED`; it sets `subscriptionStatus` to `TRIALING` (a canceled or expired trial is revived). Not combinable with `subscriptionStatus` in one request |
+| `trialEndsAt` | timestamp, **extend only**: strictly later than the current `trialEndsAt` (or than now, when it is past) and at most 365 days after now. Refused with `400 TRIAL_NOT_STARTED` while the trial has not started (`trialEndsAt` is `null`: the tenant has not finished provisioning; the trial clock starts when provisioning first completes, section 15; PO decision on PLAN-01 QA L3). Allowed only while the tenant's status is `TRIALING` or `CANCELED`; it sets `subscriptionStatus` to `TRIALING` (a canceled or expired trial is revived). Not combinable with `subscriptionStatus` in one request |
 | `subscriptionStatus` | `ACTIVE` or `CANCELED` only (`TRIALING` comes from sign-up or `trialEndsAt`, `PAST_DUE` from PLAN-06); anything else `400`. `trialEndsAt` is kept as history |
 | `allowInactive` | boolean, default `false`; allowed only together with `planId` (without it: `400`) |
 
@@ -1201,6 +1214,11 @@ evicts the tenant's cached plan/status (PLAN-02 AC1): the change is effective on
 <!-- example: tenant-plan-inactive-error response CodedErrorEnvelope 400 -->
 ```json
 { "description": "The plan is inactive; send allowInactive to assign it anyway", "data": { "code": "PLAN_INACTIVE" } }
+```
+
+<!-- example: tenant-trial-not-started-error response CodedErrorEnvelope 400 -->
+```json
+{ "description": "The trial starts when the store has been provisioned; it cannot be set before that", "data": { "code": "TRIAL_NOT_STARTED" } }
 ```
 
 <!-- example: tenant-trial-error response ValidationErrorEnvelope 400 -->
@@ -1281,7 +1299,7 @@ subscription example assumes):
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1489,7 +1507,7 @@ the seed ones, so they still agree with each other:
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1839,7 +1857,7 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1996,7 +2014,7 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
       "badgeLabel": null,
       "bulletsHeading": "Your launch essentials",
       "marketingBullets": [
-        "Free platform subdomain (yourstore.shopfi.store)",
+        "Free platform subdomain for your store",
         "Up to 50 products",
         "Integrated online checkout & payment processing",
         "Up to 3 active coupon codes",
@@ -2120,7 +2138,7 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -2322,7 +2340,7 @@ Checks run in this order; the first failure answers:
    conversion, inventory and product services today, and any later caller).
 4. **Body parsing and bean validation**: `400` (`Request body is missing or malformed.`, `Validation failed` + field
    map). Spring binds and validates `@Valid` arguments while resolving the controller arguments, so this runs **before**
-   the plan gate on every route that has a request body (e.g. `POST /admin/walk-in/order`, `POST .../stock-transfers`),
+   the plan gate on every route that has a request body (e.g. `POST /admin/walk-in/order`, `POST /api/v1/admin/inventory/transfers`),
    whether or not the decision needs the body.
 5. **Plan gate**: `402 PLAN_UPGRADE_REQUIRED` (`NOT_IN_PLAN` before `SUBSCRIPTION_INACTIVE`), then, for writes into a
    counted set, `402 PLAN_LIMIT_REACHED` (15.2).

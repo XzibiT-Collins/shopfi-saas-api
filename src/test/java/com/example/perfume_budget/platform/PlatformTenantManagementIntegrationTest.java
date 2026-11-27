@@ -9,7 +9,6 @@ import com.example.perfume_budget.platform.service.PlatformTenantService;
 import com.example.perfume_budget.security.cors.TenantOriginPolicy;
 import com.example.perfume_budget.tenancy.TenantProvisioningService;
 import org.springframework.transaction.PlatformTransactionManager;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.PlatformAdmin;
 import com.example.perfume_budget.platform.model.Tenant;
@@ -98,6 +97,9 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     @Autowired MockMvc mvc;
     @Autowired PlatformAdminRepository admins;
     @Autowired TenantRepository tenantRepository;
+    @Autowired com.example.perfume_budget.platform.plan.repository.PlanRepository planRepository;
+    @Autowired com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository planAuditRepository;
+    @Autowired org.springframework.context.ApplicationEventPublisher eventPublisher;
     @Autowired TenantSignupRepository signupRepository;
     @Autowired TenantAuditLogRepository audits;
     @Autowired TenantProvisioningService provisioningService;
@@ -158,7 +160,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     /** A registry row plus (optionally) a verified onboarding signup holding only a BCrypt hash. */
     private Tenant mk(String slug, TenantStatus status, boolean verifiedSignup) {
         Tenant t = tenantRepository.saveAndFlush(Tenant.builder().slug(slug).displayName("Shop " + slug)
-                .schemaName("tenant_" + slug.replace('-', '_')).status(status).plan(TenantPlan.FREE)
+                .schemaName("tenant_" + slug.replace('-', '_')).status(status).planId(1L)
                 .ownerEmail(slug + "@p2.test").build());
         LocalDateTime now = LocalDateTime.now();
         signupRepository.saveAndFlush(TenantSignup.builder().tenantId(t.getId()).ownerFullName("Owner " + slug)
@@ -348,7 +350,8 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         String raw = r.getContentAsString();
         assertThat(raw).doesNotContain("WEBHOOK-SECRET").doesNotContain("tenant_plat_a").doesNotContain("schemaName")
                 .doesNotContain("webhookToken").doesNotContain("password").doesNotContain("$2a$");
-        Set<String> allowed = Set.of("id", "slug", "displayName", "status", "plan", "ownerEmail", "customDomain", "customDomainStatus", "createdAt", "updatedAt");
+        Set<String> allowed = Set.of("id", "slug", "displayName", "status", "plan", "planName", "subscriptionStatus",
+                "trialEndsAt", "ownerEmail", "customDomain", "customDomainStatus", "createdAt", "updatedAt"); // + PLAN-01 AC11
         for (JsonNode item : body(r).get("data").get("items")) {
             Set<String> keys = new HashSet<>();
             item.fieldNames().forEachRemaining(keys::add);
@@ -707,7 +710,8 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     /** A service instance with no reconcile grace (the HTTP one keeps the 60 s default so it never races a live winner). */
     private PlatformTenantService noGraceService() {
         return new PlatformTenantService(tenantRepository, signupRepository, audits, provisioningService, originPolicy,
-                migrator, txManager, 1000, 15, 0);
+                migrator, txManager, 1000, 15, 0, planRepository, planAuditRepository, eventPublisher,
+                java.time.Clock.systemUTC());
     }
 
     private PlatformPrincipal principal() {
@@ -919,7 +923,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     @Test
     void sagaClaim_hookSeesTheStatusFromTheClaimTransaction_andItsFailureIsNotALostRace() throws Exception {
         var req = new com.example.perfume_budget.tenancy.ProvisioningRequest("p2-claimx", "Shop", "p2-claimx@p2.test", "Owner",
-                encoder.encode("Own3r-Passw0rd!"), TenantPlan.FREE);
+                encoder.encode("Own3r-Passw0rd!"));
         mk("p2-claimx", TenantStatus.FAILED, true);
         java.util.concurrent.atomic.AtomicReference<TenantStatus> seen = new java.util.concurrent.atomic.AtomicReference<>();
         assertThatThrownBy(() -> provisioningService.provision(req, t -> {
@@ -933,7 +937,7 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
             String slug = "p2-claim-" + st.name().toLowerCase();
             mk(slug, st, true);
             var r2 = new com.example.perfume_budget.tenancy.ProvisioningRequest(slug, "Shop", slug + "@p2.test", "Owner",
-                    encoder.encode("Own3r-Passw0rd!"), TenantPlan.FREE);
+                    encoder.encode("Own3r-Passw0rd!"));
             java.util.concurrent.atomic.AtomicInteger called = new java.util.concurrent.atomic.AtomicInteger();
             assertThatThrownBy(() -> provisioningService.provision(r2, t -> called.incrementAndGet()))
                     .isInstanceOf(com.example.perfume_budget.tenancy.TenantAlreadyExistsException.class);

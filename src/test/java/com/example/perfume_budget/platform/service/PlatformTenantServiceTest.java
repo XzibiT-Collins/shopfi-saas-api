@@ -8,7 +8,6 @@ import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
 import com.example.perfume_budget.platform.enums.TenantAction;
 import com.example.perfume_budget.platform.enums.TenantAuditPhase;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.model.TenantAuditLog;
@@ -63,16 +62,21 @@ class PlatformTenantServiceTest {
     PlatformTransactionManager tm = mock(PlatformTransactionManager.class);
     com.example.perfume_budget.tenancy.TenantSchemaMigrator migrator = mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class);
     PlatformTenantService service;
+    com.example.perfume_budget.platform.plan.repository.PlanRepository plans =
+            mock(com.example.perfume_budget.platform.plan.repository.PlanRepository.class);
 
     @BeforeEach
     void setUp() {
         when(tm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        service = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60);
+        service = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
+        com.example.perfume_budget.support.TestPlans.stubAnyId(plans);
     }
 
     private Tenant tenant(String slug, TenantStatus status) {
         return Tenant.builder().id(1L).slug(slug).displayName("Shop").schemaName("tenant_" + slug)
-                .status(status).plan(TenantPlan.FREE).ownerEmail("o@" + slug + ".test")
+                .status(status).planId(1L).ownerEmail("o@" + slug + ".test")
                 .createdAt(LocalDateTime.now().minusDays(1)).updatedAt(LocalDateTime.now()).build();
     }
 
@@ -176,12 +180,15 @@ class PlatformTenantServiceTest {
         verifyNoInteractions(audits, saga);
     }
 
-    private TenantActionResponse call(TenantAction a, String slug) {
+    private Object call(TenantAction a, String slug) {
         return switch (a) {
             case APPROVE -> service.approve(slug, ADMIN);
             case SUSPEND -> service.suspend(slug, ADMIN);
             case REACTIVATE -> service.reactivate(slug, ADMIN);
             case REPROVISION -> service.reprovision(slug, ADMIN);
+            // PLAN-01: the plan action follows the same slug rule (malformed = unknown = the same 404, no lookup)
+            case CHANGE_PLAN -> service.changePlan(slug,
+                    new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(3, null, null, null), ADMIN);
         };
     }
 
@@ -628,11 +635,52 @@ class PlatformTenantServiceTest {
 
     @Test
     void perAdminActionThrottle_returns429Exception_andIsPerAdmin() {
-        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60);
+        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
         stub("acme", TenantStatus.SUSPENDED);
         limited.suspend("acme", ADMIN);
         limited.suspend("acme", ADMIN);
         assertThatThrownBy(() -> limited.suspend("acme", ADMIN)).isInstanceOf(RateLimitExceededException.class);
         limited.suspend("acme", new PlatformPrincipal(8L, "other@platform.test", "Other")); // separate budget
+    }
+
+    /** PLAN-01 (plans.md section 11, Security requirement 12): the tenant plan action shares the per-admin budget. */
+    @Test
+    void tenantPlanAction_countsAgainstTheSamePerAdminThrottle_beforeAnyLookup() {
+        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
+        stub("acme", TenantStatus.SUSPENDED);
+        var req = new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(null, null, "ACTIVE", null);
+        limited.suspend("acme", ADMIN); // a lifecycle action spends from the same budget
+        when(tenants.lockById(1L)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> limited.changePlan("acme", req, ADMIN))
+                .isInstanceOf(ResourceNotFoundException.class); // 2nd call: allowed (row vanished -> 404)
+        org.mockito.Mockito.clearInvocations(tenants);
+        assertThatThrownBy(() -> limited.changePlan("acme", req, ADMIN)).isInstanceOf(RateLimitExceededException.class);
+        verify(tenants, never()).findBySlug(any()); // throttled before any lookup
+    }
+
+    /** QA L2: the trial bounds of the plan action use the injected clock, not the wall clock. */
+    @Test
+    void tenantPlanAction_evaluatesTheTrialBoundsAgainstTheInjectedClock() {
+        java.time.Instant fixed = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        PlatformTenantService clocked = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.fixed(fixed, java.time.ZoneOffset.UTC));
+        Tenant t = stub("acme", TenantStatus.ACTIVE);
+        t.setTrialEndsAt(fixed.plus(java.time.Duration.ofDays(5)));
+        when(tenants.lockById(1L)).thenReturn(Optional.of(t));
+        when(tenants.findById(1L)).thenReturn(Optional.of(t));
+        // 300 days after the FIXED clock: inside the bound (by the wall clock it would be years in the past -> 400)
+        clocked.changePlan("acme", new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(
+                null, fixed.plus(java.time.Duration.ofDays(300)), null, null), ADMIN);
+        verify(tenants).updateSubscription(eq(1L), eq(1L), eq(com.example.perfume_budget.platform.enums.SubscriptionStatus.TRIALING),
+                eq(fixed.plus(java.time.Duration.ofDays(300))));
+        // 366 days after the fixed clock: refused
+        assertThatThrownBy(() -> clocked.changePlan("acme", new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(
+                null, fixed.plus(java.time.Duration.ofDays(366)), null, null), ADMIN))
+                .isInstanceOf(com.example.perfume_budget.platform.plan.PlanValidationException.class);
     }
 }

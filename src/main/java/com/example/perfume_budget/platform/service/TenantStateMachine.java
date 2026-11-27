@@ -58,6 +58,7 @@ public final class TenantStateMachine {
                 case PROVISIONING -> Decision.NO_OP;
                 case PENDING, ACTIVE, SUSPENDED -> Decision.ILLEGAL;
             };
+            case CHANGE_PLAN -> throw new IllegalArgumentException("CHANGE_PLAN is not a lifecycle action");
         };
     }
 
@@ -66,6 +67,7 @@ public final class TenantStateMachine {
         return switch (action) {
             case SUSPEND -> TenantStatus.SUSPENDED;
             case APPROVE, REACTIVATE, REPROVISION -> TenantStatus.ACTIVE;
+            case CHANGE_PLAN -> throw new IllegalArgumentException("CHANGE_PLAN is not a lifecycle action");
         };
     }
 }

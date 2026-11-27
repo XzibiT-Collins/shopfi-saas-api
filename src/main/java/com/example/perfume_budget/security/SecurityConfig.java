@@ -137,6 +137,9 @@ public class SecurityConfig {
                                 "/api/v1/platform/onboarding/find-store").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/platform/onboarding/status").permitAll()
                         .requestMatchers(HttpMethod.HEAD, "/api/v1/platform/onboarding/status").permitAll()
+                        // PLAN-01: the public plan list, exact path (never /onboarding/**): GET and HEAD only
+                        .requestMatchers(HttpMethod.GET, "/api/v1/platform/onboarding/plans").permitAll()
+                        .requestMatchers(HttpMethod.HEAD, "/api/v1/platform/onboarding/plans").permitAll()
                         .requestMatchers("/api/v1/platform/**").hasRole("SUPER_ADMIN")
                         // Actuator (SEC-03b F3/F6): only the bare health probe is public (details are never shown to anonymous callers).
                         // Prometheus needs the dedicated scrape token (shopfi.metrics.scrape-token, Authorization: Bearer ...); with no

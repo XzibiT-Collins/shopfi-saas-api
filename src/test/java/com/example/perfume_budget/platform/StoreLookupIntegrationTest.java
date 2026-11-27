@@ -2,7 +2,6 @@ package com.example.perfume_budget.platform;
 
 import com.example.perfume_budget.handlers.MailDispatcher;
 import com.example.perfume_budget.notification.EmailService;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
@@ -96,7 +95,7 @@ class StoreLookupIntegrationTest extends AbstractPostgresIntegrationTest {
 
     private String tenantRow(String slug, TenantStatus status) {
         tenantRepository.save(Tenant.builder().slug(slug).displayName("Shop " + slug).schemaName("tenant_" + slug.replace('-', '_'))
-                .status(status).plan(TenantPlan.FREE).ownerEmail("owner-" + slug + "@owner.test").build());
+                .status(status).planId(1L).ownerEmail("owner-" + slug + "@owner.test").build());
         return slug;
     }
 

@@ -9,7 +9,6 @@ import com.example.perfume_budget.platform.dto.OnboardingStatusResponse;
 import com.example.perfume_budget.platform.dto.TenantResendRequest;
 import com.example.perfume_budget.platform.dto.TenantSignupRequest;
 import com.example.perfume_budget.platform.dto.TenantVerifyRequest;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.model.TenantSignup;
@@ -79,6 +78,7 @@ public class TenantOnboardingService {
     private final OnboardingProperties props;
     private final TenantResolutionProperties tenantProps;
     private final TransactionTemplate tx;
+    private final com.example.perfume_budget.platform.plan.service.PlanService planService;
     private final SecureRandom random = new SecureRandom();
 
     public TenantOnboardingService(TenantRepository tenantRepository, TenantSignupRepository signupRepository,
@@ -86,7 +86,9 @@ public class TenantOnboardingService {
                                    ApplicationEventPublisher eventPublisher,
                                    @Qualifier("onboardingTaskExecutor") TaskExecutor onboardingExecutor,
                                    OnboardingProperties props, TenantResolutionProperties tenantProps,
-                                   PlatformTransactionManager txManager) {
+                                   PlatformTransactionManager txManager,
+                                   com.example.perfume_budget.platform.plan.service.PlanService planService) {
+        this.planService = planService;
         this.tenantRepository = tenantRepository;
         this.signupRepository = signupRepository;
         this.provisioningService = provisioningService;
@@ -114,7 +116,6 @@ public class TenantOnboardingService {
         if (displayName.isEmpty() || fullName.isEmpty()) {
             throw new BadRequestException("displayName and ownerFullName must not be blank");
         }
-        TenantPlan plan = req.plan() == null ? TenantPlan.FREE : req.plan();
 
         String hash = passwordEncoder.encode(password); // before any DB work; plaintext goes no further
         String otp = generateOtp();
@@ -129,7 +130,12 @@ public class TenantOnboardingService {
                 }
                 Tenant tenant = tenantRepository.saveAndFlush(Tenant.builder()
                         .slug(slug).displayName(displayName).schemaName(schemaName)
-                        .status(TenantStatus.PENDING).plan(plan).ownerEmail(email).build());
+                        .status(TenantStatus.PENDING)
+                        // PLAN-01 (owner O1): always the default sign-up plan, TRIALING, trial end null until provisioning
+                        // completes; the request has no plan field (a client `plan` is ignored)
+                        .planId(planService.defaultSignupPlanId())
+                        .subscriptionStatus(com.example.perfume_budget.platform.enums.SubscriptionStatus.TRIALING)
+                        .ownerEmail(email).build());
                 signupRepository.saveAndFlush(TenantSignup.builder()
                         .tenantId(tenant.getId()).ownerFullName(fullName).passwordHash(hash)
                         .otpSalt(salt).otpHash(hashOtp(salt, otp))
@@ -238,7 +244,7 @@ public class TenantOnboardingService {
         signup.setVerifiedAt(now);
         signupRepository.saveAndFlush(signup);
         ProvisioningRequest pr = new ProvisioningRequest(tenant.getSlug(), tenant.getDisplayName(),
-                tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash(), tenant.getPlan());
+                tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash());
         return new VerifyResult(Outcome.OK, pr, tenant.getId(), 0, consumed, consumedExpiry);
     }
 

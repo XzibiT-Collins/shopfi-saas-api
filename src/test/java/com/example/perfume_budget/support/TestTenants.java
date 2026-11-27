@@ -1,7 +1,6 @@
 package com.example.perfume_budget.support;
 
 import com.example.perfume_budget.config.TenantSeeder;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
@@ -54,7 +53,7 @@ public class TestTenants {
                 .displayName(slug)
                 .schemaName(schema)
                 .status(TenantStatus.PROVISIONING)
-                .plan(TenantPlan.FREE)
+                .planId(1L)
                 .ownerEmail(email)
                 .build());
 

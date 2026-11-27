@@ -2,7 +2,7 @@
 
 Status: **v1, documents the behaviour of PROV-02 / PROV-02b as merged on `feature/PROV-02-onboarding-api`.** Source of truth for the public self-service signup flow used by the admin wizard (UI-06).
 
-**PLAN-03 (2026-11-27, contract for PLAN-01/PLAN-02):** signup no longer records a plan. The `plan` field is deprecated and ignored (section 3); every new tenant gets the default sign-up plan with a trial (owner decision O1, [plans.md](plans.md) section 15), and the public plan list for the wizard and the pricing page is `GET /api/v1/platform/onboarding/plans` (section 3a, full contract in [plans.md](plans.md) section 12). **Interim:** until PLAN-01 is merged the server still parses `plan` as `FREE | STARTER | PRO` and answers `400 Request body is missing or malformed.` for any other value, and `GET /plans` does not exist yet; clients should already stop sending `plan` (PLAN-05 AC8).
+**PLAN-03 (2026-11-27, contract for PLAN-01/PLAN-02):** signup no longer records a plan. The `plan` field is deprecated and ignored (section 3); every new tenant gets the default sign-up plan with a trial (owner decision O1, [plans.md](plans.md) section 15), and the public plan list for the wizard and the pricing page is `GET /api/v1/platform/onboarding/plans` (section 3a, full contract in [plans.md](plans.md) section 12). Implemented by PLAN-01: `TenantSignupRequest` has no plan, status or trial field, a client `plan` of any value or type is ignored (201), and `GET /plans` is live. Clients should stop sending `plan` (PLAN-05 AC8).
 
 | Artifact | Path |
 |---|---|
@@ -30,7 +30,7 @@ Every example below tagged `<!-- example: <name> <kind> <Schema> [status] -->` i
 | `POST /resend` | `202` (always) | Issue a fresh code (expired, lost, or after a FAILED attempt) |
 | `GET /status?slug=` | `200` | Poll the onboarding state; URLs once ACTIVE |
 | `POST /find-store` | `202` (always) | "Find your store": e-mail the owner the sign-in link if the store exists (API-RD-04) |
-| `GET /plans` | `200` | Public active plans for the pricing page and the wizard (PLAN-03, implemented by PLAN-01; [plans.md](plans.md) section 12) |
+| `GET /plans` | `200` | Public active plans for the pricing page and the wizard (PLAN-03 contract, implemented by PLAN-01; [plans.md](plans.md) section 12) |
 
 ## 3. `POST /signup`
 
@@ -43,7 +43,7 @@ Request (`TenantSignupRequest`):
 | `ownerEmail` | string, required | Valid e-mail, <= 255. Lowercased and trimmed; matching is case-insensitive |
 | `ownerFullName` | string, required | 1..255, no control characters, not blank after trim |
 | `password` | string, required | Section 9 |
-| `plan` | any, optional, **deprecated** | **Ignored** (PLAN-03, owner O1): any value of any type is accepted and never selects a plan, never a 400. There is no plan choice at signup; every new tenant gets the plan marked `isDefaultForSignup`, status `TRIALING`, trial from provisioning completion ([plans.md](plans.md) section 15). Do not send it. (Interim until PLAN-01: values outside `FREE`/`STARTER`/`PRO` still answer 400.) |
+| `plan` | any, optional, **deprecated** | **Ignored** (PLAN-03, owner O1): any value of any type is accepted and never selects a plan, never a 400. There is no plan choice at signup; every new tenant gets the plan marked `isDefaultForSignup`, status `TRIALING`, trial from provisioning completion ([plans.md](plans.md) section 15). Do not send it. |
 
 <!-- example: signup-request valid TenantSignupRequest -->
 ```json
@@ -82,7 +82,7 @@ Failures:
 | HTTP | When | `description` (data) |
 |---|---|---|
 | 400 | A field is missing, blank, too long, malformed e-mail, control characters | `Validation failed`, `data` = `{ "<field>": "<message>" }` |
-| 400 | Body is not JSON, empty, or a field of the wrong type (an unknown `plan` no longer counts, see the `plan` row; interim note at the top) | `Request body is missing or malformed.` |
+| 400 | Body is not JSON, empty, or a field of the wrong type (a `plan` of any value never counts, see the `plan` row) | `Request body is missing or malformed.` |
 | 400 | Slug shorter than 3 or longer than 40 characters (bean validation, API-01 AC3: the OpenAPI schema says 3-40) | `Validation failed`, `data` = `{ "slug": "<message>" }` |
 | 400 | Slug characters or reserved name | `slug may contain only lowercase letters, digits and single hyphens between them`, `slug is reserved` |
 | 400 | Password under 8 or over 72 characters (bean validation, API-01 AC3) | `Validation failed`, `data` = `{ "password": "<message>" }` |
@@ -161,16 +161,16 @@ Rejected request examples (the contract test posts each and expects the stated s
 { "slug": "no-password", "displayName": "No Password", "ownerEmail": "o@nopass.example", "ownerFullName": "Nop" }
 ```
 
-A client-sent plan is ignored (replaces the former `signup-unknown-plan` 400 example). The tenant still gets the default sign-up plan; the PLAN-01/PLAN-02 contract test posts this body and asserts `201` and the default plan (PLAN-02 AC9):
+A client-sent plan is ignored (replaces the former `signup-unknown-plan` 400 example). The tenant still gets the default sign-up plan; `OnboardingContractTest` (PLAN-01) posts this body and asserts `201`, the default plan, `TRIALING` and no trial end before provisioning:
 
 <!-- example: signup-plan-ignored valid TenantSignupRequest -->
 ```json
 { "slug": "gold-plan", "displayName": "Gold", "ownerEmail": "o@gold.example", "ownerFullName": "Gil", "password": "Correct-Horse-9", "plan": "SCALE" }
 ```
 
-## 3a. `GET /plans` (PLAN-03, implemented by PLAN-01)
+## 3a. `GET /plans` (PLAN-03 contract, implemented by PLAN-01)
 
-Public, like the rest of this base path: no cookie, no tenant, onboarding CORS zone (section 11). Returns the plans that are public and active, in display order, with their entitlements, prices (integer pesewas, with the derived annual fields) and card texts, plus the feature catalog; `Cache-Control: public, max-age=60`. The wizard uses it only to show "You start on <default plan name> with an N-day free trial" (hidden when the call fails or the default plan is not public); it sends nothing about a plan back. Shape, rules and the example `public-plans`: [plans.md](plans.md) section 12. (Its examples live in plans.md, not here: every response example in this file is exercised by `OnboardingContractTest`.)
+Public, like the rest of this base path: no cookie, no tenant, onboarding CORS zone (section 11). Rate limited per IP (`plans-ip`, section 7); served from a short in-process cache (at most 60 s stale). Returns the plans that are public and active, in display order, with their entitlements, prices (integer pesewas, with the derived annual fields) and card texts, plus the feature catalog; `Cache-Control: public, max-age=60`. The wizard uses it only to show "You start on <default plan name> with an N-day free trial" (hidden when the call fails or the default plan is not public); it sends nothing about a plan back. Shape, rules and the example `public-plans`: [plans.md](plans.md) section 12. (Its examples live in plans.md, not here: every response example in this file is exercised by `OnboardingContractTest`.)
 
 ## 4. `POST /verify`
 
@@ -384,8 +384,9 @@ Token buckets, in memory **per JVM instance** (N instances multiply the effectiv
 | `resend-email` | e-mail | 3 | 3600 s |
 | `find-store-ip` | client IP | 10 | 600 s |
 | `find-store-slug` | typed store name (trimmed, lower case) | 3 | 3600 s |
+| `plans-ip` | client IP (`GET /plans`, PLAN-01) | 60 | 60 s |
 
-A throttled request gets `429`, `Retry-After: <whole seconds, >= 1>`, and `Too many requests. Please try again later.` Both the IP and the e-mail limiter must pass.
+A throttled request gets `429`, `Retry-After: <whole seconds, >= 1>`, and `Too many requests. Please try again later.` Where an endpoint has both an IP and an e-mail limiter, both must pass.
 
 <!-- example: rate-limited response ErrorEnvelope 429 -->
 ```json

@@ -1,7 +1,7 @@
 package com.example.perfume_budget.platform.model;
 
 import com.example.perfume_budget.platform.enums.CustomDomainStatus;
-import com.example.perfume_budget.platform.enums.TenantPlan;
+import com.example.perfume_budget.platform.enums.SubscriptionStatus;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Email;
@@ -50,9 +50,26 @@ public class Tenant {
     @Column(nullable = false, length = 20)
     private TenantStatus status;
 
+    /**
+     * PLAN-01: the tenant's plan ({@code master.plans.id}). Set only by the server: sign-up and provisioning take the
+     * {@code is_default_for_signup} plan, the platform console changes it ({@code PUT /platform/tenants/{slug}/plan});
+     * no client field selects it.
+     */
+    @Column(name = "plan_id", nullable = false)
+    private Long planId;
+
+    /** PLAN-01: TRIALING from sign-up; ACTIVE / CANCELED from the console; PAST_DUE from PLAN-06 billing. */
+    @Builder.Default
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
-    private TenantPlan plan;
+    @Column(name = "subscription_status", nullable = false, length = 20)
+    private SubscriptionStatus subscriptionStatus = SubscriptionStatus.TRIALING;
+
+    /**
+     * PLAN-01: end of the trial; null until provisioning first completes, then set ONCE (only while null) to completion
+     * time + the plan's trial days. Reactivate / reprovision / re-approve never reset it; only the console extends it.
+     */
+    @Column(name = "trial_ends_at")
+    private Instant trialEndsAt;
 
     @Email
     @Column(name = "owner_email", nullable = false, unique = true)

@@ -18,6 +18,7 @@ public class OnboardingRateLimiter {
     private final TokenBucketRateLimiter resendEmail;
     private final TokenBucketRateLimiter findStoreIp;
     private final TokenBucketRateLimiter findStoreSlug;
+    private final TokenBucketRateLimiter plansIp;
 
     public OnboardingRateLimiter(OnboardingProperties p) {
         int max = p.getMaxTrackedKeys();
@@ -30,6 +31,7 @@ public class OnboardingRateLimiter {
         this.resendEmail = build(p.getResendEmail(), max);
         this.findStoreIp = build(p.getFindStoreIp(), max);
         this.findStoreSlug = build(p.getFindStoreSlug(), max);
+        this.plansIp = build(p.getPlansIp(), max);
     }
 
     private static TokenBucketRateLimiter build(OnboardingProperties.Limit l, int maxKeys) {
@@ -68,6 +70,11 @@ public class OnboardingRateLimiter {
 
     public void checkVerifyEmail(String email) {
         check(verifyEmail, normalize(email));
+    }
+
+    /** PLAN-01: the public plan list, 60 per 60 s per client IP by default. */
+    public void checkPlansIp(String ip) {
+        check(plansIp, ip);
     }
 
     public void checkStatusIp(String ip) {

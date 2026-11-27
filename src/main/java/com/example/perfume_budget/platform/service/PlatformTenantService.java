@@ -29,6 +29,18 @@ import com.example.perfume_budget.tenancy.TenantProvisioningService;
 import com.example.perfume_budget.tenancy.TenantSchemaMigrator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
+import com.example.perfume_budget.platform.enums.SubscriptionStatus;
+import com.example.perfume_budget.platform.plan.PlanAuditAction;
+import com.example.perfume_budget.platform.plan.PlanErrors;
+import com.example.perfume_budget.platform.plan.PlanValidationException;
+import com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest;
+import com.example.perfume_budget.platform.plan.events.TenantSubscriptionChangedEvent;
+import com.example.perfume_budget.platform.plan.model.Plan;
+import com.example.perfume_budget.platform.plan.model.PlanAuditLog;
+import com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository;
+import com.example.perfume_budget.platform.plan.repository.PlanRepository;
+import java.time.Instant;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -85,6 +97,11 @@ public class PlatformTenantService {
     private final Duration stuckAfter;
     /** An INTENT younger than this is presumed still in flight, so a retry does not write a RECONCILE row for it. */
     private final Duration reconcileGrace;
+    private final PlanRepository planRepository;
+    private final PlanAuditLogRepository planAuditRepository;
+    private final ApplicationEventPublisher events;
+    /** PLAN-01 (QA L2): the trial bounds of the plan action are evaluated against the injected clock. */
+    private final java.time.Clock clock;
 
     public PlatformTenantService(TenantRepository tenantRepository, TenantSignupRepository signupRepository,
                                  TenantAuditLogRepository auditRepository,
@@ -92,7 +109,13 @@ public class PlatformTenantService {
                                  TenantSchemaMigrator schemaMigrator, PlatformTransactionManager txManager,
                                  @Value("${platform.tenants.actions-per-minute:30}") int actionsPerMinute,
                                  @Value("${platform.tenants.stuck-provisioning-minutes:15}") long stuckMinutes,
-                                 @Value("${platform.tenants.reconcile-grace-seconds:60}") long reconcileGraceSeconds) {
+                                 @Value("${platform.tenants.reconcile-grace-seconds:60}") long reconcileGraceSeconds,
+                                 PlanRepository planRepository, PlanAuditLogRepository planAuditRepository,
+                                 ApplicationEventPublisher events, java.time.Clock systemClock) {
+        this.clock = systemClock;
+        this.planRepository = planRepository;
+        this.planAuditRepository = planAuditRepository;
+        this.events = events;
         this.tenantRepository = tenantRepository;
         this.signupRepository = signupRepository;
         this.auditRepository = auditRepository;
@@ -202,7 +225,7 @@ public class PlatformTenantService {
         } else {
             result = tenantRepository.findByStatus(status, pg.request());
         }
-        List<PlatformTenantSummary> items = result.getContent().stream().map(PlatformTenantSummary::from).toList();
+        List<PlatformTenantSummary> items = summaries(result.getContent());
         return new PlatformTenantPage(items, pg.page(), pg.size(), result.getTotalElements(), result.getTotalPages(),
                 pg.key(), pg.dirName(), customDomainCounts(status, term));
     }
@@ -274,7 +297,7 @@ public class PlatformTenantService {
     /** Tenant detail (PLAT-04): registry fields only, same shape as a list row. */
     @Transactional(readOnly = true)
     public PlatformTenantSummary detail(String slug) {
-        return PlatformTenantSummary.from(require(slug));
+        return summary(require(slug));
     }
 
     /** Audit trail of one existing tenant (PLAT-04). Newest first by default; writes nothing. */
@@ -411,7 +434,7 @@ public class PlatformTenantService {
                                 : ": the owner has not verified their email");
             }
             ProvisioningRequest request = new ProvisioningRequest(tenant.getSlug(), tenant.getDisplayName(),
-                    tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash(), tenant.getPlan());
+                    tenant.getOwnerEmail(), signup.getOwnerFullName(), signup.getPasswordHash());
             final Tenant claimed = tenant;
             // The status the claim actually moved from, captured INSIDE the claim transaction by the hook below (the
             // status read above may be stale if another caller changed it meanwhile).
@@ -578,9 +601,127 @@ public class PlatformTenantService {
         return new ResourceNotFoundException("Tenant not found");
     }
 
-    private static TenantActionResponse response(TenantAction action, boolean changed, boolean inProgress,
-                                                 TenantStatus previous, Tenant tenant) {
-        return new TenantActionResponse(action.name(), changed, inProgress, previous.name(),
-                PlatformTenantSummary.from(tenant));
+    private TenantActionResponse response(TenantAction action, boolean changed, boolean inProgress,
+                                          TenantStatus previous, Tenant tenant) {
+        return new TenantActionResponse(action.name(), changed, inProgress, previous.name(), summary(tenant));
+    }
+
+    /** PLAN-01: the summary carries the plan code and name, read from master.plans by the tenant's plan id. */
+    private PlatformTenantSummary summary(Tenant t) {
+        Plan plan = planRepository.findById(t.getPlanId())
+                .orElseThrow(() -> new IllegalStateException("tenant plan row missing"));
+        return PlatformTenantSummary.from(t, plan);
+    }
+
+    /** One plan query per page, not per row. */
+    private List<PlatformTenantSummary> summaries(List<Tenant> page) {
+        Map<Long, Plan> byId = new java.util.HashMap<>();
+        planRepository.findAllById(page.stream().map(Tenant::getPlanId).distinct().toList())
+                .forEach(p -> byId.put(p.getId(), p));
+        return page.stream().map(t -> PlatformTenantSummary.from(t, byId.get(t.getPlanId()))).toList();
+    }
+
+    // ------------------------------------------------------------------------------------------ plan (PLAN-01)
+
+    static final String TRIAL_RANGE_MESSAGE = "must be later than the current trial end and at most 365 days ahead";
+
+    /**
+     * {@code PUT /platform/tenants/{slug}/plan} (plans.md section 11): the manual bridge until PLAN-06 billing. Same slug
+     * rule and per-admin throttle as the lifecycle actions. In ONE master transaction holding the tenant row lock: the
+     * plan / trial / status write, one plan audit row ({@code TENANT_PLAN_UPDATE}) and one tenant audit row
+     * ({@code CHANGE_PLAN}, OUTCOME, previous = new registry status); {@link TenantSubscriptionChangedEvent} is published in
+     * it so the PLAN-02 cache evicts after commit. A request that changes nothing writes nothing.
+     */
+    public PlatformTenantSummary changePlan(String slug, TenantPlanUpdateRequest req, PlatformPrincipal actor) {
+        throttle(actor);
+        Tenant initial = require(slug);
+        validateShape(req);
+        return masterTx.execute(s -> {
+            Tenant t = tenantRepository.lockById(initial.getId()).orElseThrow(PlatformTenantService::notFound);
+            Plan before = planRepository.findById(t.getPlanId())
+                    .orElseThrow(() -> new IllegalStateException("tenant plan row missing"));
+            Plan after = before;
+            if (req.planId() != null) {
+                after = planRepository.findById(req.planId().longValue())
+                        .orElseThrow(() -> new PlanValidationException("planId", "unknown plan"));
+                if (!after.isActive() && !Boolean.TRUE.equals(req.allowInactive())) {
+                    throw PlanErrors.inactive();
+                }
+            }
+            SubscriptionStatus status = t.getSubscriptionStatus();
+            Instant trialEnd = t.getTrialEndsAt();
+            if (req.trialEndsAt() != null) {
+                if (trialEnd == null) {
+                    // PO decision on QA L3: the trial clock starts when provisioning first completes (startTrialIfUnset,
+                    // only while null); setting it earlier would start it before the store exists and skip that step
+                    throw PlanErrors.trialNotStarted();
+                }
+                if (status != SubscriptionStatus.TRIALING && status != SubscriptionStatus.CANCELED) {
+                    throw new PlanValidationException("trialEndsAt",
+                            "can be extended only while the subscription is TRIALING or CANCELED");
+                }
+                Instant now = clock.instant();
+                Instant wanted = req.trialEndsAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+                Instant floor = trialEnd.isBefore(now) ? now : trialEnd;
+                if (!wanted.isAfter(floor) || wanted.isAfter(now.plus(Duration.ofDays(365)))) {
+                    throw new PlanValidationException("trialEndsAt", TRIAL_RANGE_MESSAGE);
+                }
+                trialEnd = wanted;
+                status = SubscriptionStatus.TRIALING; // a canceled or expired trial is revived
+            }
+            if (req.subscriptionStatus() != null) {
+                status = SubscriptionStatus.valueOf(req.subscriptionStatus());
+            }
+            com.fasterxml.jackson.databind.node.ArrayNode changes = PLAN_JSON.createArrayNode();
+            if (!after.getId().equals(before.getId())) {
+                changes.add(planChange("planCode", before.getCode(), after.getCode()));
+            }
+            if (!java.util.Objects.equals(trialEnd, t.getTrialEndsAt())) {
+                changes.add(planChange("trialEndsAt", t.getTrialEndsAt() == null ? null : t.getTrialEndsAt().toString(),
+                        trialEnd.toString()));
+            }
+            if (status != t.getSubscriptionStatus()) {
+                changes.add(planChange("subscriptionStatus", t.getSubscriptionStatus().name(), status.name()));
+            }
+            if (changes.isEmpty()) {
+                return summary(t); // nothing changes: nothing written
+            }
+            tenantRepository.updateSubscription(t.getId(), after.getId(), status, trialEnd);
+            planAuditRepository.saveAndFlush(PlanAuditLog.builder()
+                    .actorAdminId(actor.id()).actorEmail(actor.email()).action(PlanAuditAction.TENANT_PLAN_UPDATE)
+                    .planId(after.getId()).planCode(after.getCode())
+                    .tenantId(t.getId()).tenantSlug(t.getSlug()).changes(changes).build());
+            audit(actor, t, TenantAction.CHANGE_PLAN, TenantAuditPhase.OUTCOME, t.getStatus(), t.getStatus());
+            events.publishEvent(new TenantSubscriptionChangedEvent(t.getId()));
+            log.info("Platform admin {} changed the plan/subscription of tenant {}", actor.id(), t.getSlug());
+            return summary(tenantRepository.findById(t.getId()).orElseThrow(PlatformTenantService::notFound));
+        });
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper PLAN_JSON = new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private static com.fasterxml.jackson.databind.node.ObjectNode planChange(String field, String before, String after) {
+        com.fasterxml.jackson.databind.node.ObjectNode n = PLAN_JSON.createObjectNode();
+        n.put("field", field);
+        n.put("before", before);
+        n.put("after", after);
+        return n;
+    }
+
+    /** The combination rules of section 11 (400 with a field map), checked before any lookup. */
+    private static void validateShape(TenantPlanUpdateRequest req) {
+        if (req.planId() == null && req.trialEndsAt() == null && req.subscriptionStatus() == null) {
+            throw new PlanValidationException("planId", "send at least one of planId, trialEndsAt or subscriptionStatus");
+        }
+        if (req.trialEndsAt() != null && req.subscriptionStatus() != null) {
+            throw new PlanValidationException("subscriptionStatus", "cannot be combined with trialEndsAt");
+        }
+        if (req.allowInactive() != null && req.planId() == null) {
+            throw new PlanValidationException("allowInactive", "allowed only together with planId");
+        }
+        if (req.subscriptionStatus() != null && !req.subscriptionStatus().equals("ACTIVE")
+                && !req.subscriptionStatus().equals("CANCELED")) {
+            throw new PlanValidationException("subscriptionStatus", "must be ACTIVE or CANCELED");
+        }
     }
 }

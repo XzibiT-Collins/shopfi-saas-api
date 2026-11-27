@@ -38,6 +38,8 @@ public class OnboardingProperties {
     /** API-RD-04 find-store: per client IP, and per typed store name (bounds mail to one owner from any number of IPs). */
     private Limit findStoreIp = new Limit(10, 600);
     private Limit findStoreSlug = new Limit(3, 3600);
+    /** PLAN-01 public plan list ({@code GET /plans}): per client IP (plans.md section 12). */
+    private Limit plansIp = new Limit(60, 60);
 
     /** {@code capacity} requests per {@code periodSeconds} (burst = capacity, continuous refill). */
     @Getter

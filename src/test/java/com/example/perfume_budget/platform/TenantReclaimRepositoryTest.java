@@ -1,6 +1,5 @@
 package com.example.perfume_budget.platform;
 
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
@@ -36,7 +35,7 @@ class TenantReclaimRepositoryTest extends AbstractPostgresIntegrationTest {
     private Tenant tenant(TenantStatus status, String updatedAgo) {
         int n = SEQ.incrementAndGet();
         Tenant t = tenants.saveAndFlush(Tenant.builder().slug("reclaim-" + n).displayName("Reclaim " + n)
-                .schemaName("tenant_reclaim_" + n).status(status).plan(TenantPlan.FREE)
+                .schemaName("tenant_reclaim_" + n).status(status).planId(1L)
                 .ownerEmail("reclaim" + n + "@p2b.test").build());
         sql("UPDATE master.tenants SET updated_at = now() - interval '" + updatedAgo + "' WHERE id = " + t.getId());
         return t;

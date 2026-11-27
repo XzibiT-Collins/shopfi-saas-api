@@ -49,6 +49,7 @@ class PlatformReadContractTest {
         String json = examples().get("detail-response");
         CustomApiResponse<PlatformTenantSummary> r = MAPPER.readValue(json, new TypeReference<>() { });
         assertThat(r.data().slug()).isEqualTo("acme");
+        PlatformTenantsContractTest.assertPlanFields(MAPPER.readTree(json).get("data")); // PLAN-01 AC11
         assertThat(json).doesNotContain("schemaName").doesNotContain("webhookToken").doesNotContain("password");
     }
 

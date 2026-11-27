@@ -15,7 +15,7 @@ class TenantSignupRequestValidationTest {
     private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
     private Set<String> invalidFields(String slug, String password) {
-        return validator.validate(new TenantSignupRequest(slug, "Shop", "o@shop.test", "Owner", password, null)).stream()
+        return validator.validate(new TenantSignupRequest(slug, "Shop", "o@shop.test", "Owner", password)).stream()
                 .map(v -> v.getPropertyPath().toString()).collect(Collectors.toSet());
     }
 
@@ -33,5 +33,17 @@ class TenantSignupRequestValidationTest {
         assertThat(invalidFields("abc", "x".repeat(72))).isEmpty();
         assertThat(invalidFields("abc", "1234567")).containsExactly("password");
         assertThat(invalidFields("abc", "x".repeat(73))).containsExactly("password");
+    }
+
+    /** PLAN-01 / Security requirement 3: neither the public signup body nor the saga input has a plan, status or trial field. */
+    @org.junit.jupiter.api.Test
+    void signupAndProvisioningRequestsHaveNoClientPlanStatusOrTrialField() {
+        for (Class<?> c : new Class<?>[]{TenantSignupRequest.class, com.example.perfume_budget.tenancy.ProvisioningRequest.class}) {
+            for (java.lang.reflect.RecordComponent rc : c.getRecordComponents()) {
+                org.assertj.core.api.Assertions.assertThat(rc.getName().toLowerCase(java.util.Locale.ROOT))
+                        .as(c.getSimpleName() + "." + rc.getName())
+                        .doesNotContain("plan").doesNotContain("status").doesNotContain("trial").doesNotContain("subscription");
+            }
+        }
     }
 }
