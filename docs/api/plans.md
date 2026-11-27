@@ -243,7 +243,7 @@ catalog. Read-only transaction, no audit row.
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -782,7 +782,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 100 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -822,7 +822,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 100 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1292,7 +1292,7 @@ subscription example assumes):
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1500,7 +1500,7 @@ the seed ones, so they still agree with each other:
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -1850,7 +1850,7 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
@@ -2007,7 +2007,7 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
       "badgeLabel": null,
       "bulletsHeading": "Your launch essentials",
       "marketingBullets": [
-        "Free platform subdomain (yourstore.shopfi.store)",
+        "Free platform subdomain for your store",
         "Up to 50 products",
         "Integrated online checkout & payment processing",
         "Up to 3 active coupon codes",
@@ -2131,7 +2131,7 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
         "badgeLabel": null,
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
-          "Free platform subdomain (yourstore.shopfi.store)",
+          "Free platform subdomain for your store",
           "Up to 50 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",

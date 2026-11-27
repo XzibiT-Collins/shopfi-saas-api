@@ -104,7 +104,7 @@ INSERT INTO plans (id, code, name, tagline, description, monthly_price_pesewas, 
                    marketing_bullets, sort_order, active)
 VALUES (1, 'STARTER', 'Starter', 'FOR YOUR FIRST SALES', 'Everything you need to launch your first online store.',
         14900, 20, 14, 150, TRUE, TRUE, FALSE, NULL, 'Your launch essentials',
-        '["Free platform subdomain (yourstore.shopfi.store)", "Up to 50 products", "Integrated online checkout & payment processing", "Up to 3 active coupon codes", "Standard storefront templates"]'::jsonb,
+        '["Free platform subdomain for your store", "Up to 50 products", "Integrated online checkout & payment processing", "Up to 3 active coupon codes", "Standard storefront templates"]'::jsonb,
         10, TRUE),
        (2, 'GROWTH', 'Growth', 'FOR ESTABLISHED SELLERS', 'Full brand ownership and tools to maximize conversions.',
         39900, 20, 14, 100, TRUE, FALSE, TRUE, 'Most popular', 'Everything in Starter, plus:',

@@ -59,7 +59,8 @@ import java.util.regex.Pattern;
  *       before all checks passed;</li>
  *   <li>writes the changed plans (version + 1, updatedAt, updatedBy), their entitlements, and ONE audit row per changed
  *       plan in the same transaction (actor id + e-mail, changed fields only);</li>
- *   <li>publishes {@link PlansChangedEvent} inside the transaction; listeners evict after commit.</li>
+ *   <li>publishes {@link PlansChangedEvent} inside the transaction (PLAN-02's cache evicts on it after commit) and
+ *       registers the after-commit eviction of the public list ({@link PublicPlanCache#evictAfterCommit()}).</li>
  * </ol>
  * A request whose values equal the stored ones is version-checked but writes nothing (no bump, no audit row).
  */
@@ -78,11 +79,14 @@ public class PlanAdminService {
     private final ApplicationEventPublisher events;
     private final EntityManager em;
     private final Clock clock;
+    private final PublicPlanCache publicPlanCache;
     private final ObjectMapper json = new ObjectMapper();
 
     public PlanAdminService(PlanRepository plans, PlanEntitlementRepository entitlementRepository,
                             PlanAuditLogRepository auditRepository, PlanService planService,
-                            ApplicationEventPublisher events, EntityManager em, Clock systemClock) {
+                            ApplicationEventPublisher events, EntityManager em, Clock systemClock,
+                            PublicPlanCache publicPlanCache) {
+        this.publicPlanCache = publicPlanCache;
         this.plans = plans;
         this.entitlementRepository = entitlementRepository;
         this.auditRepository = auditRepository;
@@ -328,7 +332,8 @@ public class PlanAdminService {
         }
         em.flush();
         if (!changedIds.isEmpty()) {
-            events.publishEvent(new PlansChangedEvent(Set.copyOf(changedIds)));
+            events.publishEvent(new PlansChangedEvent(Set.copyOf(changedIds))); // PLAN-02 entitlement cache seam
+            publicPlanCache.evictAfterCommit();
         }
         return changedIds;
     }

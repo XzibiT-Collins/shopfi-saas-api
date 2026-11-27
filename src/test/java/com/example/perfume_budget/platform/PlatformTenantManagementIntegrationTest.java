@@ -350,7 +350,8 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
         String raw = r.getContentAsString();
         assertThat(raw).doesNotContain("WEBHOOK-SECRET").doesNotContain("tenant_plat_a").doesNotContain("schemaName")
                 .doesNotContain("webhookToken").doesNotContain("password").doesNotContain("$2a$");
-        Set<String> allowed = Set.of("id", "slug", "displayName", "status", "plan", "ownerEmail", "customDomain", "customDomainStatus", "createdAt", "updatedAt");
+        Set<String> allowed = Set.of("id", "slug", "displayName", "status", "plan", "planName", "subscriptionStatus",
+                "trialEndsAt", "ownerEmail", "customDomain", "customDomainStatus", "createdAt", "updatedAt"); // + PLAN-01 AC11
         for (JsonNode item : body(r).get("data").get("items")) {
             Set<String> keys = new HashSet<>();
             item.fieldNames().forEachRemaining(keys::add);
