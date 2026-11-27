@@ -51,5 +51,11 @@ audiences you do not want to change). The response is the saved flag. Errors:
 | 400 | an unknown `featureKey` (path) | `Invalid parameter type` |
 | 401 / 403 | not signed in / not `ADMIN` | see above |
 
+Plans (PLAN-03, enforced by PLAN-02): using `LOGIN_OTP` is a plan entitlement. A `PATCH` that turns any audience of
+`LOGIN_OTP` **on** for a tenant whose plan lacks the `LOGIN_OTP` feature answers `402 PLAN_UPGRADE_REQUIRED`
+(`feature` `LOGIN_OTP`, [plans.md](plans.md#14-402-payment-required)); turning audiences off, or re-sending values that are
+already on, is always allowed. A tenant that loses the feature while the flag is on keeps OTP enforced (security is never
+weakened silently) until it turns the flag off itself. `GET` is never gated.
+
 Caution for the UI: turning `LOGIN_OTP` on for `adminEnabled` makes the **next** admin login need an e-mail code; confirm
 before saving, and make sure mail delivery works first. The change applies to new logins only, not to open sessions.
