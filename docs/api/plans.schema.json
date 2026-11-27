@@ -27,9 +27,9 @@
     "FeatureKind": { "enum": ["BOOLEAN", "LIMIT"] },
     "SubscriptionStatus": { "enum": ["TRIALING", "ACTIVE", "PAST_DUE", "CANCELED"] },
     "PlainText": {
-      "description": "Plain text without control characters. Clients render it as text, never as HTML or Markdown.",
+      "description": "Plain text: rejects the Unicode general categories Cc (controls, incl. C1) and Cf (format: bidi overrides and isolates, zero-width characters, soft hyphen, BOM, ...) and U+2028 / U+2029. The pattern lists the BMP code points of those categories (Unicode 16); the server rule is the category test (Java \\p{Cc} / \\p{Cf}), which also covers the astral Cf characters (U+110BD, U+E0001, U+E0020-E007F, ...). Clients render it as text, never as HTML or Markdown.",
       "type": "string",
-      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*$"
     },
     "Pesewas": { "type": "integer", "minimum": 0 },
     "Feature": {
@@ -75,7 +75,7 @@
       "properties": {
         "id": { "type": "integer", "minimum": 1 },
         "code": { "$ref": "#/$defs/PlanCode" },
-        "name": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 40 },
+        "name": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 40 },
         "tagline": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 40 }] },
         "description": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 280 }] },
         "monthlyPricePesewas": { "type": "integer", "minimum": 0, "maximum": 100000000 },
@@ -94,7 +94,7 @@
         "marketingBullets": {
           "type": "array",
           "maxItems": 12,
-          "items": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 120 }
+          "items": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 120 }
         },
         "sortOrder": { "type": "integer", "minimum": 0, "maximum": 1000 },
         "active": { "type": "boolean" },
@@ -129,7 +129,7 @@
       "required": ["name", "monthlyPricePesewas", "annualDiscountPercent", "trialDays", "transactionFeeBps", "isPublic",
         "isDefaultForSignup", "highlighted", "marketingBullets", "sortOrder", "active"],
       "properties": {
-        "name": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 40 },
+        "name": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 40 },
         "tagline": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "maxLength": 40 }] },
         "description": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "maxLength": 280 }] },
         "monthlyPricePesewas": { "type": "integer", "minimum": 0, "maximum": 100000000 },
@@ -144,7 +144,7 @@
         "marketingBullets": {
           "type": "array",
           "maxItems": 12,
-          "items": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 120 }
+          "items": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 120 }
         },
         "sortOrder": { "type": "integer", "minimum": 0, "maximum": 1000 },
         "active": { "type": "boolean" }
@@ -196,7 +196,7 @@
             "properties": {
               "id": { "type": "integer", "minimum": 1 },
               "version": { "type": "integer", "minimum": 0 },
-              "entitlements": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/EntitlementWrite" } },
+              "entitlements": { "type": "array", "minItems": 1, "maxItems": 17, "items": { "$ref": "#/$defs/EntitlementWrite" } },
               "plan": { "$ref": "#/$defs/PlanFieldsOnly" }
             }
           }
@@ -207,6 +207,8 @@
       "type": "object",
       "additionalProperties": false,
       "anyOf": [{ "required": ["planId"] }, { "required": ["trialEndsAt"] }, { "required": ["subscriptionStatus"] }],
+      "not": { "required": ["trialEndsAt", "subscriptionStatus"] },
+      "dependentRequired": { "allowInactive": ["planId"] },
       "properties": {
         "planId": { "type": "integer", "minimum": 1 },
         "trialEndsAt": { "$ref": "#/$defs/Timestamp" },

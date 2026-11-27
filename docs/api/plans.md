@@ -38,8 +38,11 @@ examples must validate against the named `$defs` entry and equal what the server
   (except as the optimistic-lock input where a request names it), `tenantCounts`, `entitlements` (on plan create and
   update; entitlements change only through the matrix). Unknown properties are ignored too (Jackson default). The schema
   marks request bodies `additionalProperties: false`, so do not send them.
-- Text fields are plain text: any character except control characters (so single line), trimmed by the server, a blank
-  optional text stored as `null`. Clients render them as text, never as HTML or Markdown.
+- Text fields are plain text, single line: the server rejects (`400`) any character of the Unicode general categories
+  **Cc** (controls, incl. C1 U+0080-009F) and **Cf** (format characters: bidi overrides U+202A-202E and isolates
+  U+2066-2069, zero-width characters U+200B-200F, soft hyphen, BOM, ...) and **U+2028 / U+2029** (Security L2). Text is
+  trimmed; a blank optional text is stored as `null`; a blank `name` or bullet is `400`. Clients render plan text as
+  text, never as HTML or Markdown.
 - Bean-validation and rule failures are the existing 400 shape `{"description": "Validation failed", "data": {"<field path>": "<message>"}}`.
   Field paths are the JSON property names; inside the matrix they are indexed: `plans[0].entitlements[1].limitValue`,
   `plans[1].plan.trialDays`. Messages are display text.
@@ -610,7 +613,7 @@ Errors of both (and of the matrix):
 
 | HTTP | When | Body |
 |---|---|---|
-| 400 | a field missing, of the wrong type, out of range (3.1), too long, control characters, more than 12 bullets, a blank bullet | `Validation failed` + field map |
+| 400 | a field missing, of the wrong type, out of range (3.1), too long, a forbidden character (section 1), more than 12 bullets, a blank bullet or name, a fraction where an integer is required | `Validation failed` + field map |
 | 400 | a plan rule of section 7 | `Validation failed` + field map naming the field |
 | 400 | body not JSON / unreadable | `Request body is missing or malformed.` |
 | 401 / 403 | not signed in as a platform admin / not SUPER_ADMIN | section 4 |
@@ -670,6 +673,16 @@ Rejected request examples (each fails the schema and the server answers `400`):
 { "version": 3, "name": "Growth", "monthlyPricePesewas": 39900, "annualDiscountPercent": 20, "trialDays": 14, "transactionFeeBps": 1001, "isPublic": true, "isDefaultForSignup": false, "highlighted": true, "marketingBullets": [], "sortOrder": 20, "active": true }
 ```
 
+<!-- example: plan-create-bidi-bullet invalid PlanCreateRequest 400 -->
+```json
+{ "code": "TRICKY", "name": "Tricky", "monthlyPricePesewas": 39900, "annualDiscountPercent": 20, "trialDays": 14, "transactionFeeBps": 100, "isPublic": true, "isDefaultForSignup": false, "highlighted": false, "marketingBullets": ["Only GHS \u202e009 a month"], "sortOrder": 20, "active": true }
+```
+
+<!-- example: plan-create-blank-bullet invalid PlanCreateRequest 400 -->
+```json
+{ "code": "BLANK", "name": "Blank", "monthlyPricePesewas": 39900, "annualDiscountPercent": 20, "trialDays": 14, "transactionFeeBps": 100, "isPublic": true, "isDefaultForSignup": false, "highlighted": false, "marketingBullets": ["   "], "sortOrder": 20, "active": true }
+```
+
 <!-- example: plan-update-missing-version invalid PlanUpdateRequest 400 -->
 ```json
 { "name": "Growth", "monthlyPricePesewas": 39900, "annualDiscountPercent": 20, "trialDays": 14, "transactionFeeBps": 100, "isPublic": true, "isDefaultForSignup": false, "highlighted": true, "marketingBullets": [], "sortOrder": 20, "active": true }
@@ -697,7 +710,7 @@ Updates several plans in **one transaction, all-or-nothing**. Body `PlanMatrixRe
 
 - `plans`: 1..50 items, each `{ "id", "version", "entitlements"?, "plan"? }` with at least one of `entitlements` / `plan`;
   the same `id` twice is `400`.
-- `entitlements`: the entries to change (others keep their stored value). BOOLEAN: `{ "featureKey", "enabled" }`;
+- `entitlements`: 1..17 entries (at most one per catalog key, Security L3) to change; others keep their stored value. BOOLEAN: `{ "featureKey", "enabled" }`;
   LIMIT: `{ "featureKey", "limitValue" }` (`null` = unlimited). Rules in 3.3.
 - `plan`: optional full replacement of the plan's writable fields (same body as `PUT /{id}` without `version`).
 
@@ -1015,6 +1028,11 @@ Errors specific to the matrix (plus the table of section 6):
 { "plans": [ { "id": 1, "version": 7 } ] }
 ```
 
+<!-- example: matrix-too-many-entitlements invalid PlanMatrixRequest 400 -->
+```json
+{ "plans": [ { "id": 1, "version": 7, "entitlements": [ {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true}, {"featureKey": "CUSTOM_DOMAIN", "enabled": true} ] } ] }
+```
+
 <!-- example: matrix-empty invalid PlanMatrixRequest 400 -->
 ```json
 { "plans": [] }
@@ -1140,7 +1158,7 @@ per-admin action throttle of platform-tenants.md (`429`). Body `TenantPlanUpdate
 | `planId` | an existing plan id (else `400`, `planId`: `unknown plan`). An inactive plan is refused with `400 PLAN_INACTIVE` unless `allowInactive: true` is also sent. Changing the plan keeps `subscriptionStatus` and `trialEndsAt` |
 | `trialEndsAt` | timestamp, **extend only**: strictly later than the current `trialEndsAt` (or than now, when it is `null` or past) and at most 365 days after now. Allowed only while the tenant's status is `TRIALING` or `CANCELED`; it sets `subscriptionStatus` to `TRIALING` (a canceled or expired trial is revived). Not combinable with `subscriptionStatus` in one request |
 | `subscriptionStatus` | `ACTIVE` or `CANCELED` only (`TRIALING` comes from sign-up or `trialEndsAt`, `PAST_DUE` from PLAN-06); anything else `400`. `trialEndsAt` is kept as history |
-| `allowInactive` | boolean, default `false`; only meaningful with `planId` |
+| `allowInactive` | boolean, default `false`; allowed only together with `planId` (without it: `400`) |
 
 Answers `200` with the tenant summary (platform-tenants.md shape with the plan fields). A request that changes nothing
 answers `200` and writes nothing. A change writes one `TENANT_PLAN_UPDATE` row (section 10) and one row in the tenant
@@ -1202,6 +1220,16 @@ evicts the tenant's cached plan/status (PLAN-02 AC1): the change is effective on
 <!-- example: tenant-plan-empty invalid TenantPlanUpdateRequest 400 -->
 ```json
 {}
+```
+
+<!-- example: tenant-trial-and-status invalid TenantPlanUpdateRequest 400 -->
+```json
+{ "trialEndsAt": "2026-12-31T23:59:59Z", "subscriptionStatus": "ACTIVE" }
+```
+
+<!-- example: tenant-allow-inactive-without-plan invalid TenantPlanUpdateRequest 400 -->
+```json
+{ "subscriptionStatus": "ACTIVE", "allowInactive": true }
 ```
 
 <!-- example: tenant-status-trialing invalid TenantPlanUpdateRequest 400 -->
