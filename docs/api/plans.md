@@ -713,10 +713,17 @@ Updates several plans in **one transaction, all-or-nothing**. Body `PlanMatrixRe
   LIMIT: `{ "featureKey", "limitValue" }` (`null` = unlimited). Rules in 3.3.
 - `plan`: optional full replacement of the plan's writable fields (same body as `PUT /{id}` without `version`).
 
-Every item's `version` is checked first. If ANY item is stale, nothing is written and the answer is
-`409 PLAN_VERSION_CONFLICT` listing **every** stale item (section 9). Then all validation and the rules of section 7 are
-checked on the final state; any failure is `400` and nothing is written. Unknown `id`: `404 PLAN_NOT_FOUND`, nothing
-written. An item whose values equal the stored ones is version-checked but writes nothing (no bump, no audit row).
+Checks run in this order; the first failure answers and nothing is written:
+
+1. **400 field validation**: bean validation of the body (bounds of 3.1, `limitValue >= 0`, 1..50 items, 1..16
+   entitlements) and the request content that needs no stored data: the same `id` twice, an item with neither
+   `entitlements` nor `plan`, an unknown or repeated `featureKey`, a `limitValue` on a BOOLEAN key, a LIMIT key without
+   `limitValue` (3.3).
+2. **404 `PLAN_NOT_FOUND`**: an item `id` that does not exist.
+3. **409 `PLAN_VERSION_CONFLICT`**: if ANY item's `version` is stale, listing **every** stale item (section 9).
+4. **400 plan rules** of section 7, checked on the final state of the whole catalog.
+
+An item whose values equal the stored ones is version-checked but writes nothing (no bump, no audit row).
 
 On success: `200` with the same body as `GET /platform/plans` (all plans, new versions, catalog), so the client replaces
 its whole state. Each changed plan gets one audit row (`PLAN_MATRIX_UPDATE`). Entitlement changes are effective for every
@@ -2326,7 +2333,7 @@ Checks run in this order; the first failure answers:
    conversion, inventory and product services today, and any later caller).
 4. **Body parsing and bean validation**: `400` (`Request body is missing or malformed.`, `Validation failed` + field
    map). Spring binds and validates `@Valid` arguments while resolving the controller arguments, so this runs **before**
-   the plan gate on every route that has a request body (e.g. `POST /admin/walk-in/order`, `POST .../stock-transfers`),
+   the plan gate on every route that has a request body (e.g. `POST /admin/walk-in/order`, `POST /api/v1/admin/inventory/transfers`),
    whether or not the decision needs the body.
 5. **Plan gate**: `402 PLAN_UPGRADE_REQUIRED` (`NOT_IN_PLAN` before `SUBSCRIPTION_INACTIVE`), then, for writes into a
    counted set, `402 PLAN_LIMIT_REACHED` (15.2).

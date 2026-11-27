@@ -533,6 +533,32 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
         assertThat(EventCapture.COMMITTED).as("no committed write, no eviction event").isEmpty();
     }
 
+    /** plans.md section 8 check order: 400 field validation -> 404 unknown id -> 409 stale version -> 400 plan rules. */
+    @Test
+    void matrix_checkOrder_fieldValidation_thenUnknownId_thenStaleVersion_thenPlanRules() throws Exception {
+        String stale = matrixItem(2, 9, "[{\"featureKey\":\"WALK_IN_POS\",\"enabled\":false}]", null);
+        String unknownId = matrixItem(9999, 0, "[{\"featureKey\":\"ACCOUNTING\",\"enabled\":true}]", null);
+        String badContent = matrixItem(3, 9, "[{\"featureKey\":\"NOT_A_FEATURE\",\"enabled\":true}]", null);
+        String ruleBreak = matrixItem(1, 0, null, planBody(1).put("active", false).fieldsOnly());
+        // field validation beats an unknown id and a stale version
+        MockHttpServletResponse r1 = matrix(stale, unknownId, badContent);
+        assertThat(r1.getStatus()).isEqualTo(400);
+        assertThat(body(r1).get("data").get("plans[2].entitlements[0].featureKey").asText()).isEqualTo("unknown feature");
+        // an unknown id beats a stale version
+        MockHttpServletResponse r2 = matrix(stale, unknownId);
+        assertThat(r2.getStatus()).isEqualTo(404);
+        assertThat(body(r2).get("data").get("code").asText()).isEqualTo("PLAN_NOT_FOUND");
+        // a stale version beats a plan-rule violation
+        MockHttpServletResponse r3 = matrix(stale, ruleBreak);
+        assertThat(r3.getStatus()).isEqualTo(409);
+        assertThat(body(r3).get("data").get("code").asText()).isEqualTo("PLAN_VERSION_CONFLICT");
+        // only then the rules
+        MockHttpServletResponse r4 = matrix(ruleBreak);
+        assertThat(r4.getStatus()).isEqualTo(400);
+        assertThat(body(r4).get("data").get("plans[0].plan.active").asText()).isEqualTo("the default sign-up plan cannot be deactivated");
+        assertThat(version(1) + version(2) + version(3)).isZero();
+    }
+
     // ------------------------------------------------------------------------------------------ audit log (AC9)
 
     @Test

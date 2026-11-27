@@ -162,7 +162,9 @@ public class PlanAdminService {
 
     @Transactional
     public PlanCatalogView matrix(PlanMatrixRequest req, PlatformPrincipal actor) {
-        // request shape first (no stored state needed): duplicate ids, items without a change
+        // plans.md section 8 order: 400 field validation (bean validation, then the request content below: duplicate ids,
+        // items without a change, unknown / duplicate feature keys, wrong kind, absent LIMIT value) -> 404 unknown plan id
+        // -> 409 stale version of ANY item -> 400 plan rules on the final state
         Map<String, String> shape = new LinkedHashMap<>();
         Set<Integer> ids = new HashSet<>();
         for (int i = 0; i < req.plans().size(); i++) {
@@ -172,6 +174,10 @@ public class PlanAdminService {
             }
             if (item.entitlements() == null && item.plan() == null) {
                 shape.put("plans[" + i + "]", "must contain entitlements or plan");
+            }
+            if (item.entitlements() != null) {
+                // request-content checks need no stored state, so they are field validation: before 404 and 409
+                validateEntitlements(item.entitlements(), "plans[" + i + "].entitlements", shape);
             }
         }
         if (!shape.isEmpty()) {
@@ -327,7 +333,29 @@ public class PlanAdminService {
         return changedIds;
     }
 
-    /** Applies a matrix item's entitlement changes to the target, collecting 400s (plans.md section 3.3). */
+    /** The content rules of plans.md section 3.3 for one item's entitlement writes (no stored state needed). */
+    private static void validateEntitlements(List<EntitlementWrite> writes, String prefix, Map<String, String> errors) {
+        Set<PlanFeature> seen = new HashSet<>();
+        for (int j = 0; j < writes.size(); j++) {
+            EntitlementWrite w = writes.get(j);
+            String at = prefix + "[" + j + "].";
+            PlanFeature f = PlanFeature.fromKey(w.getFeatureKey()).orElse(null);
+            if (f == null) {
+                errors.put(at + "featureKey", "unknown feature");
+            } else if (!seen.add(f)) {
+                errors.put(at + "featureKey", "duplicate feature");
+            } else if (f.kind() == FeatureKind.BOOLEAN && w.getLimitValue() != null) {
+                errors.put(at + "limitValue", "must be null for a BOOLEAN feature");
+            } else if (f.kind() == FeatureKind.BOOLEAN && w.getEnabled() == null) {
+                errors.put(at + "enabled", "must not be null");
+            } else if (f.kind() == FeatureKind.LIMIT && !w.isLimitValueSent()) {
+                // never read an absent limit as "unlimited"
+                errors.put(at + "limitValue", "is required for a LIMIT feature (null = unlimited)");
+            }
+        }
+    }
+
+    /** Applies a matrix item's (already validated) entitlement changes to the target (plans.md section 3.3). */
     private static void applyEntitlements(Target t, Change c, Map<String, String> errors) {
         Map<PlanFeature, EntitlementView> next = new EnumMap<>(t.entitlements);
         Set<PlanFeature> seen = new HashSet<>();
