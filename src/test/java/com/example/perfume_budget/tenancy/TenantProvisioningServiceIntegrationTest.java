@@ -1,7 +1,6 @@
 package com.example.perfume_budget.tenancy;
 
 import com.example.perfume_budget.config.ChartOfAccountsSeeder;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
@@ -69,7 +68,7 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
 
     private ProvisioningRequest req(String slug) {
         return new ProvisioningRequest(slug, "Shop " + slug, "owner@" + slug + ".test", "Owner " + slug,
-                passwordEncoder.encode(PASSWORD), TenantPlan.FREE);
+                passwordEncoder.encode(PASSWORD));
     }
 
     // ---- JDBC helpers on an independent connection -------------------------------------------------------
@@ -221,7 +220,7 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
         migrator.dropTenantSchema("tenant_provd"); // second drop is a no-op
         migrator.createTenantSchema("tenant_provd");
         tenantRepository.save(Tenant.builder().slug("provd").displayName("d").schemaName("tenant_provd")
-                .status(TenantStatus.FAILED).plan(TenantPlan.FREE).ownerEmail("owner@provd.test").build());
+                .status(TenantStatus.FAILED).planId(1L).ownerEmail("owner@provd.test").build());
 
         assertThat(service.provision(req("provd")).status()).isEqualTo(TenantStatus.ACTIVE);
         assertThat(statusOf("provd")).isEqualTo("ACTIVE");
@@ -242,7 +241,7 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
         assertThatThrownBy(() -> service.provision(req("provf"))).isInstanceOf(TenantProvisioningException.class);
         Mockito.reset(migrator);
         ProvisioningRequest hijack = new ProvisioningRequest("provf", "x", "attacker@evil.test", "A",
-                passwordEncoder.encode("whatever-123"), TenantPlan.FREE);
+                passwordEncoder.encode("whatever-123"));
         assertThatThrownBy(() -> service.provision(hijack)).isInstanceOf(TenantAlreadyExistsException.class);
         assertThat(statusOf("provf")).isEqualTo("FAILED");
     }
@@ -251,7 +250,7 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
     void duplicateOwnerEmailOnAnotherSlug_isRejected_beforeAnyDdl() {
         service.provision(req("provg"));
         ProvisioningRequest dup = new ProvisioningRequest("provh", "x", "owner@provg.test", "A",
-                passwordEncoder.encode("whatever-123"), TenantPlan.FREE);
+                passwordEncoder.encode("whatever-123"));
         assertThatThrownBy(() -> service.provision(dup)).isInstanceOf(TenantAlreadyExistsException.class);
         assertThat(PostgresTestDatabase.schemaExists("tenant_provh")).isFalse();
         assertThat(statusOf("provh")).isNull();
@@ -383,7 +382,7 @@ class TenantProvisioningServiceIntegrationTest extends AbstractPostgresIntegrati
 
     private void failedRow(String slug) {
         tenantRepository.save(Tenant.builder().slug(slug).displayName(slug).schemaName("tenant_" + slug)
-                .status(TenantStatus.FAILED).plan(TenantPlan.FREE).ownerEmail("owner@" + slug + ".test").build());
+                .status(TenantStatus.FAILED).planId(1L).ownerEmail("owner@" + slug + ".test").build());
     }
 
     /** The user-visible L1 scenario: CREATE SCHEMA succeeded server-side but failed client-side; the retry must not be blocked. */

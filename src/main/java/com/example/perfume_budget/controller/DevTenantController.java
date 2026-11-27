@@ -1,6 +1,5 @@
 package com.example.perfume_budget.controller;
 
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.tenancy.*;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import lombok.RequiredArgsConstructor;
@@ -35,7 +34,7 @@ public class DevTenantController {
         try {
             ProvisioningResult result = provisioningService.provision(new ProvisioningRequest(
                     request.slug(), request.displayName(), request.ownerEmail(), request.ownerFullName(),
-                    passwordEncoder.encode(request.ownerPassword().strip()), TenantPlan.FREE));
+                    passwordEncoder.encode(request.ownerPassword().strip())));
             log.info("[DEV] Provisioned tenant {} -> schema {}", result.slug(), result.schemaName());
             return ResponseEntity.status(HttpStatus.CREATED).body(new DevTenantResponse(
                     result.tenantId(), result.slug(), result.schemaName(), result.status().name()));

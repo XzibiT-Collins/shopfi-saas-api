@@ -18,7 +18,8 @@ class TenantProvisioningValidationTest {
     TenantRepository repo = mock(TenantRepository.class);
     TenantSchemaMigrator migrator = mock(TenantSchemaMigrator.class);
     TenantSeeder seeder = mock(TenantSeeder.class);
-    TenantProvisioningService service = new TenantProvisioningService(repo, migrator, seeder, mock(PlatformTransactionManager.class));
+    TenantProvisioningService service = new TenantProvisioningService(repo, migrator, seeder, mock(PlatformTransactionManager.class),
+            mock(com.example.perfume_budget.platform.plan.repository.PlanRepository.class));
 
     private void assertRejected(ProvisioningRequest r) {
         assertThatThrownBy(() -> service.provision(r)).isInstanceOf(InvalidProvisioningRequestException.class);
@@ -27,18 +28,18 @@ class TenantProvisioningValidationTest {
 
     @Test
     void rejectsInjectionSlug() {
-        assertRejected(new ProvisioningRequest("x\"; DROP SCHEMA master CASCADE;--", "n", "a@b.co", "A", HASH, null));
+        assertRejected(new ProvisioningRequest("x\"; DROP SCHEMA master CASCADE;--", "n", "a@b.co", "A", HASH));
     }
 
     @Test
     void rejectsReservedSlug() {
-        assertRejected(new ProvisioningRequest("public", "n", "a@b.co", "A", HASH, null));
-        assertRejected(new ProvisioningRequest("pg-anything", "n", "a@b.co", "A", HASH, null));
+        assertRejected(new ProvisioningRequest("public", "n", "a@b.co", "A", HASH));
+        assertRejected(new ProvisioningRequest("pg-anything", "n", "a@b.co", "A", HASH));
     }
 
     @Test
     void rejectsPlaintextPasswordPassedAsHash_withoutEchoingIt() {
-        ProvisioningRequest r = new ProvisioningRequest("acme", "n", "a@b.co", "A", "SuperSecret123!", null);
+        ProvisioningRequest r = new ProvisioningRequest("acme", "n", "a@b.co", "A", "SuperSecret123!");
         assertThatThrownBy(() -> service.provision(r)).isInstanceOf(InvalidProvisioningRequestException.class)
                 .hasMessageNotContaining("SuperSecret123!");
         verifyNoInteractions(repo, migrator, seeder);
@@ -46,21 +47,21 @@ class TenantProvisioningValidationTest {
 
     @Test
     void rejectsBadEmailsAndNull() {
-        assertRejected(new ProvisioningRequest("acme", "n", "not-an-email", "A", HASH, null));
-        assertRejected(new ProvisioningRequest("acme", "n", null, "A", HASH, null));
-        assertRejected(new ProvisioningRequest("acme", "n", "a@b.co\nBcc: x@y.z", "A", HASH, null));
+        assertRejected(new ProvisioningRequest("acme", "n", "not-an-email", "A", HASH));
+        assertRejected(new ProvisioningRequest("acme", "n", null, "A", HASH));
+        assertRejected(new ProvisioningRequest("acme", "n", "a@b.co\nBcc: x@y.z", "A", HASH));
         assertRejected(null);
     }
 
     @Test
     void rejectsControlCharsInNames() {
-        assertRejected(new ProvisioningRequest("acme", "bad\u0007name", "a@b.co", "A", HASH, null));
-        assertRejected(new ProvisioningRequest("acme", "n", "a@b.co", "x".repeat(300), HASH, null));
+        assertRejected(new ProvisioningRequest("acme", "bad\u0007name", "a@b.co", "A", HASH));
+        assertRejected(new ProvisioningRequest("acme", "n", "a@b.co", "x".repeat(300), HASH));
     }
 
     @Test
     void requestToStringRedactsHash() {
-        String s = new ProvisioningRequest("acme", "n", "a@b.co", "A", HASH, null).toString();
+        String s = new ProvisioningRequest("acme", "n", "a@b.co", "A", HASH).toString();
         assertThat(s).doesNotContain(HASH).contains("<redacted>");
     }
 }

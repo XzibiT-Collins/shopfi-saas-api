@@ -8,7 +8,6 @@ import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.TenantActionResponse;
 import com.example.perfume_budget.platform.enums.TenantAction;
 import com.example.perfume_budget.platform.enums.TenantAuditPhase;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.model.TenantAuditLog;
@@ -63,16 +62,21 @@ class PlatformTenantServiceTest {
     PlatformTransactionManager tm = mock(PlatformTransactionManager.class);
     com.example.perfume_budget.tenancy.TenantSchemaMigrator migrator = mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class);
     PlatformTenantService service;
+    com.example.perfume_budget.platform.plan.repository.PlanRepository plans =
+            mock(com.example.perfume_budget.platform.plan.repository.PlanRepository.class);
 
     @BeforeEach
     void setUp() {
         when(tm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        service = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60);
+        service = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
+        com.example.perfume_budget.support.TestPlans.stubAnyId(plans);
     }
 
     private Tenant tenant(String slug, TenantStatus status) {
         return Tenant.builder().id(1L).slug(slug).displayName("Shop").schemaName("tenant_" + slug)
-                .status(status).plan(TenantPlan.FREE).ownerEmail("o@" + slug + ".test")
+                .status(status).planId(1L).ownerEmail("o@" + slug + ".test")
                 .createdAt(LocalDateTime.now().minusDays(1)).updatedAt(LocalDateTime.now()).build();
     }
 
@@ -176,12 +180,15 @@ class PlatformTenantServiceTest {
         verifyNoInteractions(audits, saga);
     }
 
-    private TenantActionResponse call(TenantAction a, String slug) {
+    private Object call(TenantAction a, String slug) {
         return switch (a) {
             case APPROVE -> service.approve(slug, ADMIN);
             case SUSPEND -> service.suspend(slug, ADMIN);
             case REACTIVATE -> service.reactivate(slug, ADMIN);
             case REPROVISION -> service.reprovision(slug, ADMIN);
+            // PLAN-01: the plan action follows the same slug rule (malformed = unknown = the same 404, no lookup)
+            case CHANGE_PLAN -> service.changePlan(slug,
+                    new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(3, null, null, null), ADMIN);
         };
     }
 
@@ -628,7 +635,9 @@ class PlatformTenantServiceTest {
 
     @Test
     void perAdminActionThrottle_returns429Exception_andIsPerAdmin() {
-        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60);
+        PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
         stub("acme", TenantStatus.SUSPENDED);
         limited.suspend("acme", ADMIN);
         limited.suspend("acme", ADMIN);

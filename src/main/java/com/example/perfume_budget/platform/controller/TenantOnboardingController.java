@@ -10,6 +10,11 @@ import com.example.perfume_budget.platform.dto.TenantSignupRequest;
 import com.example.perfume_budget.platform.dto.TenantVerifyRequest;
 import com.example.perfume_budget.platform.service.OnboardingRateLimiter;
 import com.example.perfume_budget.platform.service.TenantOnboardingService;
+import com.example.perfume_budget.platform.plan.dto.PublicPlansView;
+import com.example.perfume_budget.platform.plan.service.PublicPlanCache;
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
+import java.time.Duration;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -31,6 +36,7 @@ public class TenantOnboardingController {
     private final TenantOnboardingService service;
     private final OnboardingRateLimiter limiter;
     private final StoreLookupService storeLookup;
+    private final PublicPlanCache publicPlans;
 
     @Operation(summary = "Start onboarding: create a PENDING tenant and e-mail a 6-digit code")
     @ApiResponse(responseCode = "201", description = "Signup accepted, status PENDING")
@@ -69,6 +75,23 @@ public class TenantOnboardingController {
             @RequestParam("slug") String slug, HttpServletRequest http) {
         limiter.checkStatusIp(ClientIps.rateLimitKey(http));
         return ResponseEntity.ok(CustomApiResponse.success(service.status(slug)));
+    }
+
+    /**
+     * PLAN-01 public plan list (docs/api/plans.md section 12): public AND active plans in display order, the PUBLIC shape
+     * only (no version, admins or tenant counts), plus the feature catalog. No tenant, no cookie (sets none), served from
+     * a short in-process cache (at most 60 s stale), per-IP rate limited ({@code plans-ip}).
+     */
+    @Operation(summary = "Public active plans for the pricing page and the signup wizard (PLAN-03 contract, plans.md section 12)")
+    @ApiResponse(responseCode = "200", description = "Public active plans (may be an empty list) and the feature catalog; Cache-Control: public, max-age=60")
+    @ApiResponse(responseCode = "429", description = "Rate limited (Retry-After)", content = @Content)
+    @GetMapping("/plans")
+    public ResponseEntity<CustomApiResponse<PublicPlansView>> plans(HttpServletRequest http) {
+        limiter.checkPlansIp(ClientIps.rateLimitKey(http));
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.maxAge(Duration.ofSeconds(60)).cachePublic())
+                .header(HttpHeaders.VARY, HttpHeaders.ORIGIN)
+                .body(CustomApiResponse.success(publicPlans.get()));
     }
 
     /** Enumeration-safe: always 202 with the same body, whether or not a resendable signup exists. */

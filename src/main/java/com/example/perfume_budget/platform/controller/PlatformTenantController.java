@@ -14,14 +14,20 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.http.MediaType;
+import jakarta.validation.Valid;
+import com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * Platform tenant management (PLAT-02), contract in {@code docs/api/platform-tenants.md}. Authorised by
- * SecurityConfig ({@code /api/v1/platform/** -> SUPER_ADMIN}); the actor is the platform principal. There is
- * deliberately no PUT/PATCH/DELETE here and no endpoint that writes the audit log (PLAT-04 added read-only detail and audit GETs).
+ * SecurityConfig ({@code /api/v1/platform/** -> SUPER_ADMIN}); the actor is the platform principal. No PATCH/DELETE and no
+ * endpoint that writes the audit log directly (PLAT-04 added read-only detail and audit GETs; PLAN-01 added the one PUT,
+ * the tenant plan action, which audits itself).
  */
 @RestController
 @org.springframework.security.access.prepost.PreAuthorize("hasRole('SUPER_ADMIN')")
@@ -84,6 +90,17 @@ public class PlatformTenantController {
     public ResponseEntity<CustomApiResponse<TenantActionResponse>> reprovision(
             @PathVariable String slug, @AuthenticationPrincipal PlatformPrincipal actor) {
         return reply(service.reprovision(slug, actor));
+    }
+
+    /**
+     * PLAN-01 (plans.md section 11): set the tenant's plan, extend its trial, or set ACTIVE / CANCELED. JSON only. Counts
+     * against the same per-admin throttle as the lifecycle actions (429).
+     */
+    @PutMapping(path = "/{slug}/plan", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<CustomApiResponse<PlatformTenantSummary>> changePlan(
+            @PathVariable String slug, @Valid @RequestBody TenantPlanUpdateRequest request,
+            @AuthenticationPrincipal PlatformPrincipal actor) {
+        return ResponseEntity.ok(CustomApiResponse.success(service.changePlan(slug, request, actor)));
     }
 
     /** 200 when done or an idempotent no-op; 202 when the provisioning saga is already running. */

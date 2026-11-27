@@ -15,7 +15,7 @@ class TenantSignupRequestValidationTest {
     private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
     private Set<String> invalidFields(String slug, String password) {
-        return validator.validate(new TenantSignupRequest(slug, "Shop", "o@shop.test", "Owner", password, null)).stream()
+        return validator.validate(new TenantSignupRequest(slug, "Shop", "o@shop.test", "Owner", password)).stream()
                 .map(v -> v.getPropertyPath().toString()).collect(Collectors.toSet());
     }
 

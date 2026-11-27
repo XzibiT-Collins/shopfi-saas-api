@@ -108,6 +108,6 @@ class PlatformTenantsContractTest {
             assertThat(TenantStateMachine.decide(TenantAction.valueOf(m.group(1)), TenantStatus.valueOf(m.group(2))).name())
                     .as(m.group(1) + " from " + m.group(2)).isEqualTo(m.group(3));
         }
-        assertThat(rows).as("one documented row per (action, status)").isEqualTo(TenantAction.values().length * TenantStatus.values().length);
+        assertThat(rows).as("one documented row per (action, status)").isEqualTo(TenantAction.LIFECYCLE.size() * TenantStatus.values().length);
     }
 }

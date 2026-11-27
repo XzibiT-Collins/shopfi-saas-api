@@ -8,7 +8,6 @@ import com.example.perfume_budget.platform.dto.PlatformTenantPage;
 import com.example.perfume_budget.platform.dto.PlatformTenantSummary;
 import com.example.perfume_budget.platform.enums.TenantAction;
 import com.example.perfume_budget.platform.enums.TenantAuditPhase;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.model.TenantAuditLog;
@@ -52,17 +51,22 @@ class PlatformTenantReadServiceTest {
     TenantRepository tenants = mock(TenantRepository.class);
     TenantAuditLogRepository audits = mock(TenantAuditLogRepository.class);
     PlatformTenantService service;
+    com.example.perfume_budget.platform.plan.repository.PlanRepository plans =
+            mock(com.example.perfume_budget.platform.plan.repository.PlanRepository.class);
 
     @BeforeEach
     void setUp() {
         service = new PlatformTenantService(tenants, mock(TenantSignupRepository.class), audits,
                 mock(TenantProvisioningService.class), mock(TenantOriginPolicy.class),
-                mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class), mock(PlatformTransactionManager.class), 1000, 15, 60);
+                mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class), mock(PlatformTransactionManager.class), 1000, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
+        com.example.perfume_budget.support.TestPlans.stubAnyId(plans);
     }
 
     private static Tenant tenant(String slug) {
         Tenant t = Tenant.builder().id(5L).slug(slug).displayName("Shop").schemaName("tenant_secret_schema")
-                .status(TenantStatus.ACTIVE).plan(TenantPlan.FREE).ownerEmail("o@x.test")
+                .status(TenantStatus.ACTIVE).planId(1L).ownerEmail("o@x.test")
                 .createdAt(LocalDateTime.now()).updatedAt(LocalDateTime.now()).build();
         t.setWebhookToken("WEBHOOK-TOKEN-XYZ");
         return t;

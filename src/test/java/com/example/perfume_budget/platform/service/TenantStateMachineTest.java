@@ -35,7 +35,7 @@ class TenantStateMachineTest {
 
     @Test
     void everyActionStatusPairMatchesTheDocumentedTable() {
-        for (TenantAction a : TenantAction.values()) {
+        for (TenantAction a : TenantAction.LIFECYCLE) {
             for (TenantStatus s : TenantStatus.values()) {
                 assertThat(TenantStateMachine.decide(a, s)).as(a + " from " + s).isEqualTo(TABLE.get(a).get(s));
             }

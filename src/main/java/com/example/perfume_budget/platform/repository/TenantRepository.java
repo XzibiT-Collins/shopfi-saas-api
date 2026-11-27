@@ -92,6 +92,31 @@ public interface TenantRepository extends JpaRepository<Tenant, Long>,
     int transitionStatus(@Param("id") Long id, @Param("from") java.util.Collection<TenantStatus> from,
                          @Param("to") TenantStatus to);
 
+    /**
+     * PLAN-01 (plans.md section 15, Security L5): starts the trial when provisioning first completes. Sets
+     * {@code trial_ends_at} = now + the tenant's plan's trial days ONLY while it is null, so a reprovision, a re-approve
+     * or a reactivation never resets a running or ended trial. Returns 1 when it was set.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = "UPDATE master.tenants t SET trial_ends_at = now() + make_interval(days => p.trial_days) "
+            + "FROM master.plans p WHERE t.id = :id AND p.id = t.plan_id AND t.trial_ends_at IS NULL", nativeQuery = true)
+    int startTrialIfUnset(@Param("id") Long id);
+
+    /**
+     * PLAN-01: the plan / subscription fields of one tenant (the caller holds the row lock, {@link #lockById}). Never
+     * touches the registry status.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Tenant t set t.planId = :planId, t.subscriptionStatus = :status, t.trialEndsAt = :trialEndsAt, "
+            + "t.updatedAt = CURRENT_TIMESTAMP where t.id = :id")
+    int updateSubscription(@Param("id") Long id, @Param("planId") Long planId,
+                           @Param("status") com.example.perfume_budget.platform.enums.SubscriptionStatus status,
+                           @Param("trialEndsAt") java.time.Instant trialEndsAt);
+
+    /** PLAN-01: tenants per plan and subscription status, for {@code tenantCounts} of the platform plan list. */
+    @Query("select t.planId, t.subscriptionStatus, count(t) from Tenant t group by t.planId, t.subscriptionStatus")
+    List<Object[]> countByPlanAndSubscriptionStatus();
+
     /** Stale PENDING (never verified) registrations are purged so an abandoned signup cannot hold a slug/email forever. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("delete from Tenant t where t.status = com.example.perfume_budget.platform.enums.TenantStatus.PENDING "

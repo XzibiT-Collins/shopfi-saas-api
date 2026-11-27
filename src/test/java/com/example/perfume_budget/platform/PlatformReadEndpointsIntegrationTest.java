@@ -4,7 +4,6 @@ import com.example.perfume_budget.filter.JWTUtil;
 import com.example.perfume_budget.platform.auth.PlatformPrincipal;
 import com.example.perfume_budget.platform.controller.PlatformTenantController;
 import com.example.perfume_budget.platform.enums.TenantAuditPhase;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.PlatformAdmin;
 import com.example.perfume_budget.platform.model.Tenant;
@@ -96,6 +95,9 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
     @Autowired MockMvc mvc;
     @Autowired PlatformAdminRepository admins;
     @Autowired TenantRepository tenantRepository;
+    @Autowired com.example.perfume_budget.platform.plan.repository.PlanRepository planRepository;
+    @Autowired com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository planAuditRepository;
+    @Autowired org.springframework.context.ApplicationEventPublisher eventPublisher;
     @Autowired TenantSignupRepository signupRepository;
     @Autowired TenantAuditLogRepository audits;
     @Autowired TenantProvisioningService provisioningService;
@@ -137,7 +139,7 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
 
     private Tenant mk(String slug, String displayName, String email, TenantStatus status, boolean signup) {
         Tenant t = tenantRepository.saveAndFlush(Tenant.builder().slug(slug).displayName(displayName)
-                .schemaName("tenant_" + slug.replace('-', '_')).status(status).plan(TenantPlan.FREE)
+                .schemaName("tenant_" + slug.replace('-', '_')).status(status).planId(1L)
                 .ownerEmail(email).build());
         if (signup) {
             addSignup(t);
@@ -381,7 +383,7 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
         dropInjectedFailures();
         assertThat(auditPhases("p4-crash")).containsExactly("INTENT");
         new PlatformTenantService(tenantRepository, signupRepository, audits, provisioningService, originPolicy,
-                migrator, txManager, 1000, 15, 0).approve("p4-crash", new PlatformPrincipal(admin.getId(), admin.getEmail(), "Root"));
+                migrator, txManager, 1000, 15, 0, planRepository, planAuditRepository, eventPublisher).approve("p4-crash", new PlatformPrincipal(admin.getId(), admin.getEmail(), "Root"));
         JsonNode items = body(read(BASE + "/p4-crash/audit")).get("data").get("items");
         assertThat(items).hasSize(2);
         assertThat(items.get(0).get("phase").asText()).isEqualTo("RECONCILE");

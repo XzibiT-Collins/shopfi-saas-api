@@ -9,7 +9,6 @@ import com.example.perfume_budget.platform.dto.OnboardingStatusResponse;
 import com.example.perfume_budget.platform.dto.TenantResendRequest;
 import com.example.perfume_budget.platform.dto.TenantSignupRequest;
 import com.example.perfume_budget.platform.dto.TenantVerifyRequest;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.model.TenantSignup;
@@ -49,13 +48,16 @@ class TenantOnboardingServiceTest {
     OnboardingProperties props = new OnboardingProperties();
     TenantResolutionProperties tenantProps = new TenantResolutionProperties();
     TenantOnboardingService service;
+    com.example.perfume_budget.platform.plan.service.PlanService planService =
+            mock(com.example.perfume_budget.platform.plan.service.PlanService.class);
 
     @BeforeEach
     void setUp() {
         tenantProps.setBaseDomain("shopfi.test");
         props.setMaxOtpAttempts(3);
         service = new TenantOnboardingService(tenants, signups, provisioning, encoder, events, executor, props,
-                tenantProps, mock(PlatformTransactionManager.class));
+                tenantProps, mock(PlatformTransactionManager.class), planService);
+        when(planService.defaultSignupPlanId()).thenReturn(1L);
         when(tenants.saveAndFlush(any(Tenant.class))).thenAnswer(i -> {
             Tenant t = i.getArgument(0);
             t.setId(7L);
@@ -65,7 +67,7 @@ class TenantOnboardingServiceTest {
     }
 
     private TenantSignupRequest signupReq(String slug, String password) {
-        return new TenantSignupRequest(slug, "Shop", "Owner@Example.com ", "Owner Name", password, null);
+        return new TenantSignupRequest(slug, "Shop", "Owner@Example.com ", "Owner Name", password);
     }
 
     // ---- signup -------------------------------------------------------------------------------------------
@@ -81,7 +83,11 @@ class TenantOnboardingServiceTest {
         assertThat(t.getValue().getStatus()).isEqualTo(TenantStatus.PENDING);
         assertThat(t.getValue().getOwnerEmail()).isEqualTo("owner@example.com");
         assertThat(t.getValue().getSchemaName()).isEqualTo("tenant_acme_shop");
-        assertThat(t.getValue().getPlan()).isEqualTo(TenantPlan.FREE);
+        // PLAN-01 (owner O1): always the default sign-up plan, TRIALING, no trial end until provisioning completes
+        assertThat(t.getValue().getPlanId()).isEqualTo(1L);
+        assertThat(t.getValue().getSubscriptionStatus())
+                .isEqualTo(com.example.perfume_budget.platform.enums.SubscriptionStatus.TRIALING);
+        assertThat(t.getValue().getTrialEndsAt()).isNull();
 
         ArgumentCaptor<TenantSignup> s = ArgumentCaptor.forClass(TenantSignup.class);
         verify(signups).saveAndFlush(s.capture());
@@ -132,7 +138,7 @@ class TenantOnboardingServiceTest {
         verify(signups).saveAndFlush(s.capture());
         pendingOtp = ((UserRegistrationEvent) ev.getValue()).otp();
         Tenant t = Tenant.builder().id(7L).slug("acme").displayName("Shop").schemaName("tenant_acme")
-                .status(TenantStatus.PENDING).plan(TenantPlan.FREE).ownerEmail("owner@example.com").build();
+                .status(TenantStatus.PENDING).planId(1L).ownerEmail("owner@example.com").build();
         when(tenants.findBySlug("acme")).thenReturn(Optional.of(t));
         when(signups.findByTenantIdForUpdate(7L)).thenReturn(Optional.of(s.getValue()));
         return s.getValue();
@@ -233,7 +239,7 @@ class TenantOnboardingServiceTest {
     @Test
     void worker_failureBeforeClaim_clearsVerified() {
         doThrow(new IllegalStateException("x")).when(provisioning).provision(any());
-        service.runProvisioning(new ProvisioningRequest("acme", "S", "o@x.com", "O", "h", TenantPlan.FREE), 7L);
+        service.runProvisioning(new ProvisioningRequest("acme", "S", "o@x.com", "O", "h"), 7L);
         verify(signups).clearVerified(7L);
         verify(signups, never()).deleteByTenantId(anyLong());
     }
@@ -361,7 +367,7 @@ class TenantOnboardingServiceTest {
         TenantSignup s = resendable();
         s.setVerifiedAt(LocalDateTime.now().minusMinutes(3));
         Tenant failed = Tenant.builder().id(7L).slug("acme").displayName("Shop").schemaName("tenant_acme")
-                .status(TenantStatus.FAILED).plan(TenantPlan.FREE).ownerEmail("owner@example.com").build();
+                .status(TenantStatus.FAILED).planId(1L).ownerEmail("owner@example.com").build();
         when(tenants.findBySlug("acme")).thenReturn(Optional.of(failed));
         service.resend(resendReq());
         assertThat(resendOtp()).matches("\\d{6}");
@@ -379,7 +385,7 @@ class TenantOnboardingServiceTest {
 
     private void tenantWith(TenantStatus st) {
         when(tenants.findBySlug("acme")).thenReturn(Optional.of(Tenant.builder().id(7L).slug("acme")
-                .displayName("S").schemaName("tenant_acme").status(st).plan(TenantPlan.FREE)
+                .displayName("S").schemaName("tenant_acme").status(st).planId(1L)
                 .ownerEmail("secret-owner@example.com").build()));
     }
 

@@ -1,7 +1,6 @@
 package com.example.perfume_budget.tenancy;
 
 import com.example.perfume_budget.config.TenantSeeder;
-import com.example.perfume_budget.platform.enums.TenantPlan;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
@@ -48,9 +47,12 @@ public class TenantProvisioningService {
     private final TenantSchemaMigrator migrator;
     private final TenantSeeder tenantSeeder;
     private final TransactionTemplate masterTx;
+    private final com.example.perfume_budget.platform.plan.repository.PlanRepository planRepository;
 
     public TenantProvisioningService(TenantRepository tenantRepository, TenantSchemaMigrator migrator,
-                                     TenantSeeder tenantSeeder, PlatformTransactionManager transactionManager) {
+                                     TenantSeeder tenantSeeder, PlatformTransactionManager transactionManager,
+                                     com.example.perfume_budget.platform.plan.repository.PlanRepository planRepository) {
+        this.planRepository = planRepository;
         this.tenantRepository = tenantRepository;
         this.migrator = migrator;
         this.tenantSeeder = tenantSeeder;
@@ -113,6 +115,9 @@ public class TenantProvisioningService {
                 if (moved != 1) {
                     throw new IllegalStateException("Tenant row left PROVISIONING unexpectedly");
                 }
+                // PLAN-01: the trial starts when provisioning FIRST completes; set only while null (Security L5), so a
+                // reprovision or a re-approve never resets it. Same transaction as the move to ACTIVE.
+                tenantRepository.startTrialIfUnset(tenantId);
             });
             log.info("Provisioned tenant {}", v.slug());
             return new ProvisioningResult(tenantId, v.slug(), v.schemaName(), TenantStatus.ACTIVE);
@@ -172,7 +177,7 @@ public class TenantProvisioningService {
                             .displayName(v.displayName())
                             .schemaName(v.schemaName())
                             .status(TenantStatus.PROVISIONING)
-                            .plan(v.plan())
+                            .planId(defaultSignupPlanId())
                             .ownerEmail(v.ownerEmail())
                             .build());
                     runHook(onClaimed, created);
@@ -224,6 +229,12 @@ public class TenantProvisioningService {
         }
     }
 
+    /** PLAN-01 (owner O1): a new tenant always gets the default sign-up plan; nothing in the request selects it. */
+    private Long defaultSignupPlanId() {
+        return planRepository.findDefaultForSignup()
+                .orElseThrow(() -> new IllegalStateException("no default sign-up plan is configured")).getId();
+    }
+
     private ValidatedRequest validate(ProvisioningRequest r) {
         if (r == null) {
             throw new InvalidProvisioningRequestException("request is required");
@@ -249,12 +260,11 @@ public class TenantProvisioningService {
         if (fullName.length() > MAX_DISPLAY_NAME || fullName.chars().anyMatch(Character::isISOControl)) {
             throw new InvalidProvisioningRequestException("ownerFullName is invalid");
         }
-        TenantPlan plan = r.plan() == null ? TenantPlan.FREE : r.plan();
-        return new ValidatedRequest(slug, schemaName, displayName, email, fullName, hash, plan);
+        return new ValidatedRequest(slug, schemaName, displayName, email, fullName, hash);
     }
 
     private record ValidatedRequest(String slug, String schemaName, String displayName, String ownerEmail,
-                                    String ownerFullName, String passwordHash, TenantPlan plan) {
+                                    String ownerFullName, String passwordHash) {
         @Override
         public String toString() {
             return "ValidatedRequest[slug=" + slug + "]";
