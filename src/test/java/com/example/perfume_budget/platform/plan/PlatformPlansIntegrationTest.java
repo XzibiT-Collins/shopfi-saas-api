@@ -628,4 +628,62 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
         assertThat(string("SELECT subscription_status FROM master.tenants WHERE slug = 'plans-a'")).isNotEqualTo("CANCELED");
         assertThat(EventCapture.COMMITTED).isEmpty();
     }
+
+    /** QA M1: blank = nothing left after trimming EVERY Unicode space; required texts are refused, optional ones stored null. */
+    @Test
+    void unicodeSpacesOnly_requiredTextsAre400_optionalTextsAreStoredAsNull() throws Exception {
+        for (String blank : List.of("\u3000", "\u2003", "\u00a0", " \u00a0\u3000\u2003 ", "\u2002\u205f")) {
+            expect400(2, "name", blank, "name");
+            expect400(2, "marketingBullets", List.of("ok", blank), "marketingBullets[1]");
+        }
+        assertThat(version(2)).isZero();
+        MockHttpServletResponse r = asAdmin(put(PLANS + "/2"), planBody(2).put("tagline", "\u00a0").put("description", "\u3000\u3000")
+                .put("badgeLabel", " \u2003 ").put("bulletsHeading", "\u00a0\u2003\u3000")
+                .put("name", "\u3000Growth\u00a0").put("marketingBullets", List.of("\u2003Walk-in\u00a0")).toString());
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(200);
+        JsonNode p = body(r).get("data");
+        for (String f : List.of("tagline", "description", "badgeLabel", "bulletsHeading")) {
+            assertThat(p.get(f).isNull()).as(f).isTrue();
+        }
+        assertThat(p.get("name").asText()).isEqualTo("Growth");
+        assertThat(p.get("marketingBullets").get(0).asText()).isEqualTo("Walk-in");
+        assertThat(string("SELECT tagline FROM master.plans WHERE id = 2")).isNull();
+        // inner spaces are kept (only the ends are trimmed)
+        MockHttpServletResponse inner = asAdmin(put(PLANS + "/2"), planBody(2).put("name", "Grow\u00a0th").toString());
+        assertThat(body(inner).get("data").get("name").asText()).isEqualTo("Grow\u00a0th");
+    }
+
+    /** QA L1: two concurrent creates of the same code: exactly one 201, the other the documented 409 PLAN_CODE_TAKEN. */
+    @Test
+    void twoConcurrentCreatesOfTheSameCode_oneWins_theOtherIsPlanCodeTaken() throws Exception {
+        for (int round = 0; round < 3; round++) {
+            String body = createBody("RACE_" + round).toString();
+            CountDownLatch start = new CountDownLatch(1);
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            try {
+                List<Future<MockHttpServletResponse>> results = new ArrayList<>();
+                for (int k = 0; k < 2; k++) {
+                    Callable<MockHttpServletResponse> task = () -> {
+                        start.await(10, TimeUnit.SECONDS);
+                        return asAdmin(post(PLANS), body);
+                    };
+                    results.add(pool.submit(task));
+                }
+                start.countDown();
+                List<Integer> statuses = new ArrayList<>();
+                for (Future<MockHttpServletResponse> f : results) {
+                    MockHttpServletResponse r = f.get(60, TimeUnit.SECONDS);
+                    statuses.add(r.getStatus());
+                    if (r.getStatus() == 409) {
+                        assertThat(body(r).toString()).isEqualTo(
+                                "{\"description\":\"A plan with this code already exists\",\"data\":{\"code\":\"PLAN_CODE_TAKEN\"}}");
+                    }
+                }
+                assertThat(statuses).as("round " + round).containsExactlyInAnyOrder(201, 409);
+            } finally {
+                pool.shutdownNow();
+            }
+            assertThat(scalar("SELECT count(*) FROM master.plans WHERE code = ?", "RACE_" + round)).isEqualTo(1);
+        }
+    }
 }

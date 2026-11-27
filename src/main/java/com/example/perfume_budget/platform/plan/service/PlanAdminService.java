@@ -141,7 +141,7 @@ public class PlanAdminService {
 
     @Transactional
     public PlanView create(PlanCreateRequest req, PlatformPrincipal actor) {
-        List<Plan> locked = plans.lockAll();
+        List<Plan> locked = lockCatalog();
         if (locked.stream().anyMatch(p -> p.getCode().equals(req.getCode()))) {
             throw PlanErrors.codeTaken();
         }
@@ -153,7 +153,7 @@ public class PlanAdminService {
 
     @Transactional
     public PlanView update(long id, PlanUpdateRequest req, PlatformPrincipal actor) {
-        List<Plan> locked = plans.lockAll();
+        List<Plan> locked = lockCatalog();
         Plan current = locked.stream().filter(p -> p.getId() == id).findFirst().orElseThrow(PlanErrors::notFound);
         checkVersions(Map.of(current, req.getVersion()));
         if (req.getCode() != null && !req.getCode().equals(current.getCode())) {
@@ -187,7 +187,7 @@ public class PlanAdminService {
         if (!shape.isEmpty()) {
             throw new PlanValidationException(shape);
         }
-        List<Plan> locked = plans.lockAll();
+        List<Plan> locked = lockCatalog();
         Map<Long, Plan> byId = new HashMap<>();
         locked.forEach(p -> byId.put(p.getId(), p));
         Map<Plan, Integer> versions = new LinkedHashMap<>();
@@ -233,6 +233,18 @@ public class PlanAdminService {
     }
 
     // ------------------------------------------------------------------------------------------ the write
+
+    /**
+     * Serialises EVERY plan write, inserts included (QA L1): row locks alone cannot stop two creates of the same code from
+     * both passing the code check (the new rows do not exist yet), so the loser would hit the unique index and answer a
+     * generic 409. A SHARE ROW EXCLUSIVE table lock conflicts with itself and with row writes but not with plain reads
+     * (the public list, sign-up, provisioning keep reading). Bounded wait. Then the row locks (id order) as before.
+     */
+    private List<Plan> lockCatalog() {
+        em.createNativeQuery("SET LOCAL lock_timeout = '10s'").executeUpdate();
+        em.createNativeQuery("LOCK TABLE master.plans IN SHARE ROW EXCLUSIVE MODE").executeUpdate();
+        return plans.lockAll();
+    }
 
     /** 409 listing EVERY stale plan (expected = what the client sent, current = what is stored). */
     private static void checkVersions(Map<Plan, Integer> expected) {

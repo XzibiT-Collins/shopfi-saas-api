@@ -1,5 +1,6 @@
 package com.example.perfume_budget.platform.plan.service;
 
+import com.example.perfume_budget.platform.plan.VisibleText;
 import com.example.perfume_budget.platform.plan.dto.PlanWriteRequest;
 import com.example.perfume_budget.platform.plan.model.Plan;
 
@@ -9,7 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The writable fields of one plan after normalisation (plans.md section 1: text trimmed, a blank optional text stored as
+ * The writable fields of one plan after normalisation (plans.md section 1: text trimmed of every Unicode space, a blank optional text stored as
  * null). Built from a VALIDATED request (bean validation already rejected Cc / Cf / U+2028 / U+2029 on the raw value, so
  * trimming can never hide a forbidden character) or from a stored plan; compared field by field for the no-op rule and
  * the audit diff.
@@ -22,9 +23,9 @@ record PlanFields(String name, String tagline, String description, long monthlyP
     static PlanFields of(PlanWriteRequest r) {
         List<String> bullets = new ArrayList<>();
         for (String b : r.getMarketingBullets()) {
-            bullets.add(b.strip());
+            bullets.add(VisibleText.Validator.strip(b));
         }
-        return new PlanFields(r.getName().strip(), optional(r.getTagline()), optional(r.getDescription()),
+        return new PlanFields(VisibleText.Validator.strip(r.getName()), optional(r.getTagline()), optional(r.getDescription()),
                 r.getMonthlyPricePesewas(), r.getAnnualDiscountPercent(), r.getTrialDays(), r.getTransactionFeeBps(),
                 r.getIsPublic(), r.getIsDefaultForSignup(), r.getHighlighted(), optional(r.getBadgeLabel()),
                 optional(r.getBulletsHeading()), List.copyOf(bullets), r.getSortOrder(), r.getActive());
@@ -86,7 +87,7 @@ record PlanFields(String name, String tagline, String description, long monthlyP
         if (s == null) {
             return null;
         }
-        String t = s.strip();
+        String t = VisibleText.Validator.strip(s); // Unicode-aware: NBSP / U+2003 / U+3000-only is blank -> null
         return t.isEmpty() ? null : t;
     }
 }

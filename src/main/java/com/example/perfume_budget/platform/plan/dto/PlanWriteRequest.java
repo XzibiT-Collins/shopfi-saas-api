@@ -2,10 +2,10 @@ package com.example.perfume_budget.platform.plan.dto;
 
 import com.example.perfume_budget.dto.json.StrictIntegerDeserializer;
 import com.example.perfume_budget.platform.plan.PlainText;
+import com.example.perfume_budget.platform.plan.VisibleText;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Getter;
@@ -18,14 +18,16 @@ import java.util.List;
  * {@code PUT /platform/plans/{id}} (with {@code version}), of {@code POST} (with {@code code}) and the {@code plan} object of
  * a matrix item. A full replace: an absent optional text is stored as null. Every bound is enforced here (bean validation,
  * Security requirement 4); integers are strict JSON integers (a fraction or a string is a 400, never truncated).
- * Read-only properties a client may send ({@code id}, {@code currency}, the derived annual fields, {@code entitlements},
+ * Required texts ({@code name}, each bullet) must contain a visible character, Unicode spaces included ({@link VisibleText});
+ * optional texts made only of Unicode spaces are stored as null. Read-only properties a client may send ({@code id}, {@code currency}, the derived annual fields, {@code entitlements},
  * ...) are ignored (Jackson default), never applied.
  */
 @Getter
 @Setter
 public class PlanWriteRequest {
 
-    @NotBlank
+    @NotNull
+    @VisibleText
     @Size(max = 40)
     @PlainText
     private String name;
@@ -81,7 +83,7 @@ public class PlanWriteRequest {
 
     @NotNull
     @Size(max = 12)
-    private List<@NotBlank @Size(max = 120) @PlainText String> marketingBullets;
+    private List<@NotNull @VisibleText @Size(max = 120) @PlainText String> marketingBullets;
 
     @NotNull
     @Min(0)
