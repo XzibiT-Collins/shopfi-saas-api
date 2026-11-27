@@ -1,9 +1,9 @@
 # Plans, entitlements and subscription API (PLAN-03)
 
-Status: **contract, docs only.** Owner-approved plan: `.keep/plan-keep/PLAN.md`, board section "Paywall wave 2026-11-27"
-(owner answers O1-O5). Nothing in this document exists in the code yet: PLAN-01 builds the plan catalog, the platform
-plans API, the tenant plan action and the public list; PLAN-02 builds enforcement (the 402 bodies), the subscription
-endpoint and the trial on sign-up. Both implement this document exactly; a deviation is a change to this document first.
+Status: **contract; sections 2-12 implemented by PLAN-01.** Owner-approved plan: `.keep/plan-keep/PLAN.md`, board section
+"Paywall wave 2026-11-27" (owner answers O1-O5). PLAN-01 built the plan catalog (master V51), the platform plans API, the
+tenant plan action, the public list, signup on the default plan and the trial clock (set once when provisioning first
+completes); PLAN-02 builds enforcement (the 402 bodies), the subscription endpoint and the entitlement cache. Both implement this document exactly; a deviation is a change to this document first.
 Frontend: PLAN-04 (platform Plans page) and PLAN-05 (pricing page, paywall UX) build against the examples below.
 Requirements the PLAN-01 / PLAN-02 implementations must meet (Security sign-off checks them): section 18.
 
@@ -15,7 +15,7 @@ Requirements the PLAN-01 / PLAN-02 implementations must meet (Security sign-off 
 | Signup no longer chooses a plan | [onboarding.md](onboarding.md) section 3 |
 | 402 / 409 codes in the error catalogue | [errors.md](errors.md#plans-and-subscription-plan-03) |
 | Routes and roles | [authorization-matrix.md](authorization-matrix.md#3b-plans-and-subscription-plan-03-contract) |
-| Contract tests (to be written) | PLAN-01 `PlansDocContractTest`, PLAN-02 `SubscriptionDocContractTest` (they parse every example below) |
+| Contract tests | PLAN-01 `PlansDocSchemaTest` (every example vs the schema) and `PlansDocContractTest` (every PLAN-01 example vs the live server); PLAN-02 `SubscriptionDocContractTest` (the subscription and 402 examples) |
 
 Every example below is tagged `<!-- example: <name> <kind> <Schema> [status] -->`, with the grammar of
 [onboarding.md](onboarding.md): `valid` request examples must validate against `plans.schema.json` and be accepted by

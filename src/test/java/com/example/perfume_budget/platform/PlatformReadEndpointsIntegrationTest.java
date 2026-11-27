@@ -83,8 +83,9 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
     static final String BASE = "/api/v1/platform/tenants";
     static final AtomicInteger SEQ = new AtomicInteger();
     static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
-    static final Set<String> TENANT_KEYS = Set.of("id", "slug", "displayName", "status", "plan", "ownerEmail", "customDomain",
-            "customDomainStatus", "createdAt", "updatedAt");
+    /** PLAN-01 AC11: plus planName, subscriptionStatus and trialEndsAt (plan is now the plan code). */
+    static final Set<String> TENANT_KEYS = Set.of("id", "slug", "displayName", "status", "plan", "planName",
+            "subscriptionStatus", "trialEndsAt", "ownerEmail", "customDomain", "customDomainStatus", "createdAt", "updatedAt");
     static final Set<String> AUDIT_KEYS = Set.of("id", "tenantSlug", "action", "phase", "actorEmail", "previousStatus",
             "newStatus", "occurredAt");
     static final Set<String> PAGE_KEYS = Set.of("items", "page", "size", "totalElements", "totalPages", "sort", "direction");
@@ -275,7 +276,9 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
         assertThat(d.get("slug").asText()).isEqualTo("p4-detail");
         assertThat(d.get("displayName").asText()).isEqualTo("Detail & Co");
         assertThat(d.get("status").asText()).isEqualTo("ACTIVE");
-        assertThat(d.get("plan").asText()).isEqualTo("FREE");
+        assertThat(d.get("plan").asText()).isEqualTo("STARTER");
+        assertThat(d.get("planName").asText()).isEqualTo("Starter");
+        assertThat(d.get("subscriptionStatus").asText()).isEqualTo("TRIALING");
         assertThat(d.get("ownerEmail").asText()).isEqualTo("owner@p4-detail.test");
         assertThat(d.get("customDomain").asText()).isEqualTo("shop.p4-detail.example");
         // identical to the list row of the same tenant (parity with what the list already exposes)

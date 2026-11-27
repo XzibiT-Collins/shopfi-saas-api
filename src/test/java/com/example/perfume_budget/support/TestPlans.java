@@ -21,6 +21,51 @@ public final class TestPlans {
     private TestPlans() {
     }
 
+    /**
+     * Puts the plan catalog back to EXACTLY the V51 seed (the `public-plans` example state that other test classes
+     * assert): extra plans removed (their tenants moved to STARTER), plans 1..3 and their entitlements re-read from the
+     * migration's own INSERT statements (no second copy of the seed), versions 0, updated_by null. One transaction.
+     * Callers that cache the public list must evict it afterwards ({@code PublicPlanCache#evict}).
+     */
+    public static void resetToSeed() {
+        String v51;
+        try {
+            v51 = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "src/main/resources/db/migrations/master/V51__subscription_plans.sql"));
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException(e);
+        }
+        String plansInsert = v51.substring(v51.indexOf("INSERT INTO plans "), v51.indexOf(";", v51.indexOf("INSERT INTO plans ")));
+        String entsInsert = v51.substring(v51.indexOf("INSERT INTO plan_entitlements "),
+                v51.indexOf(";", v51.indexOf("INSERT INTO plan_entitlements ")));
+        try (java.sql.Connection c = PostgresTestDatabase.connect()) {
+            c.setAutoCommit(false);
+            try (java.sql.Statement st = c.createStatement()) {
+                st.execute("SET LOCAL lock_timeout = '10s'");
+                st.execute("UPDATE master.tenants SET plan_id = 1 WHERE plan_id > 3");
+                st.execute("DELETE FROM master.plan_entitlements WHERE plan_id > 3");
+                st.execute("DELETE FROM master.plans WHERE id > 3");
+                st.execute("CREATE TEMP TABLE seed_plans (LIKE master.plans INCLUDING DEFAULTS) ON COMMIT DROP");
+                st.execute(plansInsert.replace("INSERT INTO plans ", "INSERT INTO seed_plans "));
+                st.execute("UPDATE master.plans SET is_default_for_signup = FALSE");
+                st.execute("UPDATE master.plans p SET code = s.code, name = s.name, tagline = s.tagline, "
+                        + "description = s.description, monthly_price_pesewas = s.monthly_price_pesewas, "
+                        + "annual_discount_percent = s.annual_discount_percent, currency = s.currency, trial_days = s.trial_days, "
+                        + "transaction_fee_bps = s.transaction_fee_bps, is_public = s.is_public, "
+                        + "is_default_for_signup = s.is_default_for_signup, highlighted = s.highlighted, "
+                        + "badge_label = s.badge_label, bullets_heading = s.bullets_heading, "
+                        + "marketing_bullets = s.marketing_bullets, sort_order = s.sort_order, active = s.active, "
+                        + "version = 0, updated_by = NULL, updated_at = now() FROM seed_plans s WHERE p.id = s.id");
+                st.execute("DELETE FROM master.plan_entitlements WHERE plan_id <= 3");
+                st.execute(entsInsert.replace("INSERT INTO plan_entitlements ", "INSERT INTO master.plan_entitlements "));
+                st.execute("SELECT setval(pg_get_serial_sequence('master.plans', 'id'), GREATEST(3, (SELECT max(id) FROM master.plans)), TRUE)");
+            }
+            c.commit();
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** A detached plan row as V51 seeds STARTER (only the fields a tenant summary reads). */
     public static Plan plan(long id) {
         String code = id == STARTER_ID ? "STARTER" : id == GROWTH_ID ? "GROWTH" : id == SCALE_ID ? "SCALE" : "PLAN" + id;

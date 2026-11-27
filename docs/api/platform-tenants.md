@@ -52,6 +52,9 @@ signup. It is personal data, so the console must not log it, cache it in shared 
         "displayName": "Acme Perfumes",
         "status": "ACTIVE",
         "plan": "STARTER",
+        "planName": "Starter",
+        "subscriptionStatus": "TRIALING",
+        "trialEndsAt": "2026-11-15T09:31:10.654321Z",
         "ownerEmail": "owner@acme.example",
         "customDomain": null,
         "customDomainStatus": null,
@@ -105,9 +108,9 @@ of an action response, and the answer of `PUT /api/v1/platform/tenants/{slug}/pl
 | `trialEndsAt` | string \| null | instant ending in `Z` (like audit `occurredAt`, unlike `createdAt`/`updatedAt` which have no offset); `null` while the tenant has not finished provisioning. A `TRIALING` tenant whose `trialEndsAt` is in the past is read-only for paid features ([plans.md](plans.md) section 13); the console may badge it "trial ended" |
 
 The JSON examples above and below that are tagged `example:` / `plat04:` are parsed into the CURRENT Java records by
-`PlatformTenantsContractTest` / `PlatformReadContractTest` (unknown keys fail), so they gain `planName`,
-`subscriptionStatus` and `trialEndsAt` in the PLAN-01 PR that adds them to `PlatformTenantSummary`; their `plan` already
-shows a plan code. The PLAN-03 examples of the new shape (validated against `plans.schema.json`):
+`PlatformTenantsContractTest` / `PlatformReadContractTest` (unknown keys fail, and since PLAN-01 every tenant object must
+carry `plan`, `planName`, `subscriptionStatus` and `trialEndsAt`). The PLAN-03 examples of the new shape (validated
+against `plans.schema.json` by `PlansDocSchemaTest`, and their key sets against live responses by `PlansDocContractTest`):
 
 <!-- example: tenant-list-with-plan response TenantPageEnvelope 200 -->
 ```json
@@ -172,7 +175,7 @@ audit log. The list has no plan filter yet.
 ## GET /api/v1/platform/tenants/{slug} (PLAT-04)
 
 Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description": "Tenant not found", "data": null}`).
-`data` is exactly one list row (same nine keys, same reading rules: `ownerEmail` is personal data for SUPER_ADMIN only;
+`data` is exactly one list row (same keys, same reading rules: `ownerEmail` is personal data for SUPER_ADMIN only;
 `schemaName`, `webhookToken` and tenant-schema data are never returned). Read-only, writes nothing.
 
 ```json plat04:detail-response
@@ -184,6 +187,9 @@ Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description
     "displayName": "Acme Perfumes",
     "status": "ACTIVE",
     "plan": "STARTER",
+    "planName": "Starter",
+    "subscriptionStatus": "TRIALING",
+    "trialEndsAt": "2026-11-15T09:31:10.654321Z",
     "ownerEmail": "owner@acme.example",
     "customDomain": null,
     "customDomainStatus": null,
@@ -296,6 +302,9 @@ per-admin throttle (the `429` action throttle covers the four POST actions and, 
       "displayName": "Acme Perfumes",
       "status": "SUSPENDED",
       "plan": "STARTER",
+      "planName": "Starter",
+      "subscriptionStatus": "TRIALING",
+      "trialEndsAt": "2026-11-15T09:31:10.654321Z",
       "ownerEmail": "owner@acme.example",
       "customDomain": null,
       "customDomainStatus": null,
@@ -322,6 +331,9 @@ Idempotent repeat (already suspended): HTTP 200, `changed=false`, no audit row:
       "displayName": "Acme Perfumes",
       "status": "SUSPENDED",
       "plan": "STARTER",
+      "planName": "Starter",
+      "subscriptionStatus": "TRIALING",
+      "trialEndsAt": "2026-11-15T09:31:10.654321Z",
       "ownerEmail": "owner@acme.example",
       "customDomain": null,
       "customDomainStatus": null,
@@ -348,6 +360,9 @@ Saga already running (HTTP 202):
       "displayName": "Bravo",
       "status": "PROVISIONING",
       "plan": "STARTER",
+      "planName": "Starter",
+      "subscriptionStatus": "TRIALING",
+      "trialEndsAt": null,
       "ownerEmail": "owner@bravo.example",
       "customDomain": null,
       "customDomainStatus": null,

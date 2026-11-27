@@ -42,7 +42,7 @@ is stored in the audit table and never appears in logs or error bodies.
 
 ## Plans and subscription (PLAN-03)
 
-Contract for PLAN-01 / PLAN-02 (not in the code yet); full rules, examples and precedence in [plans.md](plans.md#14-402-payment-required).
+The 404 / 409 / 400 plan codes below are implemented by PLAN-01 (platform plan API and tenant plan action); the two 402 codes are PLAN-02. Full rules, examples and precedence in [plans.md](plans.md#14-402-payment-required).
 All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 
 | Status | `data.code` | Extra `data` keys | When |

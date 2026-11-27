@@ -57,6 +57,27 @@ class PlatformTenantsContractTest {
         }
     }
 
+    /** PLAN-01 AC11: every tenant object of every example carries the plan fields (the record would accept them missing). */
+    static void assertPlanFields(JsonNode tenant) {
+        for (String f : List.of("plan", "planName", "subscriptionStatus", "trialEndsAt")) {
+            assertThat(tenant.has(f)).as(f + " in " + tenant).isTrue();
+        }
+        assertThat(tenant.get("plan").asText()).matches("^[A-Z][A-Z0-9_]{1,31}$");
+        com.example.perfume_budget.platform.enums.SubscriptionStatus.valueOf(tenant.get("subscriptionStatus").asText());
+        if (!tenant.get("trialEndsAt").isNull()) {
+            assertThat(tenant.get("trialEndsAt").asText()).endsWith("Z");
+            java.time.Instant.parse(tenant.get("trialEndsAt").asText());
+        }
+    }
+
+    @Test
+    void everyTenantObjectInTheExamplesCarriesThePlanFields() throws Exception {
+        assertPlanFields(MAPPER.readTree(examples().get("list-response")).get("data").get("items").get(0));
+        for (String key : List.of("action-response", "noop-response", "in-progress-response")) {
+            assertPlanFields(MAPPER.readTree(examples().get(key)).get("data").get("tenant"));
+        }
+    }
+
     @Test
     void listExampleParsesIntoTheRealPageDto_andLeaksNoInternalFields() throws Exception {
         String json = examples().get("list-response");

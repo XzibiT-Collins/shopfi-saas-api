@@ -128,7 +128,9 @@ class AuthorizationMatrixStructureTest {
                 "markReceiptPrinted");
 
         // --- platform control plane
-        expect(SUPER_ADMIN, "PlatformTenantController", "list", "detail", "audit", "approve", "suspend", "reactivate", "reprovision");
+        expect(SUPER_ADMIN, "PlatformTenantController", "list", "detail", "audit", "approve", "suspend", "reactivate", "reprovision",
+                "changePlan"); // PLAN-01: PUT /{slug}/plan
+        expect(SUPER_ADMIN, "PlatformPlanController", "list", "create", "update", "matrix", "audit"); // PLAN-01
         expect(SUPER_ADMIN, "PlatformAuthController", "me", "changePassword"); // API-RD-07 AC1
         expect(SUPER_ADMIN, "PlatformTenantDomainController", "getTenantCustomDomain", "verifyTenantCustomDomain",
                 "removeTenantCustomDomain"); // DOMAIN-02
@@ -139,7 +141,8 @@ class AuthorizationMatrixStructureTest {
         expect(PUBLIC, "WebhookController", "processWebhook");                       // per-tenant token + HMAC signature
         expect(PUBLIC, "DevTenantController", "createTenant");                       // bean only when dev flag; matcher denyAll otherwise
         expect(PUBLIC, "PlatformAuthController", "login", "refresh", "logout");
-        expect(PUBLIC, "TenantOnboardingController", "signup", "verify", "resend", "status", "findStore"); // API-RD-04
+        expect(PUBLIC, "TenantOnboardingController", "signup", "verify", "resend", "status", "findStore", // API-RD-04
+                "plans"); // PLAN-01: public plan list (GET/HEAD, exact path)
         expect(PUBLIC, "CategoryController", "getCategories");
         expect(PUBLIC, "ProductController", "getFeaturedProducts", "getProductListings", "searchProducts", "getProductDetailsPage",
                 "getProductsByIds", "recordView"); // CAT-07 by-ids read; VIEW-01 view beacon (public mutation, a counter)
@@ -170,7 +173,7 @@ class AuthorizationMatrixStructureTest {
             "CategoryController#getCategories", "ProductController#getFeaturedProducts",
             "ProductController#getProductListings", "ProductController#searchProducts",
             "ProductController#getProductDetailsPage", "ProductController#getProductsByIds", "StoreThemeController#getTheme",
-            "TenantOnboardingController#status");
+            "TenantOnboardingController#status", "TenantOnboardingController#plans");
 
     // ---------------------------------------------------------------- handler model
 

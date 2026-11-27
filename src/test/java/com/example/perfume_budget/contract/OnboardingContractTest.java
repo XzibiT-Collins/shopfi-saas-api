@@ -399,10 +399,52 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
                 assertTrue(docs.validate(ex.schema(), ex.json()).isEmpty(), ex.name());
             }
         }
-        // signup-request-minimal (no plan) defaults to FREE and is accepted
+        // signup-request-minimal (no plan) gets the default sign-up plan and is accepted
         ObjectNode minimal = payload("signup-request-minimal").put("slug", "minimal-plan").put("ownerEmail", "m@minimal.example");
         assertFalse(minimal.has("plan"));
         assertEquals(201, postJson("/signup", minimal.toString(), "203.0.113.70").getResponse().getStatus());
+        assertSignedUpOnTheDefaultPlan("minimal-plan");
+    }
+
+    /**
+     * PLAN-01 AC3 / owner O1 / Security requirement 3: the doc example `signup-plan-ignored` (a client `plan: "SCALE"`) is
+     * POSTED for real: 201, and the tenant gets the default sign-up plan (STARTER), TRIALING, no trial end before
+     * provisioning. Any other plan value of any type is ignored the same way (never a 400, never selects a plan).
+     */
+    @Test
+    void signupPlanIgnoredExample_isAccepted_andTheTenantGetsTheDefaultPlan() throws Exception {
+        Example ex = docs.get("signup-plan-ignored");
+        assertEquals("valid", ex.kind());
+        assertEquals("SCALE", ex.json().get("plan").asText());
+        MvcResult r = postJson("/signup", ex.json().toString(), "203.0.113.71");
+        assertEquals(201, r.getResponse().getStatus(), r.getResponse().getContentAsString());
+        assertSignedUpOnTheDefaultPlan(ex.json().get("slug").asText());
+
+        String[] odd = {"\"PRO\"", "\"FREE\"", "\"growth\"", "42", "true", "null", "{\"code\":\"SCALE\"}", "[\"SCALE\"]",
+                "\"\u202eELACS\""};
+        for (int i = 0; i < odd.length; i++) {
+            ObjectNode p = payload("signup-request").put("slug", "plan-odd-" + i).put("ownerEmail", "odd" + i + "@plan.example");
+            p.set("plan", MAPPER.readTree(odd[i]));
+            p.put("planId", 3).put("subscriptionStatus", "ACTIVE").put("trialEndsAt", "2099-01-01T00:00:00Z");
+            MvcResult o = postJson("/signup", p.toString(), "203.0.113.72");
+            assertEquals(201, o.getResponse().getStatus(), odd[i] + ": " + o.getResponse().getContentAsString());
+            assertSignedUpOnTheDefaultPlan("plan-odd-" + i);
+        }
+    }
+
+    private static void assertSignedUpOnTheDefaultPlan(String slug) throws SQLException {
+        try (Connection c = PostgresTestDatabase.connect();
+             var ps = c.prepareStatement("SELECT p.code, p.is_default_for_signup, t.subscription_status, t.trial_ends_at "
+                     + "FROM master.tenants t JOIN master.plans p ON p.id = t.plan_id WHERE t.slug = ?")) {
+            ps.setString(1, slug);
+            try (var rs = ps.executeQuery()) {
+                assertTrue(rs.next(), "tenant " + slug + " exists");
+                assertEquals("STARTER", rs.getString(1), slug + " plan");
+                assertTrue(rs.getBoolean(2), slug + " is on the default sign-up plan");
+                assertEquals("TRIALING", rs.getString(3), slug + " subscription status");
+                assertNull(rs.getObject(4), slug + ": no trial end before provisioning completes");
+            }
+        }
     }
 
     // ------------------------------------------------------------------------------------------ platform scope / CORS
@@ -459,7 +501,9 @@ class OnboardingContractTest extends AbstractPostgresIntegrationTest {
         JsonNode paths = filtered.get("paths");
         assertEquals(Set.of("/api/v1/platform/onboarding/signup", "/api/v1/platform/onboarding/verify",
                 "/api/v1/platform/onboarding/resend", "/api/v1/platform/onboarding/status",
-                "/api/v1/platform/onboarding/find-store"), fieldNames(paths));
+                "/api/v1/platform/onboarding/find-store", "/api/v1/platform/onboarding/plans"), fieldNames(paths));
+        assertTrue(paths.get(BASE + "/plans").get("get").get("responses").has("200")); // PLAN-01
+        assertTrue(paths.get(BASE + "/plans").get("get").get("responses").has("429"));
         assertTrue(paths.get(BASE + "/find-store").get("post").get("responses").has("202"));
         assertTrue(paths.get(BASE + "/find-store").get("post").get("responses").has("429"));
         assertTrue(paths.get(BASE + "/signup").get("post").get("responses").has("201"));
