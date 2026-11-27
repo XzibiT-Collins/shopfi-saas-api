@@ -52,7 +52,7 @@ examples must validate against the named `$defs` entry and equal what the server
 
 The code defines which features exist (`PlanFeature` enum, owner decision); everything else is data. The API always
 returns the catalog in this order (the enum declaration order, grouped), and every plan's `entitlements` list has one
-entry per catalog key in the same order. There are **17 keys** (owner O3: `MAX_CUSTOM_DOMAINS` dropped). Clients render
+entry per catalog key in the same order. There are **16 keys** (owner O3: `MAX_CUSTOM_DOMAINS` dropped; PO 2026-11-27: `RETURNS_REFUNDS` dropped, returns and refunds are core for every plan). Clients render
 rows and groups from the `features` array of the response, never from a hard-coded list; `group` is display text and
 groups appear in the order of their first feature.
 
@@ -63,7 +63,6 @@ groups appear in the order of their first feature.
 | `MAX_PRODUCTS` | LIMIT | Products | Catalog | every write that moves a row into the counted set (section 15): product create, new family or variant into a family |
 | `PRODUCT_FAMILIES` | BOOLEAN | Product families and pack sizes | Catalog | `ProductFamilyController`, and `familyId` / `uomCode` / `conversionFactor` on product create and update |
 | `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | starting new walk-in work: `POST /api/v1/admin/walk-in/order`, `POST /quote`, customer search (`POST` and `GET /customers/search`). **Never gated** (finishing work on existing orders, PO decision on Security L7): `GET /orders`, `GET /orders/{orderNumber}`, `PATCH .../receipt-printed`, `POST .../cancel`, `POST .../refund` |
-| `RETURNS_REFUNDS` | BOOLEAN | Returns and refunds | Orders | **no route is gated today.** Every return and refund route acts on an order that already exists, and finishing work on existing orders is never gated (PO decision on Security L7: the owner was told returns and refunds of orders already taken always stay possible): `OrderController` `POST /{orderNumber}/return`, `return-received` and `refund-acknowledgement` stay open after a downgrade or a trial expiry. The key stays in the catalog (shown on the plan cards and in "Plan & usage") for return features added later that start new work |
 | `SHOP_WIDE_DISCOUNTS` | BOOLEAN | Shop-wide discounts | Marketing | `ShopWideDiscountController` writes |
 | `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | every write that makes a coupon active (section 15): create of an active coupon, `PUT /{couponId}` from inactive to active |
 | `INVENTORY_MANAGEMENT` | BOOLEAN | Inventory adjustments and history | Inventory | `InventoryManagementController` `POST /adjustments` and `GET /products/{productId}/history` only. Core (never gated): receipts (the only way stock enters), summary, stock-by-location, and `GET /legacy-balance-report` + `POST /legacy-balance-repair` (data repair, Security L9) |
@@ -78,7 +77,8 @@ groups appear in the order of their first feature.
 
 Never gated (core): platform, onboarding, auth, storefront, cart, checkout, payment, webhook, notification and metrics
 endpoints, ledger posting from orders, scheduled and async jobs, orders, finishing work on existing orders (walk-in
-reads / receipt / cancel / refund, starting a return, return-received, refund-acknowledgement), products other than the
+reads / receipt / cancel / refund), returns and refunds (`POST /{orderNumber}/return`, `return-received`,
+`refund-acknowledgement`: core for every plan), products other than the
 limit, categories, coupons other than the limit, the legacy balance report and repair, the subscription endpoint itself.
 **Only starting new gated work is blocked**, after a downgrade or a trial expiry alike. Labels and groups are code-defined (they change with a release, not through the
 API).
@@ -254,7 +254,6 @@ catalog. Read-only transaction, no audit row.
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -294,7 +293,7 @@ catalog. Read-only transaction, no audit row.
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Walk-in point of sale",
           "Lower platform transaction fees"
@@ -308,7 +307,6 @@ catalog. Read-only transaction, no audit row.
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -359,7 +357,6 @@ catalog. Read-only transaction, no audit row.
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -393,7 +390,6 @@ catalog. Read-only transaction, no audit row.
         "group": "Catalog"
       },
       {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
-      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
       {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
       {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
       {
@@ -492,7 +488,6 @@ absent = `null`). Answers `201` with the new plan (platform shape, `version` 0, 
       {"featureKey": "MAX_PRODUCTS", "enabled": false, "limitValue": 0},
       {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
       {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-      {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
       {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
       {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": false, "limitValue": 0},
       {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -539,7 +534,7 @@ nothing: no version bump, no audit row, `200` with the unchanged plan. Unknown `
     "Custom domain connection (yourbrand.com)",
     "Up to 1,000 products & inventory management",
     "Full storefront customisation (theme & layout editor)",
-    "Shop-wide discounts, returns & refunds",
+    "Shop-wide discounts & advanced coupon rules",
     "Tax configuration & sales reports",
     "Walk-in point of sale",
     "Lower platform transaction fees"
@@ -576,7 +571,7 @@ nothing: no version bump, no audit row, `200` with the unchanged plan. Unknown `
       "Custom domain connection (yourbrand.com)",
       "Up to 1,000 products & inventory management",
       "Full storefront customisation (theme & layout editor)",
-      "Shop-wide discounts, returns & refunds",
+      "Shop-wide discounts & advanced coupon rules",
       "Tax configuration & sales reports",
       "Walk-in point of sale",
       "Lower platform transaction fees"
@@ -590,7 +585,6 @@ nothing: no version bump, no audit row, `200` with the unchanged plan. Unknown `
       {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
       {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
       {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-      {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
       {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
       {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
       {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -711,7 +705,7 @@ Updates several plans in **one transaction, all-or-nothing**. Body `PlanMatrixRe
 
 - `plans`: 1..50 items, each `{ "id", "version", "entitlements"?, "plan"? }` with at least one of `entitlements` / `plan`;
   the same `id` twice is `400`.
-- `entitlements`: 1..17 entries (at most one per catalog key, Security L3) to change; others keep their stored value. BOOLEAN: `{ "featureKey", "enabled" }`;
+- `entitlements`: 1..16 entries (at most one per catalog key, Security L3) to change; others keep their stored value. BOOLEAN: `{ "featureKey", "enabled" }`;
   LIMIT: `{ "featureKey", "limitValue" }` (`null` = unlimited). Rules in 3.3.
 - `plan`: optional full replacement of the plan's writable fields (same body as `PUT /{id}` without `version`).
 
@@ -751,7 +745,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Lower platform transaction fees"
         ],
@@ -832,7 +826,6 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 100},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -872,7 +865,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Lower platform transaction fees"
         ],
@@ -885,7 +878,6 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -936,7 +928,6 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -970,7 +961,6 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "group": "Catalog"
       },
       {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
-      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
       {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
       {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
       {
@@ -1306,7 +1296,6 @@ subscription example assumes):
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -1343,7 +1332,7 @@ subscription example assumes):
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Walk-in point of sale",
           "Lower platform transaction fees"
@@ -1357,7 +1346,6 @@ subscription example assumes):
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1405,7 +1393,6 @@ subscription example assumes):
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1436,7 +1423,6 @@ subscription example assumes):
         "group": "Catalog"
       },
       {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
-      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
       {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
       {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
       {
@@ -1518,7 +1504,6 @@ the seed ones, so they still agree with each other:
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -1555,7 +1540,7 @@ the seed ones, so they still agree with each other:
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Walk-in point of sale",
           "Lower platform transaction fees"
@@ -1569,7 +1554,6 @@ the seed ones, so they still agree with each other:
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1617,7 +1601,6 @@ the seed ones, so they still agree with each other:
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1648,7 +1631,6 @@ the seed ones, so they still agree with each other:
         "group": "Catalog"
       },
       {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
-      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
       {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
       {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
       {
@@ -1734,7 +1716,7 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
         "Custom domain connection (yourbrand.com)",
         "Up to 1,000 products & inventory management",
         "Full storefront customisation (theme & layout editor)",
-        "Shop-wide discounts, returns & refunds",
+        "Shop-wide discounts & advanced coupon rules",
         "Tax configuration & sales reports",
         "Walk-in point of sale",
         "Lower platform transaction fees"
@@ -1748,7 +1730,6 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
         {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
         {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
         {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-        {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
         {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
         {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
         {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1771,7 +1752,6 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
       {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
       {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
       {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-      {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
       {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
       {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
       {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1806,7 +1786,6 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
         "group": "Catalog"
       },
       {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
-      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
       {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
       {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
       {
@@ -1875,7 +1854,6 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -1912,7 +1890,7 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Walk-in point of sale",
           "Lower platform transaction fees"
@@ -1926,7 +1904,6 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -1974,7 +1951,6 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -2035,7 +2011,6 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
         {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
         {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
         {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-        {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
         {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
         {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
         {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -2058,7 +2033,6 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
       {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
       {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
       {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-      {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
       {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
       {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
       {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -2093,7 +2067,6 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
         "group": "Catalog"
       },
       {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
-      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
       {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
       {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
       {
@@ -2162,7 +2135,6 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
@@ -2199,7 +2171,7 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
           "Custom domain connection (yourbrand.com)",
           "Up to 1,000 products & inventory management",
           "Full storefront customisation (theme & layout editor)",
-          "Shop-wide discounts, returns & refunds",
+          "Shop-wide discounts & advanced coupon rules",
           "Tax configuration & sales reports",
           "Walk-in point of sale",
           "Lower platform transaction fees"
@@ -2213,7 +2185,6 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -2261,7 +2232,6 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
-          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
           {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
@@ -2478,6 +2448,7 @@ Decided by the PO / orchestrator on the QA and Security review of PR #72 (2026-1
 - `LOGIN_OTP` is a request-content gate: only off -> on, also in read-only mode; login reads the flag only (15).
 - Limits apply to every write into the counted set (15.2). Caching rules (15.1).
 - Finishing work on existing orders is never gated; only starting new gated work is (2).
+- Returns and refunds are core for every plan; `RETURNS_REFUNDS` is dropped, the catalog has 16 keys (2).
 - `THEME_ADVANCED` is an allowlist; the legacy balance report / repair is core (2).
 - `transactionFeeBps` <= 1000; fee changes apply from the next cycle; `trialEndsAt` is set once (3.1, 15).
 - The default sign-up plan needs `trialDays >= 1` (7).
@@ -2494,9 +2465,10 @@ Defaults this document still picked where the AC are silent (change them here be
 5. Tenant audit rows for a plan change use the new action `CHANGE_PLAN` with `previousStatus` = `newStatus` (the V6
    CHECK and the console's audit parser must accept it) (11).
 6. "Finishing existing orders" (PO decision on Security L7, confirmed 2026-11-27): walk-in reads, receipt-printed,
-   cancel and refund, starting a return on an existing order (`POST /{orderNumber}/return`), return-received and
-   refund-acknowledgement are never gated; only placing / quoting a NEW walk-in sale (and walk-in customer search) is
-   gated. `RETURNS_REFUNDS` therefore gates no route today (2).
+   cancel and refund are never gated; only placing / quoting a NEW walk-in sale (and walk-in customer search) is gated.
+   Returns and refunds are **core for every plan** (PO 2026-11-27): `RETURNS_REFUNDS` was dropped from the catalog,
+   which now has 16 keys. A return-related key can be added later (enum entry + gate) for NEW return features that
+   start new work; returns and refunds of existing orders stay core (2).
 
 ## 18. Requirements for PLAN-01 / PLAN-02 implementations
 
@@ -2513,7 +2485,7 @@ Security sign-off of PLAN-01 and PLAN-02 checks every item (Security review of P
 3. **Signup.** `TenantSignupRequest` / `ProvisioningRequest` have no plan, status or trial field the client can set; the
    plan comes only from the `isDefaultForSignup` row at provisioning; `trialEndsAt` is set once (only when `null`).
 4. **Input bounds.** Every bound of 3.1 enforced server-side (bean validation), including the plain-text rule of section 1
-   (Cc / Cf / U+2028 / U+2029 rejected), `maxItems` on bullets (12) and matrix entitlements (17), and fractional numbers
+   (Cc / Cf / U+2028 / U+2029 rejected), `maxItems` on bullets (12) and matrix entitlements (16), and fractional numbers
    rejected for integer fields. Derived prices use `long` / `BigDecimal` with HALF_UP; unit tests at the bound (3.2).
 5. **Entitlement cache** exactly as 15.1: dedicated non-`TenantAwareCacheManager` cache, fixed master keys by immutable
    plan / tenant id, JSON values, TTL <= 60 s, after-commit eviction on every plan write, matrix write, default-flag move
@@ -2532,7 +2504,7 @@ Security sign-off of PLAN-01 and PLAN-02 checks every item (Security review of P
    are never 402. Test: downgrade with the flag on -> login still asks for the OTP.
 10. **Never gated**, enforced by the allow-list scan test: auth, onboarding, platform, storefront, cart, checkout,
     payment, webhook, notifications, metrics, ledger posting from orders, scheduled and async jobs, finishing work on
-    existing orders, the legacy balance report / repair. No gate check inside webhook or scheduled code paths.
+    existing orders, returns and refunds, the legacy balance report / repair. No gate check inside webhook or scheduled code paths.
 11. **Audit** rows in the same transaction for every plan create / update / matrix item / default-flag move / tenant plan
     change, with the immutable admin id + e-mail and field-level before / after; no update or delete path for audit
     rows; values rendered as text (PLAN-04).

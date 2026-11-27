@@ -58,8 +58,8 @@ All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 (including the service-level front-desk permission checks) -> 402 -> 400 validation. The plan gate runs in the service
 after authorization. Exceptions where the body is validated (400) before the 402: the body-dependent gates
 (`THEME_ADVANCED`, `LOGIN_OTP` off -> on, `PRODUCT_FAMILIES` fields) and every limit check
-([plans.md](plans.md#144-precedence)). Finishing work on existing orders (walk-in cancel / refund, starting a return,
-return-received, refund-acknowledgement) is never a 402.
+([plans.md](plans.md#144-precedence)). Finishing work on existing orders (walk-in cancel / refund) and returns and refunds
+(core for every plan) are never a 402.
 The admin frontend opens one upgrade modal for any 402 and never shows it as a generic error.
 
 ## Kept: business messages (our own exception types)
