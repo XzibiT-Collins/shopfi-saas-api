@@ -702,7 +702,35 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
 ```json
 {
   "plans": [
-    {"id": 2, "version": 4, "entitlements": [{"featureKey": "WALK_IN_POS", "enabled": false}]},
+    {
+      "id": 2,
+      "version": 4,
+      "entitlements": [{"featureKey": "WALK_IN_POS", "enabled": false}],
+      "plan": {
+        "name": "Growth",
+        "tagline": "FOR ESTABLISHED SELLERS",
+        "description": "Full brand ownership and tools to maximize conversions.",
+        "monthlyPricePesewas": 44900,
+        "annualDiscountPercent": 15,
+        "trialDays": 14,
+        "transactionFeeBps": 100,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": true,
+        "badgeLabel": "Most popular",
+        "bulletsHeading": "Everything in Starter, plus:",
+        "marketingBullets": [
+          "Custom domain connection (yourbrand.com)",
+          "Up to 1,000 products & inventory management",
+          "Full storefront customisation (theme & layout editor)",
+          "Shop-wide discounts, returns & refunds",
+          "Tax configuration & sales reports",
+          "Lower platform transaction fees"
+        ],
+        "sortOrder": 20,
+        "active": true
+      }
+    },
     {
       "id": 1,
       "version": 7,
@@ -722,7 +750,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
           "Free platform subdomain (yourstore.shopfi.store)",
-          "Up to 50 products",
+          "Up to 100 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
           "Standard storefront templates"
@@ -762,7 +790,7 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
         "bulletsHeading": "Your launch essentials",
         "marketingBullets": [
           "Free platform subdomain (yourstore.shopfi.store)",
-          "Up to 50 products",
+          "Up to 100 products",
           "Integrated online checkout & payment processing",
           "Up to 3 active coupon codes",
           "Standard storefront templates"
@@ -818,7 +846,6 @@ Example: move `WALK_IN_POS` out of Growth (Scale already has it), give Starter 1
           "Full storefront customisation (theme & layout editor)",
           "Shop-wide discounts, returns & refunds",
           "Tax configuration & sales reports",
-          "Walk-in point of sale",
           "Lower platform transaction fees"
         ],
         "sortOrder": 20,
@@ -1183,6 +1210,12 @@ the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial lin
 "Annual · Save X%" toggle label is computed by the client from the `annualDiscountPercent` values of the shown plans
 (same for all: "Save X%"; different: "Save up to X%" with the highest; all 0: no "Save"), a display rule, not money maths.
 
+CORS stays the onboarding zone: tenant origins are **not** allowed here, so the tenant admin shell never calls this
+endpoint from the browser; it gets the same list as `publicPlans` of `GET /admin/subscription` (13).
+
+`public-plans` is exactly the seed state (the same three plans as `platform-plans-list`, and the state every 402 and
+subscription example assumes):
+
 <!-- example: public-plans response PublicPlansEnvelope 200 -->
 ```json
 {
@@ -1201,7 +1234,7 @@ the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial lin
         "annualMonthlyEquivalentPesewas": 11920,
         "annualSavingPesewas": 35760,
         "currency": "GHS",
-        "trialDays": 30,
+        "trialDays": 14,
         "transactionFeeBps": 150,
         "isPublic": true,
         "isDefaultForSignup": true,
@@ -1217,11 +1250,11 @@ the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial lin
         ],
         "sortOrder": 10,
         "active": true,
-        "updatedAt": "2026-11-27T12:00:00.5Z",
+        "updatedAt": "2026-11-27T09:40:00Z",
         "entitlements": [
           {"featureKey": "CUSTOM_DOMAIN", "enabled": false, "limitValue": null},
           {"featureKey": "THEME_ADVANCED", "enabled": false, "limitValue": null},
-          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 100},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
           {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
           {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
@@ -1244,11 +1277,11 @@ the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial lin
         "name": "Growth",
         "tagline": "FOR ESTABLISHED SELLERS",
         "description": "Full brand ownership and tools to maximize conversions.",
-        "monthlyPricePesewas": 44900,
-        "annualDiscountPercent": 15,
-        "annualPricePesewas": 457980,
-        "annualMonthlyEquivalentPesewas": 38165,
-        "annualSavingPesewas": 80820,
+        "monthlyPricePesewas": 39900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 383040,
+        "annualMonthlyEquivalentPesewas": 31920,
+        "annualSavingPesewas": 95760,
         "currency": "GHS",
         "trialDays": 14,
         "transactionFeeBps": 100,
@@ -1268,13 +1301,13 @@ the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial lin
         ],
         "sortOrder": 20,
         "active": true,
-        "updatedAt": "2026-11-27T12:00:00.5Z",
+        "updatedAt": "2026-11-27T09:45:00Z",
         "entitlements": [
           {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
           {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
           {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
-          {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
           {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
           {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
           {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
@@ -1391,6 +1424,218 @@ the wizard simply hides the "you start on ..." line (PLAN-05 AC8). The trial lin
 }
 ```
 
+`public-plans-mixed` covers the other display branches: Starter at 0% (no saving lines), Growth at 15% and Scale at 25%
+(toggle label "Annual · Save up to 25%"), and Scale with `trialDays: 0` (trial line hidden). Entitlements and bullets are
+the seed ones, so they still agree with each other:
+
+<!-- example: public-plans-mixed response PublicPlansEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "plans": [
+      {
+        "id": 1,
+        "code": "STARTER",
+        "name": "Starter",
+        "tagline": "FOR YOUR FIRST SALES",
+        "description": "Everything you need to launch your first online store.",
+        "monthlyPricePesewas": 14900,
+        "annualDiscountPercent": 0,
+        "annualPricePesewas": 178800,
+        "annualMonthlyEquivalentPesewas": 14900,
+        "annualSavingPesewas": 0,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 150,
+        "isPublic": true,
+        "isDefaultForSignup": true,
+        "highlighted": false,
+        "badgeLabel": null,
+        "bulletsHeading": "Your launch essentials",
+        "marketingBullets": [
+          "Free platform subdomain (yourstore.shopfi.store)",
+          "Up to 50 products",
+          "Integrated online checkout & payment processing",
+          "Up to 3 active coupon codes",
+          "Standard storefront templates"
+        ],
+        "sortOrder": 10,
+        "active": true,
+        "updatedAt": "2026-11-27T09:40:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": false, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": 1},
+          {"featureKey": "SALES_REPORTS", "enabled": false, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": false, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": false, "limitValue": 0},
+          {"featureKey": "LOGIN_OTP", "enabled": false, "limitValue": null}
+        ]
+      },
+      {
+        "id": 2,
+        "code": "GROWTH",
+        "name": "Growth",
+        "tagline": "FOR ESTABLISHED SELLERS",
+        "description": "Full brand ownership and tools to maximize conversions.",
+        "monthlyPricePesewas": 39900,
+        "annualDiscountPercent": 15,
+        "annualPricePesewas": 406980,
+        "annualMonthlyEquivalentPesewas": 33915,
+        "annualSavingPesewas": 71820,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 100,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": true,
+        "badgeLabel": "Most popular",
+        "bulletsHeading": "Everything in Starter, plus:",
+        "marketingBullets": [
+          "Custom domain connection (yourbrand.com)",
+          "Up to 1,000 products & inventory management",
+          "Full storefront customisation (theme & layout editor)",
+          "Shop-wide discounts, returns & refunds",
+          "Tax configuration & sales reports",
+          "Walk-in point of sale",
+          "Lower platform transaction fees"
+        ],
+        "sortOrder": 20,
+        "active": true,
+        "updatedAt": "2026-11-27T09:45:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": 1},
+          {"featureKey": "SALES_REPORTS", "enabled": true, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": true, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": true, "limitValue": 3},
+          {"featureKey": "LOGIN_OTP", "enabled": true, "limitValue": null}
+        ]
+      },
+      {
+        "id": 3,
+        "code": "SCALE",
+        "name": "Scale",
+        "tagline": "FOR HIGH-VOLUME BRANDS",
+        "description": "Advanced operations, team access, and lowest fees.",
+        "monthlyPricePesewas": 99900,
+        "annualDiscountPercent": 25,
+        "annualPricePesewas": 899100,
+        "annualMonthlyEquivalentPesewas": 74925,
+        "annualSavingPesewas": 299700,
+        "currency": "GHS",
+        "trialDays": 0,
+        "transactionFeeBps": 50,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": false,
+        "badgeLabel": null,
+        "bulletsHeading": "Everything in Growth, plus:",
+        "marketingBullets": [
+          "Unlimited products, staff and storage locations",
+          "Stock transfers & stock conversion",
+          "Accounting & bookkeeping",
+          "Lowest transaction fee tier"
+        ],
+        "sortOrder": 30,
+        "active": true,
+        "updatedAt": "2026-11-27T09:00:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": null},
+          {"featureKey": "SALES_REPORTS", "enabled": true, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": true, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": true, "limitValue": null},
+          {"featureKey": "LOGIN_OTP", "enabled": true, "limitValue": null}
+        ]
+      }
+    ],
+    "features": [
+      {"key": "CUSTOM_DOMAIN", "kind": "BOOLEAN", "label": "Custom domain", "group": "Storefront"},
+      {
+        "key": "THEME_ADVANCED",
+        "kind": "BOOLEAN",
+        "label": "Advanced theme customisation",
+        "group": "Storefront"
+      },
+      {"key": "MAX_PRODUCTS", "kind": "LIMIT", "label": "Products", "group": "Catalog"},
+      {
+        "key": "PRODUCT_FAMILIES",
+        "kind": "BOOLEAN",
+        "label": "Product families and pack sizes",
+        "group": "Catalog"
+      },
+      {"key": "WALK_IN_POS", "kind": "BOOLEAN", "label": "Walk-in point of sale", "group": "Orders"},
+      {"key": "RETURNS_REFUNDS", "kind": "BOOLEAN", "label": "Returns and refunds", "group": "Orders"},
+      {"key": "SHOP_WIDE_DISCOUNTS", "kind": "BOOLEAN", "label": "Shop-wide discounts", "group": "Marketing"},
+      {"key": "MAX_ACTIVE_COUPONS", "kind": "LIMIT", "label": "Active coupons", "group": "Marketing"},
+      {
+        "key": "INVENTORY_MANAGEMENT",
+        "kind": "BOOLEAN",
+        "label": "Inventory adjustments and history",
+        "group": "Inventory"
+      },
+      {
+        "key": "STOCK_TRANSFERS",
+        "kind": "BOOLEAN",
+        "label": "Stock transfers between locations",
+        "group": "Inventory"
+      },
+      {"key": "STOCK_CONVERSION", "kind": "BOOLEAN", "label": "Stock conversion", "group": "Inventory"},
+      {"key": "MAX_LOCATIONS", "kind": "LIMIT", "label": "Storage locations", "group": "Inventory"},
+      {"key": "SALES_REPORTS", "kind": "BOOLEAN", "label": "Sales reports", "group": "Finance and reports"},
+      {"key": "TAX_CONFIG", "kind": "BOOLEAN", "label": "Tax configuration", "group": "Finance and reports"},
+      {
+        "key": "ACCOUNTING",
+        "kind": "BOOLEAN",
+        "label": "Accounting and bookkeeping",
+        "group": "Finance and reports"
+      },
+      {
+        "key": "MAX_STAFF",
+        "kind": "LIMIT",
+        "label": "Front-desk staff accounts",
+        "group": "Team and security"
+      },
+      {"key": "LOGIN_OTP", "kind": "BOOLEAN", "label": "Login one-time codes", "group": "Team and security"}
+    ]
+  }
+}
+```
+
 ## 13. `GET /api/v1/admin/subscription` (tenant)
 
 Tenant admin route: `hasAnyRole('ADMIN','FRONT_DESK')`, the tenant is the request's resolved tenant (`TenantContext`),
@@ -1408,6 +1653,7 @@ never a parameter, so only the caller's own tenant is ever returned. Anonymous, 
 | `entitlements` | the plan's entitlements (same list as `plan.entitlements`; kept at top level for the clients' convenience) |
 | `usage` | one entry per LIMIT feature, catalog order: `{ "featureKey", "used", "limit" }`, `limit` `null` = unlimited, counted as section 15 |
 | `features` | the catalog, for labels and groups |
+| `publicPlans` | the plans that are `isPublic` and `active`, public shape, `sortOrder` then `id`: exactly `data.plans` of `GET /platform/onboarding/plans` (12). The admin shell maps `requiredPlans` codes of a 402 to names with it and links to the pricing page; it never calls the public endpoint from the browser (that endpoint does not allow tenant origins) |
 
 The frontend computes "N days left" from `trialEndsAt` (display only) and shows the read-only banner from `readOnly`.
 
@@ -1543,6 +1789,156 @@ The frontend computes "N days left" from `trialEndsAt` (display only) and shows 
         "group": "Team and security"
       },
       {"key": "LOGIN_OTP", "kind": "BOOLEAN", "label": "Login one-time codes", "group": "Team and security"}
+    ],
+    "publicPlans": [
+      {
+        "id": 1,
+        "code": "STARTER",
+        "name": "Starter",
+        "tagline": "FOR YOUR FIRST SALES",
+        "description": "Everything you need to launch your first online store.",
+        "monthlyPricePesewas": 14900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 143040,
+        "annualMonthlyEquivalentPesewas": 11920,
+        "annualSavingPesewas": 35760,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 150,
+        "isPublic": true,
+        "isDefaultForSignup": true,
+        "highlighted": false,
+        "badgeLabel": null,
+        "bulletsHeading": "Your launch essentials",
+        "marketingBullets": [
+          "Free platform subdomain (yourstore.shopfi.store)",
+          "Up to 50 products",
+          "Integrated online checkout & payment processing",
+          "Up to 3 active coupon codes",
+          "Standard storefront templates"
+        ],
+        "sortOrder": 10,
+        "active": true,
+        "updatedAt": "2026-11-27T09:40:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": false, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": 1},
+          {"featureKey": "SALES_REPORTS", "enabled": false, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": false, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": false, "limitValue": 0},
+          {"featureKey": "LOGIN_OTP", "enabled": false, "limitValue": null}
+        ]
+      },
+      {
+        "id": 2,
+        "code": "GROWTH",
+        "name": "Growth",
+        "tagline": "FOR ESTABLISHED SELLERS",
+        "description": "Full brand ownership and tools to maximize conversions.",
+        "monthlyPricePesewas": 39900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 383040,
+        "annualMonthlyEquivalentPesewas": 31920,
+        "annualSavingPesewas": 95760,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 100,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": true,
+        "badgeLabel": "Most popular",
+        "bulletsHeading": "Everything in Starter, plus:",
+        "marketingBullets": [
+          "Custom domain connection (yourbrand.com)",
+          "Up to 1,000 products & inventory management",
+          "Full storefront customisation (theme & layout editor)",
+          "Shop-wide discounts, returns & refunds",
+          "Tax configuration & sales reports",
+          "Walk-in point of sale",
+          "Lower platform transaction fees"
+        ],
+        "sortOrder": 20,
+        "active": true,
+        "updatedAt": "2026-11-27T09:45:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": 1},
+          {"featureKey": "SALES_REPORTS", "enabled": true, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": true, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": true, "limitValue": 3},
+          {"featureKey": "LOGIN_OTP", "enabled": true, "limitValue": null}
+        ]
+      },
+      {
+        "id": 3,
+        "code": "SCALE",
+        "name": "Scale",
+        "tagline": "FOR HIGH-VOLUME BRANDS",
+        "description": "Advanced operations, team access, and lowest fees.",
+        "monthlyPricePesewas": 99900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 959040,
+        "annualMonthlyEquivalentPesewas": 79920,
+        "annualSavingPesewas": 239760,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 50,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": false,
+        "badgeLabel": null,
+        "bulletsHeading": "Everything in Growth, plus:",
+        "marketingBullets": [
+          "Unlimited products, staff and storage locations",
+          "Stock transfers & stock conversion",
+          "Accounting & bookkeeping",
+          "Lowest transaction fee tier"
+        ],
+        "sortOrder": 30,
+        "active": true,
+        "updatedAt": "2026-11-27T09:00:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": null},
+          {"featureKey": "SALES_REPORTS", "enabled": true, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": true, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": true, "limitValue": null},
+          {"featureKey": "LOGIN_OTP", "enabled": true, "limitValue": null}
+        ]
+      }
     ]
   }
 }
@@ -1680,6 +2076,156 @@ A Starter tenant whose trial ended (product count is at the limit; reads keep wo
         "group": "Team and security"
       },
       {"key": "LOGIN_OTP", "kind": "BOOLEAN", "label": "Login one-time codes", "group": "Team and security"}
+    ],
+    "publicPlans": [
+      {
+        "id": 1,
+        "code": "STARTER",
+        "name": "Starter",
+        "tagline": "FOR YOUR FIRST SALES",
+        "description": "Everything you need to launch your first online store.",
+        "monthlyPricePesewas": 14900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 143040,
+        "annualMonthlyEquivalentPesewas": 11920,
+        "annualSavingPesewas": 35760,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 150,
+        "isPublic": true,
+        "isDefaultForSignup": true,
+        "highlighted": false,
+        "badgeLabel": null,
+        "bulletsHeading": "Your launch essentials",
+        "marketingBullets": [
+          "Free platform subdomain (yourstore.shopfi.store)",
+          "Up to 50 products",
+          "Integrated online checkout & payment processing",
+          "Up to 3 active coupon codes",
+          "Standard storefront templates"
+        ],
+        "sortOrder": 10,
+        "active": true,
+        "updatedAt": "2026-11-27T09:40:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": false, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 50},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": false, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": false, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": false, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": 3},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": 1},
+          {"featureKey": "SALES_REPORTS", "enabled": false, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": false, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": false, "limitValue": 0},
+          {"featureKey": "LOGIN_OTP", "enabled": false, "limitValue": null}
+        ]
+      },
+      {
+        "id": 2,
+        "code": "GROWTH",
+        "name": "Growth",
+        "tagline": "FOR ESTABLISHED SELLERS",
+        "description": "Full brand ownership and tools to maximize conversions.",
+        "monthlyPricePesewas": 39900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 383040,
+        "annualMonthlyEquivalentPesewas": 31920,
+        "annualSavingPesewas": 95760,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 100,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": true,
+        "badgeLabel": "Most popular",
+        "bulletsHeading": "Everything in Starter, plus:",
+        "marketingBullets": [
+          "Custom domain connection (yourbrand.com)",
+          "Up to 1,000 products & inventory management",
+          "Full storefront customisation (theme & layout editor)",
+          "Shop-wide discounts, returns & refunds",
+          "Tax configuration & sales reports",
+          "Walk-in point of sale",
+          "Lower platform transaction fees"
+        ],
+        "sortOrder": 20,
+        "active": true,
+        "updatedAt": "2026-11-27T09:45:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": 1000},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": false, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": 1},
+          {"featureKey": "SALES_REPORTS", "enabled": true, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": true, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": false, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": true, "limitValue": 3},
+          {"featureKey": "LOGIN_OTP", "enabled": true, "limitValue": null}
+        ]
+      },
+      {
+        "id": 3,
+        "code": "SCALE",
+        "name": "Scale",
+        "tagline": "FOR HIGH-VOLUME BRANDS",
+        "description": "Advanced operations, team access, and lowest fees.",
+        "monthlyPricePesewas": 99900,
+        "annualDiscountPercent": 20,
+        "annualPricePesewas": 959040,
+        "annualMonthlyEquivalentPesewas": 79920,
+        "annualSavingPesewas": 239760,
+        "currency": "GHS",
+        "trialDays": 14,
+        "transactionFeeBps": 50,
+        "isPublic": true,
+        "isDefaultForSignup": false,
+        "highlighted": false,
+        "badgeLabel": null,
+        "bulletsHeading": "Everything in Growth, plus:",
+        "marketingBullets": [
+          "Unlimited products, staff and storage locations",
+          "Stock transfers & stock conversion",
+          "Accounting & bookkeeping",
+          "Lowest transaction fee tier"
+        ],
+        "sortOrder": 30,
+        "active": true,
+        "updatedAt": "2026-11-27T09:00:00Z",
+        "entitlements": [
+          {"featureKey": "CUSTOM_DOMAIN", "enabled": true, "limitValue": null},
+          {"featureKey": "THEME_ADVANCED", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_PRODUCTS", "enabled": true, "limitValue": null},
+          {"featureKey": "PRODUCT_FAMILIES", "enabled": true, "limitValue": null},
+          {"featureKey": "WALK_IN_POS", "enabled": true, "limitValue": null},
+          {"featureKey": "RETURNS_REFUNDS", "enabled": true, "limitValue": null},
+          {"featureKey": "SHOP_WIDE_DISCOUNTS", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_ACTIVE_COUPONS", "enabled": true, "limitValue": null},
+          {"featureKey": "INVENTORY_MANAGEMENT", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_TRANSFERS", "enabled": true, "limitValue": null},
+          {"featureKey": "STOCK_CONVERSION", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_LOCATIONS", "enabled": true, "limitValue": null},
+          {"featureKey": "SALES_REPORTS", "enabled": true, "limitValue": null},
+          {"featureKey": "TAX_CONFIG", "enabled": true, "limitValue": null},
+          {"featureKey": "ACCOUNTING", "enabled": true, "limitValue": null},
+          {"featureKey": "MAX_STAFF", "enabled": true, "limitValue": null},
+          {"featureKey": "LOGIN_OTP", "enabled": true, "limitValue": null}
+        ]
+      }
     ]
   }
 }
@@ -1741,7 +2287,9 @@ Codes of the plans that are `isPublic` and `active` and would allow the action, 
   create: the same rule).
 
 It may be **empty** (no public plan offers it): the modal then shows "contact us" instead of plan names. Codes, not
-names: the client maps them to names with the public plans list (12). Non-public or inactive plans are never named.
+names: the admin shell maps them to names with `publicPlans` of `GET /admin/subscription` (13), which is the same list as
+the public endpoint (12). A code missing from `publicPlans` (the list changed since it was read) is dropped from the
+message, never shown raw. Non-public or inactive plans are never named.
 
 ### 14.4 Precedence
 
@@ -1812,8 +2360,16 @@ race-safe: two concurrent creates at `limit - 1` let exactly one through (PLAN-0
 - **402**: one modal for any admin call; `PLAN_LIMIT_REACHED` -> "You have used X of Y"; `SUBSCRIPTION_INACTIVE` -> the
   read-only explanation; `requiredPlans` empty -> "contact us". A side panel that calls a gated endpoint (product detail
   sales panel) shows a locked panel, not an error page.
-- **Locks before the click**: the shared subscription hook (`GET /admin/subscription`) drives "Upgrade" badges; the
-  402 stays the authority (the plan can change between the read and the click).
+- **Locks before the click**: the shared subscription hook (`GET /admin/subscription`) drives "Upgrade" badges and
+  provides `publicPlans` for the upgrade modal's plan names (PLAN-05 AC9); the 402 stays the authority (the plan can
+  change between the read and the click). The admin shell (tenant host) never calls `GET /platform/onboarding/plans`;
+  the pricing page (platform host) reads it server-side.
+- **Fixtures**: `public-plans` is the seed state and agrees with every 402 and subscription example; use
+  `public-plans-mixed` for the "Save up to X%", 0% and no-trial branches. Do not mix states from `matrix-response` into
+  the pricing fixtures.
+- **Bullets drift (PLAN-04)**: marketing bullets are free text and are not updated when entitlements change. When a save
+  changes entitlements of a plan that has bullets, the confirm dialog shows a non-blocking hint "Marketing bullets are
+  not updated automatically; check the card text of <plan>".
 
 ## 17. Open points for the PO (defaults chosen in this contract)
 

@@ -381,7 +381,7 @@
         "data": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["plan", "status", "trialEndsAt", "readOnly", "entitlements", "usage", "features"],
+          "required": ["plan", "status", "trialEndsAt", "readOnly", "entitlements", "usage", "features", "publicPlans"],
           "properties": {
             "plan": { "$ref": "#/$defs/PlanPublic" },
             "status": { "$ref": "#/$defs/SubscriptionStatus" },
@@ -389,7 +389,8 @@
             "readOnly": { "type": "boolean" },
             "entitlements": { "type": "array", "items": { "$ref": "#/$defs/Entitlement" } },
             "usage": { "type": "array", "items": { "$ref": "#/$defs/Usage" } },
-            "features": { "type": "array", "items": { "$ref": "#/$defs/Feature" } }
+            "features": { "type": "array", "items": { "$ref": "#/$defs/Feature" } },
+            "publicPlans": { "type": "array", "items": { "$ref": "#/$defs/PlanPublic" } }
           }
         }
       }
