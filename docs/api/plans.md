@@ -64,7 +64,7 @@ groups appear in the order of their first feature.
 | `PRODUCT_FAMILIES` | BOOLEAN | Product families and pack sizes | Catalog | `ProductFamilyController`, and `familyId` / `uomCode` / `conversionFactor` on product create and update |
 | `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | starting new walk-in work: `POST /api/v1/admin/walk-in/order`, `POST /quote`, customer search (`POST` and `GET /customers/search`). **Never gated** (finishing work on existing orders, PO decision on Security L7): `GET /orders`, `GET /orders/{orderNumber}`, `PATCH .../receipt-printed`, `POST .../cancel`, `POST .../refund` |
 | `SHOP_WIDE_DISCOUNTS` | BOOLEAN | Shop-wide discounts | Marketing | `ShopWideDiscountController` writes |
-| `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | every write that makes a coupon active (section 15): create of an active coupon, `PUT /{couponId}` from inactive to active |
+| `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | every write that moves a coupon into the counted set (`is_active OR limit_deactivated`, section 15.2): create of an active coupon, `PUT /{couponId}` from switched off to active |
 | `INVENTORY_MANAGEMENT` | BOOLEAN | Inventory adjustments and history | Inventory | `InventoryManagementController` `POST /adjustments` and `GET /products/{productId}/history` only. Core (never gated): receipts (the only way stock enters), summary, stock-by-location, and `GET /legacy-balance-report` + `POST /legacy-balance-repair` (data repair, Security L9) |
 | `STOCK_TRANSFERS` | BOOLEAN | Stock transfers between locations | Inventory | `StockTransferController` |
 | `STOCK_CONVERSION` | BOOLEAN | Stock conversion | Inventory | `StockConversionController` |
@@ -1682,7 +1682,7 @@ never a parameter, so only the caller's own tenant is ever returned. Anonymous, 
 | `trialEndsAt` | timestamp or `null` (the trial clock starts when provisioning completes, PLAN-02 AC9) |
 | `readOnly` | `true` when `status` is `CANCELED`, or `TRIALING` with `trialEndsAt` not null and `now >= trialEndsAt` (at the instant itself the trial has ended). `ACTIVE` and `PAST_DUE` are never read-only (PAST_DUE grace is PLAN-06). Evaluated per request against the server clock |
 | `entitlements` | the plan's entitlements (same list as `plan.entitlements`; kept at top level for the clients' convenience) |
-| `usage` | one entry per LIMIT feature, catalog order: `{ "featureKey", "used", "limit" }`, `limit` `null` = unlimited, counted as section 15 |
+| `usage` | one entry per LIMIT feature, catalog order: `{ "featureKey", "used", "limit" }`, `limit` `null` = unlimited, `used` counted over the counted set of 15.2 (for `MAX_ACTIVE_COUPONS`: active plus exhausted coupons) |
 | `features` | the catalog, for labels and groups |
 | `publicPlans` | the plans that are `isPublic` and `active`, public shape, `sortOrder` then `id`: exactly `data.plans` of `GET /platform/onboarding/plans` (12). The admin shell maps `requiredPlans` codes of a 402 to names with it and links to the pricing page; it never calls the public endpoint from the browser (that endpoint does not allow tenant origins) |
 
@@ -2408,9 +2408,16 @@ counted row, deactivating, deleting) is never limit-checked. The same count is `
 | Key | Counted set | Writes that move a row into it (all limit-checked) |
 |---|---|---|
 | `MAX_PRODUCTS` | every row in `products` (products are hard-deleted; family variants are product rows; inactive / unlisted products count) | `POST /api/v1/product/add-product` in both `ProductServiceImpl` scenarios: a new product (new family) and a variant created into an existing family. There is no product restore path today; one added later must call the same check |
-| `MAX_ACTIVE_COUPONS` | coupons with `is_active = true` (an expired coupon that was never deactivated still counts) | `POST /api/v1/coupon/add-coupon` creating an active coupon; `PUT /api/v1/coupon/{couponId}` that changes `isActive` from false to true. (Deactivate and delete leave the set) |
+| `MAX_ACTIVE_COUPONS` | coupons with `is_active = true` **OR** `limit_deactivated = true` (QA round 2 N2, PO decision): a coupon the system switched off because its usage limit was reached ("exhausted") still counts, and so does an expired coupon that was never deactivated. Only a coupon the admin switched off (`is_active = false` and `limit_deactivated = false`) is outside the set | `POST /api/v1/coupon/add-coupon` creating an active coupon; `PUT /api/v1/coupon/{couponId}` with `isActive: true` on a coupon that is outside the set. `PUT` with `isActive: true` on an exhausted coupon is not an entry (it is already counted) and is never 402. The automatic redemption moves (`reserveRedemption`, `releaseRedemption` and the re-take for a revived order in `CouponRepository`) only move a coupon between `is_active` and `limit_deactivated`, i.e. inside the set, so a cancelled order or failed payment that re-activates an exhausted coupon can never push the tenant above the limit, and these core paths never answer 402 |
 | `MAX_STAFF` | users with the `FRONT_DESK` role and `is_active = true` (ADMINs and customers never count) | `POST /api/v1/admin/front-desk/users`; `PATCH /api/v1/admin/front-desk/users/{userId}` with `isActive: true` on an inactive FRONT_DESK user; **`PATCH /api/v1/admin/front-desk/users/{userId}/assign`** on an active user (e.g. a customer who self-registered through `POST /auth/register`), and an assigned-but-inactive user counts when it is later re-activated (the `PATCH` above) |
 | `MAX_LOCATIONS` | every storage location, active or not (AC6) | `POST /api/v1/admin/inventory/locations`. Activating an existing location (`PUT /{id}` with `active: true`) does not change the count (inactive locations already count), so it is never 402; if the PO changes the counted set to active locations only, that `PUT` becomes a limit-checked write |
+
+Leaving the coupon set (frees a slot), as the code works today (`CouponServiceImpl`): `POST /api/v1/coupon/{couponId}/deactivate`
+sets `is_active = false` and `limit_deactivated = false`; `PUT /{couponId}` with `isActive: false` does the same (every
+`PUT` resets `limit_deactivated` to false, the admin's `isActive` decides); `DELETE /{couponId}` removes the row but is
+allowed only for a coupon with no live redemption (otherwise `409 COUPON_REDEEMED`), so an exhausted coupon is normally
+freed by deactivating it, not by deleting it. After an admin deactivate a released redemption never re-activates the
+coupon (it is no longer `limit_deactivated`).
 
 Custom domains have no limit: `CUSTOM_DOMAIN` is a boolean and a tenant has at most one domain (O3). Count and insert are
 serialized per tenant and feature (a transaction-scoped advisory lock or `SELECT ... FOR UPDATE` on a per-tenant row), so
@@ -2462,7 +2469,9 @@ Defaults this document still picked where the AC are silent (change them here be
 1. `trialEndsAt` "extend only": later than the current trial end; it revives `CANCELED` to `TRIALING` and is refused for
    `ACTIVE` / `PAST_DUE` tenants (11).
 2. `isDefaultForSignup: true` on another plan moves the flag (bumping the other plan's version) (7).
-3. Expired-but-active coupons count towards `MAX_ACTIVE_COUPONS`; inactive storage locations count towards
+3. `MAX_ACTIVE_COUPONS` counts coupons that are `is_active OR limit_deactivated` (PO decision on QA round 2 N2: exhausted
+   coupons count, so the system re-activation on a released redemption never exceeds the limit; deactivating an
+   exhausted coupon frees its slot). Expired-but-active coupons count as well; inactive storage locations count towards
    `MAX_LOCATIONS` (AC6), so activating a location is not limit-checked (15.2).
 4. Field limits the AC did not state: `name` <= 40, `bulletsHeading` <= 80, `monthlyPricePesewas` <= 100,000,000,
    `sortOrder` 0..1000, matrix <= 50 items (3.1, 8); public list limiter 60 per 60 s per IP (12).
