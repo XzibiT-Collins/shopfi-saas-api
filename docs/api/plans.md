@@ -55,26 +55,28 @@ groups appear in the order of their first feature.
 | `key` | `kind` | `label` | `group` | What it gates (PLAN-02 AC2) |
 |---|---|---|---|---|
 | `CUSTOM_DOMAIN` | BOOLEAN | Custom domain | Storefront | `PUT /api/v1/admin/custom-domain` and `POST .../verify` (GET and DELETE stay open). Boolean only, there is no domain-count limit |
-| `THEME_ADVANCED` | BOOLEAN | Advanced theme customisation | Storefront | `PUT /api/v1/theme` when it adds or changes `rich-text`, `story` or `banner` sections, footer `linkGroups`, colour/typography overrides beyond the catalog theme, or a background image (O2), compared with the stored document. Storefront `GET` never gated |
-| `MAX_PRODUCTS` | LIMIT | Products | Catalog | product create (`POST /api/v1/product/add-product`, including a variant created into a family) |
+| `THEME_ADVANCED` | BOOLEAN | Advanced theme customisation | Storefront | `PUT /api/v1/theme`, defined as an **allowlist** (fails closed): without the feature a theme may use only the catalog theme (`themeId`) with its own tokens, logo and branding, and the section types `hero`, `featured-products`, `category-grid` and the basic footer (no `linkGroups`). Anything else that the request adds or changes, compared with the stored document on a canonical form, is gated: today `rich-text`, `story`, `banner`, footer `linkGroups`, colour/typography overrides beyond the catalog theme and a background image (O2), and **any section type added later** until it is put on the allowlist. Stored content that is not changed never triggers a 402. Storefront `GET` never gated |
+| `MAX_PRODUCTS` | LIMIT | Products | Catalog | every write that moves a row into the counted set (section 15): product create, new family or variant into a family |
 | `PRODUCT_FAMILIES` | BOOLEAN | Product families and pack sizes | Catalog | `ProductFamilyController`, and `familyId` / `uomCode` / `conversionFactor` on product create and update |
-| `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | `WalkInOrderController` (every route) |
-| `RETURNS_REFUNDS` | BOOLEAN | Returns and refunds | Orders | `OrderController` return, return-received, refund-acknowledgement |
+| `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | starting new walk-in work: `POST /api/v1/admin/walk-in/order`, `POST /quote`, customer search (`POST` and `GET /customers/search`). **Never gated** (finishing work on existing orders, PO decision on Security L7): `GET /orders`, `GET /orders/{orderNumber}`, `PATCH .../receipt-printed`, `POST .../cancel`, `POST .../refund` |
+| `RETURNS_REFUNDS` | BOOLEAN | Returns and refunds | Orders | starting a return: `OrderController` `POST /{orderNumber}/return`. **Never gated**: `return-received` and `refund-acknowledgement` of a return that already exists (finishing it, PO decision on Security L7) |
 | `SHOP_WIDE_DISCOUNTS` | BOOLEAN | Shop-wide discounts | Marketing | `ShopWideDiscountController` writes |
-| `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | coupon create, and a coupon update that re-activates a coupon |
-| `INVENTORY_MANAGEMENT` | BOOLEAN | Inventory adjustments and history | Inventory | `InventoryManagementController` `POST /adjustments` and `GET /history` only (receipts, summary and stock-by-location stay core: receipts are the only way stock enters) |
+| `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | every write that makes a coupon active (section 15): create of an active coupon, `PUT /{couponId}` from inactive to active |
+| `INVENTORY_MANAGEMENT` | BOOLEAN | Inventory adjustments and history | Inventory | `InventoryManagementController` `POST /adjustments` and `GET /products/{productId}/history` only. Core (never gated): receipts (the only way stock enters), summary, stock-by-location, and `GET /legacy-balance-report` + `POST /legacy-balance-repair` (data repair, Security L9) |
 | `STOCK_TRANSFERS` | BOOLEAN | Stock transfers between locations | Inventory | `StockTransferController` |
 | `STOCK_CONVERSION` | BOOLEAN | Stock conversion | Inventory | `StockConversionController` |
-| `MAX_LOCATIONS` | LIMIT | Storage locations | Inventory | storage location create |
+| `MAX_LOCATIONS` | LIMIT | Storage locations | Inventory | storage location create (section 15) |
 | `SALES_REPORTS` | BOOLEAN | Sales reports | Finance and reports | `SalesReportController` except `items-sold/{productId}` (used by the product detail page) |
 | `TAX_CONFIG` | BOOLEAN | Tax configuration | Finance and reports | `TaxController` add, update, delete (reads stay open; checkout keeps applying existing active taxes) |
 | `ACCOUNTING` | BOOLEAN | Accounting and bookkeeping | Finance and reports | `AccountingController`, `BookkeepingController` (ledger posting from orders keeps running) |
-| `MAX_STAFF` | LIMIT | Front-desk staff accounts | Team and security | front-desk user create, and a `PATCH` that re-activates a front-desk user |
-| `LOGIN_OTP` | BOOLEAN | Login one-time codes | Team and security | `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` when it turns an audience **on** (turning off is always allowed, see section 9) |
+| `MAX_STAFF` | LIMIT | Front-desk staff accounts | Team and security | every write that makes an active FRONT_DESK user (section 15): create, re-activation, and `PATCH /users/{userId}/assign` |
+| `LOGIN_OTP` | BOOLEAN | Login one-time codes | Team and security | a **request-content gate**, not a route gate: only a `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` that changes an audience from off to on is checked; turning off, or unchanged values, are never 402 in any state (section 15) |
 
 Never gated (core): platform, onboarding, auth, storefront, cart, checkout, payment, webhook, notification and metrics
-endpoints, orders other than the three return routes, products other than the limit, categories, coupons other than the
-limit, the subscription endpoint itself. Labels and groups are code-defined (they change with a release, not through the
+endpoints, ledger posting from orders, scheduled and async jobs, orders other than starting a return, finishing work on
+existing orders (walk-in cancel / refund / receipt, return-received, refund-acknowledgement), products other than the
+limit, categories, coupons other than the limit, the legacy balance report and repair, the subscription endpoint itself.
+**Only starting new gated work is blocked**, after a downgrade or a trial expiry alike. Labels and groups are code-defined (they change with a release, not through the
 API).
 
 Catalog entry (`Feature`): `key` (string), `kind` (`BOOLEAN` | `LIMIT`), `label` (1..60), `group` (1..40). A client that
@@ -2244,7 +2246,7 @@ A tenant route that needs a feature the tenant's plan lacks, or a write while th
 | `reason` | When | `description` (exact) |
 |---|---|---|
 | `NOT_IN_PLAN` | the route's BOOLEAN feature is off in the tenant's plan (any method, reads included) | `Your plan does not include this feature.` |
-| `SUBSCRIPTION_INACTIVE` | `readOnly` is true (13) and the request is a gated write (any method other than GET/HEAD on a gated route) or a limit-checked create; `feature` is the route's feature, or the LIMIT key for a create | `Your subscription is not active. Existing data stays readable; upgrade to make changes.` |
+| `SUBSCRIPTION_INACTIVE` | `readOnly` is true (13), the plan has the feature, and the request is a gated write (a method other than GET/HEAD on a gated route of section 2, or a request-content gate that fires: `THEME_ADVANCED` change, `LOGIN_OTP` off -> on, `PRODUCT_FAMILIES` fields) or a write that moves a row into a counted set (15); `feature` is the route's feature, or the LIMIT key. Never for the never-gated routes of section 2 (finishing existing orders included) | `Your subscription is not active. Existing data stays readable; upgrade to make changes.` |
 
 <!-- example: upgrade-required-not-in-plan response PlanUpgradeRequiredEnvelope 402 -->
 ```json
@@ -2293,26 +2295,35 @@ message, never shown raw. Non-public or inactive plans are never named.
 
 ### 14.4 Precedence
 
-Checks run in this order, the first failure answers:
+Checks run in this order; the first failure answers:
 
-1. Tenant resolution (`TenantResolutionFilter`, before authentication): no tenant `400`, unknown tenant `404`,
-   **suspended tenant `423`**. These come first for every caller, signed in or not (existing behaviour, errors.md).
-2. Authentication: `401`.
-3. Authorization: `403` (role matcher, `@PreAuthorize`, and the front-desk permission checks). A FRONT_DESK user without
-   the permission gets `403`, never a `402` that reveals the plan.
-4. Plan gate: `402 PLAN_UPGRADE_REQUIRED` (`NOT_IN_PLAN` before `SUBSCRIPTION_INACTIVE`).
-5. Request validation: `400` (bean validation and body parsing) on feature-gated routes; a gated route never reveals
-   field errors to a tenant whose plan lacks the feature.
-6. Limit check inside the create service: `402 PLAN_UPGRADE_REQUIRED` (`SUBSCRIPTION_INACTIVE`) then
-   `402 PLAN_LIMIT_REACHED`. Limit checks run in the service, after the body was parsed and validated, so an invalid
-   create body at the limit gets the `400`.
+1. **Tenant resolution** (`TenantResolutionFilter`, before authentication): no tenant `400`, unknown tenant `404`,
+   **suspended tenant `423`**, for every caller, signed in or not (existing behaviour, errors.md).
+2. **Authentication**: `401`.
+3. **Authorization**: `403`. This includes the `SecurityConfig` role matchers, `@PreAuthorize`, AND the service-level
+   front-desk permission checks done by `FrontDeskAccessService` (`requireAccess` / `hasPermission`) inside services (walk-in, stock transfer, stock
+   conversion, inventory and product services today, and any later caller). A FRONT_DESK user without the role or permission always
+   gets `403`, never a `402` that reveals the plan.
+4. **Plan gate**: `402 PLAN_UPGRADE_REQUIRED` (`NOT_IN_PLAN` before `SUBSCRIPTION_INACTIVE`).
+5. **Request validation**: `400` (body parsing and bean validation).
 
-The board AC (PLAN-03 AC3) wrote the order as 401 -> 403 -> 423 -> 402 -> 400; in this code base the 423 is produced by
-the tenant-resolution filter before authentication runs, so it precedes 401 (step 1). Implementation note for PLAN-02:
-Spring calls a `HandlerInterceptor.preHandle` BEFORE `@PreAuthorize` method security and before `@Valid` body binding,
-so a plain interceptor would answer 402 where step 3 must answer 403 for routes whose role is only in `@PreAuthorize`
-(e.g. FRONT_DESK on `/admin/accounting/**`) and for service-level permission checks. The gate must evaluate after
-authorization (and the PLAN-02 tests pin step 3 before step 4 for every gated route).
+The gate is evaluated **in the service layer, after authorization** (directly after the `FrontDeskAccessService` permission check where
+a service has one, otherwise at the start of the service method), not by a `HandlerInterceptor` or an annotation advice
+that runs before `@PreAuthorize`: Spring calls `HandlerInterceptor.preHandle` before method security and before `@Valid`
+binding, so such a gate would answer 402 where step 3 must answer 403. Because the gate runs inside the service, the body
+has already been bound, so step 5 only precedes step 4 where the decision needs the body (below); for the route gates the
+service rejects with 402 before any business validation of its own. PLAN-02 tests step 3 before step 4 for every gated
+route (one FRONT_DESK-without-permission case each).
+
+**Exceptions, body validation (400) before 402.** These gates depend on the request body, so the body is parsed and
+validated first and an invalid body gets `400` even when the plan lacks the feature:
+
+- `THEME_ADVANCED`: `PUT /api/v1/theme` (the new document is compared with the stored one);
+- `LOGIN_OTP`: `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` (only an off -> on change is gated; a malformed or
+  incomplete body is `400` like today, see feature-flags.md);
+- `PRODUCT_FAMILIES`: `familyId` / `uomCode` / `conversionFactor` on product create and update (multipart);
+- every limit check (15): it runs in the create / update service after the body was validated, so an invalid body at the
+  limit gets `400`, a valid one `402`.
 
 ## 15. Semantics (what a change does)
 
@@ -2332,8 +2343,14 @@ authorization (and the PLAN-02 tests pin step 3 before step 4 for every gated ro
   `trialEndsAt` = the moment provisioning completes (tenant becomes `ACTIVE`) + that plan's `trialDays` at that moment.
   Any `plan` value in the signup body is ignored (onboarding.md). Until provisioning completes `trialEndsAt` is `null`.
 - **Feature flags vs entitlements**: an entitlement decides whether the tenant MAY use a feature; the existing feature
-  flags (feature-flags.md) decide whether it has turned it on. A tenant that loses `LOGIN_OTP` while the flag is on keeps
-  OTP enforced (security is never weakened silently); it may turn the flag off but not back on (402 `NOT_IN_PLAN`).
+  flags (feature-flags.md) decide whether it has turned it on.
+- **`LOGIN_OTP` is a request-content gate.** Only a `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` that changes at least
+  one audience from off to on is checked: plan without the feature -> `402` `NOT_IN_PLAN`; plan with it but `readOnly` ->
+  `402` `SUBSCRIPTION_INACTIVE` (an off -> on change is a gated write in read-only mode too). Turning an audience off, or
+  sending values equal to the stored ones, is **never** 402, in any plan or status. The login path keeps reading the
+  flag only (`featureFlagService.isEnabled(LOGIN_OTP, roles)` in `AuthServiceImpl`) and must never become
+  `flag && entitlement`: a downgrade or an expired trial never removes OTP from an account that has it on; the tenant
+  can only turn it off itself.
 
 How each limit is counted (the same count is `usage[].used` and the 402 `used`), in the tenant's own schema:
 
