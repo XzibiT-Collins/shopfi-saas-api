@@ -290,7 +290,7 @@ public class PlanAdminService {
                 t.fields = c.fields;
             }
             if (c.entitlements != null) {
-                applyEntitlements(t, c, errors);
+                applyEntitlements(t, c);
             }
             requested.add(t);
         }
@@ -361,32 +361,12 @@ public class PlanAdminService {
     }
 
     /** Applies a matrix item's (already validated) entitlement changes to the target (plans.md section 3.3). */
-    private static void applyEntitlements(Target t, Change c, Map<String, String> errors) {
+    private static void applyEntitlements(Target t, Change c) {
         Map<PlanFeature, EntitlementView> next = new EnumMap<>(t.entitlements);
-        Set<PlanFeature> seen = new HashSet<>();
-        for (int j = 0; j < c.entitlements.size(); j++) {
-            EntitlementWrite w = c.entitlements.get(j);
-            String at = c.entitlementPrefix + "[" + j + "].";
-            PlanFeature f = PlanFeature.fromKey(w.getFeatureKey()).orElse(null);
-            if (f == null) {
-                errors.put(at + "featureKey", "unknown feature");
-                continue;
-            }
-            if (!seen.add(f)) {
-                errors.put(at + "featureKey", "duplicate feature");
-                continue;
-            }
+        for (EntitlementWrite w : c.entitlements) {
+            PlanFeature f = PlanFeature.fromKey(w.getFeatureKey()).orElseThrow();
             if (f.kind() == FeatureKind.BOOLEAN) {
-                if (w.getLimitValue() != null) {
-                    errors.put(at + "limitValue", "must be null for a BOOLEAN feature");
-                } else if (w.getEnabled() == null) {
-                    errors.put(at + "enabled", "must not be null");
-                } else {
-                    next.put(f, new EntitlementView(f.name(), w.getEnabled(), null));
-                }
-            } else if (!w.isLimitValueSent()) {
-                // never read an absent limit as "unlimited"
-                errors.put(at + "limitValue", "is required for a LIMIT feature (null = unlimited)");
+                next.put(f, new EntitlementView(f.name(), w.getEnabled(), null));
             } else {
                 Integer limit = w.getLimitValue();
                 next.put(f, new EntitlementView(f.name(), limit == null || limit > 0, limit));
