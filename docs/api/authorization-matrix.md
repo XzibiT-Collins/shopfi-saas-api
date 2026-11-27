@@ -224,6 +224,29 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 
 Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant user, decided in SEC-03b): `AuthController` `GET /auth/me`, `TaxController` `GET /tax` (tax calculation for a subtotal and coupon) and `GET /tax/all` (rate list). **Tax policy:** the storefront frontend calls neither (checkout totals come from `POST /cart/preview`), but rates are not secret (every checkout total shows them), the calculation is the same one a customer already triggers through checkout, and an API client may rely on it, so the routes stay open to signed-in users while the rate administration (`add-tax`, `update`, `{taxId}`, `delete`) is `ADMIN`. Revisit if rates ever become confidential.
 
+## 3b. Plans and subscription (PLAN-03 contract)
+
+Not in the code yet: PLAN-01 / PLAN-02 add these handlers and then move each row into section 3 (whose rows must equal
+the controllers, `AuthorizationMatrixStructureTest`) together with the matching `EXPECTED` entries and `SecurityConfig`
+matchers. Contract: [plans.md](plans.md).
+
+| Controller (planned) | Method | Path | Matcher | @PreAuthorize | Effect |
+|---|---|---|---|---|---|
+| PlatformPlanController | GET | `/api/v1/platform/plans` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads master plan data and tenant counts |
+| PlatformPlanController | POST | `/api/v1/platform/plans` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates master plan data (audited) |
+| PlatformPlanController | PUT | `/api/v1/platform/plans/{id}` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates master plan data (audited, optimistic lock) |
+| PlatformPlanController | PUT | `/api/v1/platform/plans/matrix` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates the entitlements of every tenant on the changed plans (audited, one transaction) |
+| PlatformPlanController | GET | `/api/v1/platform/plans/audit` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | reads the plan audit log (admin e-mails) |
+| PlatformTenantController | PUT | `/api/v1/platform/tenants/{slug}/plan` | SUPER_ADMIN | `hasRole('SUPER_ADMIN')` (class) | mutates one tenant's plan / trial / subscription status (audited) |
+| PlatformPlanPublicController (or TenantOnboardingController) | GET | `/api/v1/platform/onboarding/plans` | permitAll (explicit GET, + HEAD) | - | public plan list for the pricing page; no tenant, no cookie; never returns versions, admins or tenant counts |
+| SubscriptionController | GET | `/api/v1/admin/subscription` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads the caller's own tenant plan, status and usage counts; tenant from `TenantContext` only |
+
+Same actor rules as the rest of the platform: tenant tokens of any role on `/platform/**` are `401`, anonymous `401`. The
+public allow-list of section 2 gains `GET /api/v1/platform/onboarding/plans` when PLAN-01 ships. **New status 402**
+(PLAN-02): on gated tenant routes, after 401 and 403 (a role or permission failure, including the service-level
+front-desk permission checks, is always reported as 403, never as a 402 that reveals the plan); the gate runs in the
+service after authorization, not in an interceptor before `@PreAuthorize`; see [plans.md](plans.md#144-precedence) and [errors.md](errors.md#plans-and-subscription-plan-03).
+
 ## 4. SEC-03b hardening
 
 * Public catalog reads (`/product/{featured,listing,search}`) now return `PublicProductListing`: no `stockQuantity`, `isActive`, `isEnlisted` (availability is `isOutOfStock`). The ADMIN/FRONT_DESK listings keep the full `ProductListing`.

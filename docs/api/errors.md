@@ -40,6 +40,29 @@ Plain `400` (bad or extra body property), `403` (not ADMIN) and `404` (unknown o
 Full table and semantics: [walk-in.md](walk-in.md#cancel-and-refund-api-rd-03-ac3). The reason text typed by the admin
 is stored in the audit table and never appears in logs or error bodies.
 
+## Plans and subscription (PLAN-03)
+
+Contract for PLAN-01 / PLAN-02 (not in the code yet); full rules, examples and precedence in [plans.md](plans.md#14-402-payment-required).
+All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
+
+| Status | `data.code` | Extra `data` keys | When |
+|---|---|---|---|
+| 402 | `PLAN_UPGRADE_REQUIRED` | `feature`, `reason` (`NOT_IN_PLAN` \| `SUBSCRIPTION_INACTIVE`), `requiredPlans` (plan codes) | a tenant route needs a feature its plan lacks, or a gated write / limit-checked create while the trial has ended or the subscription is `CANCELED` |
+| 402 | `PLAN_LIMIT_REACHED` | `feature`, `limit`, `used`, `requiredPlans` | any write that moves a row into a counted set (product create, coupon create or activation, front-desk user create / re-activation / assign, storage location create) at the plan's limit |
+| 409 | `PLAN_VERSION_CONFLICT` | `conflicts[]` = `{planId, expectedVersion, currentVersion}` | a platform plan write (PUT, matrix) carried a stale `version`; nothing was written. Plan writes never use the generic `503 TRY_AGAIN` optimistic-lock answer |
+| 409 | `PLAN_CODE_TAKEN` | | plan create with an existing code |
+| 404 | `PLAN_NOT_FOUND` | | unknown plan id |
+| 400 | `PLAN_INACTIVE` | | assigning an inactive plan to a tenant without `allowInactive: true` |
+
+402 is new in this API. Precedence on a tenant route: tenant resolution (400 / 404 / 423 suspended) -> 401 -> 403
+(including the service-level front-desk permission checks) -> 400 body parsing / bean validation (`@Valid` runs at
+argument binding) -> 402 plan gate -> the service's own business checks (which may also answer 400 / 409). Every 403
+precedes every 402. The plan gate, the body-dependent gates (`THEME_ADVANCED`, `LOGIN_OTP` off -> on,
+`PRODUCT_FAMILIES` fields) and the limit checks all run in the service after authorization
+([plans.md](plans.md#144-precedence)). Finishing work on existing orders (walk-in cancel / refund) and returns and refunds
+(core for every plan) are never a 402.
+The admin frontend opens one upgrade modal for any 402 and never shows it as a generic error.
+
 ## Kept: business messages (our own exception types)
 
 `ApiCodeException` (with `data.code`), `BadRequestException`, `CouponRejectedException`, `ValidationException`,

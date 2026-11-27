@@ -43,7 +43,7 @@
         "ownerEmail": { "$ref": "#/$defs/Email" },
         "ownerFullName": { "$ref": "#/$defs/NoControlChars" },
         "password": { "type": "string", "minLength": 8, "maxLength": 72, "description": "Trimmed by the server. At least 8 characters; at most 72 UTF-8 bytes (BCrypt limit, so 72 is only exact for ASCII). Bean validation enforces 8..72 characters (field-map 400); over-72-byte multi-byte values are rejected by the service with 400." },
-        "plan": { "enum": ["FREE", "STARTER", "PRO"], "description": "Optional, defaults to FREE. Records intent only; no billing." }
+        "plan": { "description": "Deprecated (PLAN-03, owner O1): ignored by the server, any value of any type, never selects a plan and never causes a 400. Every new tenant gets the default sign-up plan. Clients should not send it. Interim until PLAN-01 merges: the server still rejects values other than FREE, STARTER, PRO with 400." }
       }
     },
     "TenantVerifyRequest": {

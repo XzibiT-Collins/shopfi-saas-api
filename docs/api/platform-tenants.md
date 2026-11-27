@@ -18,7 +18,7 @@ return tenant business data.
 | 401 / 403 | not authenticated / not SUPER_ADMIN |
 | 404 | tenant not found (detail, audit and every action). An unknown slug and a malformed slug give the identical response |
 | 409 | illegal transition for the tenant's current status, or approve/reprovision without verified credentials (exact texts below) |
-| 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30), `Retry-After` header (seconds) set. Standard error envelope, exactly `{"description": "Too many tenant actions, slow down", "data": null}` |
+| 429 | per-admin action throttle (`platform.tenants.actions-per-minute`, default 30) on the four POST actions and, from PLAN-01, on `PUT /tenants/{slug}/plan` ([plans.md](plans.md) section 11), `Retry-After` header (seconds) set. Standard error envelope, exactly `{"description": "Too many tenant actions, slow down", "data": null}` |
 | 500 | the provisioning saga failed; the tenant is now `FAILED` and may be reprovisioned |
 
 ## Slug path parameter
@@ -51,7 +51,7 @@ signup. It is personal data, so the console must not log it, cache it in shared 
         "slug": "acme",
         "displayName": "Acme Perfumes",
         "status": "ACTIVE",
-        "plan": "FREE",
+        "plan": "STARTER",
         "ownerEmail": "owner@acme.example",
         "customDomain": null,
         "customDomainStatus": null,
@@ -92,6 +92,83 @@ with `status` by AND. Blank or whitespace-only means no search. Longer than **10
 does not match everything and `a_c` does not match `abc`), quotes and any other character are plain data, and the term is a
 bound query parameter, never concatenated into SQL. The response envelope is unchanged (`totalElements` counts the matches).
 
+## Plan and subscription fields (PLAN-03)
+
+Contract for PLAN-01 (AC11); full plan API in [plans.md](plans.md). Every tenant summary (list rows, detail, the `tenant`
+of an action response, and the answer of `PUT /api/v1/platform/tenants/{slug}/plan`) carries:
+
+| key | type | notes |
+|---|---|---|
+| `plan` | string | **the plan code** (`STARTER`, `GROWTH`, `SCALE`, or any code a super-admin created; `^[A-Z][A-Z0-9_]{1,31}$`). Still a string, so the console's existing parser (string <= 40) keeps working. Before PLAN-01 it was `FREE`, `STARTER` or `PRO`; the V51 backfill maps FREE and STARTER to STARTER, PRO to SCALE |
+| `planName` | string | the plan's current `name` (display) |
+| `subscriptionStatus` | string | `TRIALING`, `ACTIVE`, `PAST_DUE`, `CANCELED` |
+| `trialEndsAt` | string \| null | instant ending in `Z` (like audit `occurredAt`, unlike `createdAt`/`updatedAt` which have no offset); `null` while the tenant has not finished provisioning. A `TRIALING` tenant whose `trialEndsAt` is in the past is read-only for paid features ([plans.md](plans.md) section 13); the console may badge it "trial ended" |
+
+The JSON examples above and below that are tagged `example:` / `plat04:` are parsed into the CURRENT Java records by
+`PlatformTenantsContractTest` / `PlatformReadContractTest` (unknown keys fail), so they gain `planName`,
+`subscriptionStatus` and `trialEndsAt` in the PLAN-01 PR that adds them to `PlatformTenantSummary`; their `plan` already
+shows a plan code. The PLAN-03 examples of the new shape (validated against `plans.schema.json`):
+
+<!-- example: tenant-list-with-plan response TenantPageEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "items": [
+      {
+        "id": 12,
+        "slug": "acme",
+        "displayName": "Acme Perfumes",
+        "status": "ACTIVE",
+        "plan": "GROWTH",
+        "planName": "Growth",
+        "subscriptionStatus": "TRIALING",
+        "trialEndsAt": "2026-12-11T09:30:00Z",
+        "ownerEmail": "owner@acme.example",
+        "customDomain": null,
+        "customDomainStatus": null,
+        "createdAt": "2026-11-01T09:30:00.123456",
+        "updatedAt": "2026-11-27T09:31:10.654321"
+      }
+    ],
+    "page": 0,
+    "size": 20,
+    "totalElements": 1,
+    "totalPages": 1,
+    "sort": "createdAt",
+    "direction": "desc",
+    "customDomainCounts": {"PENDING": 0, "VERIFIED": 0, "FAILED": 0, "NONE": 1}
+  }
+}
+```
+
+<!-- example: tenant-detail-with-plan response TenantSummaryEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "id": 12,
+    "slug": "acme",
+    "displayName": "Acme Perfumes",
+    "status": "ACTIVE",
+    "plan": "GROWTH",
+    "planName": "Growth",
+    "subscriptionStatus": "TRIALING",
+    "trialEndsAt": "2026-12-11T09:30:00Z",
+    "ownerEmail": "owner@acme.example",
+    "customDomain": null,
+    "customDomainStatus": null,
+    "createdAt": "2026-11-01T09:30:00.123456",
+    "updatedAt": "2026-11-27T09:31:10.654321"
+  }
+}
+```
+
+The plan action `PUT /api/v1/platform/tenants/{slug}/plan` (set plan, extend trial, set `ACTIVE`/`CANCELED`) is
+documented in [plans.md](plans.md) section 11. It writes a tenant audit row with `action` `CHANGE_PLAN`, `phase`
+`OUTCOME` and `previousStatus` = `newStatus` (the registry status does not change); the plan details are in the plan
+audit log. The list has no plan filter yet.
+
 ## GET /api/v1/platform/tenants/{slug} (PLAT-04)
 
 Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description": "Tenant not found", "data": null}`).
@@ -106,7 +183,7 @@ Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description
     "slug": "acme",
     "displayName": "Acme Perfumes",
     "status": "ACTIVE",
-    "plan": "FREE",
+    "plan": "STARTER",
     "ownerEmail": "owner@acme.example",
     "customDomain": null,
     "customDomainStatus": null,
@@ -134,7 +211,7 @@ previousStatus, newStatus, phase` and drops the rest):
 |---|---|---|
 | `id` | number | per-table identity, strictly increasing: the order the rows were written |
 | `tenantSlug` | string | the requested tenant |
-| `action` | string | `APPROVE`, `SUSPEND`, `REACTIVATE`, `REPROVISION` |
+| `action` | string | `APPROVE`, `SUSPEND`, `REACTIVATE`, `REPROVISION`; from PLAN-01 also `CHANGE_PLAN` (plan, trial or subscription status changed, see "Plan and subscription fields") |
 | `phase` | string | `INTENT`, `OUTCOME`, `RECLAIM`, `RECONCILE` (meaning in the previous section) |
 | `actorEmail` | string | platform admin who acted (also on RECLAIM and RECONCILE); SUPER_ADMIN data, do not log or cache in shared storage |
 | `previousStatus`, `newStatus` | string | tenant statuses |
@@ -194,7 +271,7 @@ standard paging envelope (`page`, `size`, `totalElements`, `totalPages`, `sort`,
 
 Access and limits of the three read endpoints: SUPER_ADMIN only (class-level `@PreAuthorize` plus the `/platform/**` matcher),
 platform cookie required, same errors as above. They run in read-only transactions, never write an audit row and have no
-per-admin throttle (the `429` action throttle covers the four POST actions only, as the list always did).
+per-admin throttle (the `429` action throttle covers the four POST actions and, from PLAN-01, the plan action `PUT /tenants/{slug}/plan`).
 
 ## Actions
 
@@ -218,7 +295,7 @@ per-admin throttle (the `429` action throttle covers the four POST actions only,
       "slug": "acme",
       "displayName": "Acme Perfumes",
       "status": "SUSPENDED",
-      "plan": "FREE",
+      "plan": "STARTER",
       "ownerEmail": "owner@acme.example",
       "customDomain": null,
       "customDomainStatus": null,
@@ -244,7 +321,7 @@ Idempotent repeat (already suspended): HTTP 200, `changed=false`, no audit row:
       "slug": "acme",
       "displayName": "Acme Perfumes",
       "status": "SUSPENDED",
-      "plan": "FREE",
+      "plan": "STARTER",
       "ownerEmail": "owner@acme.example",
       "customDomain": null,
       "customDomainStatus": null,
@@ -270,7 +347,7 @@ Saga already running (HTTP 202):
       "slug": "bravo",
       "displayName": "Bravo",
       "status": "PROVISIONING",
-      "plan": "FREE",
+      "plan": "STARTER",
       "ownerEmail": "owner@bravo.example",
       "customDomain": null,
       "customDomainStatus": null,

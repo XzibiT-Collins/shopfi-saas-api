@@ -1,0 +1,504 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shopfi.example/schemas/plans.schema.json",
+  "title": "Shopfi plans, entitlements, subscription and 402 contract (PLAN-03)",
+  "description": "Request and response bodies of /api/v1/platform/plans/**, PUT /api/v1/platform/tenants/{slug}/plan, GET /api/v1/platform/onboarding/plans, GET /api/v1/admin/subscription and the 402 bodies of every gated tenant route. Every body is the CustomApiResponse envelope {description, data}. The examples in plans.md and the PLAN-03 examples of platform-tenants.md are validated against this file. Rules JSON Schema cannot express (derived money maths, cross-plan rules, catalog order) are in plans.md.",
+  "$defs": {
+    "Timestamp": {
+      "description": "An instant in UTC, always ending in Z. The fractional part has variable length (trailing zeros trimmed) and may be absent.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "LocalDateTime": {
+      "description": "Registry timestamps of the tenant summary (createdAt, updatedAt): LocalDateTime, server local time, NO offset. Unchanged from platform-tenants.md.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?$"
+    },
+    "PlanCode": {
+      "description": "Upper-case code, unique, immutable after create.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{1,31}$"
+    },
+    "FeatureKey": {
+      "description": "A PlanFeature key. The catalog (GET responses, field features) is the authority on which keys exist; the 16 keys of PLAN-03 are listed in plans.md section 2.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+    },
+    "FeatureKind": { "enum": ["BOOLEAN", "LIMIT"] },
+    "SubscriptionStatus": { "enum": ["TRIALING", "ACTIVE", "PAST_DUE", "CANCELED"] },
+    "PlainText": {
+      "description": "Plain text: rejects the Unicode general categories Cc (controls, incl. C1) and Cf (format: bidi overrides and isolates, zero-width characters, soft hyphen, BOM, ...) and U+2028 / U+2029. The pattern lists the BMP code points of those categories (Unicode 16); the server rule is the category test (Java \\p{Cc} / \\p{Cf}), which also covers the astral Cf characters (U+110BD, U+E0001, U+E0020-E007F, ...). Clients render it as text, never as HTML or Markdown.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*$"
+    },
+    "Pesewas": { "type": "integer", "minimum": 0 },
+    "Feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "kind", "label", "group"],
+      "properties": {
+        "key": { "$ref": "#/$defs/FeatureKey" },
+        "kind": { "$ref": "#/$defs/FeatureKind" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "group": { "type": "string", "minLength": 1, "maxLength": 40 }
+      }
+    },
+    "Entitlement": {
+      "description": "One feature of one plan. BOOLEAN: enabled is the switch, limitValue is always null. LIMIT: limitValue is the cap (integer >= 0, null = unlimited) and enabled is derived (limitValue null or > 0).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["featureKey", "enabled", "limitValue"],
+      "properties": {
+        "featureKey": { "$ref": "#/$defs/FeatureKey" },
+        "enabled": { "type": "boolean" },
+        "limitValue": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }] }
+      }
+    },
+    "TenantCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["TRIALING", "ACTIVE", "PAST_DUE", "CANCELED"],
+      "properties": {
+        "TRIALING": { "type": "integer", "minimum": 0 },
+        "ACTIVE": { "type": "integer", "minimum": 0 },
+        "PAST_DUE": { "type": "integer", "minimum": 0 },
+        "CANCELED": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "PlanBase": {
+      "description": "Fields common to the public and the platform plan shape. Not used on its own.",
+      "type": "object",
+      "required": ["id", "code", "name", "tagline", "description", "monthlyPricePesewas", "annualDiscountPercent",
+        "annualPricePesewas", "annualMonthlyEquivalentPesewas", "annualSavingPesewas", "currency", "trialDays",
+        "transactionFeeBps", "isPublic", "isDefaultForSignup", "highlighted", "badgeLabel", "bulletsHeading",
+        "marketingBullets", "sortOrder", "active", "updatedAt", "entitlements"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "code": { "$ref": "#/$defs/PlanCode" },
+        "name": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 40 },
+        "tagline": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 40 }] },
+        "description": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 280 }] },
+        "monthlyPricePesewas": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "annualDiscountPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "annualPricePesewas": { "$ref": "#/$defs/Pesewas" },
+        "annualMonthlyEquivalentPesewas": { "$ref": "#/$defs/Pesewas" },
+        "annualSavingPesewas": { "$ref": "#/$defs/Pesewas" },
+        "currency": { "const": "GHS" },
+        "trialDays": { "type": "integer", "minimum": 0, "maximum": 365 },
+        "transactionFeeBps": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "isPublic": { "type": "boolean" },
+        "isDefaultForSignup": { "type": "boolean" },
+        "highlighted": { "type": "boolean" },
+        "badgeLabel": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 40 }] },
+        "bulletsHeading": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "minLength": 1, "maxLength": 80 }] },
+        "marketingBullets": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 120 }
+        },
+        "sortOrder": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "active": { "type": "boolean" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" },
+        "entitlements": { "type": "array", "items": { "$ref": "#/$defs/Entitlement" } }
+      }
+    },
+    "PlanPublic": {
+      "description": "Public plan shape: GET /platform/onboarding/plans and GET /admin/subscription. No version, updatedBy or tenantCounts.",
+      "allOf": [{ "$ref": "#/$defs/PlanBase" }],
+      "unevaluatedProperties": false
+    },
+    "PlanPlatform": {
+      "description": "Platform (SUPER_ADMIN) plan shape.",
+      "allOf": [
+        { "$ref": "#/$defs/PlanBase" },
+        {
+          "type": "object",
+          "required": ["version", "updatedBy", "tenantCounts"],
+          "properties": {
+            "version": { "type": "integer", "minimum": 0 },
+            "updatedBy": { "oneOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 255 }] },
+            "tenantCounts": { "$ref": "#/$defs/TenantCounts" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PlanWriteFields": {
+      "description": "Writable plan fields (PUT /{id}, the optional plan object of a matrix item, and POST together with code). Full replace: an absent nullable text field is stored as null. Read-only fields (id, code on update, currency, the three derived annual fields, updatedAt, updatedBy, tenantCounts, entitlements) are ignored by the server; this schema forbids them so clients do not send them.",
+      "type": "object",
+      "required": ["name", "monthlyPricePesewas", "annualDiscountPercent", "trialDays", "transactionFeeBps", "isPublic",
+        "isDefaultForSignup", "highlighted", "marketingBullets", "sortOrder", "active"],
+      "properties": {
+        "name": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 40 },
+        "tagline": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "maxLength": 40 }] },
+        "description": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "maxLength": 280 }] },
+        "monthlyPricePesewas": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "annualDiscountPercent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "trialDays": { "type": "integer", "minimum": 0, "maximum": 365 },
+        "transactionFeeBps": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "isPublic": { "type": "boolean" },
+        "isDefaultForSignup": { "type": "boolean" },
+        "highlighted": { "type": "boolean" },
+        "badgeLabel": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "maxLength": 40 }] },
+        "bulletsHeading": { "oneOf": [{ "type": "null" }, { "allOf": [{ "$ref": "#/$defs/PlainText" }], "maxLength": 80 }] },
+        "marketingBullets": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "allOf": [{ "$ref": "#/$defs/PlainText" }], "pattern": "\\S", "minLength": 1, "maxLength": 120 }
+        },
+        "sortOrder": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "active": { "type": "boolean" }
+      }
+    },
+    "PlanCreateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/PlanWriteFields" },
+        { "type": "object", "required": ["code"], "properties": { "code": { "$ref": "#/$defs/PlanCode" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PlanUpdateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/PlanWriteFields" },
+        { "type": "object", "required": ["version"], "properties": { "version": { "type": "integer", "minimum": 0 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "PlanFieldsOnly": {
+      "allOf": [{ "$ref": "#/$defs/PlanWriteFields" }],
+      "unevaluatedProperties": false
+    },
+    "EntitlementWrite": {
+      "description": "BOOLEAN: send enabled, limitValue null or absent. LIMIT: send limitValue (integer >= 0, null = unlimited); enabled is ignored.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["featureKey"],
+      "properties": {
+        "featureKey": { "$ref": "#/$defs/FeatureKey" },
+        "enabled": { "type": "boolean" },
+        "limitValue": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }] }
+      }
+    },
+    "PlanMatrixRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plans"],
+      "properties": {
+        "plans": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "version"],
+            "anyOf": [{ "required": ["entitlements"] }, { "required": ["plan"] }],
+            "properties": {
+              "id": { "type": "integer", "minimum": 1 },
+              "version": { "type": "integer", "minimum": 0 },
+              "entitlements": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/EntitlementWrite" } },
+              "plan": { "$ref": "#/$defs/PlanFieldsOnly" }
+            }
+          }
+        }
+      }
+    },
+    "TenantPlanUpdateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [{ "required": ["planId"] }, { "required": ["trialEndsAt"] }, { "required": ["subscriptionStatus"] }],
+      "not": { "required": ["trialEndsAt", "subscriptionStatus"] },
+      "dependentRequired": { "allowInactive": ["planId"] },
+      "properties": {
+        "planId": { "type": "integer", "minimum": 1 },
+        "trialEndsAt": { "$ref": "#/$defs/Timestamp" },
+        "subscriptionStatus": { "enum": ["ACTIVE", "CANCELED"] },
+        "allowInactive": { "type": "boolean" }
+      }
+    },
+    "PlanCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plans", "features"],
+      "properties": {
+        "plans": { "type": "array", "items": { "$ref": "#/$defs/PlanPlatform" } },
+        "features": { "type": "array", "items": { "$ref": "#/$defs/Feature" } }
+      }
+    },
+    "PlanCatalogEnvelope": {
+      "description": "GET /api/v1/platform/plans and PUT /api/v1/platform/plans/matrix (200).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": { "description": { "type": "null" }, "data": { "$ref": "#/$defs/PlanCatalog" } }
+    },
+    "PlanEnvelope": {
+      "description": "POST /api/v1/platform/plans (201) and PUT /api/v1/platform/plans/{id} (200).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": { "description": { "type": "null" }, "data": { "$ref": "#/$defs/PlanPlatform" } }
+    },
+    "PublicPlansEnvelope": {
+      "description": "GET /api/v1/platform/onboarding/plans (200).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "null" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["plans", "features"],
+          "properties": {
+            "plans": { "type": "array", "items": { "$ref": "#/$defs/PlanPublic" } },
+            "features": { "type": "array", "items": { "$ref": "#/$defs/Feature" } }
+          }
+        }
+      }
+    },
+    "AuditChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "before", "after"],
+      "properties": {
+        "field": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "before": {},
+        "after": {}
+      }
+    },
+    "PlanAuditRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "occurredAt", "actorEmail", "action", "planId", "planCode", "tenantSlug", "changes"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "actorEmail": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "action": { "enum": ["PLAN_CREATE", "PLAN_UPDATE", "PLAN_MATRIX_UPDATE", "TENANT_PLAN_UPDATE"] },
+        "planId": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }] },
+        "planCode": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/PlanCode" }] },
+        "tenantSlug": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^[a-z0-9-]{3,40}$" }] },
+        "changes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/AuditChange" } }
+      }
+    },
+    "PlanAuditPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "null" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["items", "page", "size", "totalElements", "totalPages"],
+          "properties": {
+            "items": { "type": "array", "items": { "$ref": "#/$defs/PlanAuditRow" } },
+            "page": { "type": "integer", "minimum": 0 },
+            "size": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "totalElements": { "type": "integer", "minimum": 0 },
+            "totalPages": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "TenantSummary": {
+      "description": "PlatformTenantSummary after PLAN-01: the PLAT-02 keys plus planName, subscriptionStatus and trialEndsAt. plan is now the plan code (still a string).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "slug", "displayName", "status", "plan", "planName", "subscriptionStatus", "trialEndsAt",
+        "ownerEmail", "customDomain", "customDomainStatus", "createdAt", "updatedAt"],
+      "properties": {
+        "id": { "type": "integer" },
+        "slug": { "type": "string", "pattern": "^[a-z0-9-]{3,40}$" },
+        "displayName": { "type": "string" },
+        "status": { "enum": ["PENDING", "PROVISIONING", "ACTIVE", "SUSPENDED", "FAILED"] },
+        "plan": { "$ref": "#/$defs/PlanCode" },
+        "planName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "subscriptionStatus": { "$ref": "#/$defs/SubscriptionStatus" },
+        "trialEndsAt": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Timestamp" }] },
+        "ownerEmail": { "type": "string" },
+        "customDomain": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+        "customDomainStatus": { "oneOf": [{ "type": "null" }, { "enum": ["PENDING", "VERIFIED", "FAILED"] }] },
+        "createdAt": { "$ref": "#/$defs/LocalDateTime" },
+        "updatedAt": { "$ref": "#/$defs/LocalDateTime" }
+      }
+    },
+    "TenantSummaryEnvelope": {
+      "description": "GET /api/v1/platform/tenants/{slug} and PUT /api/v1/platform/tenants/{slug}/plan (200).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": { "description": { "type": "null" }, "data": { "$ref": "#/$defs/TenantSummary" } }
+    },
+    "TenantPageEnvelope": {
+      "description": "GET /api/v1/platform/tenants (200) after PLAN-01.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "null" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["items", "page", "size", "totalElements", "totalPages", "sort", "direction", "customDomainCounts"],
+          "properties": {
+            "items": { "type": "array", "items": { "$ref": "#/$defs/TenantSummary" } },
+            "page": { "type": "integer", "minimum": 0 },
+            "size": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "totalElements": { "type": "integer", "minimum": 0 },
+            "totalPages": { "type": "integer", "minimum": 0 },
+            "sort": { "type": "string" },
+            "direction": { "enum": ["asc", "desc"] },
+            "customDomainCounts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["PENDING", "VERIFIED", "FAILED", "NONE"],
+              "properties": {
+                "PENDING": { "type": "integer" }, "VERIFIED": { "type": "integer" },
+                "FAILED": { "type": "integer" }, "NONE": { "type": "integer" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["featureKey", "used", "limit"],
+      "properties": {
+        "featureKey": { "$ref": "#/$defs/FeatureKey" },
+        "used": { "type": "integer", "minimum": 0 },
+        "limit": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }] }
+      }
+    },
+    "SubscriptionEnvelope": {
+      "description": "GET /api/v1/admin/subscription (200).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "null" },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["plan", "status", "trialEndsAt", "readOnly", "entitlements", "usage", "features", "publicPlans"],
+          "properties": {
+            "plan": { "$ref": "#/$defs/PlanPublic" },
+            "status": { "$ref": "#/$defs/SubscriptionStatus" },
+            "trialEndsAt": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Timestamp" }] },
+            "readOnly": { "type": "boolean" },
+            "entitlements": { "type": "array", "items": { "$ref": "#/$defs/Entitlement" } },
+            "usage": { "type": "array", "items": { "$ref": "#/$defs/Usage" } },
+            "features": { "type": "array", "items": { "$ref": "#/$defs/Feature" } },
+            "publicPlans": { "type": "array", "items": { "$ref": "#/$defs/PlanPublic" } }
+          }
+        }
+      }
+    },
+    "PlanUpgradeRequiredEnvelope": {
+      "description": "402 on a gated route: the plan lacks the feature (NOT_IN_PLAN) or the subscription is inactive (SUBSCRIPTION_INACTIVE).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "feature", "reason", "requiredPlans"],
+          "properties": {
+            "code": { "const": "PLAN_UPGRADE_REQUIRED" },
+            "feature": { "$ref": "#/$defs/FeatureKey" },
+            "reason": { "enum": ["NOT_IN_PLAN", "SUBSCRIPTION_INACTIVE"] },
+            "requiredPlans": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/PlanCode" } }
+          }
+        }
+      }
+    },
+    "PlanLimitReachedEnvelope": {
+      "description": "402 on a limit-checked create.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "feature", "limit", "used", "requiredPlans"],
+          "properties": {
+            "code": { "const": "PLAN_LIMIT_REACHED" },
+            "feature": { "$ref": "#/$defs/FeatureKey" },
+            "limit": { "type": "integer", "minimum": 0 },
+            "used": { "type": "integer", "minimum": 0 },
+            "requiredPlans": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/PlanCode" } }
+          }
+        }
+      }
+    },
+    "PlanVersionConflictEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "conflicts"],
+          "properties": {
+            "code": { "const": "PLAN_VERSION_CONFLICT" },
+            "conflicts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["planId", "expectedVersion", "currentVersion"],
+                "properties": {
+                  "planId": { "type": "integer", "minimum": 1 },
+                  "expectedVersion": { "type": "integer", "minimum": 0 },
+                  "currentVersion": { "type": "integer", "minimum": 0 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "CodedErrorEnvelope": {
+      "description": "ApiCodeException body: data.code is the stable machine code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code"],
+          "properties": { "code": { "enum": ["PLAN_CODE_TAKEN", "PLAN_NOT_FOUND", "PLAN_INACTIVE"] } }
+        }
+      }
+    },
+    "ValidationErrorEnvelope": {
+      "description": "The existing bean-validation 400: description \"Validation failed\", data maps field path to message.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": {
+        "description": { "const": "Validation failed" },
+        "data": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } }
+      }
+    },
+    "ErrorEnvelope": {
+      "description": "Any other error: description is display text, data is null.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "data"],
+      "properties": { "description": { "type": "string", "minLength": 1 }, "data": { "type": "null" } }
+    }
+  }
+}
