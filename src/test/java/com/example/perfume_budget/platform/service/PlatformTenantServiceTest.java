@@ -70,7 +70,7 @@ class PlatformTenantServiceTest {
         when(tm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         service = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60,
                 plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
         com.example.perfume_budget.support.TestPlans.stubAnyId(plans);
     }
 
@@ -637,7 +637,7 @@ class PlatformTenantServiceTest {
     void perAdminActionThrottle_returns429Exception_andIsPerAdmin() {
         PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60,
                 plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
         stub("acme", TenantStatus.SUSPENDED);
         limited.suspend("acme", ADMIN);
         limited.suspend("acme", ADMIN);
@@ -650,7 +650,7 @@ class PlatformTenantServiceTest {
     void tenantPlanAction_countsAgainstTheSamePerAdminThrottle_beforeAnyLookup() {
         PlatformTenantService limited = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 2, 15, 60,
                 plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
         stub("acme", TenantStatus.SUSPENDED);
         var req = new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(null, null, "ACTIVE", null);
         limited.suspend("acme", ADMIN); // a lifecycle action spends from the same budget
@@ -660,5 +660,27 @@ class PlatformTenantServiceTest {
         org.mockito.Mockito.clearInvocations(tenants);
         assertThatThrownBy(() -> limited.changePlan("acme", req, ADMIN)).isInstanceOf(RateLimitExceededException.class);
         verify(tenants, never()).findBySlug(any()); // throttled before any lookup
+    }
+
+    /** QA L2: the trial bounds of the plan action use the injected clock, not the wall clock. */
+    @Test
+    void tenantPlanAction_evaluatesTheTrialBoundsAgainstTheInjectedClock() {
+        java.time.Instant fixed = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        PlatformTenantService clocked = new PlatformTenantService(tenants, signups, audits, saga, cors, migrator, tm, 1000, 15, 60,
+                plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.fixed(fixed, java.time.ZoneOffset.UTC));
+        Tenant t = stub("acme", TenantStatus.ACTIVE);
+        t.setTrialEndsAt(fixed.plus(java.time.Duration.ofDays(5)));
+        when(tenants.lockById(1L)).thenReturn(Optional.of(t));
+        when(tenants.findById(1L)).thenReturn(Optional.of(t));
+        // 300 days after the FIXED clock: inside the bound (by the wall clock it would be years in the past -> 400)
+        clocked.changePlan("acme", new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(
+                null, fixed.plus(java.time.Duration.ofDays(300)), null, null), ADMIN);
+        verify(tenants).updateSubscription(eq(1L), eq(1L), eq(com.example.perfume_budget.platform.enums.SubscriptionStatus.TRIALING),
+                eq(fixed.plus(java.time.Duration.ofDays(300))));
+        // 366 days after the fixed clock: refused
+        assertThatThrownBy(() -> clocked.changePlan("acme", new com.example.perfume_budget.platform.plan.dto.TenantPlanUpdateRequest(
+                null, fixed.plus(java.time.Duration.ofDays(366)), null, null), ADMIN))
+                .isInstanceOf(com.example.perfume_budget.platform.plan.PlanValidationException.class);
     }
 }

@@ -479,7 +479,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["code"],
-          "properties": { "code": { "enum": ["PLAN_CODE_TAKEN", "PLAN_NOT_FOUND", "PLAN_INACTIVE"] } }
+          "properties": { "code": { "enum": ["PLAN_CODE_TAKEN", "PLAN_NOT_FOUND", "PLAN_INACTIVE", "TRIAL_NOT_STARTED"] } }
         }
       }
     },

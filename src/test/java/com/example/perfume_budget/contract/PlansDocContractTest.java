@@ -157,6 +157,10 @@ class PlansDocContractTest extends AbstractPlansIntegrationTest {
         Tenant acme = tenantRepository.findBySlug("acme").orElseThrow();
         exec("UPDATE master.tenants SET plan_id = 2, subscription_status = 'TRIALING', trial_ends_at = now() + interval '5 days' WHERE id = ?",
                 acme.getId());
+        exec("UPDATE master.tenants SET trial_ends_at = NULL WHERE id = ?", acme.getId());
+        assertMatches("tenant-trial-not-started-error", asAdmin(put("/api/v1/platform/tenants/acme/plan"),
+                req("tenant-trial-extend-request")), false);
+        exec("UPDATE master.tenants SET trial_ends_at = now() + interval '5 days' WHERE id = ?", acme.getId());
         MockHttpServletResponse change = asAdmin(put("/api/v1/platform/tenants/acme/plan"), req("tenant-plan-change-request"));
         assertThat(change.getStatus()).as(change.getContentAsString()).isEqualTo(200);
         JsonNode liveTenant = JSON.readTree(change.getContentAsString());

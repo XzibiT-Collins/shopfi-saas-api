@@ -182,9 +182,17 @@ class TenantPlanAndPublicPlansIntegrationTest extends AbstractPlansIntegrationTe
         exec("UPDATE master.tenants SET trial_ends_at = now() - interval '30 days' WHERE slug = 'tp-expired'");
         Instant soon = Instant.now().plus(Duration.ofDays(2)).truncatedTo(ChronoUnit.SECONDS);
         assertThat(change("tp-expired", "{\"trialEndsAt\":\"" + soon + "\"}").getStatus()).isEqualTo(200);
-        // null trial (not provisioned yet): the floor is now as well
+        // null trial (not provisioned yet): refused, the trial starts when provisioning completes (PO decision, QA L3)
         fresh("tp-null", TenantStatus.PENDING);
-        assertThat(change("tp-null", "{\"trialEndsAt\":\"" + soon + "\"}").getStatus()).isEqualTo(200);
+        long audit = auditRows();
+        MockHttpServletResponse notStarted = change("tp-null", "{\"trialEndsAt\":\"" + soon + "\"}");
+        assertThat(notStarted.getStatus()).isEqualTo(400);
+        assertThat(body(notStarted).get("data").get("code").asText()).isEqualTo("TRIAL_NOT_STARTED");
+        assertThat(trialEnd("tp-null")).isNull();
+        assertThat(auditRows()).isEqualTo(audit);
+        // plan and status changes stay allowed before provisioning
+        assertThat(change("tp-null", "{\"planId\":3}").getStatus()).isEqualTo(200);
+        assertThat(trialEnd("tp-null")).isNull();
     }
 
     // ------------------------------------------------------------------------------------------ trial clock (section 15)

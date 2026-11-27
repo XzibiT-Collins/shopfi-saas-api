@@ -386,7 +386,8 @@ class PlatformReadEndpointsIntegrationTest extends AbstractPostgresIntegrationTe
         dropInjectedFailures();
         assertThat(auditPhases("p4-crash")).containsExactly("INTENT");
         new PlatformTenantService(tenantRepository, signupRepository, audits, provisioningService, originPolicy,
-                migrator, txManager, 1000, 15, 0, planRepository, planAuditRepository, eventPublisher).approve("p4-crash", new PlatformPrincipal(admin.getId(), admin.getEmail(), "Root"));
+                migrator, txManager, 1000, 15, 0, planRepository, planAuditRepository, eventPublisher,
+                java.time.Clock.systemUTC()).approve("p4-crash", new PlatformPrincipal(admin.getId(), admin.getEmail(), "Root"));
         JsonNode items = body(read(BASE + "/p4-crash/audit")).get("data").get("items");
         assertThat(items).hasSize(2);
         assertThat(items.get(0).get("phase").asText()).isEqualTo("RECONCILE");

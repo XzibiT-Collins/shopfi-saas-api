@@ -60,7 +60,7 @@ class PlatformTenantReadServiceTest {
                 mock(TenantProvisioningService.class), mock(TenantOriginPolicy.class),
                 mock(com.example.perfume_budget.tenancy.TenantSchemaMigrator.class), mock(PlatformTransactionManager.class), 1000, 15, 60,
                 plans, mock(com.example.perfume_budget.platform.plan.repository.PlanAuditLogRepository.class),
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class), java.time.Clock.systemUTC());
         com.example.perfume_budget.support.TestPlans.stubAnyId(plans);
     }
 

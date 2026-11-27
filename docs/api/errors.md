@@ -53,6 +53,7 @@ All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 | 409 | `PLAN_CODE_TAKEN` | | plan create with an existing code |
 | 404 | `PLAN_NOT_FOUND` | | unknown plan id |
 | 400 | `PLAN_INACTIVE` | | assigning an inactive plan to a tenant without `allowInactive: true` |
+| 400 | `TRIAL_NOT_STARTED` | | `trialEndsAt` sent for a tenant whose trial has not started (not provisioned yet, `trialEndsAt` null) |
 
 402 is new in this API. Precedence on a tenant route: tenant resolution (400 / 404 / 423 suspended) -> 401 -> 403
 (including the service-level front-desk permission checks) -> 400 body parsing / bean validation (`@Valid` runs at

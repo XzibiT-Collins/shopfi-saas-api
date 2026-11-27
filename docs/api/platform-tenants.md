@@ -170,7 +170,8 @@ against `plans.schema.json` by `PlansDocSchemaTest`, and their key sets against 
 The plan action `PUT /api/v1/platform/tenants/{slug}/plan` (set plan, extend trial, set `ACTIVE`/`CANCELED`) is
 documented in [plans.md](plans.md) section 11. It writes a tenant audit row with `action` `CHANGE_PLAN`, `phase`
 `OUTCOME` and `previousStatus` = `newStatus` (the registry status does not change); the plan details are in the plan
-audit log. The list has no plan filter yet.
+audit log. A trial cannot be set before it has started: `trialEndsAt` on a tenant whose `trialEndsAt` is still `null`
+(not provisioned yet) is `400 {"data": {"code": "TRIAL_NOT_STARTED"}}`. The list has no plan filter yet.
 
 ## GET /api/v1/platform/tenants/{slug} (PLAT-04)
 

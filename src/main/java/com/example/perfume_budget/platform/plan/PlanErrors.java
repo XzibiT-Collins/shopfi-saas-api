@@ -13,6 +13,7 @@ public final class PlanErrors {
     public static final String PLAN_CODE_TAKEN = "PLAN_CODE_TAKEN";
     public static final String PLAN_VERSION_CONFLICT = "PLAN_VERSION_CONFLICT";
     public static final String PLAN_INACTIVE = "PLAN_INACTIVE";
+    public static final String TRIAL_NOT_STARTED = "TRIAL_NOT_STARTED";
 
     private PlanErrors() {
     }
@@ -28,6 +29,12 @@ public final class PlanErrors {
     public static ApiCodeException inactive() {
         return new ApiCodeException(HttpStatus.BAD_REQUEST, PLAN_INACTIVE,
                 "The plan is inactive; send allowInactive to assign it anyway");
+    }
+
+    /** PO decision on QA L3: {@code trialEndsAt} cannot be set before provisioning has started the trial. */
+    public static ApiCodeException trialNotStarted() {
+        return new ApiCodeException(HttpStatus.BAD_REQUEST, TRIAL_NOT_STARTED,
+                "The trial starts when the store has been provisioned; it cannot be set before that");
     }
 
     /** One entry per stale plan of the request; the dedicated 409, never the generic 503 TRY_AGAIN. */

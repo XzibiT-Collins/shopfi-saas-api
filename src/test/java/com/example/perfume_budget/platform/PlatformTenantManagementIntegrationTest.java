@@ -710,7 +710,8 @@ class PlatformTenantManagementIntegrationTest extends AbstractPostgresIntegratio
     /** A service instance with no reconcile grace (the HTTP one keeps the 60 s default so it never races a live winner). */
     private PlatformTenantService noGraceService() {
         return new PlatformTenantService(tenantRepository, signupRepository, audits, provisioningService, originPolicy,
-                migrator, txManager, 1000, 15, 0, planRepository, planAuditRepository, eventPublisher);
+                migrator, txManager, 1000, 15, 0, planRepository, planAuditRepository, eventPublisher,
+                java.time.Clock.systemUTC());
     }
 
     private PlatformPrincipal principal() {

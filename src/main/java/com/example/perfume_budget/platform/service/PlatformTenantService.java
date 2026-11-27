@@ -100,6 +100,8 @@ public class PlatformTenantService {
     private final PlanRepository planRepository;
     private final PlanAuditLogRepository planAuditRepository;
     private final ApplicationEventPublisher events;
+    /** PLAN-01 (QA L2): the trial bounds of the plan action are evaluated against the injected clock. */
+    private final java.time.Clock clock;
 
     public PlatformTenantService(TenantRepository tenantRepository, TenantSignupRepository signupRepository,
                                  TenantAuditLogRepository auditRepository,
@@ -109,7 +111,8 @@ public class PlatformTenantService {
                                  @Value("${platform.tenants.stuck-provisioning-minutes:15}") long stuckMinutes,
                                  @Value("${platform.tenants.reconcile-grace-seconds:60}") long reconcileGraceSeconds,
                                  PlanRepository planRepository, PlanAuditLogRepository planAuditRepository,
-                                 ApplicationEventPublisher events) {
+                                 ApplicationEventPublisher events, java.time.Clock systemClock) {
+        this.clock = systemClock;
         this.planRepository = planRepository;
         this.planAuditRepository = planAuditRepository;
         this.events = events;
@@ -648,13 +651,18 @@ public class PlatformTenantService {
             SubscriptionStatus status = t.getSubscriptionStatus();
             Instant trialEnd = t.getTrialEndsAt();
             if (req.trialEndsAt() != null) {
+                if (trialEnd == null) {
+                    // PO decision on QA L3: the trial clock starts when provisioning first completes (startTrialIfUnset,
+                    // only while null); setting it earlier would start it before the store exists and skip that step
+                    throw PlanErrors.trialNotStarted();
+                }
                 if (status != SubscriptionStatus.TRIALING && status != SubscriptionStatus.CANCELED) {
                     throw new PlanValidationException("trialEndsAt",
                             "can be extended only while the subscription is TRIALING or CANCELED");
                 }
-                Instant now = Instant.now();
+                Instant now = clock.instant();
                 Instant wanted = req.trialEndsAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-                Instant floor = trialEnd == null || trialEnd.isBefore(now) ? now : trialEnd;
+                Instant floor = trialEnd.isBefore(now) ? now : trialEnd;
                 if (!wanted.isAfter(floor) || wanted.isAfter(now.plus(Duration.ofDays(365)))) {
                     throw new PlanValidationException("trialEndsAt", TRIAL_RANGE_MESSAGE);
                 }

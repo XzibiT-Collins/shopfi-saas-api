@@ -42,8 +42,10 @@ examples must validate against the named `$defs` entry and equal what the server
 - Text fields are plain text, single line: the server rejects (`400`) any character of the Unicode general categories
   **Cc** (controls, incl. C1 U+0080-009F) and **Cf** (format characters: bidi overrides U+202A-202E and isolates
   U+2066-2069, zero-width characters U+200B-200F, soft hyphen, BOM, ...) and **U+2028 / U+2029** (Security L2). Text is
-  trimmed; a blank optional text is stored as `null`; a blank `name` or bullet is `400`. Clients render plan text as
-  text, never as HTML or Markdown.
+  trimmed of every Unicode space (Java whitespace and the general categories Zs / Zl / Zp: U+0020, NBSP U+00A0, em space
+  U+2003, ideographic space U+3000, ...). "Blank" means nothing is left after that trim: a blank optional text
+  (`tagline`, `description`, `badgeLabel`, `bulletsHeading`) is **stored as `null`** (not refused); a blank `name` or
+  bullet is `400` (`must not be blank`). Clients render plan text as text, never as HTML or Markdown.
 - Bean-validation and rule failures are the existing 400 shape `{"description": "Validation failed", "data": {"<field path>": "<message>"}}`.
   Field paths are the JSON property names; inside the matrix they are indexed: `plans[0].entitlements[1].limitValue`,
   `plans[1].plan.trialDays`. Messages are display text.
@@ -1158,7 +1160,7 @@ per-admin action throttle of platform-tenants.md (`429`). Body `TenantPlanUpdate
 | Field | Rules |
 |---|---|
 | `planId` | an existing plan id (else `400`, `planId`: `unknown plan`). An inactive plan is refused with `400 PLAN_INACTIVE` unless `allowInactive: true` is also sent. Changing the plan keeps `subscriptionStatus` and `trialEndsAt` |
-| `trialEndsAt` | timestamp, **extend only**: strictly later than the current `trialEndsAt` (or than now, when it is `null` or past) and at most 365 days after now. Allowed only while the tenant's status is `TRIALING` or `CANCELED`; it sets `subscriptionStatus` to `TRIALING` (a canceled or expired trial is revived). Not combinable with `subscriptionStatus` in one request |
+| `trialEndsAt` | timestamp, **extend only**: strictly later than the current `trialEndsAt` (or than now, when it is past) and at most 365 days after now. Refused with `400 TRIAL_NOT_STARTED` while the trial has not started (`trialEndsAt` is `null`: the tenant has not finished provisioning; the trial clock starts when provisioning first completes, section 15; PO decision on PLAN-01 QA L3). Allowed only while the tenant's status is `TRIALING` or `CANCELED`; it sets `subscriptionStatus` to `TRIALING` (a canceled or expired trial is revived). Not combinable with `subscriptionStatus` in one request |
 | `subscriptionStatus` | `ACTIVE` or `CANCELED` only (`TRIALING` comes from sign-up or `trialEndsAt`, `PAST_DUE` from PLAN-06); anything else `400`. `trialEndsAt` is kept as history |
 | `allowInactive` | boolean, default `false`; allowed only together with `planId` (without it: `400`) |
 
@@ -1212,6 +1214,11 @@ evicts the tenant's cached plan/status (PLAN-02 AC1): the change is effective on
 <!-- example: tenant-plan-inactive-error response CodedErrorEnvelope 400 -->
 ```json
 { "description": "The plan is inactive; send allowInactive to assign it anyway", "data": { "code": "PLAN_INACTIVE" } }
+```
+
+<!-- example: tenant-trial-not-started-error response CodedErrorEnvelope 400 -->
+```json
+{ "description": "The trial starts when the store has been provisioned; it cannot be set before that", "data": { "code": "TRIAL_NOT_STARTED" } }
 ```
 
 <!-- example: tenant-trial-error response ValidationErrorEnvelope 400 -->
