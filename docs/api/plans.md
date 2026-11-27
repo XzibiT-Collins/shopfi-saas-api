@@ -63,7 +63,7 @@ groups appear in the order of their first feature.
 | `MAX_PRODUCTS` | LIMIT | Products | Catalog | every write that moves a row into the counted set (section 15): product create, new family or variant into a family |
 | `PRODUCT_FAMILIES` | BOOLEAN | Product families and pack sizes | Catalog | `ProductFamilyController`, and `familyId` / `uomCode` / `conversionFactor` on product create and update |
 | `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | starting new walk-in work: `POST /api/v1/admin/walk-in/order`, `POST /quote`, customer search (`POST` and `GET /customers/search`). **Never gated** (finishing work on existing orders, PO decision on Security L7): `GET /orders`, `GET /orders/{orderNumber}`, `PATCH .../receipt-printed`, `POST .../cancel`, `POST .../refund` |
-| `RETURNS_REFUNDS` | BOOLEAN | Returns and refunds | Orders | starting a return: `OrderController` `POST /{orderNumber}/return`. **Never gated**: `return-received` and `refund-acknowledgement` of a return that already exists (finishing it, PO decision on Security L7) |
+| `RETURNS_REFUNDS` | BOOLEAN | Returns and refunds | Orders | **no route is gated today.** Every return and refund route acts on an order that already exists, and finishing work on existing orders is never gated (PO decision on Security L7: the owner was told returns and refunds of orders already taken always stay possible): `OrderController` `POST /{orderNumber}/return`, `return-received` and `refund-acknowledgement` stay open after a downgrade or a trial expiry. The key stays in the catalog (shown on the plan cards and in "Plan & usage") for return features added later that start new work |
 | `SHOP_WIDE_DISCOUNTS` | BOOLEAN | Shop-wide discounts | Marketing | `ShopWideDiscountController` writes |
 | `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | every write that makes a coupon active (section 15): create of an active coupon, `PUT /{couponId}` from inactive to active |
 | `INVENTORY_MANAGEMENT` | BOOLEAN | Inventory adjustments and history | Inventory | `InventoryManagementController` `POST /adjustments` and `GET /products/{productId}/history` only. Core (never gated): receipts (the only way stock enters), summary, stock-by-location, and `GET /legacy-balance-report` + `POST /legacy-balance-repair` (data repair, Security L9) |
@@ -77,8 +77,8 @@ groups appear in the order of their first feature.
 | `LOGIN_OTP` | BOOLEAN | Login one-time codes | Team and security | a **request-content gate**, not a route gate: only a `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` that changes an audience from off to on is checked; turning off, or unchanged values, are never 402 in any state (section 15) |
 
 Never gated (core): platform, onboarding, auth, storefront, cart, checkout, payment, webhook, notification and metrics
-endpoints, ledger posting from orders, scheduled and async jobs, orders other than starting a return, finishing work on
-existing orders (walk-in cancel / refund / receipt, return-received, refund-acknowledgement), products other than the
+endpoints, ledger posting from orders, scheduled and async jobs, orders, finishing work on existing orders (walk-in
+reads / receipt / cancel / refund, starting a return, return-received, refund-acknowledgement), products other than the
 limit, categories, coupons other than the limit, the legacy balance report and repair, the subscription endpoint itself.
 **Only starting new gated work is blocked**, after a downgrade or a trial expiry alike. Labels and groups are code-defined (they change with a release, not through the
 API).
@@ -2493,9 +2493,10 @@ Defaults this document still picked where the AC are silent (change them here be
    `sortOrder` 0..1000, matrix <= 50 items (3.1, 8); public list limiter 60 per 60 s per IP (12).
 5. Tenant audit rows for a plan change use the new action `CHANGE_PLAN` with `previousStatus` = `newStatus` (the V6
    CHECK and the console's audit parser must accept it) (11).
-6. "Finishing existing orders" (PO decision on Security L7) is read as: walk-in reads, receipt-printed, cancel and
-   refund, and return-received / refund-acknowledgement of a return that exists, stay open; starting a return
-   (`POST /{orderNumber}/return`) and placing / quoting a walk-in sale are gated (2).
+6. "Finishing existing orders" (PO decision on Security L7, confirmed 2026-11-27): walk-in reads, receipt-printed,
+   cancel and refund, starting a return on an existing order (`POST /{orderNumber}/return`), return-received and
+   refund-acknowledgement are never gated; only placing / quoting a NEW walk-in sale (and walk-in customer search) is
+   gated. `RETURNS_REFUNDS` therefore gates no route today (2).
 
 ## 18. Requirements for PLAN-01 / PLAN-02 implementations
 
