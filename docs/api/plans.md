@@ -2352,17 +2352,25 @@ validated first and an invalid body gets `400` even when the plan lacks the feat
   `flag && entitlement`: a downgrade or an expired trial never removes OTP from an account that has it on; the tenant
   can only turn it off itself.
 
-How each limit is counted (the same count is `usage[].used` and the 402 `used`), in the tenant's own schema:
+### 15.1 Limits: counted set and every write that enters it
 
-| Key | Counts |
-|---|---|
-| `MAX_PRODUCTS` | every row in `products` (products are hard-deleted; family variants are product rows and count; inactive / unlisted products count) |
-| `MAX_ACTIVE_COUPONS` | coupons with `is_active = true` (an expired coupon that was never deactivated still counts) |
-| `MAX_STAFF` | users with the `FRONT_DESK` role and `is_active = true` (ADMINs and customers never count) |
-| `MAX_LOCATIONS` | every storage location, active or not |
+A limit applies to **every write that moves a row into the counted set**, not only to the obvious "create" endpoint
+(Security H1). The check runs inside the service that performs the write (so every controller and any later caller of
+that service is covered), counts in the tenant's own schema, and answers `402 PLAN_LIMIT_REACHED` when `used >= limit`
+before the write (`SUBSCRIPTION_INACTIVE` first when `readOnly`). A write that does not move a row into the set (editing a
+counted row, deactivating, deleting) is never limit-checked. The same count is `usage[].used` and the 402 `used`.
+
+| Key | Counted set | Writes that move a row into it (all limit-checked) |
+|---|---|---|
+| `MAX_PRODUCTS` | every row in `products` (products are hard-deleted; family variants are product rows; inactive / unlisted products count) | `POST /api/v1/product/add-product` in both `ProductServiceImpl` scenarios: a new product (new family) and a variant created into an existing family. There is no product restore path today; one added later must call the same check |
+| `MAX_ACTIVE_COUPONS` | coupons with `is_active = true` (an expired coupon that was never deactivated still counts) | `POST /api/v1/coupon/add-coupon` creating an active coupon; `PUT /api/v1/coupon/{couponId}` that changes `isActive` from false to true. (Deactivate and delete leave the set) |
+| `MAX_STAFF` | users with the `FRONT_DESK` role and `is_active = true` (ADMINs and customers never count) | `POST /api/v1/admin/front-desk/users`; `PATCH /api/v1/admin/front-desk/users/{userId}` with `isActive: true` on an inactive FRONT_DESK user; **`PATCH /api/v1/admin/front-desk/users/{userId}/assign`** on an active user (e.g. a customer who self-registered through `POST /auth/register`), and an assigned-but-inactive user counts when it is later re-activated (the `PATCH` above) |
+| `MAX_LOCATIONS` | every storage location, active or not (AC6) | `POST /api/v1/admin/inventory/locations`. Activating an existing location (`PUT /{id}` with `active: true`) does not change the count (inactive locations already count), so it is never 402; if the PO changes the counted set to active locations only, that `PUT` becomes a limit-checked write |
 
 Custom domains have no limit: `CUSTOM_DOMAIN` is a boolean and a tenant has at most one domain (O3). Count and insert are
-race-safe: two concurrent creates at `limit - 1` let exactly one through (PLAN-02 AC4).
+serialized per tenant and feature (a transaction-scoped advisory lock or `SELECT ... FOR UPDATE` on a per-tenant row), so
+two concurrent writes at `limit - 1` let exactly one through (PLAN-02 AC4); a re-check after insert under READ COMMITTED
+without a lock is not enough. PLAN-02's 402 tests have one row per write in the table above, including `assign`.
 
 ## 16. Guidance for frontend implementers
 
