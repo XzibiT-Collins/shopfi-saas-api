@@ -2317,30 +2317,34 @@ Checks run in this order; the first failure answers:
 1. **Tenant resolution** (`TenantResolutionFilter`, before authentication): no tenant `400`, unknown tenant `404`,
    **suspended tenant `423`**, for every caller, signed in or not (existing behaviour, errors.md).
 2. **Authentication**: `401`.
-3. **Authorization**: `403`. This includes the `SecurityConfig` role matchers, `@PreAuthorize`, AND the service-level
-   front-desk permission checks done by `FrontDeskAccessService` (`requireAccess` / `hasPermission`) inside services (walk-in, stock transfer, stock
-   conversion, inventory and product services today, and any later caller). A FRONT_DESK user without the role or permission always
-   gets `403`, never a `402` that reveals the plan.
-4. **Plan gate**: `402 PLAN_UPGRADE_REQUIRED` (`NOT_IN_PLAN` before `SUBSCRIPTION_INACTIVE`).
-5. **Request validation**: `400` (body parsing and bean validation).
+3. **Authorization**: `403`, from the `SecurityConfig` role matchers, `@PreAuthorize`, and the service-level front-desk
+   permission checks of `FrontDeskAccessService` (`requireAccess` / `hasPermission`: walk-in, stock transfer, stock
+   conversion, inventory and product services today, and any later caller).
+4. **Body parsing and bean validation**: `400` (`Request body is missing or malformed.`, `Validation failed` + field
+   map). Spring binds and validates `@Valid` arguments while resolving the controller arguments, so this runs **before**
+   the plan gate on every route that has a request body (e.g. `POST /admin/walk-in/order`, `POST .../stock-transfers`),
+   whether or not the decision needs the body.
+5. **Plan gate**: `402 PLAN_UPGRADE_REQUIRED` (`NOT_IN_PLAN` before `SUBSCRIPTION_INACTIVE`), then, for writes into a
+   counted set, `402 PLAN_LIMIT_REACHED` (15.2).
+6. **Service business checks**: the service's own rules (`400`, `404`, `409`, ...) after the gate.
 
-The gate is evaluated **in the service layer, after authorization** (directly after the `FrontDeskAccessService` permission check where
-a service has one, otherwise at the start of the service method), not by a `HandlerInterceptor` or an annotation advice
-that runs before `@PreAuthorize`: Spring calls `HandlerInterceptor.preHandle` before method security and before `@Valid`
-binding, so such a gate would answer 402 where step 3 must answer 403. Because the gate runs inside the service, the body
-has already been bound, so step 5 only precedes step 4 where the decision needs the body (below); for the route gates the
-service rejects with 402 before any business validation of its own. PLAN-02 tests step 3 before step 4 for every gated
-route (one FRONT_DESK-without-permission case each).
+**Every 403 precedes every 402**: an unauthorized FRONT_DESK user never sees a 402 that reveals the plan. (Exact
+interleaving inside steps 3-4, unchanged by this contract: the role matchers run in the filter chain before binding,
+while `@PreAuthorize` and the service-level permission checks run after argument binding, so an invalid body from a
+caller who fails `@PreAuthorize` or a service permission gets `400`, as today. None of this involves a 402.)
 
-**Exceptions, body validation (400) before 402.** These gates depend on the request body, so the body is parsed and
-validated first and an invalid body gets `400` even when the plan lacks the feature:
+The gate is evaluated **in the service layer, after authorization**: directly after the `FrontDeskAccessService` check
+where the service has one, otherwise at the start of the service method, and before the service's business validation.
+It is not a `HandlerInterceptor` or an annotation advice that runs before `@PreAuthorize`: Spring calls
+`HandlerInterceptor.preHandle` before method security, so such a gate would answer 402 where step 3 must answer 403.
+PLAN-02 tests, for every gated route, that a FRONT_DESK user without the role or permission gets 403 and that a valid
+body from a tenant without the feature gets 402.
 
-- `THEME_ADVANCED`: `PUT /api/v1/theme` (the new document is compared with the stored one);
-- `LOGIN_OTP`: `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` (only an off -> on change is gated; a malformed or
-  incomplete body is `400` like today, see feature-flags.md);
-- `PRODUCT_FAMILIES`: `familyId` / `uomCode` / `conversionFactor` on product create and update (multipart);
-- every limit check (15): it runs in the create / update service after the body was validated, so an invalid body at the
-  limit gets `400`, a valid one `402`.
+Body-dependent gates follow the same order; the body is needed for the decision, not only validated before it:
+`THEME_ADVANCED` (`PUT /api/v1/theme`, new document compared with the stored one), `LOGIN_OTP`
+(`PATCH /api/v1/admin/feature-flags/LOGIN_OTP`, only an off -> on change; a malformed or incomplete body is `400`, see
+feature-flags.md) and `PRODUCT_FAMILIES` (`familyId` / `uomCode` / `conversionFactor` on the multipart product create
+and update). Limit checks (15.2) run in the same place.
 
 ## 15. Semantics (what a change does)
 
@@ -2443,8 +2447,8 @@ Decided by the PO / orchestrator on the QA and Security review of PR #72 (2026-1
 
 - The public plans endpoint stays in the onboarding CORS zone (no tenant origins); the admin shell gets the list as
   `publicPlans` of `GET /admin/subscription` (13).
-- Check order 423 -> 401 -> 403 (incl. service-level permission checks) -> 402 -> 400, with the body-dependent exceptions
-  of 14.4; the gate runs in the service after authorization.
+- Check order 423 -> 401 -> 403 (incl. service-level permission checks) -> 400 body parsing / bean validation -> 402
+  -> service business checks; every 403 precedes every 402; the gate runs in the service after authorization (14.4).
 - `LOGIN_OTP` is a request-content gate: only off -> on, also in read-only mode; login reads the flag only (15).
 - Limits apply to every write into the counted set (15.2). Caching rules (15.1).
 - Finishing work on existing orders is never gated; only starting new gated work is (2).
@@ -2496,10 +2500,11 @@ Security sign-off of PLAN-01 and PLAN-02 checks every item (Security review of P
 7. **Limits** inside the services on every write into the counted set (15.2, including `assign`), serialized per tenant
    and feature (`pg_advisory_xact_lock` or `SELECT ... FOR UPDATE` on a per-tenant row) so count and insert are atomic.
    Concurrency test at `limit - 1` lets exactly one through.
-8. **Gate order** 14.4: tenant resolution -> 401 -> 403 (incl. service-level `FrontDeskAccessService` checks) -> 402 ->
-   400, body-dependent exceptions as listed. One test per gated route proves a FRONT_DESK user without the permission
-   gets 403. Request-content gates (`PRODUCT_FAMILIES` fields on the multipart product create / update,
-   `THEME_ADVANCED`, `LOGIN_OTP` off -> on) run in the service and count as gated writes for `SUBSCRIPTION_INACTIVE`.
+8. **Gate order** 14.4: tenant resolution -> 401 -> 403 (incl. service-level `FrontDeskAccessService` checks) -> 400
+   body parsing / bean validation -> 402 -> service business checks; every 403 precedes every 402. One test per gated
+   route proves a FRONT_DESK user without the permission gets 403, and one that a valid body without the feature gets
+   402. Request-content gates (`PRODUCT_FAMILIES` fields on the multipart product create / update, `THEME_ADVANCED`,
+   `LOGIN_OTP` off -> on) run in the service and count as gated writes for `SUBSCRIPTION_INACTIVE`.
 9. **`LOGIN_OTP`.** The login path reads the flag only; a downgrade never disables OTP; turning off or unchanged values
    are never 402. Test: downgrade with the flag on -> login still asks for the OTP.
 10. **Never gated**, enforced by the allow-list scan test: auth, onboarding, platform, storefront, cart, checkout,

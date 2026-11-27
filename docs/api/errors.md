@@ -55,9 +55,10 @@ All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`.
 | 400 | `PLAN_INACTIVE` | | assigning an inactive plan to a tenant without `allowInactive: true` |
 
 402 is new in this API. Precedence on a tenant route: tenant resolution (400 / 404 / 423 suspended) -> 401 -> 403
-(including the service-level front-desk permission checks) -> 402 -> 400 validation. The plan gate runs in the service
-after authorization. Exceptions where the body is validated (400) before the 402: the body-dependent gates
-(`THEME_ADVANCED`, `LOGIN_OTP` off -> on, `PRODUCT_FAMILIES` fields) and every limit check
+(including the service-level front-desk permission checks) -> 400 body parsing / bean validation (`@Valid` runs at
+argument binding) -> 402 plan gate -> the service's own business checks (which may also answer 400 / 409). Every 403
+precedes every 402. The plan gate, the body-dependent gates (`THEME_ADVANCED`, `LOGIN_OTP` off -> on,
+`PRODUCT_FAMILIES` fields) and the limit checks all run in the service after authorization
 ([plans.md](plans.md#144-precedence)). Finishing work on existing orders (walk-in cancel / refund) and returns and refunds
 (core for every plan) are never a 402.
 The admin frontend opens one upgrade modal for any 402 and never shows it as a generic error.
