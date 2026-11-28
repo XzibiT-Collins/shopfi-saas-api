@@ -3097,6 +3097,27 @@
         }
       }
     },
+    "NumberPreviews": {
+      "description": "Read-only: the number each format would issue NEXT (current counters of the year of now, UTC). Server-computed so the console renders nothing itself.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "INVOICE",
+        "RECEIPT",
+        "CREDIT_NOTE"
+      ],
+      "properties": {
+        "INVOICE": {
+          "type": "string"
+        },
+        "RECEIPT": {
+          "type": "string"
+        },
+        "CREDIT_NOTE": {
+          "type": "string"
+        }
+      }
+    },
     "BillingSettingsView": {
       "type": "object",
       "additionalProperties": false,
@@ -3105,7 +3126,8 @@
         "version",
         "updatedAt",
         "updatedBy",
-        "credentials"
+        "credentials",
+        "numberPreviews"
       ],
       "properties": {
         "settings": {
@@ -3142,6 +3164,51 @@
           },
           "maxItems": 2,
           "minItems": 2
+        },
+        "numberPreviews": {
+          "$ref": "#/$defs/NumberPreviews"
+        }
+      }
+    },
+    "NumberPreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "invoiceNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "receiptNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "creditNoteNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        }
+      },
+      "description": "POST .../settings/number-preview: preview UNSAVED formats (any subset); formats not sent use the saved ones."
+    },
+    "NumberPreviewEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/NumberPreviews"
         }
       }
     },
@@ -3177,6 +3244,10 @@
         "secretKey": {
           "type": "string",
           "pattern": "^sk_(test|live)_[A-Za-z0-9]{16,128}$"
+        },
+        "expectedVersion": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

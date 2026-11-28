@@ -152,16 +152,16 @@ An event whose source state is not listed is an `IllegalBillingTransitionExcepti
 | E4 | `RENEWAL_SUCCEEDED` | billing job / webhook (verified) | `ACTIVE` | `ACTIVE` | `CURRENT` | `FULL` (unless E15 applies) |
 | E5 | `CHARGE_FAILED` (first charge or renewal, attempt 1) | billing job / webhook (verified) | `TRIALING`, `ACTIVE` | `PAST_DUE` | `RETRYING` if a retry is scheduled, else `FAILED` | `GRACE` when `graceDays > 0`, else `READ_ONLY` |
 | E6 | `RETRY_FAILED` | retry job / webhook | `PAST_DUE` (access `GRACE`) | `PAST_DUE` | `RETRYING` if another attempt is scheduled, else `FAILED` | `GRACE` |
-| E7 | `GRACE_EXPIRED` | grace expiry job | `PAST_DUE` (access `GRACE`) | `PAST_DUE`, or `CANCELED` when `cancelAtPeriodEnd` (O25) | `FAILED`, or `NONE` when ended | `READ_ONLY` |
+| E7 | `GRACE_EXPIRED` | grace expiry job | `PAST_DUE` (access `GRACE`) | `PAST_DUE` (flag unchanged), or `CANCELED` with `cancelAtPeriodEnd = false` when the flag was set (O25) | `FAILED`, or `NONE` when ended | `READ_ONLY` |
 | E8 | `PAYMENT_SETTLED` | any verified success while `PAST_DUE`: scheduled retry, member retry, webhook, reconciliation, admin | `PAST_DUE` | `ACTIVE` | `CURRENT` | `FULL` (unless E15 applies) |
 | E9 | `CANCEL_REQUESTED` | member `cancel`, admin `CANCEL_AT_PERIOD_END` | `TRIALING`, `ACTIVE`, `PAST_DUE` | unchanged, `cancelAtPeriodEnd = true` | unchanged | unchanged |
 | E10 | `CANCEL_REVERSED` | member `reactivate`, admin | as E9 with the flag set | unchanged, flag `false` | unchanged | unchanged |
-| E11 | `CANCEL_EFFECTIVE` | job at period end / trial end (flag set), E7 with the flag, admin `CANCEL_NOW` | `TRIALING`, `ACTIVE`, `PAST_DUE` | `CANCELED` | `NONE` | `READ_ONLY` |
+| E11 | `CANCEL_EFFECTIVE` | job at period end / trial end (flag set), E7 with the flag, admin `CANCEL_NOW` | `TRIALING`, `ACTIVE`, `PAST_DUE` (flag set or not) | `CANCELED`, `cancelAtPeriodEnd = false`, any pending change and grace cleared | `NONE` | `READ_ONLY` |
 | E12 | `TERM_ENDED` | job, admin `ACTIVATE` with `until` elapsed | `ACTIVE` (manual term) | `EXPIRED` | `NONE` | `READ_ONLY` |
-| E13 | `RESUBSCRIBED` | verified success of an `sb` charge | `CANCELED`, `EXPIRED`, or `ACTIVE` in `MANUAL` mode | `ACTIVE` | `CURRENT` | `FULL` |
+| E13 | `RESUBSCRIBED` | verified success of an `sb` charge | `CANCELED`, `EXPIRED`, or `ACTIVE` in `MANUAL` mode | `ACTIVE`; starts clean: `cancelAtPeriodEnd = false`, `complimentary = false`, no pending change, no grace, `manualRestriction = false`, `billingMode = PAYSTACK` (also when it comes from `MANUAL`), new anchor and period | `CURRENT` | `FULL` |
 | E14 | `PLAN_CHANGED` | verified upgrade, scheduled change applied at renewal, admin `CHANGE_PLAN` | `TRIALING`, `ACTIVE` (admin: also `PAST_DUE`) | unchanged | unchanged | unchanged |
 | E15 | `ACCESS_RESTRICTED_MANUAL` / `ACCESS_RESTORED_MANUAL` | admin `RESTRICT` / `RESTORE` | `TRIALING`, `ACTIVE`, `PAST_DUE` | unchanged | unchanged | `RESTRICT`: `READ_ONLY` and `manualRestriction = true`; `RESTORE`: clears the flag and recomputes the access from the lifecycle and grace rules (a billing restriction after grace stays) |
-| E16 | `COMPLIMENTARY_GRANTED` | admin | any live or ended state | `ACTIVE`, `complimentary = true` | `NONE` | `FULL` |
+| E16 | `COMPLIMENTARY_GRANTED` | admin | any live or ended state (flag set or not) | `ACTIVE`, `complimentary = true`, `cancelAtPeriodEnd = false`, pending change, grace and `manualRestriction` cleared | `NONE` | `FULL` |
 | E17 | `COMPLIMENTARY_ENDED` | admin or job at `until` | `ACTIVE` with `complimentary` | with a card: `ACTIVE`, due at once (a renewal charge at the end instant, anchor = end instant); without a card: `PAST_DUE` with reason `NO_CARD` | `CURRENT` then per the charge; `FAILED` for `NO_CARD` | `FULL`; `GRACE` for `NO_CARD` |
 | E18 | `TRIAL_EXTENDED` | admin `EXTEND_TRIAL` | `TRIALING` | `TRIALING` | unchanged | unchanged |
 | E19 | `CARD_ATTACHED` | member card verify while `billingMode = MANUAL` | `TRIALING`, `ACTIVE` | unchanged, `billingMode = PAYSTACK` | `NONE` -> `CURRENT` | unchanged |
@@ -294,6 +294,10 @@ The seed (migration) is the **Default** column; identity fields are `null` until
 | `webhookIpAllowlist` | string[] | `[]` | <= 20 IPv4/IPv6 addresses or CIDR blocks | `must be IP addresses or CIDR blocks` |
 | `refundMaxDays` | integer | `90` | 1..365: a refund is allowed this many days after `paidAt` (O11) | `must be between 1 and 365` |
 
+**Field bounds come from the contract, not from a runtime call.** The bounds, defaults and messages above exist only in this table and in `billing.schema.json`; the console (BILL-FE-01) takes them from the schema or types generated from it and never fetches them from the API. The server stays the authority and repeats every check.
+
+**Number previews.** `BillingSettingsView.numberPreviews` is read-only and server-computed: the number each SAVED format would issue next, from the current counters of the year of now (UTC), for example `SUB-2026-000001`. For UNSAVED edits the console calls `POST /api/v1/platform/billing/settings/number-preview` (SUPER_ADMIN, no state change, no counter is consumed) with any subset of the three formats and shows the returned strings; it never renders `{YYYY}` or `{NNNNNN}` itself. A format that violates 4.1 is the `400` field map. Formats not sent use the saved ones.
+
 ### 4.2 Cross-field rules (server only; each has a 400 example or a table row)
 
 1. `retryOffsetsDays` strictly ascending and every value `<= graceDays` (`graceDays = 0` therefore allows only `[]`).
@@ -424,7 +428,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
         "updatedAt": null,
         "updatedBy": null
       }
-    ]
+    ],
+    "numberPreviews": {
+      "INVOICE": "SUB-2026-000001",
+      "RECEIPT": "REC-2026-000001",
+      "CREDIT_NOTE": "CN-2026-000001"
+    }
   }
 }
 ```
@@ -552,7 +561,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
         "updatedAt": null,
         "updatedBy": null
       }
-    ]
+    ],
+    "numberPreviews": {
+      "INVOICE": "SUB-2026-000001",
+      "RECEIPT": "REC-2026-000001",
+      "CREDIT_NOTE": "CN-2026-000001"
+    }
   }
 }
 ```
@@ -769,7 +783,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
         "updatedAt": null,
         "updatedBy": null
       }
-    ]
+    ],
+    "numberPreviews": {
+      "INVOICE": "SUB-2026-000001",
+      "RECEIPT": "REC-2026-000001",
+      "CREDIT_NOTE": "CN-2026-000001"
+    }
   }
 }
 ```
@@ -1229,6 +1248,32 @@ A cross-field failure (not expressible in JSON Schema; field map as above):
 }
 ```
 
+<!-- example: number-preview-request valid NumberPreviewRequest -->
+```json
+{
+  "invoiceNumberFormat": "INV/{YYYY}/{NNNNNN}"
+}
+```
+
+<!-- example: number-preview-request-no-counter invalid NumberPreviewRequest 400 -->
+```json
+{
+  "invoiceNumberFormat": "INV-{YYYY}"
+}
+```
+
+<!-- example: number-preview-response response NumberPreviewEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "INVOICE": "INV/2026/000001",
+    "RECEIPT": "REC-2026-000001",
+    "CREDIT_NOTE": "CN-2026-000001"
+  }
+}
+```
+
 Stale `version`: `409`, nothing written, the client keeps its edits and offers Reload / Review ([plans.md](plans.md) section 9):
 
 <!-- example: settings-version-conflict response VersionConflictEnvelope 409 -->
@@ -1264,7 +1309,7 @@ One row per environment: `public_key`, `secret_key` (AES-GCM with a **versioned 
 | `VERIFIED` | the last `verify` call succeeded (`verifiedAt`) |
 | `FAILED` | the last `verify` call was rejected by Paystack (`failureCode: KEY_REJECTED`); a network failure or an open circuit does NOT change the status (`503 PROVIDER_UNAVAILABLE`) |
 
-`PUT /api/v1/platform/billing/credentials/{environment}` (`environment` = `test` | `live`): body `{publicKey, secretKey}`; the prefixes must match the path (`pk_test_` / `sk_test_` for `test`, `pk_live_` / `sk_live_` for `live`, else `400` with the field message), 16..128 letters and digits after the prefix. It stores the secret encrypted, sets `UNVERIFIED`, resets `verified_at` and returns `CredentialStatus`. The new pair is used immediately (key rotation after a leak must not wait); the operator is expected to press Verify right away.
+`PUT /api/v1/platform/billing/credentials/{environment}` (`environment` = `test` | `live`): body `{publicKey, secretKey, expectedVersion?}` (a stale `expectedVersion` is `409 CREDENTIALS_VERSION_CONFLICT`); the prefixes must match the path (`pk_test_` / `sk_test_` for `test`, `pk_live_` / `sk_live_` for `live`, else `400` with the field message), 16..128 letters and digits after the prefix. It stores the secret encrypted, sets `UNVERIFIED`, resets `verified_at` and returns `CredentialStatus`. The new pair is used immediately (key rotation after a leak must not wait); the operator is expected to press Verify right away.
 **A Paystack `401` or `403` on any billing call (our key is wrong, revoked or rotated) is a platform fault, never a member fault**: the environment status becomes `FAILED`, the billing jobs skip that environment until a `verify` succeeds (no charge is marked failed, no grace starts, no subscription changes state), and a metric and alert fire.
 `CredentialStatus.webhookUrl` is the URL to paste in that Paystack dashboard (test and live dashboards each have ONE webhook URL, so the environment is carried in the PATH, never guessed from the body, M6); it is built from server configuration (`billing.webhook-base-url`), never from input.
 
@@ -1312,6 +1357,18 @@ One row per environment: `public_key`, `secret_key` (AES-GCM with a **versioned 
   "description": "Validation failed",
   "data": {
     "secretKey": "must carry the key prefix of the test environment"
+  }
+}
+```
+
+<!-- example: credentials-version-conflict response VersionConflictEnvelope 409 -->
+```json
+{
+  "description": "The credentials were changed by someone else. Reload and review.",
+  "data": {
+    "code": "CREDENTIALS_VERSION_CONFLICT",
+    "expectedVersion": 1,
+    "currentVersion": 2
   }
 }
 ```
@@ -1728,7 +1785,7 @@ Failures (the token survives failed attempts, not a success; at most 5 failed at
 
 ### 5.6 Frontend guidance (BILL-FE-02a)
 
-Keep `cardSetupToken` in memory or `sessionStorage` for the wizard session and send it in the header; never in a URL, never logged. Allow-list the checkout URL host (`checkout.paystack.com`, plus the fake in the e2e config) before redirecting.
+Keep `cardSetupToken` AND the `cardSetup` object (the status endpoint returns neither, so a resumed card step has nothing else to display) in memory or `sessionStorage` for the wizard session and send the token in the header; never in a URL, never logged. Allow-list the checkout URL host (`checkout.paystack.com`, plus the fake in the e2e config) before redirecting.
 Validate `reference` (charset `A-Za-z0-9-`, length 8..64) on the callback route, call `callback-verify`, then `history.replaceState` the reference out of the URL and continue with status polling. Map `404` to "Start again", `CARD_AUTH_FAILED` to the fixed message with "Try another card" (re-initialize), and an unknown `phase` or `status` to the existing error screen. Card step copy (trial days, price, date, hold) comes only from `cardSetup`.
 
 ## 6. Money rules (BR-03, BR-07, BR-08, BR-09, FR-10, FR-16)
@@ -8160,7 +8217,7 @@ Security signs off each billing ticket against this list (the board's S1-S10), t
 | FR-19, FR-20, BR-05 | 7.3, 7.4 |
 | FR-21 | 16 |
 | FR-22, BR-10 | 11, 7.9-7.11 |
-| FR-23, FR-24 | [plans.md](plans.md) (plan configuration); price changes 6.4 |
+| FR-23, FR-24 | [plans.md](plans.md) (plan configuration: fixed prices, intervals, trial, limits, availability); price changes 6.4. **Percentage-based or hybrid pricing (transaction-fee collection) is DEFERRED** (O23, PLAN-06 stays out of scope; `transactionFeeBps` is display-only), so FR-23 is covered for fixed pricing only |
 | FR-25 | 14 |
 | FR-26 | 17.5 |
 | BR-01, BR-02 | 3, 3.4 |
