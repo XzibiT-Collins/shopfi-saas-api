@@ -3246,7 +3246,7 @@
       }
     },
     "PlatformHealth": {
-      "description": "Loud platform-fault indicator (accepted decision 20.3 item 9): paused is true while the active environment's keys are rejected or billing is switched off although billing-managed subscriptions exist; those tenants keep full access, so the console shows a persistent alert.",
+      "description": "Loud platform-fault indicator (PO default, billing.md 20.3 item 9 and 20.6, awaiting owner confirmation): paused is true while the active environment's keys are rejected or billing is switched off although billing-managed subscriptions exist; those tenants keep full access, so the console shows a persistent alert.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -4303,6 +4303,7 @@
         "billingMode",
         "environment",
         "manualRestriction",
+        "allowedActions",
         "trialEndsAt",
         "currentPeriod",
         "anchorAt",
@@ -4348,6 +4349,23 @@
         },
         "manualRestriction": {
           "type": "boolean"
+        },
+        "allowedActions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "ACTIVATE",
+              "RESTRICT",
+              "RESTORE",
+              "EXTEND_TRIAL",
+              "CHANGE_PLAN",
+              "CANCEL_NOW",
+              "CANCEL_AT_PERIOD_END",
+              "RETRY_PAYMENT_NOW",
+              "CLEAR_PENDING_CHANGE"
+            ]
+          }
         },
         "trialEndsAt": {
           "oneOf": [

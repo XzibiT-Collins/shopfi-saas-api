@@ -91,6 +91,7 @@ Roles: "ADMIN" = tenant `hasRole('ADMIN')`; "FRONT_DESK" = `hasAnyRole('ADMIN','
 | Endpoint | Success | Purpose |
 |---|---|---|
 | `GET` / `PUT /api/v1/platform/billing/settings` | 200 | billing settings (one versioned row) |
+| `POST /api/v1/platform/billing/settings/number-preview` | 200 | preview unsaved invoice, receipt and credit-note number formats (no counter consumed) |
 | `GET /api/v1/platform/billing/settings/audit` | 200 | settings audit, paged |
 | `GET /api/v1/platform/billing/credentials` | 200 | status of both environments (never the keys) |
 | `PUT /api/v1/platform/billing/credentials/{environment}` | 200 | write the keys of one environment (write-only) |
@@ -101,6 +102,7 @@ Roles: "ADMIN" = tenant `hasRole('ADMIN')`; "FRONT_DESK" = `hasAnyRole('ADMIN','
 | `POST` / `DELETE /api/v1/platform/billing/subscriptions/{slug}/complimentary` | 200 | grant / end a complimentary plan |
 | `GET /api/v1/platform/billing/subscriptions/{slug}/history` | 200 | merged billing history |
 | `POST /api/v1/platform/billing/payments/{id}/refund` | 200 / 202 | refund (money only), `Idempotency-Key` |
+| `POST /api/v1/platform/billing/tenants/{slug}/personal-data-redaction` | 200 | erase a member's personal data at render time, stored rows unchanged (10.6) |
 | `GET /api/v1/platform/billing/audit`, `GET /api/v1/platform/tenants/{slug}/billing-audit` | 200 | billing audit, paged |
 | `GET /api/v1/platform/billing/documents`, `GET .../documents/{id}`, `GET .../documents/{id}/pdf`, `POST .../documents/{id}/resend` | 200 / 202 | documents of every tenant |
 | `GET /api/v1/platform/billing/reconciliation/findings`, `POST .../findings/{id}/resolve`, `POST .../reconciliation/run`, `GET .../reconciliation/runs` | 200 / 202 | reconciliation |
@@ -148,19 +150,19 @@ An event whose source state is not listed is an `IllegalBillingTransitionExcepti
 |---|---|---|---|---|---|---|
 | E1 | `TRIAL_STARTED` | provisioning complete with a card (BILL-02) | none | `TRIALING` | `CURRENT` | `FULL` |
 | E2 | `TRIAL_CHARGE_SUCCEEDED` | billing job / webhook (verified) | `TRIALING` | `ACTIVE` | `CURRENT` | `FULL` |
-| E3 | `CHARGE_STARTED` | any charge about to be sent | `TRIALING`, `ACTIVE`, `PAST_DUE` | unchanged | `PENDING` | unchanged |
+| E3 | `CHARGE_STARTED` | any charge about to be sent | `TRIALING`, `ACTIVE`, `PAST_DUE`, never `complimentary` | unchanged | `PENDING` | unchanged |
 | E4 | `RENEWAL_SUCCEEDED` | billing job / webhook (verified) | `ACTIVE` | `ACTIVE` | `CURRENT` | `FULL` (unless E15 applies) |
 | E5 | `CHARGE_FAILED` (first charge or renewal, attempt 1) | billing job / webhook (verified) | `TRIALING`, `ACTIVE` | `PAST_DUE` | `RETRYING` if a retry is scheduled, else `FAILED` | `GRACE` when `graceDays > 0`, else `READ_ONLY` |
 | E6 | `RETRY_FAILED` | retry job / webhook | `PAST_DUE` (access `GRACE`) | `PAST_DUE` | `RETRYING` if another attempt is scheduled, else `FAILED` | `GRACE` |
 | E7 | `GRACE_EXPIRED` | grace expiry job | `PAST_DUE` (access `GRACE`) | `PAST_DUE` (flag unchanged), or `CANCELED` with `cancelAtPeriodEnd = false` when the flag was set (O25) | `FAILED`, or `NONE` when ended | `READ_ONLY` |
 | E8 | `PAYMENT_SETTLED` | any verified success while `PAST_DUE`: scheduled retry, member retry, webhook, reconciliation, admin | `PAST_DUE` | `ACTIVE` | `CURRENT` | `FULL` (unless E15 applies) |
-| E9 | `CANCEL_REQUESTED` | member `cancel`, admin `CANCEL_AT_PERIOD_END` | `TRIALING`, `ACTIVE`, `PAST_DUE` | unchanged, `cancelAtPeriodEnd = true` | unchanged | unchanged |
+| E9 | `CANCEL_REQUESTED` | member `cancel`, admin `CANCEL_AT_PERIOD_END` | `TRIALING`, `ACTIVE`, `PAST_DUE`, never `complimentary` | unchanged, `cancelAtPeriodEnd = true` | unchanged | unchanged |
 | E10 | `CANCEL_REVERSED` | member `reactivate`, admin | as E9 with the flag set | unchanged, flag `false` | unchanged | unchanged |
-| E11 | `CANCEL_EFFECTIVE` | job at period end / trial end (flag set), E7 with the flag, admin `CANCEL_NOW` | `TRIALING`, `ACTIVE`, `PAST_DUE` (flag set or not) | `CANCELED`, `cancelAtPeriodEnd = false`, any pending change and grace cleared | `NONE` | `READ_ONLY` |
-| E12 | `TERM_ENDED` | job, admin `ACTIVATE` with `until` elapsed | `ACTIVE` (manual term) | `EXPIRED` | `NONE` | `READ_ONLY` |
+| E11 | `CANCEL_EFFECTIVE` | job at period end / trial end (flag set), E7 with the flag, admin `CANCEL_NOW` | `TRIALING`, `ACTIVE`, `PAST_DUE` (flag set or not), never `complimentary` (end it first) | `CANCELED`, `cancelAtPeriodEnd = false`, `complimentary = false`, any pending change and grace cleared | `NONE` | `READ_ONLY` |
+| E12 | `TERM_ENDED` | job, admin `ACTIVATE` with `until` elapsed | `ACTIVE` (manual term, flag set or not) | `EXPIRED`, `cancelAtPeriodEnd = false` | `NONE` | `READ_ONLY` |
 | E13 | `RESUBSCRIBED` | verified success of an `sb` charge | `CANCELED`, `EXPIRED`, or `ACTIVE` in `MANUAL` mode | `ACTIVE`; starts clean: `cancelAtPeriodEnd = false`, `complimentary = false`, no pending change, no grace, `manualRestriction = false`, `billingMode = PAYSTACK` (also when it comes from `MANUAL`), new anchor and period | `CURRENT` | `FULL` |
 | E14 | `PLAN_CHANGED` | verified upgrade, scheduled change applied at renewal, admin `CHANGE_PLAN` | `TRIALING`, `ACTIVE` (admin: also `PAST_DUE`) | unchanged | unchanged | unchanged |
-| E15 | `ACCESS_RESTRICTED_MANUAL` / `ACCESS_RESTORED_MANUAL` | admin `RESTRICT` / `RESTORE` | `TRIALING`, `ACTIVE`, `PAST_DUE` | unchanged | unchanged | `RESTRICT`: `READ_ONLY` and `manualRestriction = true`; `RESTORE`: clears the flag and recomputes the access from the lifecycle and grace rules (a billing restriction after grace stays) |
+| E15 | `ACCESS_RESTRICTED_MANUAL` / `ACCESS_RESTORED_MANUAL` | admin `RESTRICT` / `RESTORE` | `TRIALING`, `ACTIVE`, `PAST_DUE`, never `complimentary` (a complimentary plan is always `FULL`, invariant 2) | unchanged | unchanged | `RESTRICT`: `READ_ONLY` and `manualRestriction = true`; `RESTORE`: clears the flag and recomputes the access from the lifecycle and grace rules (a billing restriction after grace stays) |
 | E16 | `COMPLIMENTARY_GRANTED` | admin | any live or ended state (flag set or not) | `ACTIVE`, `complimentary = true`, `cancelAtPeriodEnd = false`, pending change, grace and `manualRestriction` cleared | `NONE` | `FULL` |
 | E17 | `COMPLIMENTARY_ENDED` | admin or job at `until` | `ACTIVE` with `complimentary` | with a card: `ACTIVE`, due at once (a renewal charge at the end instant, anchor = end instant); without a card: `PAST_DUE` with reason `NO_CARD` | `CURRENT` then per the charge; `FAILED` for `NO_CARD` | `FULL`; `GRACE` for `NO_CARD` |
 | E18 | `TRIAL_EXTENDED` | admin `EXTEND_TRIAL` | `TRIALING` | `TRIALING` | unchanged | unchanged |
@@ -190,6 +192,8 @@ Examples of combined states (every example in this document that carries a `stat
 - **PAST_DUE + FAILED + READ_ONLY**: grace over, unpaid (example `summary-read-only`).
 - **PAST_DUE + PENDING + GRACE**: a retry or "update card and retry" charge is in flight (example `card-verify-result-retry-started`).
 - **ACTIVE + CURRENT + READ_ONLY** with `manualRestriction`: an admin restriction (example `action-result-restrict`).
+
+**Complimentary subscriptions** accept no event except E16 (re-grant), E17 and E13-free exits: an admin action that would apply E3, E9, E11 or E15 to a complimentary subscription (`CHANGE_PLAN` with `charge: true`, `RETRY_PAYMENT_NOW`, `CANCEL_AT_PERIOD_END`, `CANCEL_NOW`, `RESTRICT`) is refused with `409 ACTION_NOT_ALLOWED` ("end the complimentary plan first", 7.9). The set of actions legal for the current state is returned by the server as `allowedActions` on the subscription detail (11.2), computed by the same state function, so the console never derives it.
 
 ### 3.3 Who writes what
 
@@ -738,9 +742,9 @@ While billing is paused by a platform fault the settings view carries the loud i
       }
     ],
     "numberPreviews": {
-      "INVOICE": "SUB-2026-000001",
-      "RECEIPT": "REC-2026-000001",
-      "CREDIT_NOTE": "CN-2026-000001"
+      "INVOICE": "SUB-2027-000001",
+      "RECEIPT": "REC-2027-000001",
+      "CREDIT_NOTE": "CN-2027-000001"
     },
     "health": {
       "paused": true,
@@ -1547,7 +1551,7 @@ One row per environment: `public_key`, `secret_key` (AES-GCM with a **versioned 
 
 `PUT /api/v1/platform/billing/credentials/{environment}` (`environment` = `test` | `live`): body `{publicKey, secretKey, expectedVersion?}` (a stale `expectedVersion` is `409 CREDENTIALS_VERSION_CONFLICT`); the prefixes must match the path (`pk_test_` / `sk_test_` for `test`, `pk_live_` / `sk_live_` for `live`, else `400` with the field message), 16..128 letters and digits after the prefix. It stores the secret encrypted, sets `UNVERIFIED`, resets `verified_at` and returns `CredentialStatus`. The new pair is used immediately (key rotation after a leak must not wait); the operator is expected to press Verify right away.
 **A Paystack `401` or `403` on any billing call (our key is wrong, revoked or rotated) is a platform fault, never a member fault**: the environment status becomes `FAILED`, the billing jobs skip that environment until a `verify` succeeds (no charge is marked failed, no grace starts, no subscription changes state), and a metric and alert fire.
-**Accepted decision (owner, 2026-11-28; section 20.3 item 9):** while OUR keys are rejected, or `billingEnabled` is off while billing-managed subscriptions exist, those tenants keep FULL access (the fault is ours) and there is NO ceiling after which access is restricted. The risk is made visible instead: `BillingSettingsView.health` reports `paused`, `reason` (`KEY_REJECTED`, `BILLING_DISABLED`), `since` and the number of affected subscriptions; the console shows a persistent SUPER_ADMIN banner while `paused` is true, an alert fires on entry, and entering and leaving the state is audited (`BILLING_PAUSED`, `BILLING_RESUMED`).
+**PO default, reported to the owner 2026-11-28 and awaiting owner confirmation (section 20.3 item 9, pending decision 20.6; the alternative is a `platformFaultMaxDays` ceiling):** while OUR keys are rejected, or `billingEnabled` is off while billing-managed subscriptions exist, those tenants keep FULL access (the fault is ours) and there is NO ceiling after which access is restricted. The risk is made visible instead: `BillingSettingsView.health` reports `paused`, `reason` (`KEY_REJECTED`, `BILLING_DISABLED`), `since` and the number of affected subscriptions; the console shows a persistent SUPER_ADMIN banner while `paused` is true, an alert fires on entry, and entering and leaving the state is audited (`BILLING_PAUSED`, `BILLING_RESUMED`).
 `CredentialStatus.webhookUrl` is the URL to paste in that Paystack dashboard (test and live dashboards each have ONE webhook URL, so the environment is carried in the PATH, never guessed from the body, M6); it is built from server configuration (`billing.webhook-base-url`), never from input.
 
 <!-- example: credentials-request-test valid CredentialsRequest -->
@@ -2873,17 +2877,17 @@ The refund goes to Paystack with our deterministic refund key `sub-rf-<t|l>-<ref
 
 ### 7.11 Manual admin actions (FR-22, BR-10)
 
-`POST /api/v1/platform/billing/subscriptions/{slug}/actions` `{action, reason, expectedVersion, ...}`; `reason` required (plain text 5..500), `expectedVersion` required (stale: `409 SUBSCRIPTION_VERSION_CONFLICT`), SUPER_ADMIN only, throttled per admin. **Every action that moves money (`CHANGE_PLAN` with `charge: true`, `RETRY_PAYMENT_NOW`) and the complimentary grant / end (7.9) require an `Idempotency-Key`** (a network retry replays the stored answer instead of a confusing `409`); the other actions rely on `expectedVersion`. Each action runs through `SubscriptionStateService`, is audited (actor admin id and e-mail, reason, before / after), evicts the cache after commit, and answers with the new `SubscriptionDetail`. A state in which the action is illegal: `409 ACTION_NOT_ALLOWED` with the `action`, `lifecycleStatus` and `accessState`.
+`POST /api/v1/platform/billing/subscriptions/{slug}/actions` `{action, reason, expectedVersion, ...}`; `reason` required (plain text 5..500), `expectedVersion` required (stale: `409 SUBSCRIPTION_VERSION_CONFLICT`), SUPER_ADMIN only, throttled per admin. **Every action that moves money (`CHANGE_PLAN` with `charge: true`, `RETRY_PAYMENT_NOW`) and the complimentary grant / end (7.9) require an `Idempotency-Key`** (a network retry replays the stored answer instead of a confusing `409`); the other actions rely on `expectedVersion`. Each action runs through `SubscriptionStateService`, is audited (actor admin id and e-mail, reason, before / after), evicts the cache after commit, and answers with the new `SubscriptionDetail`. A state in which the action is illegal: `409 ACTION_NOT_ALLOWED` with the `action`, `lifecycleStatus` and `accessState`; this includes every money or access action on a `complimentary` subscription (`CHANGE_PLAN` with `charge: true`, `RETRY_PAYMENT_NOW`, `CANCEL_AT_PERIOD_END`, `CANCEL_NOW`, `RESTRICT`, `EXTEND_TRIAL`, `ACTIVATE`: end the complimentary plan first, 7.9). The legal set for the current state is `allowedActions` of the subscription detail (11.2).
 
 | `action` | Extra fields | Legal from | Effect |
 |---|---|---|---|
 | `ACTIVATE` | `until?` (future, <= 5 years) | any live or ended state | `ACTIVE`, access `FULL`, payment `NONE`; without `until` the tenant becomes `MANUAL` and open-ended; with `until` a fixed term that ends in `EXPIRED` (E12). Not for a `complimentary` subscription (use the complimentary endpoints) |
-| `RESTRICT` | | `TRIALING`, `ACTIVE`, `PAST_DUE` | access `READ_ONLY` now, `manualRestriction = true` (survives payments until `RESTORE`) |
+| `RESTRICT` | | `TRIALING`, `ACTIVE`, `PAST_DUE`, not complimentary, not already restricted | access `READ_ONLY` now, `manualRestriction = true` (survives payments until `RESTORE`) |
 | `RESTORE` | | with `manualRestriction` | clears it and recomputes the access from the lifecycle and grace rules |
 | `EXTEND_TRIAL` | `trialEndsAt` (later than the current, in the future, <= now + 365 days) | `TRIALING` | E18: moves the first charge and the reminders (unsent trial reminders are rescheduled) |
-| `CHANGE_PLAN` | `planId`, `interval?`, `charge?`, `allowInactive?` | `TRIALING`, `ACTIVE`, `PAST_DUE` | immediate, no charge; with `charge: true` through the normal prorated path (the stored card is charged; **`Idempotency-Key` required**) |
-| `CANCEL_NOW` | | `TRIALING`, `ACTIVE`, `PAST_DUE` | E11 now: `CANCELED`, `READ_ONLY` (no refund) |
-| `CANCEL_AT_PERIOD_END` | | same | E9 |
+| `CHANGE_PLAN` | `planId`, `interval?`, `charge?`, `allowInactive?` | `TRIALING`, `ACTIVE`, `PAST_DUE`, not complimentary | immediate, no charge; with `charge: true` through the normal prorated path (the stored card is charged; **`Idempotency-Key` required**) |
+| `CANCEL_NOW` | | `TRIALING`, `ACTIVE`, `PAST_DUE`, not complimentary | E11 now: `CANCELED`, `READ_ONLY` (no refund) |
+| `CANCEL_AT_PERIOD_END` | | same, flag not set | E9 |
 | `RETRY_PAYMENT_NOW` | | `PAST_DUE` | ONE attempt through the section 8 path (`PAYMENT_PENDING` while one is in flight; **`Idempotency-Key` required**) |
 | `CLEAR_PENDING_CHANGE` | | with a pending change | clears it |
 
@@ -3309,6 +3313,13 @@ The refund goes to Paystack with our deterministic refund key `sub-rf-<t|l>-<ref
           "refundedPesewas": 10000
         }
       }
+    ],
+    "allowedActions": [
+      "ACTIVATE",
+      "RESTORE",
+      "CHANGE_PLAN",
+      "CANCEL_NOW",
+      "CANCEL_AT_PERIOD_END"
     ]
   }
 }
@@ -3368,7 +3379,15 @@ The refund goes to Paystack with our deterministic refund key `sub-rf-<t|l>-<ref
     "payments": [],
     "documents": [],
     "adjustments": [],
-    "recentAudit": []
+    "recentAudit": [],
+    "allowedActions": [
+      "ACTIVATE",
+      "RESTRICT",
+      "EXTEND_TRIAL",
+      "CHANGE_PLAN",
+      "CANCEL_NOW",
+      "CANCEL_AT_PERIOD_END"
+    ]
   }
 }
 ```
@@ -6256,7 +6275,7 @@ Quick filters of the console map onto these: All (none), Trialing (`trialing=tru
 
 ### 11.2 `GET /api/v1/platform/billing/subscriptions/{slug}`
 
-The detail: the three state fields, `manualRestriction`, the schedule (`currentPeriod`, `anchorAt`, `nextBillingAt`, `grace.retrySchedule`), the pending change, the price lock (`lockedPricesPesewas`), the price change notice, the complimentary info, card display data, the `timeline` of transitions (newest first, each with `from` / `to` state, event code, actor type and reference), `payments` (admin view with environment, fees, verification, flags and the refund arithmetic), `documents`, `adjustments` and the `recentAudit` rows. `version` is the lock input of every write below. A tenant without a subscription row (a `MANUAL` tenant never converted) answers with `billingMode MANUAL` and the legacy projection (`lifecycleStatus` from `subscription_status`, empty lists).
+The detail: the three state fields, `manualRestriction`, the schedule (`currentPeriod`, `anchorAt`, `nextBillingAt`, `grace.retrySchedule`), the pending change, the price lock (`lockedPricesPesewas`), the price change notice, the complimentary info, card display data, the `timeline` of transitions (newest first, each with `from` / `to` state, event code, actor type and reference), `payments` (admin view with environment, fees, verification, flags and the refund arithmetic), `documents`, `adjustments` and the `recentAudit` rows. `allowedActions` lists the manual actions legal for the CURRENT state (`ACTIVATE`, `RESTRICT`, `RESTORE`, `EXTEND_TRIAL`, `CHANGE_PLAN`, `CANCEL_NOW`, `CANCEL_AT_PERIOD_END`, `RETRY_PAYMENT_NOW`, `CLEAR_PENDING_CHANGE`), computed by the state function that validates them, so the console's action menu (BILL-FE-01b) never derives it; an action outside it answers `409 ACTION_NOT_ALLOWED`. Complimentary subscriptions list none (end the complimentary plan first). `version` is the lock input of every write below. A tenant without a subscription row (a `MANUAL` tenant never converted) answers with `billingMode MANUAL` and the legacy projection (`lifecycleStatus` from `subscription_status`, empty lists).
 
 <!-- example: subscription-detail response SubscriptionDetailEnvelope 200 -->
 ```json
@@ -6589,6 +6608,14 @@ The detail: the three state fields, `manualRestriction`, the schedule (`currentP
           "refundedPesewas": 10000
         }
       }
+    ],
+    "allowedActions": [
+      "ACTIVATE",
+      "RESTRICT",
+      "CHANGE_PLAN",
+      "CANCEL_NOW",
+      "CANCEL_AT_PERIOD_END",
+      "RETRY_PAYMENT_NOW"
     ]
   }
 }
@@ -6944,7 +6971,8 @@ The detail: the three state fields, `manualRestriction`, the schedule (`currentP
           "refundedPesewas": 10000
         }
       }
-    ]
+    ],
+    "allowedActions": []
   }
 }
 ```
@@ -7288,6 +7316,14 @@ The detail: the three state fields, `manualRestriction`, the schedule (`currentP
           "refundedPesewas": 10000
         }
       }
+    ],
+    "allowedActions": [
+      "ACTIVATE",
+      "RESTRICT",
+      "CHANGE_PLAN",
+      "CANCEL_NOW",
+      "CANCEL_AT_PERIOD_END",
+      "RETRY_PAYMENT_NOW"
     ]
   }
 }
@@ -8115,7 +8151,7 @@ The range is `[from, to)` in UTC. An invalid date, enum or range is `400` with t
 | new subscriptions | subscriptions whose FIRST successful non-verification payment is in the range |
 | cancellations | `scheduled`: cancellation requests recorded in the range; `effective`: subscriptions that became `CANCELED` or `EXPIRED` in the range |
 | failed payments | payment attempts with status `FAILED` created in the range (count and amount) |
-| trial conversion | of the trials whose `trialEndsAt` is in the range (`trialsEnded`), those with a successful `TRIAL_CONVERSION` payment (`converted`); `rateBps = round_half_up(converted x 10000 / trialsEnded)`, `null` when none ended |
+| trial conversion | of the trials whose `trialEndsAt` is in the range (`trialsEnded`; **a zero-length trial of a signup that got no free trial under `oneTrialPerCard`, 5.7, is not a trial and is excluded from both counts**), those with a successful `TRIAL_CONVERSION` payment (`converted`); `rateBps = round_half_up(converted x 10000 / trialsEnded)`, `null` when none ended |
 | outstanding (as at `to`) | subscriptions with payment status `RETRYING` or `FAILED`, and the amount of their open charge (`amountAtRisk`) |
 | revenue by plan | gross, refunded and net grouped by the plan of the payment |
 | ARPU | `round_half_up(MRR / active subscriptions)`, `null` when there are none |
@@ -8124,18 +8160,19 @@ Time-series metrics: `MRR` the MRR as at the end of each bucket, `REVENUE` net r
 
 ### 14.3 Golden dataset (hand-computed; BILL-07 AC3 uses it, `check_examples.py` recomputes the examples from it)
 
-Range `[2026-11-30T00:00:00Z, 2027-01-04T00:00:00Z)`, environment `LIVE`, no plan or interval filter. Subscriptions as at `to` (`lockedPesewas` is the lock of the interval shown; `trialEndsAt`, `cancelRequestedAt`, `endedAt` are the history facts used by the metrics):
+Range `[2026-11-30T00:00:00Z, 2027-01-04T00:00:00Z)`, environment `LIVE`, no plan or interval filter. Subscriptions as at `to` (`lockedPesewas` is the lock of the interval shown; `trialEndsAt`, `trialGranted`, `cancelRequestedAt`, `endedAt` are the history facts used by the metrics; `trialGranted` `no` marks a zero-length trial, excluded from trial conversion):
 
-| slug | plan | interval | lockedPesewas | lifecycle | payment | mode | complimentary | trialEndsAt | cancelRequestedAt | endedAt |
-|---|---|---|---|---|---|---|---|---|---|---|
-| acme | SCALE | MONTHLY | 99900 | ACTIVE | CURRENT | PAYSTACK | no | `2026-12-11T09:30:00Z` | - | - |
-| lumen | STARTER | MONTHLY | 14900 | ACTIVE | CURRENT | PAYSTACK | no | `2026-12-05T10:00:00Z` | `2026-12-27T10:00:00Z` | - |
-| kente | GROWTH | ANNUAL | 383040 | ACTIVE | CURRENT | PAYSTACK | no | `2026-09-19T08:00:00Z` | - | - |
-| zuri | GROWTH | MONTHLY | 39900 | PAST_DUE | RETRYING | PAYSTACK | no | `2026-12-28T10:00:00Z` | - | - |
-| quin | STARTER | MONTHLY | 14900 | CANCELED | NONE | PAYSTACK | no | `2026-12-20T10:00:00Z` | `2026-12-15T10:00:00Z` | `2026-12-20T10:00:00Z` |
-| nana | SCALE | MONTHLY | 99900 | ACTIVE | NONE | PAYSTACK | yes | - | - | - |
-| olu | GROWTH | MONTHLY | 39900 | ACTIVE | NONE | MANUAL | no | - | - | - |
-| tori | STARTER | MONTHLY | 14900 | TRIALING | CURRENT | PAYSTACK | no | `2027-01-10T10:00:00Z` | - | - |
+| slug | plan | interval | lockedPesewas | lifecycle | payment | mode | complimentary | trialEndsAt | trialGranted | cancelRequestedAt | endedAt |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| acme | SCALE | MONTHLY | 99900 | ACTIVE | CURRENT | PAYSTACK | no | `2026-12-11T09:30:00Z` | yes | - | - |
+| dora | STARTER | MONTHLY | 14900 | ACTIVE | CURRENT | PAYSTACK | no | `2026-12-15T10:00:00Z` | no | - | - |
+| lumen | STARTER | MONTHLY | 14900 | ACTIVE | CURRENT | PAYSTACK | no | `2026-12-05T10:00:00Z` | yes | `2026-12-27T10:00:00Z` | - |
+| kente | GROWTH | ANNUAL | 383040 | ACTIVE | CURRENT | PAYSTACK | no | `2026-09-19T08:00:00Z` | yes | - | - |
+| zuri | GROWTH | MONTHLY | 39900 | PAST_DUE | RETRYING | PAYSTACK | no | `2026-12-28T10:00:00Z` | yes | - | - |
+| quin | STARTER | MONTHLY | 14900 | CANCELED | NONE | PAYSTACK | no | `2026-12-20T10:00:00Z` | yes | `2026-12-15T10:00:00Z` | `2026-12-20T10:00:00Z` |
+| nana | SCALE | MONTHLY | 99900 | ACTIVE | NONE | PAYSTACK | yes | - | - | - | - |
+| olu | GROWTH | MONTHLY | 39900 | ACTIVE | NONE | MANUAL | no | - | - | - | - |
+| tori | STARTER | MONTHLY | 14900 | TRIALING | CURRENT | PAYSTACK | no | `2027-01-10T10:00:00Z` | yes | - | - |
 
 Payments (all `LIVE` unless the `env` column says otherwise; `CARD_VERIFY` and the `TEST` row are excluded by the definitions; ids 9001 and 9002 are the payments of the story):
 
@@ -8143,6 +8180,7 @@ Payments (all `LIVE` unless the `env` column says otherwise; `CARD_VERIFY` and t
 |---|---|---|---|---|---|---|---|
 | 9200 | kente | TRIAL_CONVERSION | GROWTH | SUCCESS | 39900 | `2026-10-03T08:00:05Z` | LIVE |
 | 9201 | kente | RENEWAL | GROWTH | SUCCESS | 383040 | `2026-12-03T08:00:05Z` | LIVE |
+| 9207 | dora | TRIAL_CONVERSION | STARTER | SUCCESS | 14900 | `2026-12-15T10:00:04Z` | LIVE |
 | 9202 | lumen | TRIAL_CONVERSION | STARTER | SUCCESS | 14900 | `2026-12-05T10:00:06Z` | LIVE |
 | 9001 | acme | TRIAL_CONVERSION | GROWTH | SUCCESS | 39900 | `2026-12-11T09:30:07Z` | LIVE |
 | 9206 | tori | CARD_VERIFY | STARTER | SUCCESS | 100 | `2026-12-20T10:00:04Z` | LIVE |
@@ -8156,7 +8194,7 @@ Refunds:
 |---|---|---|---|---|
 | 3001 | 9001 | 10000 | COMPLETED | `2026-12-30T10:00:05Z` |
 
-Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 383040 (kente renewal) + 14900 (lumen conversion) = **478485**; refunded **10000**; net **468485**. MRR = 99900 + 14900 + round_half_up(383040 / 12) = 31920 + 39900 (zuri, `PAST_DUE` still counts) = **186620** over **4** active subscriptions, ARPU = round_half_up(186620 / 4) = **46655**. New subscriptions **2** (acme, lumen; kente paid first in October). Trials ended in the range: acme, lumen, zuri, quin = 4, converted 2, `rateBps` **5000**. Cancellations: requested 2 (lumen, quin), effective 1 (quin). Failed payments: 1 attempt of 39900 (zuri). Outstanding: 1 subscription, 39900. Revenue by plan: STARTER 14900, GROWTH 422940 gross (10000 refunded, 412940 net), SCALE 40645; they add up to the totals. The weekly revenue buckets (Mondays) are 397940 (kente 383040 + lumen 14900), 39900, 0, 40645, -10000 and add up to the net.
+Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 383040 (kente renewal) + 14900 (lumen conversion) + 14900 (dora, no free trial) = **493385**; refunded **10000**; net **483385**. MRR = 99900 + 14900 + round_half_up(383040 / 12) = 31920 + 39900 (zuri, `PAST_DUE` still counts) + 14900 (dora) = **201520** over **5** active subscriptions, ARPU = round_half_up(201520 / 5) = **40304**. New subscriptions **3** (acme, lumen, dora; kente paid first in October). Trials ended in the range: acme, lumen, zuri, quin = 4 (dora's zero-length trial is excluded), converted 2, `rateBps` **5000**. Cancellations: requested 2 (lumen, quin), effective 1 (quin). Failed payments: 1 attempt of 39900 (zuri). Outstanding: 1 subscription, 39900. Revenue by plan: STARTER 29800, GROWTH 422940 gross (10000 refunded, 412940 net), SCALE 40645; they add up to the totals. The weekly revenue buckets (Mondays) are 397940 (kente 383040 + lumen 14900), 39900, 14900 (dora), 40645, -10000 and add up to the net.
 
 <!-- example: reports-summary response ReportsSummaryEnvelope 200 -->
 ```json
@@ -8173,14 +8211,14 @@ Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 38304
       "interval": null
     },
     "revenue": {
-      "grossCollectedPesewas": 478485,
+      "grossCollectedPesewas": 493385,
       "refundedPesewas": 10000,
-      "netRevenuePesewas": 468485,
+      "netRevenuePesewas": 483385,
       "feesPesewas": null
     },
-    "mrrPesewas": 186620,
-    "activeSubscriptions": 4,
-    "newSubscriptions": 2,
+    "mrrPesewas": 201520,
+    "activeSubscriptions": 5,
+    "newSubscriptions": 3,
     "cancellations": {
       "scheduled": 2,
       "effective": 1
@@ -8202,9 +8240,9 @@ Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 38304
       {
         "planCode": "STARTER",
         "planName": "Starter",
-        "grossPesewas": 14900,
+        "grossPesewas": 29800,
         "refundedPesewas": 0,
-        "netPesewas": 14900
+        "netPesewas": 29800
       },
       {
         "planCode": "GROWTH",
@@ -8221,7 +8259,7 @@ Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 38304
         "netPesewas": 40645
       }
     ],
-    "arpuPesewas": 46655,
+    "arpuPesewas": 40304,
     "definitions": {
       "revenue": "Gross: sum of SUCCESS payments with paidAt in [from, to), purposes other than CARD_VERIFY, in the filtered environment; refunded: sum of COMPLETED refunds with completedAt in the range; net = gross - refunded.",
       "mrr": "As at `to`: sum over subscriptions that are ACTIVE or PAST_DUE, billingMode PAYSTACK, not complimentary, of the locked price per month (ANNUAL: round_half_up(locked / 12)). Trialing, ended and MANUAL subscriptions are excluded.",
@@ -8229,7 +8267,7 @@ Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 38304
       "newSubscriptions": "Subscriptions whose first successful non-verification payment is in the range.",
       "cancellations": "scheduled: cancellation requests recorded in the range; effective: subscriptions that became CANCELED or EXPIRED in the range.",
       "failedPayments": "Payment attempts with status FAILED created in the range (count and amount).",
-      "trialConversion": "Of the trials whose trialEndsAt is in the range: converted = those with a successful TRIAL_CONVERSION payment; rateBps = round_half_up(converted x 10000 / trialsEnded), null when no trial ended.",
+      "trialConversion": "Of the trials whose trialEndsAt is in the range (zero-length trials of signups without a free trial excluded): converted = those with a successful TRIAL_CONVERSION payment; rateBps = round_half_up(converted x 10000 / trialsEnded), null when no trial ended.",
       "outstanding": "As at `to`: subscriptions with payment status RETRYING or FAILED and the amount of their open charge.",
       "arpu": "round_half_up(mrr / activeSubscriptions), null when there are none."
     }
@@ -8260,7 +8298,7 @@ Hand computation: gross = 39900 (acme conversion) + 40645 (acme upgrade) + 38304
       },
       {
         "bucketStart": "2026-12-14T00:00:00Z",
-        "value": 0
+        "value": 14900
       },
       {
         "bucketStart": "2026-12-21T00:00:00Z",
@@ -8565,7 +8603,7 @@ A PDF library is added; BILL-05 picks OpenPDF or Apache PDFBox (programmatic lay
 6. A price change of a plan creates a notice for every affected subscription, including price DECREASES (uniform rule, D3); a second edit replaces the notice and restarts the clock (6.4).
 7. `EXPIRED` is produced only by a fixed-term admin `ACTIVATE` with `until`; every ended-by-cancellation subscription is `CANCELED`. Both map to `tenants.subscription_status = CANCELED` (3, 3.4).
 8. A refund with `cancelSubscription: true` schedules non-renewal; it does not end access (7.10). `RESTRICT` sets a `manualRestriction` that payments do not lift (7.11).
-9. **ACCEPTED RISK (owner, 2026-11-28; Security L1).** A Paystack `401` / `403` with our own key is a platform fault: the environment becomes `FAILED`, billing jobs skip it, no member is charged a failure or put in grace; the same applies while `billingEnabled` is off but billing-managed subscriptions exist. Those tenants keep FULL access with **no ceiling** (no `platformFaultMaxDays`). Mitigation required instead: `BillingSettingsView.health` (`paused`, `reason`, `since`, `affectedSubscriptions`), a persistent SUPER_ADMIN console banner, an alert on entry and an audit row on entering and leaving (`BILLING_PAUSED`, `BILLING_RESUMED`) (4.4, 21 item 20).
+9. **PO DEFAULT, reported to the owner 2026-11-28, AWAITING OWNER CONFIRMATION (Security L1; pending decision 20.6).** A Paystack `401` / `403` with our own key is a platform fault: the environment becomes `FAILED`, billing jobs skip it, no member is charged a failure or put in grace; the same applies while `billingEnabled` is off but billing-managed subscriptions exist. Under this default those tenants keep FULL access with **no ceiling**; the alternative is a configurable ceiling (20.6). The mitigation is required either way: `BillingSettingsView.health` (`paused`, `reason`, `since`, `affectedSubscriptions`), a persistent SUPER_ADMIN console banner, an alert on entry and an audit row on entering and leaving (`BILLING_PAUSED`, `BILLING_RESUMED`) (4.4, 21 item 20).
 10. Settings added to the board list so that D2, O2, O18 and O29 are real settings: `graceEndingReminderDaysBefore`, `recurringChannels`, `webhookIpAllowlist`, `attachPdfToEmail`, `emailEnabled` (one flag per notification kind).
 11. Retries clamp to `graceEndsAt`; with `graceDays = 0` access is restricted at the first failure and no retries run (4.1, 8.2).
 12. `callback-verify` is a `GET` with a server-side effect (the board's contract); it is made safe by the custom token header and by idempotent replay of the same reference for 15 minutes (5.4).
@@ -8614,6 +8652,10 @@ No tax is assumed (D4). **Either answer is a settings change:** (a) tax already 
 | O29 | webhook IP allow-list off by default | 12.6 |
 | O30 | copy "Card required, charged after the trial" is the frontend's constant, confirmed by the owner in the FE PR | [onboarding.md](onboarding.md) section 3b |
 
+### 20.6 Platform-fault access ceiling (PENDING owner confirmation)
+
+PO default (reported to the owner 2026-11-28, not yet confirmed by the owner): while our own Paystack keys are rejected, or billing is switched off while billing-managed subscriptions exist, those tenants keep FULL access with no ceiling; the loud `health` indicator, SUPER_ADMIN banner, alert and audit (4.4) are required in every case. **Alternative if the owner wants a limit:** a new integer setting `platformFaultMaxDays` (0 = no ceiling, the default behaviour); after that many days of `health.paused` the affected subscriptions fall back to the normal failure policy (grace, then `READ_ONLY`, section 8) with the paused period not counted against the member. It is a settings field plus one scheduled rule, no change to any shape of sections 3 and 8.
+
 ## 21. Requirements for BILL-01..07 implementations
 
 Security signs off each billing ticket against this list (the board's S1-S10), the same way section 18 of [plans.md](plans.md) works for PLAN-01 / PLAN-02. A ticket that touches payments, webhooks, credentials, auth, tenancy, caching or scheduled jobs is `Security review: yes`.
@@ -8638,7 +8680,7 @@ Security signs off each billing ticket against this list (the board's S1-S10), t
 17. **Provider URLs (5.3, 19.1).** The fake Paystack is excluded from the production jar (a build check on the jar contents fails the build when a fake class is present); outside `dev` / `test` the application refuses to start unless each environment's Paystack base URL is exactly `https://api.paystack.co`; the server verifies that every returned `authorization_url` starts with `https://checkout.paystack.com/`. A startup test and a unit test per rule.
 18. **Refund events and reconciliation (12.5).** Fetch the refund from Paystack and match refund key, transaction reference, amount and environment; mismatch: flag, change nothing; unmatched: `ORPHAN_REFUND`. Tests with a foreign refund of the same transaction, a wrong amount and a wrong environment.
 19. **One trial per card and owner (5.7).** Keyed hashes (never plain) of the card fingerprint and owner e-mail per environment, never returned or logged; tests: repeat e-mail, repeat card on another tenant, TEST vs LIVE isolation, setting off.
-20. **Platform-fault visibility (accepted risk, 20.3 item 9).** `health` on the settings view, persistent console banner, alert and audit on entering and leaving; tests: keys rejected keeps FULL access and raises the banner, a later successful `verify` clears it.
+20. **Platform-fault visibility (PO default, 20.3 item 9 and 20.6).** `health` on the settings view, persistent console banner, alert and audit on entering and leaving; tests: keys rejected keeps FULL access and raises the banner, a later successful `verify` clears it.
 21. **Webhook.** HMAC on the raw bytes before any JSON parsing; the size cap enforced while streaming, never trusting `Content-Length`; the IP allow-list uses the trusted-proxy client IP rule of `ClientIps`, never a raw `X-Forwarded-For`.
 22. **Card setup token.** Stored as SHA-256, looked up by hash, compared in constant time, accepted only in the header and rejected if it appears in a query string.
 23. **Unique constraints in the database:** payment `reference` unique per environment, refund key unique, webhook `(environment, dedupeKey)` unique, and ONE in-flight payment per subscription as a partial unique index, not only in code.
