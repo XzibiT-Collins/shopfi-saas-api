@@ -64,6 +64,28 @@ precedes every 402. The plan gate, the body-dependent gates (`THEME_ADVANCED`, `
 (core for every plan) are never a 402.
 The admin frontend opens one upgrade modal for any 402 and never shows it as a generic error.
 
+## Subscription billing (BILL-00)
+
+Contract only (docs `billing.md`); implemented by BILL-01..BILL-07. All are `ApiCodeException` bodies `{"description", "data": {"code", ...}}`. **No billing endpoint ever answers `402`** (402 stays the plan gate, [plans.md](plans.md) section 14) and no billing endpoint is blocked by read-only mode. Check order: tenant resolution (400 / 404 / **423**) -> 401 -> 403 -> 400 (body, validation, `Idempotency-Key`) -> 404 (own-tenant object) -> 409 (state, version, idempotency) -> the charge ([billing.md](billing.md) section 17.1).
+
+| Status | `data.code` | Extra `data` keys | When |
+|---|---|---|---|
+| 400 | `CARD_AUTH_FAILED` | `retryAllowed`, `reason` | the card authorization was declined, abandoned, not reusable, not a card, wrong amount or e-mail |
+| 400 | `PREVIEW_TOKEN_INVALID` | | the plan-change preview token is missing, tampered, expired or another tenant's |
+| 400 | `IDEMPOTENCY_KEY_REQUIRED` / `IDEMPOTENCY_KEY_INVALID` | | money POST without / with a malformed `Idempotency-Key` (existing codes, now also on billing) |
+| 409 | `BILLING_NOT_CONFIGURED` | | billing disabled or no verified credentials for an action that needs Paystack |
+| 409 | `CARD_REQUIRED`, `PAYMENT_PENDING`, `PAYMENT_FAILED` | `paymentId?`, `payment?` | no card on file; a charge is already in flight; a plan-change / subscribe charge was declined (nothing changed) |
+| 409 | `CHANGE_NOT_ALLOWED` | `reason` | plan change refused by the subscription state (`NOT_ACTIVE`, `PAYMENT_OVERDUE`, `ENDED`, `COMPLIMENTARY`, `MANUAL_MODE`, `PLAN_NOT_PURCHASABLE`, `UPGRADE_WITH_INTERVAL_CHANGE`, `TRIAL_ENDED`, `NOTHING_DUE`) |
+| 409 | `PRICE_CHANGED`, `PENDING_CHANGE_CONFLICT` | `reason`, `newPricePesewas?`, `chargeNowPesewas?` | the preview is stale; a concurrent write won the one-pending-change slot |
+| 409 | `USE_SUBSCRIBE`, `ALREADY_SUBSCRIBED` | | reactivate after the subscription ended; subscribe while a live one exists |
+| 409 | `REFUND_EXCEEDS_REMAINING`, `REFUND_NOT_ALLOWED` | `remainingPesewas`; `reason` | platform refund above the remaining amount or not allowed |
+| 409 | `SUBSCRIPTION_VERSION_CONFLICT`, `BILLING_SETTINGS_VERSION_CONFLICT`, `CREDENTIALS_VERSION_CONFLICT` | `expectedVersion`, `currentVersion` | stale optimistic-lock `version` (never the generic `503 TRY_AGAIN`) |
+| 409 | `BILLING_MANAGED` | | the PLAN-01 status bridge on a tenant billed through Paystack |
+| 409 | `CREDENTIALS_NOT_CONFIGURED`, `ACTION_NOT_ALLOWED`, `NOT_COMPLIMENTARY`, `IDEMPOTENCY_KEY_REUSED`, `RECONCILIATION_IN_PROGRESS`, `FINDING_ALREADY_RESOLVED`, `WEBHOOK_EVENT_NOT_RETRYABLE` | `action`, `lifecycleStatus`, `accessState` (for `ACTION_NOT_ALLOWED`) | platform console conflicts |
+| 503 | `PROVIDER_UNAVAILABLE` | | Paystack unreachable or the circuit is open BEFORE anything was sent (an unknown outcome of a charge already sent is `202`, never 503) |
+
+Webhook receiver (`POST /api/v1/platform/billing/webhooks/paystack/{environment}`): `401 Invalid signature` (only a counter is incremented), `404 Not found` (unknown environment or no keys), `413 Payload too large` (> 64 KiB), `400 Invalid payload`; a business outcome is never a 5xx ([billing.md](billing.md) section 12.3). Provider text, authorization codes, secrets and webhook bodies are never part of any error body or log (the `Paystack` section above applies to the platform client as well).
+
 ## Kept: business messages (our own exception types)
 
 `ApiCodeException` (with `data.code`), `BadRequestException`, `CouponRejectedException`, `ValidationException`,

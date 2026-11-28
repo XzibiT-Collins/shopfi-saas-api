@@ -248,6 +248,20 @@ public allow-list of section 2 has `GET /api/v1/platform/onboarding/plans` (exac
 front-desk permission checks, is always reported as 403, never as a 402 that reveals the plan); the gate runs in the
 service after authorization, not in an interceptor before `@PreAuthorize`; see [plans.md](plans.md#144-precedence) and [errors.md](errors.md#plans-and-subscription-plan-03).
 
+## 3c. Subscription billing (BILL-00 contract)
+
+Contract only ([billing.md](billing.md)); the controllers are built by BILL-01..BILL-07 and each ticket ADDS its rows to the reflection-pinned table of section 3 (`AuthorizationMatrixStructureTest`) in the same PR. Until then these rows are intentionally NOT in section 3 (that table must equal the real controllers row for row). Actor rules are those of section 1; billing endpoints are never plan-gated (no 402) and answer while the tenant is read-only.
+
+| Route | Matcher | Roles | Notes |
+|---|---|---|---|
+| `GET /api/v1/admin/billing/summary` | authenticated | `hasAnyRole('ADMIN','FRONT_DESK')` | ADMIN full view, FRONT_DESK banner subset only |
+| `GET /api/v1/admin/billing/card`, `POST .../card/initialize`, `POST .../card/verify`, `POST .../retry-payment`, `POST .../subscribe`, `POST .../changes/preview`, `POST .../changes`, `POST .../cancel`, `POST .../reactivate`, `GET .../payments`, `GET .../payments/{id}`, `GET .../documents`, `GET .../documents/{id}`, `GET .../documents/{id}/pdf`, `POST .../documents/{id}/resend` | authenticated | `hasRole('ADMIN')` | FRONT_DESK and CUSTOMER `403`; ids of another tenant `404` |
+| `GET` / `PUT /api/v1/platform/billing/settings`, `GET .../settings/audit`, `GET .../credentials`, `PUT .../credentials/{environment}`, `POST .../credentials/{environment}/verify` | `/api/v1/platform/**` `hasRole('SUPER_ADMIN')` | `hasRole('SUPER_ADMIN')` | tenant tokens `401`, non-SUPER_ADMIN `403` |
+| `GET /api/v1/platform/billing/subscriptions`, `.../subscriptions/{slug}`, `POST .../actions`, `POST` / `DELETE .../complimentary`, `.../history`, `POST /payments/{id}/refund`, `GET .../audit`, `GET /api/v1/platform/tenants/{slug}/billing-audit`, documents, reconciliation, webhook events, reports | `/api/v1/platform/**` `hasRole('SUPER_ADMIN')` | `hasRole('SUPER_ADMIN')` | writes JSON only behind the platform Origin guard; per-admin throttles |
+| `POST /api/v1/platform/billing/webhooks/paystack/{environment}` | **`permitAll`, exact path, POST only, placed BEFORE the `/api/v1/platform/**` rule** (BILL-01b) | none; HMAC-SHA512 signature | no tenant resolution, no cookies, no CORS; other methods fall to the SUPER_ADMIN rule (`401`) |
+| `POST /api/v1/platform/onboarding/card/initialize`, `GET .../card/callback-verify` | `permitAll` (exact paths, BILL-02) | none; header `X-Card-Setup-Token` | public like the rest of onboarding; token bound to the signup |
+| `/api/v1/dev/billing/**` | `denyAll` unless `tenant.dev-endpoints.enabled` | | controller bean conditional on it; absent under `prod` (test) |
+
 ## 4. SEC-03b hardening
 
 * Public catalog reads (`/product/{featured,listing,search}`) now return `PublicProductListing`: no `stockQuantity`, `isActive`, `isEnlisted` (availability is `isOutOfStock`). The ADMIN/FRONT_DESK listings keep the full `ProductListing`.

@@ -95,3 +95,8 @@ committed. It is best effort: the inbox (`GET /`) is the source of truth, so ref
 
 The admin UI has no notifications bell yet. Build against this contract; use `recipientId` (not `notificationId`) to mark a
 row read.
+
+## Subscription billing notifications (BILL-00)
+
+Contract only ([billing.md](billing.md) section 16). Subscription billing is MASTER data, so its notifications do **not** use this inbox: no `Notification` / `NotificationRecipient` rows are written in the tenant schema, `PAYMENT_SUCCESS` here still means a shop order payment, and the STOMP push is not used. Billing e-mails go to the tenant owner e-mail through a master `billing_outbox` and `BillingMailService`; the in-app side is the banner list of `GET /api/v1/admin/billing/summary` (readable by ADMIN, and a non-financial subset by FRONT_DESK), shown by the admin shell next to this bell. The catalogue (trial reminders, payment success and failure, retry and grace reminders, access restricted and restored, renewal reminder, upgrade, downgrade, cancellation, invoice available, refund, price change notice, complimentary, card expiring), the timing setting that controls each one, the template variables and the dedupe keys are in billing.md section 16.2. Clients show an unknown banner `kind` as nothing rather than failing.
+

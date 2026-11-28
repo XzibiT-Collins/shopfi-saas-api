@@ -173,6 +173,22 @@ documented in [plans.md](plans.md) section 11. It writes a tenant audit row with
 audit log. A trial cannot be set before it has started: `trialEndsAt` on a tenant whose `trialEndsAt` is still `null`
 (not provisioned yet) is `400 {"data": {"code": "TRIAL_NOT_STARTED"}}`. The list has no plan filter yet.
 
+## Billing fields (BILL-00)
+
+Contract only; **BILL-01b** implements them. Every tenant summary object (list rows, detail, the `tenant` of an action response and the answer of `PUT /api/v1/platform/tenants/{slug}/plan`) gains five keys, derived from the subscription state of [billing.md](billing.md) section 3 (booleans and enums only, never card data):
+
+| key | type | notes |
+|---|---|---|
+| `billingStatus` | string | `lifecycleStatus`: `TRIALING`, `ACTIVE`, `PAST_DUE`, `CANCELED`, `EXPIRED`. `subscriptionStatus` above stays the 4-value projection (`EXPIRED` projects to `CANCELED`), so existing console code keeps working |
+| `accessState` | string | `FULL`, `GRACE`, `READ_ONLY` (billing restriction; unrelated to the tenant `status` `SUSPENDED`, which stays the whole-store lock) |
+| `paymentStatus` | string | `NONE`, `CURRENT`, `PENDING`, `RETRYING`, `FAILED` |
+| `cardOnFile` | boolean | an active authorization exists |
+| `billingMode` | string | `PAYSTACK` (charged by the billing engine) or `MANUAL` (existing tenants and admin-activated tenants: not charged; the PLAN-01 status bridge applies) |
+
+The fragments `tenant-billing-fields` and `tenant-billing-fields-grace` in billing.md section 3.4 show the keys. **The two PLAN-03 examples above (`tenant-list-with-plan`, `tenant-detail-with-plan`) and the `example:` / `plat04:` blocks are parsed into the CURRENT records and compared with live responses key for key by `PlatformTenantsContractTest`, `PlatformReadContractTest` and `PlansDocContractTest`, so they are NOT changed here.** BILL-01b adds the five keys to the DTOs, the two PLAN-03 examples, `TenantSummary` in `plans.schema.json` and the console parsers in ONE PR. A tenant without a subscription row (never converted) reports `billingStatus` from the legacy `subscriptionStatus`, `accessState` `FULL` (or `READ_ONLY` by the pre-billing rule), `paymentStatus` `NONE`, `cardOnFile` false, `billingMode` `MANUAL`. The console list gets no billing filter here; filters for subscriptions live on `GET /api/v1/platform/billing/subscriptions` (billing.md section 11.1).
+
+The PLAN-01 bridge `PUT /api/v1/platform/tenants/{slug}/plan` answers `409` with `data.code` `BILLING_MANAGED` for a tenant with `billingMode PAYSTACK` and a live subscription (use the billing actions, billing.md section 7.11); for `MANUAL` tenants it is unchanged and is routed through the subscription state service and audited as a manual change.
+
 ## GET /api/v1/platform/tenants/{slug} (PLAT-04)
 
 Tenant detail. `{slug}` rules as above (unknown or malformed: `404 {"description": "Tenant not found", "data": null}`).
