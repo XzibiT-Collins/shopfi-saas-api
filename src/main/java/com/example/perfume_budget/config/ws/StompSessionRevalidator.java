@@ -65,7 +65,7 @@ public class StompSessionRevalidator {
                     return;
                 }
                 TenantIdentity previous = TenantContext.get();
-                TenantContext.set(TenantIdentity.tenant(slug, tenant.getSchemaName()));
+                TenantContext.set(TenantIdentity.tenant(tenant.getId(), slug, tenant.getSchemaName()));
                 try {
                     for (String email : emails) {
                         if (!enabled(email)) {

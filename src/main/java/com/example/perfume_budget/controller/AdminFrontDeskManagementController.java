@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.front_desk.request.CreateFrontDeskUserRequest;
 import com.example.perfume_budget.dto.front_desk.request.FrontDeskPermissionTemplateUpdateRequest;
@@ -54,17 +56,20 @@ public class AdminFrontDeskManagementController {
         return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.getFrontDeskUsers()));
     }
 
+    @RequiresFeature(value = PlanFeature.MAX_STAFF, mode = RequiresFeature.Mode.LIMIT)
     @PostMapping("/users")
     public ResponseEntity<CustomApiResponse<FrontDeskUserSummaryResponse>> createFrontDeskUser(
             @Valid @RequestBody CreateFrontDeskUserRequest request) {
         return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.createFrontDeskUser(request)));
     }
 
+    @RequiresFeature(value = PlanFeature.MAX_STAFF, mode = RequiresFeature.Mode.LIMIT)
     @PatchMapping("/users/{userId}/assign")
     public ResponseEntity<CustomApiResponse<FrontDeskUserSummaryResponse>> assignUserToFrontDesk(@PathVariable Long userId) {
         return ResponseEntity.ok(CustomApiResponse.success(adminFrontDeskManagementService.assignUserToFrontDesk(userId)));
     }
 
+    @RequiresFeature(value = PlanFeature.MAX_STAFF, mode = RequiresFeature.Mode.LIMIT)
     @PatchMapping("/users/{userId}")
     public ResponseEntity<CustomApiResponse<FrontDeskUserSummaryResponse>> updateFrontDeskUser(
             @PathVariable Long userId,

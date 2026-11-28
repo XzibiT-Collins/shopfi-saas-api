@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.tax.TaxCalculationResponse;
 import com.example.perfume_budget.dto.tax.request.TaxRequest;
@@ -33,12 +35,14 @@ public class TaxController {
         );
     }
 
+    @RequiresFeature(PlanFeature.TAX_CONFIG)
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/add-tax")
     public ResponseEntity<CustomApiResponse<TaxResponse>> addTax(@Valid @RequestBody TaxRequest request) {
         return withEtag(taxService.createTax(request));
     }
 
+    @RequiresFeature(PlanFeature.TAX_CONFIG)
     @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/update/{taxId}")
     public ResponseEntity<CustomApiResponse<TaxResponse>> updateTax(
@@ -66,6 +70,7 @@ public class TaxController {
         return ResponseEntity.ok().eTag(ConcurrencyTag.header(tax.version())).body(CustomApiResponse.success(tax));
     }
 
+    @RequiresFeature(PlanFeature.TAX_CONFIG)
     @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/delete/{taxId}")
     public ResponseEntity<Void> deleteTax(@PathVariable Long taxId) {

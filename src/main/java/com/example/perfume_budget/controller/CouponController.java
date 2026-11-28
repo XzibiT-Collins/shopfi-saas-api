@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.coupon.request.CouponRequest;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.*;
 public class CouponController {
     private final CouponService couponService;
 
+    @RequiresFeature(value = PlanFeature.MAX_ACTIVE_COUPONS, mode = RequiresFeature.Mode.LIMIT)
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/add-coupon")
     public ResponseEntity<CustomApiResponse<CouponDetailResponse>> createCoupon(@Valid @RequestBody CouponRequest request){
@@ -43,6 +46,7 @@ public class CouponController {
         );
     }
 
+    @RequiresFeature(value = PlanFeature.MAX_ACTIVE_COUPONS, mode = RequiresFeature.Mode.LIMIT)
     @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/{couponId}")
     public ResponseEntity<CustomApiResponse<CouponDetailResponse>> updateCoupon(

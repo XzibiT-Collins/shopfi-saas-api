@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.inventory.request.StockTransferRequest;
 import com.example.perfume_budget.dto.inventory.response.StockTransferResponse;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 public class StockTransferController {
     private final StockTransferService stockTransferService;
 
+    @RequiresFeature(PlanFeature.STOCK_TRANSFERS)
     @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @PostMapping
     public ResponseEntity<CustomApiResponse<StockTransferResponse>> transfer(
@@ -27,6 +30,7 @@ public class StockTransferController {
         ));
     }
 
+    @RequiresFeature(PlanFeature.STOCK_TRANSFERS)
     @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @GetMapping
     public ResponseEntity<CustomApiResponse<Page<StockTransferResponse>>> history(

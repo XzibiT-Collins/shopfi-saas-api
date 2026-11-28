@@ -34,6 +34,7 @@ public class ThemeServiceImpl implements ThemeService {
     private final CacheManager cacheManager;
     private final ObjectMapper mapper;
     private final ThemeCanonicalizer canonicalizer;
+    private final ThemePlanGate planGate;
 
     @Override
     @Cacheable(cacheNames = CACHE, key = CACHE_KEY)
@@ -65,14 +66,16 @@ public class ThemeServiceImpl implements ThemeService {
         String folder = BrandingUploadService.brandingFolder();
 
         ThemeSnapshot current = store.read();
-        // Optimistic lock FIRST, before validation and before any network call: a stale If-Match must not cost an
+        ObjectNode currentResolved = canonicalizer.resolveStored((ObjectNode) current.theme(), store.defaultDocument());
+        ThemeCanonicalizer.Canonical canonical = canonicalizer.canonicalize(normalize(theme), currentResolved);
+        // PLAN-02: THEME_ADVANCED allowlist on the canonical form, before the service's own checks (plans.md 14.4)
+        planGate.check(canonical.document(), currentResolved);
+        // Optimistic lock next, before validation and before any network call: a stale If-Match must not cost an
         // upload (uploads use new unique ids, but there is no reason to do the work). store.save re-checks atomically.
         if (expectedVersion != null && expectedVersion != current.version()) {
             throw new ThemeConflictException("Theme was modified by someone else; reload and retry");
         }
         Set<String> storedUrls = imageUrls(current.theme());
-        ThemeCanonicalizer.Canonical canonical = canonicalizer.canonicalize(normalize(theme),
-                canonicalizer.resolveStored((ObjectNode) current.theme(), store.defaultDocument()));
         ObjectNode working = canonical.document();
         files = canonicalizer.adjust(files, canonical.submittedHeroId());
 

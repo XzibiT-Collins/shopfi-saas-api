@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.accounts.request.DateRangeRequest;
 import com.example.perfume_budget.exception.ApiCodeException;
@@ -36,6 +38,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class AccountingReportServiceImpl implements AccountingReportService {
+    private final EntitlementService entitlementService;
 
     /**
      * API-RD-12f: presentation code of the balance sheet's virtual Retained Earnings row. It used to be "3200", which is
@@ -49,6 +52,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public LedgerSummaryResponse getLedgerSummary() {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         List<LedgerAccount> allAccounts = ledgerAccountRepository
                 .findAllByIsActiveTrueOrderByCodeAsc();
 
@@ -73,6 +77,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public IncomeStatementResponse getIncomeStatement(DateRangeRequest dateRange) {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         requireValidRange(dateRange);
         LocalDateTime start = dateRange.startDate().atStartOfDay();
         // API-RD-12a: [start, end + 1 day), exactly the journal list's window (was <= endDate 23:59:59, which missed the last second's fractions)
@@ -135,6 +140,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public BalanceSheetResponse getBalanceSheet() {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         List<AccountBalanceResponse> assets = getAccountsByType(AccountType.ASSET);
         List<AccountBalanceResponse> liabilities = getAccountsByType(AccountType.LIABILITY);
 
@@ -179,6 +185,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public CashFlowResponse getCashFlow(DateRangeRequest dateRange) {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         requireValidRange(dateRange);
         LocalDateTime start = dateRange.startDate().atStartOfDay();
         // API-RD-12a: [start, end + 1 day), exactly the journal list's window (was <= endDate 23:59:59, which missed the last second's fractions)
@@ -231,6 +238,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public PageResponse<JournalEntryResponse> getJournalEntries(DateRangeRequest dateRange, Pageable pageable) {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         requireValidRange(dateRange);
         Pageable page = journalPage(pageable);
         // both days whole: [startDate 00:00, endDate + 1 day 00:00) (was BETWEEN ... endDate 23:59:59, which lost the
@@ -286,6 +294,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
     @Override
     public List<JournalEntryResponse> getJournalEntriesByReference(
             String referenceType, String referenceId) {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         return journalEntryRepository
                 .findByReferenceTypeAndReferenceId(referenceType, referenceId)
                 .stream()
@@ -295,6 +304,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public List<JournalEntryResponse> getManualEntries() {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         return journalEntryRepository.findByIsManualTrueOrderByTransactionDateDesc()
                 .stream()
                 .map(this::toJournalEntryResponse)
@@ -303,6 +313,7 @@ public class AccountingReportServiceImpl implements AccountingReportService {
 
     @Override
     public AccountingMetadataResponse getAccountingMetadata() {
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02
         List<EnumResponse> categories = Arrays.stream(AccountCategory.values())
                 .map(category -> new EnumResponse(category.name(), formatEnumName(category.name())))
                 .toList();

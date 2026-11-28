@@ -54,6 +54,9 @@ class StockTransferServiceImplTest {
     @Mock
     private FrontDeskAccessService frontDeskAccessService;
 
+    @Mock
+    private com.example.perfume_budget.entitlement.EntitlementService entitlementService; // PLAN-02 gates (no-op mock)
+
     @InjectMocks
     private StockTransferServiceImpl stockTransferService;
 

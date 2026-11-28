@@ -36,6 +36,9 @@ class ProductFamilyServiceImplTest {
     @Mock
     private UnitOfMeasureRepository unitOfMeasureRepository;
 
+    @Mock
+    private com.example.perfume_budget.entitlement.EntitlementService entitlementService; // PLAN-02 gates (no-op mock)
+
     @InjectMocks
     private ProductFamilyServiceImpl productFamilyService;
 

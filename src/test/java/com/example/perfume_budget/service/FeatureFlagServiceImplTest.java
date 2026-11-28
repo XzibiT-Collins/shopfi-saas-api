@@ -26,6 +26,9 @@ class FeatureFlagServiceImplTest {
     @Mock
     private FeatureFlagRepository featureFlagRepository;
 
+    @Mock
+    private com.example.perfume_budget.entitlement.EntitlementService entitlementService; // PLAN-02 gates (no-op mock)
+
     @InjectMocks
     private FeatureFlagServiceImpl featureFlagService;
 

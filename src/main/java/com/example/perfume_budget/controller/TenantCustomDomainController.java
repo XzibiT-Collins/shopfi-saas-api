@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.exception.UnauthorizedException;
 import com.example.perfume_budget.model.User;
@@ -39,6 +41,7 @@ public class TenantCustomDomainController {
     }
 
     /** Claims (or replaces) the custom domain; it starts PENDING and is not honoured until verified. */
+    @RequiresFeature(PlanFeature.CUSTOM_DOMAIN)
     @PutMapping
     public ResponseEntity<CustomApiResponse<CustomDomainView>> requestCustomDomain(@RequestBody CustomDomainRequest body) {
         return ResponseEntity.ok(CustomApiResponse.success(
@@ -46,6 +49,7 @@ public class TenantCustomDomainController {
     }
 
     /** Checks the DNS TXT proof now (rate limited); VERIFIED or FAILED. */
+    @RequiresFeature(PlanFeature.CUSTOM_DOMAIN)
     @PostMapping("/verify")
     public ResponseEntity<CustomApiResponse<CustomDomainView>> verifyCustomDomain() {
         return ResponseEntity.ok(CustomApiResponse.success(service.verify(TenantContext.getSlug(), actor())));

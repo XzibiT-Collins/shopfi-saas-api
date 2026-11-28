@@ -27,7 +27,7 @@ class ShopDiscountListTest {
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 6, 15, 12, 0);
     private final ShopWideDiscountRepository repo = mock(ShopWideDiscountRepository.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneId.of("UTC"));
-    private final ShopWideDiscountServiceImpl service = new ShopWideDiscountServiceImpl(repo, clock);
+    private final ShopWideDiscountServiceImpl service = new ShopWideDiscountServiceImpl(org.mockito.Mockito.mock(com.example.perfume_budget.entitlement.EntitlementService.class), repo, clock);
 
     private static ShopWideDiscount row(long id, String start, String end, boolean on) {
         return ShopWideDiscount.builder().id(id).label("Sale " + id).discountPercentage(new BigDecimal("10"))
@@ -91,7 +91,7 @@ class ShopDiscountListTest {
 
     @Test
     void theStatusOfARowIsComputedAtTheInstantItsQueryUsed_notAtALaterClockRead() {
-        ShopWideDiscountServiceImpl ticking = new ShopWideDiscountServiceImpl(repo, tickingClock());
+        ShopWideDiscountServiceImpl ticking = new ShopWideDiscountServiceImpl(org.mockito.Mockito.mock(com.example.perfume_budget.entitlement.EntitlementService.class), repo, tickingClock());
         // in force for 30 minutes after the first read; a second clock read (an hour later) would show it EXPIRED
         ShopWideDiscount d = row(1, "2026-06-15T11:00:00", "2026-06-15T12:30:00", true);
         when(repo.findNotEnded(eq(NOW), any(Pageable.class))).thenReturn(List.of(d));

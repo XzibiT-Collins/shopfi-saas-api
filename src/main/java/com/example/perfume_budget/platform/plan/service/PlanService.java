@@ -87,6 +87,15 @@ public class PlanService {
         return Optional.of(entitlementsByPlan(List.of(planId)).get(planId));
     }
 
+    /**
+     * PLAN-02 subscription response: one plan in the PUBLIC shape, also when it is inactive or not public (the tenant's
+     * own plan). Empty when the plan does not exist.
+     */
+    @Transactional(readOnly = true)
+    public Optional<PublicPlanView> publicPlan(long planId) {
+        return plans.findById(planId).map(p -> publicView(p, entitlementsByPlan(List.of(planId)).get(planId)));
+    }
+
     // ------------------------------------------------------------------------------------------ shared builders
 
     /**

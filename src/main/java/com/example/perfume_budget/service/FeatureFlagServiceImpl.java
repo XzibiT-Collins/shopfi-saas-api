@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.feature_flag.request.FeatureFlagUpdateRequest;
 import com.example.perfume_budget.dto.feature_flag.response.FeatureFlagResponse;
 import com.example.perfume_budget.enums.FeatureAudience;
@@ -18,6 +20,7 @@ import java.util.List;
 @RequiredArgsConstructor
 @Transactional
 public class FeatureFlagServiceImpl implements FeatureFlagService {
+    private final EntitlementService entitlementService;
     private final FeatureFlagRepository featureFlagRepository;
 
     @Override
@@ -67,10 +70,21 @@ public class FeatureFlagServiceImpl implements FeatureFlagService {
 
     @Override
     public FeatureFlagResponse updateFlag(FeatureFlagKey featureKey, FeatureFlagUpdateRequest request) {
+        if (featureKey == FeatureFlagKey.LOGIN_OTP && turnsAnAudienceOn(getFlag(featureKey), request)) {
+            // PLAN-02 (plans.md 15): only an off -> on change of LOGIN_OTP is a plan-gated write; turning it off or
+            // re-sending the stored values is never a 402. Login keeps reading the flag only (isEnabled).
+            entitlementService.requireWrite(PlanFeature.LOGIN_OTP);
+        }
         upsert(featureKey, FeatureAudience.ADMIN, request.adminEnabled());
         upsert(featureKey, FeatureAudience.FRONT_DESK, request.frontDeskEnabled());
         upsert(featureKey, FeatureAudience.CUSTOMER, request.customerEnabled());
         return getFlag(featureKey);
+    }
+
+    static boolean turnsAnAudienceOn(FeatureFlagResponse stored, FeatureFlagUpdateRequest request) {
+        return (Boolean.TRUE.equals(request.adminEnabled()) && !stored.adminEnabled())
+                || (Boolean.TRUE.equals(request.frontDeskEnabled()) && !stored.frontDeskEnabled())
+                || (Boolean.TRUE.equals(request.customerEnabled()) && !stored.customerEnabled());
     }
 
     private void upsert(FeatureFlagKey featureKey, FeatureAudience audience, boolean enabled) {

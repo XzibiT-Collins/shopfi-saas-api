@@ -123,4 +123,12 @@ public interface TenantRepository extends JpaRepository<Tenant, Long>,
             + "and t.createdAt < :cutoff and (t.slug = :slug or t.ownerEmail = :email)")
     int deleteStalePending(@Param("slug") String slug, @Param("email") String email,
                            @Param("cutoff") java.time.LocalDateTime cutoff);
+
+    /** PLAN-02: the subscription columns of one tenant (id, plan id, status, trial end), as a projection (no entity). */
+    @Query("select t.id, t.planId, t.subscriptionStatus, t.trialEndsAt from Tenant t where t.id = :id")
+    List<Object[]> findSubscriptionState(@Param("id") Long id);
+
+    /** PLAN-02: the immutable id of the tenant with this slug (fallback when the request identity carries no id). */
+    @Query("select t.id from Tenant t where t.slug = :slug")
+    Optional<Long> findIdBySlug(@Param("slug") String slug);
 }

@@ -71,7 +71,7 @@ public class RequestTenantResolver {
         if (tenant.getStatus() != TenantStatus.ACTIVE) {
             return Resolution.of(Outcome.UNAVAILABLE);
         }
-        return new Resolution(Outcome.RESOLVED, TenantIdentity.tenant(tenant.getSlug(), tenant.getSchemaName()));
+        return new Resolution(Outcome.RESOLVED, TenantIdentity.tenant(tenant.getId(), tenant.getSlug(), tenant.getSchemaName()));
     }
 
     private Optional<Tenant> resolveTenant(String originHost, HttpServletRequest request) {

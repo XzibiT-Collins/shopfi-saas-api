@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.tax.TaxCalculationResult;
 import com.example.perfume_budget.dto.walk_in.request.WalkInCustomerRequest;
@@ -72,6 +74,7 @@ import java.util.Optional;
 @RequiredArgsConstructor
 @Transactional
 public class WalkInOrderServiceImpl implements WalkInOrderService {
+    private final EntitlementService entitlementService;
     private static final String WALK_IN_ORDER_NOT_FOUND = "Walk-in order not found.";
 
     private final WalkInOrderRepository walkInOrderRepository;
@@ -90,6 +93,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     @Override
     public WalkInOrderResponse placeWalkInOrder(WalkInOrderRequest request, String idempotencyKey) {
         User currentUser = requireWalkInAccess(FrontDeskPermission.WALK_IN_ORDER_CREATE);
+        entitlementService.requireRoute(PlanFeature.WALK_IN_POS); // PLAN-02: starting a new sale, after the 403 check
         String key = normalizeIdempotencyKey(idempotencyKey);
         String fingerprint = null;
         if (key != null) {
@@ -160,6 +164,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     @Transactional(readOnly = true)
     public WalkInQuoteResponse quote(WalkInQuoteRequest request) {
         requireWalkInAccess(FrontDeskPermission.WALK_IN_ORDER_CREATE);
+        entitlementService.requireRoute(PlanFeature.WALK_IN_POS); // PLAN-02: after the 403 check
         Pricing pricing = price(request.items(), request.discountType(), request.discountValue());
         BigDecimal total = pricing.totalAmount();
         BigDecimal paid = request.amountPaid() == null ? null : scale(request.amountPaid());
@@ -247,6 +252,7 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     @Transactional(readOnly = true)
     public List<CustomerSearchResponse> searchCustomers(String query) {
         requireWalkInAccess(FrontDeskPermission.CUSTOMER_SEARCH);
+        entitlementService.requireRoute(PlanFeature.WALK_IN_POS); // PLAN-02: after the 403 check
         String cleanedQuery = query == null ? "" : query.strip();
         if (cleanedQuery.isBlank()) {
             return List.of();

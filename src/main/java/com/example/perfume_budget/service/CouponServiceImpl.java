@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.coupon.request.CouponRequest;
 import com.example.perfume_budget.dto.coupon.response.CouponDetailResponse;
@@ -38,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class CouponServiceImpl implements CouponService {
+    private final EntitlementService entitlementService;
     public static final String CODE_EXISTS = "COUPON_CODE_EXISTS";
     public static final String CODE_EXISTS_MESSAGE = "A coupon with this code already exists.";
     public static final String REDEEMED = "COUPON_REDEEMED";
@@ -56,6 +59,10 @@ public class CouponServiceImpl implements CouponService {
     @Override
     @Transactional
     public CouponDetailResponse createCoupon(CouponRequest request) {
+        if (Boolean.TRUE.equals(request.isActive())) {
+            // PLAN-02 (plans.md 15.2): an active coupon enters the counted set; locked until this transaction ends
+            entitlementService.requireLimitSlot(PlanFeature.MAX_ACTIVE_COUPONS);
+        }
         String couponCode = request.couponCode() == null
                 ? couponCodeGenerator.generateCouponCode()
                 : normaliseCode(request.couponCode());
@@ -92,6 +99,12 @@ public class CouponServiceImpl implements CouponService {
     @Transactional
     public CouponDetailResponse updateCoupon(Long couponId, CouponRequest request) {
         Coupon coupon = lock(couponId);
+        if (Boolean.TRUE.equals(request.isActive()) && !Boolean.TRUE.equals(coupon.getIsActive())
+                && !coupon.isLimitDeactivated()) {
+            // PLAN-02: switching an admin-deactivated coupon back on enters the counted set (is_active OR
+            // limit_deactivated); an exhausted coupon is already counted and is never limit-checked
+            entitlementService.requireLimitSlot(PlanFeature.MAX_ACTIVE_COUPONS);
+        }
         // case-insensitive: sending back a legacy coupon's own code (whatever its case) is not a change
         if (request.couponCode() != null && !normaliseCode(request.couponCode()).equals(normaliseCode(coupon.getCode()))) {
             throw new BadRequestException("Coupon code cannot be changed. Create a new coupon instead.");

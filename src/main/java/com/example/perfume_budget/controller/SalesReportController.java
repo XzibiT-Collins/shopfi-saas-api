@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.sales.ItemsSoldReportResponse;
 import com.example.perfume_budget.dto.sales.ProductSalesDetailResponse;
@@ -25,6 +27,7 @@ public class SalesReportController {
 
     private final SalesReportService salesReportService;
 
+    @RequiresFeature(PlanFeature.SALES_REPORTS)
     @GetMapping("/items-sold")
     public ResponseEntity<CustomApiResponse<ItemsSoldReportResponse>> getItemsSold(
             @RequestParam(defaultValue = "ALL") SalesAnalyticsSource source,

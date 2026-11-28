@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.inventory.request.LocationDefaultsRequest;
 import com.example.perfume_budget.dto.inventory.request.StorageLocationRequest;
@@ -19,6 +21,7 @@ import java.util.List;
 public class StorageLocationController {
     private final StorageLocationService storageLocationService;
 
+    @RequiresFeature(value = PlanFeature.MAX_LOCATIONS, mode = RequiresFeature.Mode.LIMIT)
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<CustomApiResponse<StorageLocationResponse>> create(

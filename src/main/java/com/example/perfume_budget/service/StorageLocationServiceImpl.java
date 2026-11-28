@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.inventory.request.LocationDefaultsRequest;
 import com.example.perfume_budget.dto.inventory.request.StorageLocationRequest;
 import com.example.perfume_budget.dto.inventory.response.StorageLocationResponse;
@@ -20,11 +22,13 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class StorageLocationServiceImpl implements StorageLocationService {
+    private final EntitlementService entitlementService;
     private final StorageLocationRepository storageLocationRepository;
 
     @Override
     @Transactional
     public StorageLocationResponse create(StorageLocationRequest request) {
+        entitlementService.requireLimitSlot(PlanFeature.MAX_LOCATIONS); // PLAN-02: every location counts (active or not)
         if (storageLocationRepository.existsByNameIgnoreCase(request.name())) {
             throw new BadRequestException("A storage location named '" + request.name() + "' already exists.");
         }

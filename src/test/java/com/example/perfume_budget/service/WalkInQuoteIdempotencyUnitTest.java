@@ -54,6 +54,9 @@ class WalkInQuoteIdempotencyUnitTest {
     @Mock private InventoryManagementService inventoryManagementService;
     @Mock private FrontDeskAccessService frontDeskAccessService;
     @Mock private EffectivePriceService effectivePriceService;
+    @Mock
+    private com.example.perfume_budget.entitlement.EntitlementService entitlementService; // PLAN-02 gates (no-op mock)
+
     @InjectMocks private WalkInOrderServiceImpl service;
 
     private User admin;

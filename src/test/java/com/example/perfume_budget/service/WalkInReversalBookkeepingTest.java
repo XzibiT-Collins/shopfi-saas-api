@@ -36,6 +36,9 @@ class WalkInReversalBookkeepingTest {
     @Mock JournalEntryNumberGenerator numbers;
     @Mock com.example.perfume_budget.utils.AuthUserUtil authUserUtil;
     @Mock com.example.perfume_budget.repository.ProductRepository productRepository;
+    @Mock
+    private com.example.perfume_budget.entitlement.EntitlementService entitlementService; // PLAN-02 gates (no-op mock)
+
     @InjectMocks BookkeepingService service;
 
     private final Map<AccountCategory, LedgerAccount> byCategory = new EnumMap<>(AccountCategory.class);

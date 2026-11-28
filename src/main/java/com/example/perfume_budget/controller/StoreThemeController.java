@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.tenancy.TenantResolutionFilter;
 import com.example.perfume_budget.theme.BrandingFile;
@@ -117,6 +119,7 @@ public class StoreThemeController {
      *   <li>anything else: 415.</li>
      * </ul>
      */
+    @RequiresFeature(value = PlanFeature.THEME_ADVANCED, mode = RequiresFeature.Mode.CONTENT)
     @PreAuthorize("hasRole('ADMIN')")
     @PutMapping
     public ResponseEntity<CustomApiResponse<JsonNode>> put(

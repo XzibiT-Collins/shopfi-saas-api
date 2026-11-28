@@ -26,7 +26,7 @@ class ShopDiscountCurrentTest {
 
     private final ShopWideDiscountRepository repo = mock(ShopWideDiscountRepository.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-15T12:00:00Z"), ZoneId.of("UTC"));
-    private final ShopWideDiscountServiceImpl service = new ShopWideDiscountServiceImpl(repo, clock);
+    private final ShopWideDiscountServiceImpl service = new ShopWideDiscountServiceImpl(org.mockito.Mockito.mock(com.example.perfume_budget.entitlement.EntitlementService.class), repo, clock);
 
     private static ShopWideDiscount row(String start, String end) {
         return ShopWideDiscount.builder().id(7L).label("Sale").discountPercentage(new BigDecimal("10"))

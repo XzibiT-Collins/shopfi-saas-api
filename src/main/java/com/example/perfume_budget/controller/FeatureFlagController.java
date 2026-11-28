@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.feature_flag.request.FeatureFlagUpdateRequest;
 import com.example.perfume_budget.dto.feature_flag.response.FeatureFlagResponse;
@@ -31,6 +33,7 @@ public class FeatureFlagController {
         return ResponseEntity.ok(CustomApiResponse.success(featureFlagService.getFlag(featureKey)));
     }
 
+    @RequiresFeature(value = PlanFeature.LOGIN_OTP, mode = RequiresFeature.Mode.CONTENT)
     @PreAuthorize("hasRole('ADMIN')")
     @PatchMapping("/{featureKey}")
     public ResponseEntity<CustomApiResponse<FeatureFlagResponse>> updateFlag(@PathVariable FeatureFlagKey featureKey,

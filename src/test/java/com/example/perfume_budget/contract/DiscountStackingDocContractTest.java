@@ -227,7 +227,7 @@ class DiscountStackingDocContractTest {
 
     private static WalkInOrderServiceImpl walkIn(ProductRepository productRepo, AuthUserUtil auth, TaxService tax,
                                                  EffectivePriceService eff, FrontDeskAccessService access) {
-        return new WalkInOrderServiceImpl(mock(WalkInOrderRepository.class), mock(WalkInOrderAuditEventRepository.class),
+        return new WalkInOrderServiceImpl(mock(com.example.perfume_budget.entitlement.EntitlementService.class), mock(WalkInOrderRepository.class), mock(WalkInOrderAuditEventRepository.class),
                 mock(WalkInCustomerRepository.class), mock(UserRepository.class), productRepo, tax, auth,
                 mock(WalkInOrderNumberGenerator.class), mock(BookkeepingService.class), mock(InventoryManagementService.class),
                 access, eff);

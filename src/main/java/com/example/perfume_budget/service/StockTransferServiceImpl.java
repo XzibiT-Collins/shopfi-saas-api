@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.inventory.request.StockTransferRequest;
 import com.example.perfume_budget.dto.inventory.response.StockTransferResponse;
 import com.example.perfume_budget.enums.FrontDeskPermission;
@@ -26,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class StockTransferServiceImpl implements StockTransferService {
+    private final EntitlementService entitlementService;
     private final ProductRepository productRepository;
     private final StorageLocationRepository storageLocationRepository;
     private final StockTransferRepository stockTransferRepository;
@@ -37,6 +40,7 @@ public class StockTransferServiceImpl implements StockTransferService {
     @Transactional
     public StockTransferResponse transfer(StockTransferRequest request) {
         frontDeskAccessService.requireAccess(FrontDeskPermission.STOCK_TRANSFER);
+        entitlementService.requireRoute(PlanFeature.STOCK_TRANSFERS); // PLAN-02: after the 403 check
         if (request.fromLocationId().equals(request.toLocationId())) {
             throw new BadRequestException("Source and destination locations must differ.");
         }
@@ -55,6 +59,7 @@ public class StockTransferServiceImpl implements StockTransferService {
     @Transactional(readOnly = true)
     public Page<StockTransferResponse> history(Long productId, Long locationId, int page, int size) {
         frontDeskAccessService.requireAccess(FrontDeskPermission.STOCK_TRANSFER);
+        entitlementService.requireRoute(PlanFeature.STOCK_TRANSFERS); // PLAN-02: after the 403 check
         return stockTransferRepository.findHistory(productId, locationId, PageRequest.of(page, size))
                 .map(this::toResponse);
     }

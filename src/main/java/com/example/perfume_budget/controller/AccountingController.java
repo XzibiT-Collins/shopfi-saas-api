@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.accounts.request.DateRangeRequest;
@@ -27,6 +29,7 @@ public class AccountingController {
     private final AccountingReportService accountingReportService;
 
     // overall snapshot - no date range needed
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/summary")
     public ResponseEntity<CustomApiResponse<LedgerSummaryResponse>> getLedgerSummary() {
         return ResponseEntity.ok(CustomApiResponse.success(
@@ -34,6 +37,7 @@ public class AccountingController {
     }
 
     // income statement for a period
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/income-statement")
     public ResponseEntity<CustomApiResponse<IncomeStatementResponse>> getIncomeStatement(
             @RequestParam LocalDate startDate,
@@ -44,6 +48,7 @@ public class AccountingController {
     }
 
     // balance sheet - current state of assets, liabilities, equity
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/balance-sheet")
     public ResponseEntity<CustomApiResponse<BalanceSheetResponse>> getBalanceSheet() {
         return ResponseEntity.ok(CustomApiResponse.success(
@@ -51,6 +56,7 @@ public class AccountingController {
     }
 
     // cash flow for a period
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/cash-flow")
     public ResponseEntity<CustomApiResponse<CashFlowResponse>> getCashFlow(
             @RequestParam LocalDate startDate,
@@ -65,6 +71,7 @@ public class AccountingController {
      * capped at 50, page start below row 10,000, newest first); the data is a {@code PageResponse}, no longer a bare
      * list. See docs/api/accounting.md.
      */
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/journal-entries")
     public ResponseEntity<CustomApiResponse<PageResponse<JournalEntryResponse>>> getJournalEntries(
             @RequestParam LocalDate startDate,
@@ -76,6 +83,7 @@ public class AccountingController {
     }
 
     // trace all entries for a specific order or payment
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/journal-entries/reference")
     public ResponseEntity<CustomApiResponse<List<JournalEntryResponse>>> getEntriesByReference(
             @RequestParam String referenceType,
@@ -86,6 +94,7 @@ public class AccountingController {
     }
 
     // all manual entries for audit review
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/journal-entries/manual")
     public ResponseEntity<CustomApiResponse<List<JournalEntryResponse>>> getManualEntries() {
         return ResponseEntity.ok(CustomApiResponse.success(
@@ -93,6 +102,7 @@ public class AccountingController {
     }
 
     // metadata for select fields
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @GetMapping("/metadata")
     public ResponseEntity<CustomApiResponse<AccountingMetadataResponse>> getMetadata() {
         return ResponseEntity.ok(CustomApiResponse.success(
