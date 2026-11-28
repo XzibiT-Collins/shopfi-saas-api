@@ -49,7 +49,7 @@ public class WalkInOrderController {
     }
 
     /** API-RD-13(b): the search text travels in the body, so it never reaches an access log or browser history. */
-    @RequiresFeature(PlanFeature.WALK_IN_POS)
+    @RequiresFeature(value = PlanFeature.WALK_IN_POS, mode = RequiresFeature.Mode.READ)
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @PostMapping("/customers/search")
     public ResponseEntity<CustomApiResponse<List<CustomerSearchResponse>>> searchCustomersByBody(

@@ -31,6 +31,11 @@ public @interface RequiresFeature {
     enum Mode {
         /** The whole route is gated: NOT_IN_PLAN for any method; SUBSCRIPTION_INACTIVE for a method other than GET/HEAD. */
         ROUTE,
+        /**
+         * A read whatever the HTTP method (e.g. {@code POST /admin/walk-in/customers/search}, a search with the query in
+         * the body): NOT_IN_PLAN when the feature is off, never SUBSCRIPTION_INACTIVE (PO 2026-11-28).
+         */
+        READ,
         /** Gated only when the request content asks for the feature (THEME_ADVANCED, LOGIN_OTP off -> on, PRODUCT_FAMILIES fields). */
         CONTENT,
         /** A write that may move a row into the counted set of a LIMIT feature (plans.md 15.2). */

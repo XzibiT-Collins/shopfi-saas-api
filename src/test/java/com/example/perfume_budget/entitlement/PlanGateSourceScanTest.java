@@ -40,7 +40,7 @@ class PlanGateSourceScanTest {
 
     private static final Path MAIN = Path.of("src/main/java/com/example/perfume_budget");
     private static final Pattern CALL = Pattern.compile(
-            "entitlementService\\.(requireRoute|requireWrite|requireLimitSlot|precheckLimitSlot)\\(PlanFeature\\.(\\w+)\\)");
+            "entitlementService\\.(requireRoute|requireRead|requireWrite|requireLimitSlot|precheckLimitSlot)\\(PlanFeature\\.(\\w+)\\)");
     private static final Pattern METHOD = Pattern.compile("^    (?:public |private |protected |static |final |synchronized )*\\w[\\w<>\\[\\], ?.]* (\\w+)\\(");
 
     /** Class#method -> the features it checks. Hand-maintained: a new call site must be added here (and to the registry). */
@@ -69,7 +69,6 @@ class PlanGateSourceScanTest {
             Map.entry("ProductServiceImpl#createProductRows", "MAX_PRODUCTS"),
             Map.entry("ProductServiceImpl#updateProduct", "PRODUCT_FAMILIES"),
             Map.entry("SalesReportServiceImpl#getItemsSold", "SALES_REPORTS"),
-            Map.entry("ShopWideDiscountServiceImpl#deactivate", "SHOP_WIDE_DISCOUNTS"),
             Map.entry("ShopWideDiscountServiceImpl#setShopWideDiscount", "SHOP_WIDE_DISCOUNTS"),
             Map.entry("StockConversionServiceImpl#convertForward", "STOCK_CONVERSION"),
             Map.entry("StockConversionServiceImpl#convertReverse", "STOCK_CONVERSION"),
@@ -104,6 +103,7 @@ class PlanGateSourceScanTest {
             "TaxController#calculateTaxes", "TaxController#getAllTaxes", "TaxController#getTaxById",
             "TenantCustomDomainController#getCustomDomain", "TenantCustomDomainController#removeCustomDomain",
             "ShopWideDiscountController#listNotEnded", "ShopWideDiscountController#getCurrent",
+            "ShopWideDiscountController#deactivate", // PO 2026-11-28: ending a running discount is core
             "FeatureFlagController#getAllFlags", "FeatureFlagController#getFlag",
             "CouponController#getCouponById", "CouponController#getAll", "CouponController#deactivateCoupon",
             "CouponController#deleteCoupon",
@@ -129,7 +129,10 @@ class PlanGateSourceScanTest {
             "service/OtpServiceImpl.java", "service/AdminMetricServiceImpl.java", "service/NotificationInboxServiceImpl.java",
             "service/ReservedProductCleanupService.java", "service/LocationLedgerSyncImpl.java",
             "platform/service/TenantOnboardingService.java", "platform/service/PlatformTenantService.java",
-            "tenancy/TenantProvisioningService.java");
+            "tenancy/TenantProvisioningService.java",
+            // PO 2026-11-28: platform custom-domain endpoints and the re-verification job are never plan-gated
+            "platform/controller/PlatformTenantDomainController.java", "platform/domain/CustomDomainReverifier.java",
+            "platform/domain/CustomDomainReverifyScheduler.java");
 
     private static List<Path> mainSources() throws IOException {
         try (Stream<Path> s = Files.walk(MAIN)) {

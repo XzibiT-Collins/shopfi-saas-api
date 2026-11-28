@@ -57,7 +57,7 @@ class PlanGateMatrixIntegrationTest extends AbstractEntitlementIntegrationTest {
             assertThat(tested.add(r.handler() + " " + r.feature() + "/" + r.mode())).as("duplicate row " + r.handler()).isTrue();
         }
         assertThat(tested).as("a new @RequiresFeature needs a row in AbstractEntitlementIntegrationTest#rows").isEqualTo(annotated);
-        assertThat(annotated).hasSize(41);
+        assertThat(annotated).hasSize(40);
     }
 
     @Test
@@ -142,7 +142,7 @@ class PlanGateMatrixIntegrationTest extends AbstractEntitlementIntegrationTest {
         T t = tenant("p2-trial");
         Instant end = Instant.parse("2030-06-01T12:00:00Z");
         setPlan(t, TestPlans.SCALE_ID, "TRIALING", end);
-        Row write = rows().stream().filter(r -> r.handler().equals("ShopWideDiscountController#deactivate")).findFirst().orElseThrow();
+        Row write = rows().stream().filter(r -> r.handler().equals("ShopWideDiscountController#setShopWideDiscount")).findFirst().orElseThrow();
         Row read = rows().stream().filter(r -> r.handler().equals("StockTransferController#history")).findFirst().orElseThrow();
         Row limit = rows().stream().filter(r -> r.handler().equals("StorageLocationController#create")).findFirst().orElseThrow();
         Row content = rows().stream().filter(r -> r.handler().equals("FeatureFlagController#updateFlag")).findFirst().orElseThrow();
@@ -186,6 +186,33 @@ class PlanGateMatrixIntegrationTest extends AbstractEntitlementIntegrationTest {
             }
         }
         assertThat(problems).isEmpty();
+    }
+
+    /**
+     * PO 2026-11-28: ending a running shop-wide discount is core (never gated, also read-only); the walk-in customer
+     * search is a read for POST and GET alike (gated by WALK_IN_POS, never blocked by read-only mode).
+     */
+    @Test
+    void endingADiscountIsCore_andTheCustomerSearchIsARead() throws Exception {
+        T t = tenant("p2-po");
+        setPlan(t, TestPlans.SCALE_ID, "TRIALING", null);
+        assertThat(send(t, t.admin(), req(HttpMethod.PUT, "/api/v1/admin/shop-discount"), "{\"label\":\"P2 run\",\"discountPercentage\":5,"
+                + "\"startAt\":\"2020-01-01T00:00:00\",\"endAt\":\"2099-01-02T00:00:00\"}").getStatus()).isEqualTo(200);
+        long id = scalar("SELECT max(id) FROM " + t.schema() + ".shop_wide_discounts");
+        for (long plan : new long[]{TestPlans.STARTER_ID, TestPlans.SCALE_ID}) {
+            setPlan(t, plan, "CANCELED", null);
+            assertThat(send(t, t.admin(), req(HttpMethod.DELETE, "/api/v1/admin/shop-discount/" + id), null).getStatus())
+                    .as("end a running discount on " + code(plan) + " while canceled").isIn(200, 204);
+        }
+        setPlan(t, TestPlans.SCALE_ID, "CANCELED", null);
+        for (MockHttpServletResponse r : List.of(
+                send(t, t.admin(), req(HttpMethod.POST, "/api/v1/admin/walk-in/customers/search"), "{\"query\":\"zz\"}"),
+                send(t, t.admin(), req(HttpMethod.GET, "/api/v1/admin/walk-in/customers/search?query=zz"), null))) {
+            assertThat(r.getStatus()).as("search while read-only: " + r.getContentAsString()).isEqualTo(200);
+        }
+        setPlan(t, TestPlans.STARTER_ID, "TRIALING", null);
+        assert402(send(t, t.admin(), req(HttpMethod.POST, "/api/v1/admin/walk-in/customers/search"), "{\"query\":\"zz\"}"),
+                "PLAN_UPGRADE_REQUIRED", PlanFeature.WALK_IN_POS, "NOT_IN_PLAN", "starter search");
     }
 
     /** 14.4 step 4: bean validation runs before the gate (a malformed body is 400 even without the feature). */

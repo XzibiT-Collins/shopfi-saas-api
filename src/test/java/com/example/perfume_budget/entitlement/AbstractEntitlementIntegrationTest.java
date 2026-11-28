@@ -187,8 +187,9 @@ public abstract class AbstractEntitlementIntegrationTest extends AbstractPlansIn
      * sent. A request that passes the gate may still fail a later business check (400/404/409): only 401/402/403 count.
      */
     protected record Row(String handler, PlanFeature feature, RequiresFeature.Mode mode, Consumer<T> prepare, Req request) {
+        /** Allowed while read-only: a GET of a route gate, or a READ gate whatever its method. */
         boolean read() {
-            return mode == RequiresFeature.Mode.ROUTE && request.method() == HttpMethod.GET;
+            return mode == RequiresFeature.Mode.READ || (mode == RequiresFeature.Mode.ROUTE && request.method() == HttpMethod.GET);
         }
     }
 
@@ -226,15 +227,13 @@ public abstract class AbstractEntitlementIntegrationTest extends AbstractPlansIn
                 "{\"items\":[{\"productId\":999999,\"quantity\":1}],\"paymentMethod\":\"CASH\",\"amountPaid\":10}")));
         rows.add(route("WalkInOrderController#quoteWalkInOrder", F, json(HttpMethod.POST, "/api/v1/admin/walk-in/quote",
                 "{\"items\":[{\"productId\":999999,\"quantity\":1}]}")));
-        rows.add(route("WalkInOrderController#searchCustomersByBody", F,
+        rows.add(new Row("WalkInOrderController#searchCustomersByBody", F, RequiresFeature.Mode.READ, t -> { },
                 json(HttpMethod.POST, "/api/v1/admin/walk-in/customers/search", "{\"query\":\"zz\"}")));
         rows.add(route("WalkInOrderController#searchCustomers", F, get("/api/v1/admin/walk-in/customers/search?query=zz")));
         // SHOP_WIDE_DISCOUNTS writes
         rows.add(route("ShopWideDiscountController#setShopWideDiscount", PlanFeature.SHOP_WIDE_DISCOUNTS,
                 json(HttpMethod.PUT, "/api/v1/admin/shop-discount", "{\"label\":\"P2\",\"discountPercentage\":5,"
                         + "\"startAt\":\"2090-01-01T00:00:00\",\"endAt\":\"2090-01-02T00:00:00\"}")));
-        rows.add(route("ShopWideDiscountController#deactivate", PlanFeature.SHOP_WIDE_DISCOUNTS,
-                json(HttpMethod.DELETE, "/api/v1/admin/shop-discount/999999", null)));
         // INVENTORY_MANAGEMENT
         rows.add(route("InventoryManagementController#adjustInventory", PlanFeature.INVENTORY_MANAGEMENT,
                 json(HttpMethod.POST, "/api/v1/admin/inventory/adjustments",

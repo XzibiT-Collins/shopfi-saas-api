@@ -43,7 +43,6 @@ public class ShopWideDiscountController {
         return ResponseEntity.ok().body(CustomApiResponse.success(shopWideDiscountService.getCurrent()));
     }
 
-    @RequiresFeature(PlanFeature.SHOP_WIDE_DISCOUNTS)
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deactivate(@PathVariable Long id){
         shopWideDiscountService.deactivate(id);

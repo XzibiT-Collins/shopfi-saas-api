@@ -83,7 +83,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
     @Transactional
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public void deactivate(Long id) {
-        entitlementService.requireRoute(PlanFeature.SHOP_WIDE_DISCOUNTS); // PLAN-02
+        // PLAN-02 (PO 2026-11-28): ending a running discount is core, never plan-gated, also when read-only
         ShopWideDiscount discount = shopWideDiscountRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Shop-wide discount not found."));
         discount.setIsActive(false);

@@ -87,6 +87,11 @@ public class EntitlementService {
         require(feature, isWriteRequest());
     }
 
+    /** A read whatever the HTTP method (a search with its query in the body): NOT_IN_PLAN only, never read-only. */
+    public void requireRead(PlanFeature feature) {
+        require(feature, false);
+    }
+
     /** A request-content gate that fired: always a gated write (plans.md 14.1). */
     public void requireWrite(PlanFeature feature) {
         require(feature, true);

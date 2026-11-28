@@ -185,6 +185,36 @@ class CustomDomainReverifyIntegrationTest extends AbstractTenantWebTest {
                 Timestamp.from(clock.instant().minusSeconds(1)), slug);
     }
 
+    // ---- PLAN-02: the CUSTOM_DOMAIN plan gate never blocks platform or system callers ---------------------------------
+
+    /**
+     * PO 2026-11-28: acme is put on a plan without CUSTOM_DOMAIN and CANCELED. The re-verification job (system) and a
+     * platform super-admin's verify (the service call of {@code POST /platform/tenants/{slug}/custom-domain/verify}, in
+     * the platform scope) and a system actor still work; only a tenant admin's claim / verify is plan-gated.
+     */
+    @Test
+    void thePlanGateNeverBlocksTheJobOrAPlatformOrSystemCaller() {
+        jdbc.update("UPDATE master.tenants SET plan_id = 1, subscription_status = 'CANCELED' WHERE slug = 'acme'");
+        try {
+            makeDue("acme");
+            assertThat(round().stillVerified()).as("the job re-verified acme").isGreaterThanOrEqualTo(1);
+            assertThat(status("acme")).isEqualTo("VERIFIED");
+
+            com.example.perfume_budget.tenancy.TenantContext.set(com.example.perfume_budget.tenancy.TenantIdentity.platform());
+            service.resetLimits();
+            assertThat(service.verify("acme", new CustomDomainService.Actor(CustomDomainService.ActorType.PLATFORM_ADMIN, 1L,
+                    "root@platform.test"))).isNotNull();
+            com.example.perfume_budget.tenancy.TenantContext.clear();
+            service.resetLimits();
+            assertThat(service.verify("acme", new CustomDomainService.Actor(CustomDomainService.ActorType.SYSTEM, null, null)))
+                    .isNotNull();
+            assertThat(status("acme")).isEqualTo("VERIFIED");
+        } finally {
+            com.example.perfume_budget.tenancy.TenantContext.clear();
+            tenants.acme(); // back to the test tenants' plan
+        }
+    }
+
     // ---- downgrade policy -------------------------------------------------------------------------------------------
 
     @Test

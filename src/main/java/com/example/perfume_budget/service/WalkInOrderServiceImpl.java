@@ -252,7 +252,8 @@ public class WalkInOrderServiceImpl implements WalkInOrderService {
     @Transactional(readOnly = true)
     public List<CustomerSearchResponse> searchCustomers(String query) {
         requireWalkInAccess(FrontDeskPermission.CUSTOMER_SEARCH);
-        entitlementService.requireRoute(PlanFeature.WALK_IN_POS); // PLAN-02: after the 403 check
+        // PLAN-02: after the 403 check; a search is a read (GET and POST alike), never blocked by read-only mode
+        entitlementService.requireRead(PlanFeature.WALK_IN_POS);
         String cleanedQuery = query == null ? "" : query.strip();
         if (cleanedQuery.isBlank()) {
             return List.of();
