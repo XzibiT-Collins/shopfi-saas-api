@@ -1,5 +1,6 @@
 package com.example.perfume_budget.platform.auth;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.platform.model.PlatformAdmin;
 import com.example.perfume_budget.platform.repository.PlatformAdminRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,7 @@ import java.util.Locale;
  * skipped with a WARN and no DB access (an operator can remove the secret after first boot; startup never fails).
  * Values (and the password length) are never logged. A weak or oversized password is refused, not truncated.
  */
+@NotPlanGated(reason = "startup bootstrap of the platform admin, never plan-gated")
 @Slf4j
 @Component
 public class PlatformAdminBootstrap implements ApplicationRunner {

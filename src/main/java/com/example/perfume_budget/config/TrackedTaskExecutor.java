@@ -1,5 +1,6 @@
 package com.example.perfume_budget.config;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import org.springframework.core.task.TaskDecorator;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@link #inFlight()} has no such window. Used to wait for background side effects deterministically (tests, and
  * the shutdown log).
  */
+@NotPlanGated(reason = "executor wrapper that tracks async tasks, no tenant write behind a gate")
 public class TrackedTaskExecutor extends ThreadPoolTaskExecutor {
 
     private final AtomicLong inFlight = new AtomicLong();

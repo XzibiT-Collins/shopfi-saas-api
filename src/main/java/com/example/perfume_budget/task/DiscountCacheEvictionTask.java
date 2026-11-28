@@ -1,5 +1,6 @@
 package com.example.perfume_budget.task;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.service.CatalogCaches;
 import com.example.perfume_budget.tenancy.TenantRunner;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +26,7 @@ public class DiscountCacheEvictionTask {
     private final CacheManager cacheManager;
     private final TenantRunner tenantRunner;
 
+    @NotPlanGated(reason = "cache housekeeping, no tenant write")
     @Scheduled(fixedDelayString = "${discount.cache-evict-interval-ms:600000}")
     public void evictProductCaches() {
         // Runs per active tenant so the tenant-prefixed caches are cleared (a context-less run

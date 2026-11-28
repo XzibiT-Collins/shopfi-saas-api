@@ -33,6 +33,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.example.perfume_budget.service.AdvisoryLocks;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -52,7 +53,7 @@ import java.util.regex.Pattern;
 /**
  * Write side of the plan catalog (PLAN-01, docs/api/plans.md sections 6-10). Every write:
  * <ol>
- *   <li>locks EVERY plan row (SELECT ... FOR UPDATE, id order, bounded wait) so version checks and rules see a stable
+ *   <li>locks EVERY plan row (SELECT ... FOR NO KEY UPDATE, id order, bounded wait) so version checks and rules see a stable
  *       catalog and two writers from the same version cannot both win;</li>
  *   <li>checks, in this order: unknown id (404), stale version of ANY item (409 PLAN_VERSION_CONFLICT listing every stale
  *       item), request content (400), then the plan rules of section 7 on the FINAL state (400); nothing is written
@@ -237,12 +238,14 @@ public class PlanAdminService {
     /**
      * Serialises EVERY plan write, inserts included (QA L1): row locks alone cannot stop two creates of the same code from
      * both passing the code check (the new rows do not exist yet), so the loser would hit the unique index and answer a
-     * generic 409. A SHARE ROW EXCLUSIVE table lock conflicts with itself and with row writes but not with plain reads
-     * (the public list, sign-up, provisioning keep reading). Bounded wait. Then the row locks (id order) as before.
+     * generic 409. A transaction-scoped advisory lock ({@link AdvisoryLocks#PLAN_CATALOG}) conflicts only with other plan
+     * writers; unlike the former SHARE ROW EXCLUSIVE table lock it does not block the {@code FOR KEY SHARE} of a foreign key
+     * check, so sign-ups and tenant plan changes keep going (BILL-01c). Plain reads never wait either. Bounded wait. Then the
+     * row locks ({@code FOR NO KEY UPDATE}, id order).
      */
     private List<Plan> lockCatalog() {
         em.createNativeQuery("SET LOCAL lock_timeout = '10s'").executeUpdate();
-        em.createNativeQuery("LOCK TABLE master.plans IN SHARE ROW EXCLUSIVE MODE").executeUpdate();
+        AdvisoryLocks.lock(em, AdvisoryLocks.PLAN_CATALOG, "plans");
         return plans.lockAll();
     }
 

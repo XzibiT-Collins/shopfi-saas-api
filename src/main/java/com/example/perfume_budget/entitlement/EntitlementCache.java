@@ -34,8 +34,12 @@ import java.util.function.Supplier;
  *       grant;</li>
  *   <li>{@code readOnly} is never cached ({@link TenantPlanState} has no such field).</li>
  * </ol>
- * Residual (documented in the PR): a request that read the database just before a committed change may write the old
- * value back after the eviction; the TTL bounds that to 60 s.
+ * BILL-01c generation guard (closes the former "60 s write-back window"): every key has a generation counter; a loader
+ * reads it BEFORE the database and writes its value only while it is unchanged (atomic compare-and-set in the store),
+ * and every eviction increments it. A request that read the database before a committed change therefore can never
+ * write the old value back after the eviction. Eviction of an access change is retried with backoff within a total wall-time budget (the store has its own short
+ * command timeout, QA M1); if it still fails a metric and an ERROR fire and the keys are marked (generation bumped, entry
+ * replaced by a short-lived marker that reads as a miss). When the generation read fails the cache entry is not read or written either (one failed command per lookup).
  */
 @Slf4j
 @Component
@@ -43,21 +47,42 @@ public class EntitlementCache {
 
     public static final Duration TTL = Duration.ofSeconds(60);
     public static final String ERRORS_METRIC = "shopfi.entitlement.cache.errors";
+    /** Counts evictions that failed after every retry (alert on any increase: access may be stale for up to the TTL). */
+    public static final String EVICTION_FAILED_METRIC = "shopfi.entitlement.cache.eviction.failed";
+    /** Written over an entry whose eviction failed; read as a miss, expires almost at once. */
+    static final String MARKER = "!evicted";
+    static final Duration MARKER_TTL = Duration.ofSeconds(2);
+    /** Pauses between eviction attempts: 4 attempts in all, at most ~0.5 s on the request that committed the change. */
+    static final List<Duration> DEFAULT_BACKOFF = List.of(Duration.ofMillis(25), Duration.ofMillis(100), Duration.ofMillis(400));
     static final String PREFIX = "plans:v1:";
     private static final TypeReference<List<EntitlementView>> ENTITLEMENTS = new TypeReference<>() {
     };
 
     private final EntitlementStore store;
     private final ObjectProvider<MeterRegistry> meters;
+    private final List<Duration> backoff;
+    private final Duration evictionBudget;
+    static final Duration EVICTION_BUDGET = Duration.ofMillis(1500);
     private final ObjectMapper json = JsonMapper.builder()
             .addModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .build();
 
+    @org.springframework.beans.factory.annotation.Autowired
     public EntitlementCache(EntitlementStore store, ObjectProvider<MeterRegistry> meters) {
+        this(store, meters, DEFAULT_BACKOFF, EVICTION_BUDGET);
+    }
+
+    EntitlementCache(EntitlementStore store, ObjectProvider<MeterRegistry> meters, List<Duration> backoff) {
+        this(store, meters, backoff, EVICTION_BUDGET);
+    }
+
+    EntitlementCache(EntitlementStore store, ObjectProvider<MeterRegistry> meters, List<Duration> backoff, Duration evictionBudget) {
         this.store = store;
         this.meters = meters;
+        this.backoff = backoff;
+        this.evictionBudget = evictionBudget;
     }
 
     public static String tenantKey(long tenantId) {
@@ -71,32 +96,36 @@ public class EntitlementCache {
     /** The tenant's plan id / status / trial end; {@code loader} reads the master table (empty: no such tenant). */
     public Optional<TenantPlanState> tenant(long tenantId, Supplier<Optional<TenantPlanState>> loader) {
         String key = tenantKey(tenantId);
-        TenantPlanState hit = read(key, TenantPlanState.class, null);
+        long[] generation = {generation(key)}; // BEFORE the database read (BILL-01c)
+        TenantPlanState hit = read(key, TenantPlanState.class, null, generation);
         if (hit != null && hit.tenantId() == tenantId) {
             return Optional.of(hit);
         }
         Optional<TenantPlanState> fresh = loader.get();
-        fresh.ifPresent(v -> write(key, v));
+        fresh.ifPresent(v -> write(key, v, generation[0]));
         return fresh;
     }
 
     /** One plan's entitlements in catalog order; {@code loader} reads the master tables. */
     public List<EntitlementView> plan(long planId, Supplier<List<EntitlementView>> loader) {
         String key = planKey(planId);
-        List<EntitlementView> hit = read(key, null, ENTITLEMENTS);
+        long[] generation = {generation(key)}; // BEFORE the database read (BILL-01c)
+        List<EntitlementView> hit = read(key, null, ENTITLEMENTS, generation);
         if (hit != null) {
             return hit;
         }
         List<EntitlementView> fresh = loader.get();
-        write(key, fresh);
+        write(key, fresh, generation[0]);
         return fresh;
     }
 
+    @NotPlanGated(reason = "cache eviction after commit; touches no database and no gate")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onPlansChanged(PlansChangedEvent event) {
         evict(event.planIds().stream().map(EntitlementCache::planKey).toList());
     }
 
+    @NotPlanGated(reason = "cache eviction after commit; touches no database and no gate")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onTenantSubscriptionChanged(TenantSubscriptionChangedEvent event) {
         if (event.tenantId() != null) {
@@ -109,18 +138,60 @@ public class EntitlementCache {
         evict(List.of(tenantKey(tenantId)));
     }
 
+    /**
+     * Increments the generation and deletes each key, atomically per call. A failure is retried with backoff (every change
+     * that grants OR revokes access evicts here; a revocation must not wait for the TTL). When every attempt failed: a
+     * metric and an ERROR fire and each key gets a short-lived marker so a stale entry cannot outlive a couple of seconds.
+     */
     private void evict(List<String> keys) {
+        RuntimeException last = null;
+        long start = System.nanoTime();
+        for (int attempt = 0; attempt <= backoff.size(); attempt++) {
+            if (attempt > 0) {
+                long pause = backoff.get(attempt - 1).toNanos();
+                if (System.nanoTime() - start + pause >= evictionBudget.toNanos()) {
+                    break; // total wall time stays bounded, whatever the store's own timeouts add up to
+                }
+                try {
+                    Thread.sleep(pause / 1_000_000L);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            try {
+                store.evict(keys);
+                return;
+            } catch (RuntimeException e) {
+                last = e;
+                count("evict");
+            }
+            if (System.nanoTime() - start >= evictionBudget.toNanos()) {
+                break;
+            }
+        }
+        failedEviction(keys, last);
+    }
+
+    private void failedEviction(List<String> keys, RuntimeException cause) {
+        countEvictionFailure();
+        // loud: a missed eviction keeps the old state for up to the TTL unless the marker below lands
+        log.error("Entitlement cache eviction FAILED ({}); entries expire within {} s",
+                cause == null ? "interrupted" : cause.getClass().getSimpleName(), TTL.toSeconds());
         try {
-            store.delete(keys);
+            // one more try that does both: bumps the generation (a late reader's write-back is rejected) and replaces the
+            // entry by a marker that reads as a miss and expires within seconds
+            store.markEvicted(keys, MARKER, MARKER_TTL);
         } catch (RuntimeException e) {
-            count("evict");
-            // loud: a missed eviction keeps the old state for up to the TTL
-            log.error("Entitlement cache eviction failed ({}); entries expire within {} s", e.getClass().getSimpleName(),
-                    TTL.toSeconds());
+            count("marker");
         }
     }
 
-    private <T> T read(String key, Class<T> type, TypeReference<T> ref) {
+    /** {@code generation[0]} is re-read after an unreadable entry was dropped (that drop is an eviction of this very key). */
+    private <T> T read(String key, Class<T> type, TypeReference<T> ref, long[] generation) {
+        if (generation[0] < 0) {
+            return null; // the generation read failed: do not touch the store again
+        }
         String raw;
         try {
             raw = store.get(key);
@@ -129,8 +200,8 @@ public class EntitlementCache {
             log.warn("Entitlement cache read failed ({}); reading the database", e.getClass().getSimpleName());
             return null;
         }
-        if (raw == null) {
-            return null;
+        if (raw == null || MARKER.equals(raw)) {
+            return null; // a miss; the marker only exists to push a stale entry out within seconds
         }
         try {
             return type != null ? json.readValue(raw, type) : json.readValue(raw, ref);
@@ -138,16 +209,45 @@ public class EntitlementCache {
             count("get");
             log.warn("Entitlement cache entry unreadable ({}); reading the database", e.getClass().getSimpleName());
             evict(List.of(key));
+            generation[0] = generation(key); // still BEFORE the caller's database read
             return null;
         }
     }
 
-    private void write(String key, Object value) {
+    /** The key's generation, or -1 when the store failed (then nothing is written back; the database answer is used). */
+    private long generation(String key) {
         try {
-            store.put(key, json.writeValueAsString(value), TTL);
+            return store.generation(key);
+        } catch (RuntimeException e) {
+            count("get");
+            log.warn("Entitlement cache generation read failed ({}); reading the database", e.getClass().getSimpleName());
+            return -1;
+        }
+    }
+
+    /** Writes the loader's value only while the generation read before the database read is unchanged. */
+    private void write(String key, Object value, long generation) {
+        if (generation < 0) {
+            return;
+        }
+        try {
+            if (!store.putIfGeneration(key, json.writeValueAsString(value), TTL, generation)) {
+                count("write-rejected"); // a reader lost the race with an eviction: expected, informational
+            }
         } catch (Exception e) {
             count("put");
             log.warn("Entitlement cache write failed ({})", e.getClass().getSimpleName());
+        }
+    }
+
+    private void countEvictionFailure() {
+        try {
+            MeterRegistry r = meters.getIfAvailable();
+            if (r != null) {
+                r.counter(EVICTION_FAILED_METRIC).increment();
+            }
+        } catch (RuntimeException ignored) {
+            // metrics never turn a cache problem into a failure
         }
     }
 

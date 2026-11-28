@@ -13,6 +13,7 @@ import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.tenancy.TenantIdentity;
 import com.example.perfume_budget.tenancy.TenantScope;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.context.request.RequestAttributes;
@@ -53,9 +54,12 @@ public class EntitlementService {
     private final UsageCounter usage;
     private final DbLockTimeout lockTimeout;
     private final Clock clock;
+    private final ObjectProvider<TenantAccessStateSource> accessStates;
 
     public EntitlementService(EntitlementCache cache, TenantRepository tenants, PlanService planService,
-                              PublicPlanCache publicPlans, UsageCounter usage, DbLockTimeout lockTimeout, Clock systemClock) {
+                              PublicPlanCache publicPlans, UsageCounter usage, DbLockTimeout lockTimeout, Clock systemClock,
+                              ObjectProvider<TenantAccessStateSource> accessStates) {
+        this.accessStates = accessStates;
         this.cache = cache;
         this.tenants = tenants;
         this.planService = planService;
@@ -137,6 +141,7 @@ public class EntitlementService {
     // ------------------------------------------------------------------------------------------ internals
 
     private void require(PlanFeature feature, boolean write) {
+        assertGateAllowed();
         if (feature.kind() != FeatureKind.BOOLEAN) {
             throw new IllegalArgumentException(feature + " is a LIMIT feature; use requireLimitSlot");
         }
@@ -150,6 +155,7 @@ public class EntitlementService {
     }
 
     private void checkLimit(PlanFeature feature, boolean lock) {
+        assertGateAllowed();
         if (feature.kind() != FeatureKind.LIMIT) {
             throw new IllegalArgumentException(feature + " is not a LIMIT feature");
         }
@@ -208,8 +214,25 @@ public class EntitlementService {
             return Optional.empty();
         }
         Object[] r = rows.get(0);
+        TenantAccessStateSource.Projection billing = accessStates.getIfAvailable(() -> TenantAccessStateSource.PRE_BILLING)
+                .load(tenantId);
         return Optional.of(new TenantPlanState(((Number) r[0]).longValue(), ((Number) r[1]).longValue(),
-                (SubscriptionStatus) r[2], (Instant) r[3]));
+                (SubscriptionStatus) r[2], (Instant) r[3], billing.accessState(), billing.billingManaged()));
+    }
+
+    /** A plan check inside a never-gated request (billing, card setup) is a bug: fail loudly, never answer 402 there. */
+    private static void assertGateAllowed() {
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes sra) {
+            HttpServletRequest req = sra.getRequest();
+            String path = req.getRequestURI();
+            String ctx = req.getContextPath();
+            if (path != null && ctx != null && !ctx.isEmpty() && path.startsWith(ctx)) {
+                path = path.substring(ctx.length());
+            }
+            if (NeverGatedPaths.matches(path)) {
+                throw new IllegalStateException("a plan check ran inside a never-gated request (billing.md 17.2)");
+            }
+        }
     }
 
     /** GET and HEAD are reads; anything else, and a call outside an HTTP request, is a write (fails closed). */

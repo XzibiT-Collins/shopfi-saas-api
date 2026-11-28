@@ -1,5 +1,6 @@
 package com.example.perfume_budget.handlers;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.events.CartTimesEvent;
 import com.example.perfume_budget.events.ViewCountEvent;
 import com.example.perfume_budget.repository.ProductRepository;
@@ -23,6 +24,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 public class ProductViewCountHandler {
     private final ProductRepository productRepository;
 
+    @NotPlanGated(reason = "storefront counter, never plan-gated")
     @Async
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
@@ -31,6 +33,7 @@ public class ProductViewCountHandler {
         log.info("Product view count updated for product ID: {}", event.productId());
     }
 
+    @NotPlanGated(reason = "storefront counter, never plan-gated")
     @Async
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)

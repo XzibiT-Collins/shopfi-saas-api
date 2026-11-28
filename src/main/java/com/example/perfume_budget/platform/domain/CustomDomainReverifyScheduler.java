@@ -1,5 +1,6 @@
 package com.example.perfume_budget.platform.domain;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.utils.SafeStackTrace;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.SmartLifecycle;
@@ -15,6 +16,7 @@ import java.util.concurrent.TimeUnit;
  * {@code tenant.custom-domain.reverify.enabled=true}. A failing round is logged (class only) and the next one runs.
  */
 @Slf4j
+@NotPlanGated(reason = "custom-domain re-verification job: platform system actor, never plan-gated (PO 2026-11-28)")
 @Component
 public class CustomDomainReverifyScheduler implements SmartLifecycle {
 

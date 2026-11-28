@@ -1,5 +1,6 @@
 package com.example.perfume_budget.handlers;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.events.LoginOtpEvent;
 import com.example.perfume_budget.events.UserRegistrationEvent;
 import com.example.perfume_budget.notification.EmailService;
@@ -21,6 +22,7 @@ public class OTPEmailSendHandler {
     private final EmailService emailService;
     private final MailDispatcher mailDispatcher;
 
+    @NotPlanGated(reason = "auth mail, never plan-gated")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleUserRegistrationOtpEvent(UserRegistrationEvent event){
         mailDispatcher.submit("registration OTP e-mail", MailDispatcher.reference(event), () -> {
@@ -29,6 +31,7 @@ public class OTPEmailSendHandler {
         });
     }
 
+    @NotPlanGated(reason = "auth mail, never plan-gated (login reads the OTP flag only, plans.md 15)")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleLoginOtpEvent(LoginOtpEvent event) {
         mailDispatcher.submit("login OTP e-mail", MailDispatcher.reference(event), () -> {

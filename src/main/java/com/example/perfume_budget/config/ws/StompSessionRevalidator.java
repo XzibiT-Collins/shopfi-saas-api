@@ -1,5 +1,6 @@
 package com.example.perfume_budget.config.ws;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.platform.enums.TenantStatus;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.service.TenantRegistryService;
@@ -48,6 +49,7 @@ public class StompSessionRevalidator {
         this.clock = clock;
     }
 
+    @NotPlanGated(reason = "drops sessions of revoked users; auth, never plan-gated")
     @Scheduled(fixedDelayString = "${shopfi.ws.revalidate-interval-ms:15000}")
     public void revalidate() {
         long now = clock.getAsLong();

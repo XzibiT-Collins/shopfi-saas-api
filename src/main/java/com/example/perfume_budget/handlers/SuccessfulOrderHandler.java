@@ -1,5 +1,6 @@
 package com.example.perfume_budget.handlers;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.model.Order;
 import com.example.perfume_budget.model.Payment;
 import com.example.perfume_budget.outbox.OutboxKind;
@@ -42,6 +43,7 @@ public class SuccessfulOrderHandler {
      * In the settlement transaction, before it commits (first of the before-commit hooks: an INSERT into the outbox
      * table that locks no existing row and flushes nothing, so the coupon row is still the last lock taken).
      */
+    @NotPlanGated(reason = "ledger posting from orders, never plan-gated (plans.md 18 item 10)")
     @org.springframework.core.annotation.Order(Ordered.HIGHEST_PRECEDENCE)
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT, fallbackExecution = true)
     public void recordPaymentSideEffects(Payment payment) {
@@ -50,6 +52,7 @@ public class SuccessfulOrderHandler {
         }
     }
 
+    @NotPlanGated(reason = "payment side effects of an existing order, never plan-gated")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handlePaymentSuccess(Payment payment) {
         String id = String.valueOf(payment.getId());
@@ -58,6 +61,7 @@ public class SuccessfulOrderHandler {
         }
     }
 
+    @NotPlanGated(reason = "order mail hand-off, never plan-gated")
     @org.springframework.core.annotation.Order(Ordered.HIGHEST_PRECEDENCE)
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT, fallbackExecution = true)
     public void recordNewOrderMail(Order order) {
@@ -68,6 +72,7 @@ public class SuccessfulOrderHandler {
      * The admin "new order" e-mail of a checkout. EVT-01: AFTER COMMIT only (a checkout rolled back after publishing
      * never e-mails the admin about an order that does not exist).
      */
+    @NotPlanGated(reason = "ledger posting from a new order, never plan-gated (plans.md 18 item 10)")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleOrderCreationEvent(Order order) {
         String id = String.valueOf(order.getId());

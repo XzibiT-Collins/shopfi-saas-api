@@ -1,5 +1,6 @@
 package com.example.perfume_budget.platform.service;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.events.UserRegistrationEvent;
 import com.example.perfume_budget.exception.BadRequestException;
 import com.example.perfume_budget.exception.DuplicateResourceException;
@@ -57,6 +58,7 @@ import java.util.concurrent.RejectedExecutionException;
  * </ul>
  * The raw password and OTP are never logged or persisted.
  */
+@NotPlanGated(reason = "onboarding and its asynchronous provisioning are never plan-gated (plans.md 18 item 10)")
 @Slf4j
 @Service
 public class TenantOnboardingService {

@@ -224,6 +224,77 @@ class PlanGateSourceScanTest {
                 .containsExactly("BookkeepingService#recordManualEntry");
     }
 
+    /**
+     * BILL-00 / BILL-01c AC7: every controller mapped under {@code /api/v1/admin/billing}, {@code /api/v1/platform/billing},
+     * {@code /api/v1/platform/onboarding/card} or {@code /api/v1/dev/billing} is never gated (the member has to be able to
+     * pay while restricted): no {@code @RequiresFeature} on the class or a handler, no reference to the enforcement in its
+     * source, and no code of a billing package references it either (background billing code never calls a gated service).
+     */
+    @Test
+    void billingAndCardSetupControllersAndBillingCodeAreNeverGated() throws Exception {
+        List<String> offenders = new ArrayList<>();
+        int seen = 0;
+        for (Class<?> c : controllers()) {
+            List<String> paths = new ArrayList<>();
+            org.springframework.web.bind.annotation.RequestMapping base =
+                    AnnotatedElementUtils.findMergedAnnotation(c, org.springframework.web.bind.annotation.RequestMapping.class);
+            List<String> bases = base == null || base.path().length == 0 ? List.of("") : List.of(base.path());
+            boolean billing = false;
+            for (Method m : c.getDeclaredMethods()) {
+                org.springframework.web.bind.annotation.RequestMapping rm =
+                        AnnotatedElementUtils.findMergedAnnotation(m, org.springframework.web.bind.annotation.RequestMapping.class);
+                if (rm == null) {
+                    continue;
+                }
+                List<String> subs = rm.path().length == 0 ? List.of("") : List.of(rm.path());
+                for (String b : bases) {
+                    for (String sub : subs) {
+                        if (NeverGatedPaths.matches((b + sub).replaceAll("/+$", ""))) {
+                            billing = true;
+                            if (!AnnotatedElementUtils.findMergedRepeatableAnnotations(m, RequiresFeature.class).isEmpty()) {
+                                offenders.add(c.getSimpleName() + "#" + m.getName() + " carries @RequiresFeature");
+                            }
+                        }
+                    }
+                }
+            }
+            if (billing) {
+                seen++;
+                if (!AnnotatedElementUtils.findMergedRepeatableAnnotations(c, RequiresFeature.class).isEmpty()) {
+                    offenders.add(c.getSimpleName() + " carries @RequiresFeature");
+                }
+                String src = Files.readString(mainSources().stream().filter(p -> p.getFileName().toString().equals(c.getSimpleName() + ".java"))
+                        .findFirst().orElseThrow());
+                if (src.contains("EntitlementService") || src.contains("ThemePlanGate") || src.contains("RequiresFeature")) {
+                    offenders.add(c.getSimpleName() + " references the plan enforcement");
+                }
+            }
+        }
+        for (Path p : mainSources()) {
+            String rel = MAIN.relativize(p).toString().replace('\\', '/');
+            if ((rel.contains("/billing/") || rel.startsWith("billing/")) && Files.readString(p).matches("(?s).*(EntitlementService|ThemePlanGate).*")) {
+                offenders.add(rel + " (billing code) references the plan enforcement");
+            }
+        }
+        assertThat(offenders).isEmpty();
+        assertThat(seen).as("billing controllers found (grows as BILL-01.. land)").isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void theNeverGatedPathListMatchesTheBillingFamiliesExactly() {
+        assertThat(NeverGatedPaths.PREFIXES).containsExactlyInAnyOrder("/api/v1/admin/billing", "/api/v1/platform/billing",
+                "/api/v1/platform/onboarding/card", "/api/v1/dev/billing");
+        assertThat(NeverGatedPaths.matches("/api/v1/admin/billing")).isTrue();
+        assertThat(NeverGatedPaths.matches("/api/v1/admin/billing/subscribe")).isTrue();
+        assertThat(NeverGatedPaths.matches("/api/v1/platform/billing/credentials/TEST")).isTrue();
+        assertThat(NeverGatedPaths.matches("/api/v1/platform/onboarding/card/setup")).isTrue();
+        assertThat(NeverGatedPaths.matches("/api/v1/dev/billing/fake")).isTrue();
+        assertThat(NeverGatedPaths.matches("/api/v1/admin/billingx")).as("a prefix of the string is not a path prefix").isFalse();
+        assertThat(NeverGatedPaths.matches("/api/v1/admin/walk-in/quote")).isFalse();
+        assertThat(NeverGatedPaths.matches("/api/v1/platform/onboarding/plans")).isFalse();
+        assertThat(NeverGatedPaths.matches(null)).isFalse();
+    }
+
     private static List<Class<?>> controllers() throws Exception {
         ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
         scanner.addIncludeFilter(new AnnotationTypeFilter(Controller.class));

@@ -629,6 +629,26 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
         assertThat(EventCapture.COMMITTED).isEmpty();
     }
 
+    /** BILL-01c (PLAN-01 Security low): blank-rendering characters are not visible text either. */
+    @Test
+    void invisibleNonSpaceCharactersOnly_requiredTextsAre400_optionalTextsAreStoredAsNull() throws Exception {
+        for (String invisible : List.of("\u3164", "\u3164\u3164", "\u2800", " \u2800\u3164 ", "\u0301", "\u200b", "\u115f\u1160")) {
+            expect400(2, "name", invisible, "name");
+            expect400(2, "marketingBullets", List.of("ok", invisible), "marketingBullets[1]");
+        }
+        assertThat(version(2)).isZero();
+        MockHttpServletResponse r = asAdmin(put(PLANS + "/2"), planBody(2).put("tagline", "\u3164").put("description", "\u2800\u2800")
+                .put("badgeLabel", "\u3164\u2800").put("bulletsHeading", "\u3164")
+                .put("name", "Growth").put("marketingBullets", List.of("Walk-in")).toString());
+        assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(200);
+        JsonNode p = body(r).get("data");
+        for (String f : List.of("tagline", "description", "badgeLabel", "bulletsHeading")) {
+            assertThat(p.get(f).isNull()).as(f).isTrue();
+        }
+        // a visible character next to an invisible one is fine
+        assertThat(asAdmin(put(PLANS + "/2"), planBody(2).put("name", "Grow\u3164th").toString()).getStatus()).isEqualTo(200);
+    }
+
     /** QA M1: blank = nothing left after trimming EVERY Unicode space; required texts are refused, optional ones stored null. */
     @Test
     void unicodeSpacesOnly_requiredTextsAre400_optionalTextsAreStoredAsNull() throws Exception {

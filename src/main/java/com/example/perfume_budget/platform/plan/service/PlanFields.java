@@ -88,6 +88,6 @@ record PlanFields(String name, String tagline, String description, long monthlyP
             return null;
         }
         String t = VisibleText.Validator.strip(s); // Unicode-aware: NBSP / U+2003 / U+3000-only is blank -> null
-        return t.isEmpty() ? null : t;
+        return t.isEmpty() || !VisibleText.Validator.hasVisible(t) ? null : t; // invisible-only (U+3164, U+2800, ...) is blank too
     }
 }

@@ -1,12 +1,8 @@
 package com.example.perfume_budget.platform.plan.repository;
 
 import com.example.perfume_budget.platform.plan.model.Plan;
-import jakarta.persistence.LockModeType;
-import jakarta.persistence.QueryHint;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
@@ -29,13 +25,13 @@ public interface PlanRepository extends JpaRepository<Plan, Long> {
     Optional<Plan> findDefaultForSignup();
 
     /**
-     * Row locks (SELECT ... FOR UPDATE) on EVERY plan, in id order. Every plan write takes them first: the rules look at
-     * the whole catalog (one default, one public active plan) and "compare the version, then write" must be atomic, so of
-     * two writers from the same version exactly one wins and the other sees the bumped version (409). The catalog is a
-     * handful of rows; the wait is bounded (lock timeout), never indefinite.
+     * Row locks (native {@code SELECT ... FOR NO KEY UPDATE}) on EVERY plan, in id order. Every plan write takes them
+     * first: the rules look at the whole catalog (one default, one public active plan) and "compare the version, then write"
+     * must be atomic, so of two writers from the same version exactly one wins and the other sees the bumped version (409).
+     * {@code FOR NO KEY UPDATE} (BILL-01c) instead of {@code FOR UPDATE}: it conflicts with every other writer of a plan row
+     * but NOT with the {@code FOR KEY SHARE} that a foreign key check takes, so a sign-up inserting a tenant (or a tenant
+     * plan change) never waits behind a console save. The caller sets {@code lock_timeout} first (bounded wait).
      */
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "10000"))
-    @Query("select p from Plan p order by p.id asc")
+    @Query(value = "select * from master.plans order by id asc for no key update", nativeQuery = true)
     List<Plan> lockAll();
 }

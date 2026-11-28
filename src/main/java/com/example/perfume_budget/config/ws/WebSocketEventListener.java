@@ -1,5 +1,6 @@
 package com.example.perfume_budget.config.ws;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -15,6 +16,7 @@ import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 public class WebSocketEventListener {
     private final AdminSessionManager adminSessionManager;
 
+    @NotPlanGated(reason = "WebSocket session bookkeeping, no tenant write")
     @EventListener
     public void handleWebSocketConnectListener(SessionConnectedEvent event) {
         StompHeaderAccessor headerAccessor = StompHeaderAccessor.wrap(event.getMessage());
@@ -24,6 +26,7 @@ public class WebSocketEventListener {
         }
     }
 
+    @NotPlanGated(reason = "WebSocket session bookkeeping, no tenant write")
     @EventListener
     public void handleWebSocketDisconnectListener(SessionDisconnectEvent event) {
         if (event.getUser() instanceof StompTenantAuthentication user && event.getSessionId() != null) {

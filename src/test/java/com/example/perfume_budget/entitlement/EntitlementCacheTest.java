@@ -41,7 +41,7 @@ class EntitlementCacheTest {
         cache.plan(2, () -> List.of(new EntitlementView("WALK_IN_POS", true, null)));
         assertThat(store.values.keySet()).containsExactlyInAnyOrder("plans:v1:tenant:7", "plans:v1:entitlements:2");
         assertThat(store.values.get("plans:v1:tenant:7"))
-                .isEqualTo("{\"tenantId\":7,\"planId\":2,\"status\":\"TRIALING\",\"trialEndsAt\":\"2030-01-01T00:00:00Z\"}");
+                .isEqualTo("{\"tenantId\":7,\"planId\":2,\"status\":\"TRIALING\",\"trialEndsAt\":\"2030-01-01T00:00:00Z\",\"accessState\":\"FULL\",\"billingManaged\":false}");
         assertThat(store.values.get("plans:v1:entitlements:2")).isEqualTo("[{\"featureKey\":\"WALK_IN_POS\",\"enabled\":true,\"limitValue\":null}]");
         assertThat(store.ttls.values()).allSatisfy(ttl -> assertThat(ttl).isLessThanOrEqualTo(Duration.ofSeconds(60)).isPositive());
         assertThat(store.values.values()).noneMatch(v -> v.contains("@class") || v.contains("java."));
@@ -100,7 +100,9 @@ class EntitlementCacheTest {
     void theCacheIsNotTheTenantAwareCacheManager() {
         assertThat(java.util.Arrays.stream(EntitlementCache.class.getDeclaredFields()).map(f -> f.getType().getName()))
                 .noneMatch(n -> n.contains("CacheManager"));
-        assertThat(java.util.Arrays.stream(RedisEntitlementStore.class.getDeclaredFields()).map(f -> f.getType().getName()).toList())
-                .containsExactly(org.springframework.data.redis.core.StringRedisTemplate.class.getName());
+        assertThat(java.util.Arrays.stream(RedisEntitlementStore.class.getDeclaredFields())
+                .filter(f -> !java.lang.reflect.Modifier.isStatic(f.getModifiers())).map(f -> f.getType().getName()).toList())
+                .containsExactlyInAnyOrder(org.springframework.data.redis.core.StringRedisTemplate.class.getName(),
+                        org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory.class.getName()); // BILL-01c: + its own client
     }
 }

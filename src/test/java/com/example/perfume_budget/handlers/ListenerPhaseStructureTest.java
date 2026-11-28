@@ -229,9 +229,31 @@ class ListenerPhaseStructureTest {
         }
         Method evict = com.example.perfume_budget.entitlement.EntitlementCache.class.getDeclaredMethod("evict", List.class);
         for (String call : callsIn(evict)) {
-            if (!(call.equals(store + "#delete") || call.startsWith("org/slf4j/") || call.equals(cache + "#count")
-                    || call.startsWith("java/lang/") || call.startsWith("java/time/"))) {
+            // BILL-01c: the guarded eviction (store#evict), its bounded retry (java/lang Thread.sleep / System.nanoTime, java/util
+            // List) and the hand-off to failedEviction; still no database, no transaction
+            if (!(call.equals(store + "#evict") || call.startsWith("org/slf4j/") || call.equals(cache + "#count")
+                    || call.equals(cache + "#failedEviction")
+                    || call.startsWith("java/lang/") || call.startsWith("java/time/") || call.startsWith("java/util/List#"))) {
                 offenders.add("evict calls " + call);
+            }
+        }
+        // BILL-01c Security low: the same allow-list for the helpers evict hands off to
+        for (String helper : List.of("failedEviction", "countEvictionFailure", "count")) {
+            Method h = null;
+            for (Method d : com.example.perfume_budget.entitlement.EntitlementCache.class.getDeclaredMethods()) {
+                if (d.getName().equals(helper)) {
+                    h = d;
+                }
+            }
+            assertThat(h).as(helper + " exists").isNotNull();
+            for (String call : callsIn(h)) {
+                boolean ok = call.equals(store + "#markEvicted") || call.startsWith("org/slf4j/") || call.equals(cache + "#count")
+                        || call.equals(cache + "#countEvictionFailure") || call.startsWith("java/lang/")
+                        || call.startsWith("java/time/") || call.startsWith("io/micrometer/")
+                        || call.startsWith("org/springframework/beans/factory/ObjectProvider#") || call.equals(cache + "#<init>");
+                if (!ok) {
+                    offenders.add(helper + " calls " + call);
+                }
             }
         }
         assertThat(seen).isEqualTo(2);

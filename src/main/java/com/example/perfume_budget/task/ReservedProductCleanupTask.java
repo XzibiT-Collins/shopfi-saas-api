@@ -1,5 +1,6 @@
 package com.example.perfume_budget.task;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.service.ReservedProductCleanupService;
 import com.example.perfume_budget.tenancy.TenantContext;
 import com.example.perfume_budget.tenancy.TenantRunner;
@@ -23,6 +24,7 @@ public class ReservedProductCleanupTask {
     @Value("${inventory.reservation.expiry-hours:1}")
     private long expiryHours;
 
+    @NotPlanGated(reason = "releases expired stock reservations of orders that already exist; core inventory, never plan-gated")
     @Scheduled(fixedDelayString = "${inventory.reservation.cleanup-interval-ms:900000}")
     public void cleanupExpiredReservations() {
         log.info("Running reserved product cleanup task across active tenants");
