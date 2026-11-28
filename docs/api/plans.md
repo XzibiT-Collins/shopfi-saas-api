@@ -2445,8 +2445,15 @@ on a tenant request and an eviction fired from a platform request would hit diff
 9. **Eviction is reliable.** Every change that grants or revokes access evicts after commit. A failed eviction is retried
    (4 attempts in all, backoff 25 ms, 100 ms, 400 ms); when every attempt failed the counter
    `shopfi.entitlement.cache.eviction.failed` is incremented, an ERROR is logged, and each key is overwritten with a
-   short-lived marker (2 s) that reads as a miss, so a stale entry cannot outlive a couple of seconds. A Redis outage still
-   reads the database and never grants by default.
+   short-lived marker (2 s) that reads as a miss, so a stale entry cannot outlive a couple of seconds; the marker is written
+   by a script that also increments the generation, so a late reader cannot write the old state back either. The retries stay
+   inside a total wall-time budget (1.5 s) and the store has its own Redis client with a 300 ms connect / command timeout that
+   rejects commands at once while disconnected, so a Redis outage never holds a request thread for the client's default
+   60 s per command. A Redis outage still reads the database (one failed command per lookup) and never grants by default.
+   **Deployment assumptions of the guard:** a standalone Redis (the Lua scripts touch a key and its generation key together;
+   under Redis Cluster they would need a common hash tag such as `plans:v1:{tenant:7}` and `plans:v1:gen:{tenant:7}`), and a
+   `maxmemory-policy` of `noeviction` (a policy that may drop keys could drop a generation counter early and reopen the
+   write-back window).
 10. **Cached value.** `plans:v1:tenant:{tenantId}` also holds `accessState` (`FULL`, `GRACE`, `READ_ONLY`) and
     `billingManaged` from the billing projection ([billing.md](billing.md) section 17.4). `readOnly` is still computed per
     request: `accessState == READ_ONLY`, or (not `billingManaged` and the rule of section 13: `CANCELED`, or `TRIALING` at or

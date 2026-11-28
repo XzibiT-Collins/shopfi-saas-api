@@ -146,6 +146,38 @@ class PlanCatalogLockingIntegrationTest extends AbstractPlansIntegrationTest {
         }
     }
 
+    /** QA L3: the catalog lock wait is bounded: behind a stuck plan writer an API write answers 503 TRY_AGAIN after ~10 s. */
+    @Test
+    void aPlanWriteBehindAHeldCatalogLock_answers503TryAgainWithinAboutTenSeconds() throws Exception {
+        String body = planBody(2).put("tagline", "behind a lock").toString();
+        try (Connection holder = PostgresTestDatabase.connect(); Statement st = holder.createStatement()) {
+            holder.setAutoCommit(false);
+            st.execute("SELECT pg_advisory_xact_lock(" + com.example.perfume_budget.service.AdvisoryLocks.PLAN_CATALOG
+                    + ", hashtext('plans'))");
+            long t0 = System.nanoTime();
+            ExecutorService pool = Executors.newSingleThreadExecutor();
+            try {
+                Future<org.springframework.mock.web.MockHttpServletResponse> call = pool.submit(() -> asAdmin(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(PLANS + "/2"), body));
+                org.springframework.mock.web.MockHttpServletResponse r;
+                try {
+                    r = call.get(30, TimeUnit.SECONDS); // a lock wait without lock_timeout would still be hanging here
+                } catch (java.util.concurrent.TimeoutException e) {
+                    holder.rollback(); // let the stuck write finish before failing
+                    throw new AssertionError("the plan write did not give up on the held catalog lock within 30 s", e);
+                }
+                long secs = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - t0);
+                assertThat(r.getStatus()).as(r.getContentAsString()).isEqualTo(503);
+                assertThat(body(r).at("/data/code").asText()).isEqualTo("TRY_AGAIN");
+                assertThat(secs).as("waited for lock_timeout").isBetween(8L, 25L);
+            } finally {
+                pool.shutdownNow();
+            }
+            holder.rollback();
+        }
+        assertThat(version(2)).as("nothing was written").isZero();
+    }
+
     @Test
     void thePlanRowLockIsNoKeyUpdate_notForUpdate_inTheSource() throws Exception {
         String repo = java.nio.file.Files.readString(java.nio.file.Path.of(

@@ -28,6 +28,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public class PublicPlanCache {
 
     static final Duration TTL = Duration.ofSeconds(60);
+    /** How long a caller with nothing to serve waits for the one reload before it is answered 503 TRY_AGAIN. */
+    static final Duration COLD_WAIT = Duration.ofSeconds(3);
 
     private record Entry(PublicPlansView value, Instant loadedAt) {
     }
@@ -38,9 +40,17 @@ public class PublicPlanCache {
     private final AtomicLong generation = new AtomicLong();
     private final ReentrantLock refresh = new ReentrantLock();
 
+    private final Duration coldWait;
+
+    @org.springframework.beans.factory.annotation.Autowired
     public PublicPlanCache(PlanService planService, Clock systemClock) {
+        this(planService, systemClock, COLD_WAIT);
+    }
+
+    public PublicPlanCache(PlanService planService, Clock systemClock, Duration coldWait) {
         this.planService = planService;
         this.clock = systemClock;
+        this.coldWait = coldWait;
     }
 
     public PublicPlansView get() {
@@ -54,7 +64,19 @@ public class PublicPlanCache {
                 return e.value();
             }
         } else {
-            refresh.lock(); // nothing to serve: wait for the single reload
+            // nothing to serve: wait for the single reload, but never pile up without bound (Security low): after the
+            // wait a 503 TRY_AGAIN is answered instead of one more thread waiting on the master database
+            boolean got;
+            try {
+                got = refresh.tryLock(coldWait.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                got = false;
+            }
+            if (!got) {
+                throw new com.example.perfume_budget.exception.ApiCodeException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                        "TRY_AGAIN", "The plans are being loaded. Please try again.");
+            }
         }
         try {
             Entry again = entry.get();

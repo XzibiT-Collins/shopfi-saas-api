@@ -37,8 +37,9 @@ import java.util.function.Supplier;
  * BILL-01c generation guard (closes the former "60 s write-back window"): every key has a generation counter; a loader
  * reads it BEFORE the database and writes its value only while it is unchanged (atomic compare-and-set in the store),
  * and every eviction increments it. A request that read the database before a committed change therefore can never
- * write the old value back after the eviction. Eviction of an access change is retried with backoff; if it still fails
- * a metric and an ERROR fire and the key gets a very short-lived marker (a read of the marker is a miss).
+ * write the old value back after the eviction. Eviction of an access change is retried with backoff within a total wall-time budget (the store has its own short
+ * command timeout, QA M1); if it still fails a metric and an ERROR fire and the keys are marked (generation bumped, entry
+ * replaced by a short-lived marker that reads as a miss). When the generation read fails the cache entry is not read or written either (one failed command per lookup).
  */
 @Slf4j
 @Component
@@ -60,6 +61,8 @@ public class EntitlementCache {
     private final EntitlementStore store;
     private final ObjectProvider<MeterRegistry> meters;
     private final List<Duration> backoff;
+    private final Duration evictionBudget;
+    static final Duration EVICTION_BUDGET = Duration.ofMillis(1500);
     private final ObjectMapper json = JsonMapper.builder()
             .addModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
@@ -68,13 +71,18 @@ public class EntitlementCache {
 
     @org.springframework.beans.factory.annotation.Autowired
     public EntitlementCache(EntitlementStore store, ObjectProvider<MeterRegistry> meters) {
-        this(store, meters, DEFAULT_BACKOFF);
+        this(store, meters, DEFAULT_BACKOFF, EVICTION_BUDGET);
     }
 
     EntitlementCache(EntitlementStore store, ObjectProvider<MeterRegistry> meters, List<Duration> backoff) {
+        this(store, meters, backoff, EVICTION_BUDGET);
+    }
+
+    EntitlementCache(EntitlementStore store, ObjectProvider<MeterRegistry> meters, List<Duration> backoff, Duration evictionBudget) {
         this.store = store;
         this.meters = meters;
         this.backoff = backoff;
+        this.evictionBudget = evictionBudget;
     }
 
     public static String tenantKey(long tenantId) {
@@ -137,10 +145,15 @@ public class EntitlementCache {
      */
     private void evict(List<String> keys) {
         RuntimeException last = null;
+        long start = System.nanoTime();
         for (int attempt = 0; attempt <= backoff.size(); attempt++) {
             if (attempt > 0) {
+                long pause = backoff.get(attempt - 1).toNanos();
+                if (System.nanoTime() - start + pause >= evictionBudget.toNanos()) {
+                    break; // total wall time stays bounded, whatever the store's own timeouts add up to
+                }
                 try {
-                    Thread.sleep(backoff.get(attempt - 1).toMillis());
+                    Thread.sleep(pause / 1_000_000L);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
@@ -153,6 +166,9 @@ public class EntitlementCache {
                 last = e;
                 count("evict");
             }
+            if (System.nanoTime() - start >= evictionBudget.toNanos()) {
+                break;
+            }
         }
         failedEviction(keys, last);
     }
@@ -160,19 +176,22 @@ public class EntitlementCache {
     private void failedEviction(List<String> keys, RuntimeException cause) {
         countEvictionFailure();
         // loud: a missed eviction keeps the old state for up to the TTL unless the marker below lands
-        log.error("Entitlement cache eviction FAILED after {} attempts ({}); entries expire within {} s",
-                backoff.size() + 1, cause == null ? "interrupted" : cause.getClass().getSimpleName(), TTL.toSeconds());
-        for (String key : keys) {
-            try {
-                store.put(key, MARKER, MARKER_TTL);
-            } catch (RuntimeException e) {
-                count("marker");
-            }
+        log.error("Entitlement cache eviction FAILED ({}); entries expire within {} s",
+                cause == null ? "interrupted" : cause.getClass().getSimpleName(), TTL.toSeconds());
+        try {
+            // one more try that does both: bumps the generation (a late reader's write-back is rejected) and replaces the
+            // entry by a marker that reads as a miss and expires within seconds
+            store.markEvicted(keys, MARKER, MARKER_TTL);
+        } catch (RuntimeException e) {
+            count("marker");
         }
     }
 
     /** {@code generation[0]} is re-read after an unreadable entry was dropped (that drop is an eviction of this very key). */
     private <T> T read(String key, Class<T> type, TypeReference<T> ref, long[] generation) {
+        if (generation[0] < 0) {
+            return null; // the generation read failed: do not touch the store again
+        }
         String raw;
         try {
             raw = store.get(key);

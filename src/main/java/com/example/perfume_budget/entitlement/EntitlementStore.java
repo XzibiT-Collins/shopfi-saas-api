@@ -24,8 +24,11 @@ public interface EntitlementStore {
     /** The stored JSON, or {@code null} on a miss. */
     String get(String key);
 
-    /** An unconditional write (the short-lived failure marker; never a loader's value). */
-    void put(String key, String json, Duration ttl);
+    /**
+     * The last resort after every eviction attempt failed: atomically increments each key's generation AND overwrites the
+     * entry with {@code marker} (short TTL), so a reader that read the old state can no longer write it back either.
+     */
+    void markEvicted(Collection<String> keys, String marker, Duration ttl);
 
     /** The key's current generation (0 when it was never evicted). */
     long generation(String key);

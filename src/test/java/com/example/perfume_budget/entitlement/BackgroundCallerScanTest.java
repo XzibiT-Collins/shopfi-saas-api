@@ -171,4 +171,24 @@ class BackgroundCallerScanTest {
                 programmatic.replace("public class TimerThing", "@NotPlanGated(reason = \"timer\")\npublic class TimerThing")));
         assertThat(classified.findings()).isEmpty();
     }
+
+    /** Security lows 3: other ways of starting background work are entry points too (before billing workers land). */
+    @Test
+    void scan_treatsLifecycleThreadsExecutorsAndAsyncFuturesAsBackgroundEntryPoints() {
+        List<String> bodies = List.of(
+                "private final ExecutorService pool;\n    public void go() {\n        pool.submit(this::work);\n    }\n    void work() {\n    }",
+                "public void go() {\n        java.util.concurrent.CompletableFuture.runAsync(this::work);\n    }\n    void work() {\n    }",
+                "public void go() {\n        CompletableFuture.supplyAsync(() -> 1);\n    }",
+                "public void go() {\n        new Thread(this::work).start();\n    }\n    void work() {\n    }",
+                "public void go() {\n        Executors.newFixedThreadPool(2);\n    }",
+                "public void go() {\n        Thread.ofVirtual().start(() -> { });\n    }");
+        for (String b : bodies) {
+            var scan = new BackgroundCallerScan(Map.of("Worker", "package x;\npublic class Worker {\n    " + b + "\n}\n"));
+            assertThat(scan.findings()).as(b).isNotEmpty().allMatch(f -> f.startsWith("Worker#") && f.contains("without @NotPlanGated"));
+        }
+        String lifecycle = "package x;\npublic class Boot implements SmartLifecycle {\n    public void start() {\n    }\n    public void stop() {\n    }\n}\n";
+        assertThat(new BackgroundCallerScan(Map.of("Boot", lifecycle)).findings()).hasSize(2);
+        assertThat(new BackgroundCallerScan(Map.of("Boot", lifecycle.replace("public class Boot",
+                "@NotPlanGated(reason = \"lifecycle\")\npublic class Boot"))).findings()).isEmpty();
+    }
 }

@@ -239,6 +239,7 @@ class EntitlementCacheGenerationGuardTest {
         assertThat(store.values.get("plans:v1:tenant:4")).as("the stale entry was overwritten by the marker")
                 .isEqualTo(EntitlementCache.MARKER);
         assertThat(store.ttls.get("plans:v1:tenant:4")).isEqualTo(Duration.ofSeconds(2));
+        assertThat(store.generation("plans:v1:tenant:4")).as("the marker also bumped the generation (QA L1)").isEqualTo(1);
         // a read of the marker is a miss: the database answers, and its value replaces the marker
         assertThat(cache.tenant(4, () -> Optional.of(state(4, 2))).orElseThrow().planId()).isEqualTo(2);
         assertThat(store.values.get("plans:v1:tenant:4")).contains("\"planId\":2");
@@ -283,4 +284,37 @@ class EntitlementCacheGenerationGuardTest {
         }
     }
 
+
+    /** QA L1: a reader that read the old state before the change, with the eviction failing, cannot write it back after the marker. */
+    @Test
+    void afterAFailedEvictionTheMarkerBumpsTheGeneration_soALateReaderCannotWriteTheOldStateBack() {
+        store.failEvicts.set(Integer.MAX_VALUE);
+        Optional<TenantPlanState> reader = cache.tenant(6, () -> {
+            cache.onTenantSubscriptionChanged(new TenantSubscriptionChangedEvent(6L)); // eviction fails, marker lands
+            return Optional.of(state(6, 1)); // the stale read
+        });
+        assertThat(reader.orElseThrow().planId()).isEqualTo(1);
+        assertThat(store.values.get("plans:v1:tenant:6")).as("still the marker, the old state was NOT written back")
+                .isEqualTo(EntitlementCache.MARKER);
+    }
+
+    @Test
+    void evictionStopsWithinItsWallTimeBudget_evenWhenEveryStoreCallIsSlow() {
+        EntitlementCache slow = new EntitlementCache(new InMemoryEntitlementStore() {
+            @Override public synchronized void evict(java.util.Collection<String> keys) {
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new org.springframework.data.redis.RedisConnectionFailureException("slow (test)");
+            }
+        }, provider(meters), List.of(Duration.ofMillis(100), Duration.ofMillis(100), Duration.ofMillis(100), Duration.ofMillis(100),
+                Duration.ofMillis(100), Duration.ofMillis(100), Duration.ofMillis(100), Duration.ofMillis(100)), Duration.ofMillis(900));
+        long t0 = System.nanoTime();
+        slow.evictTenant(1);
+        long ms = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0);
+        assertThat(ms).as("9 attempts x 300 ms + pauses would be 3.5 s; the budget stops it").isLessThan(1500);
+        assertThat(meters.find(EntitlementCache.EVICTION_FAILED_METRIC).counter().count()).isEqualTo(1.0);
+    }
 }

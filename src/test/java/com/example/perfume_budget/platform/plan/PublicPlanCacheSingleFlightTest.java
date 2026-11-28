@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -155,5 +156,35 @@ class PublicPlanCacheSingleFlightTest {
         assertThat(loads).hasValue(2);
         assertThat(cache.get()).isSameAs(changed);
         assertThat(loads).hasValue(2);
+    }
+
+    /** Security low: a cold cache never piles threads up on the master database; after the wait a 503 TRY_AGAIN is answered. */
+    @Test
+    void coldCache_aWaiterGivesUpAfterTheWait_with503TryAgain_andTheLoaderStillCompletes() throws Exception {
+        PublicPlanCache impatient = new PublicPlanCache(service, clock, Duration.ofMillis(150));
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch started = new CountDownLatch(1);
+        PublicPlansView loaded = view();
+        when(service.publicPlans()).thenAnswer(i -> {
+            started.countDown();
+            assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
+            return loaded;
+        });
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<PublicPlansView> loader = pool.submit(impatient::get);
+            assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+            Future<PublicPlansView> waiter = pool.submit(impatient::get);
+            assertThatThrownBy(() -> waiter.get(5, TimeUnit.SECONDS)).hasRootCauseInstanceOf(
+                            com.example.perfume_budget.exception.ApiCodeException.class)
+                    .rootCause().extracting(t -> ((com.example.perfume_budget.exception.ApiCodeException) t).getStatus())
+                    .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+            release.countDown();
+            assertThat(loader.get(5, TimeUnit.SECONDS)).isSameAs(loaded);
+            assertThat(impatient.get()).isSameAs(loaded);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
     }
 }

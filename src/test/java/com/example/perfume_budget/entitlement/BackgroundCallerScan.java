@@ -40,7 +40,10 @@ final class BackgroundCallerScan {
     private static final Pattern METHOD_REF = Pattern.compile("\\b(\\w+)::(\\w+)");
     private static final Pattern PLAIN_CALL = Pattern.compile("(?<![.\\w])(\\w+)\\(");
     private static final Pattern CLASSIFIED = Pattern.compile("@(NotPlanGated|PlanGatedBackground)\\(\\s*reason\\s*=\\s*\"([^\"]*)\"\\s*\\)");
-    private static final Pattern PROGRAMMATIC = Pattern.compile("\\b(ScheduledExecutorService|TaskScheduler|ThreadPoolTaskScheduler)\\b");
+    private static final Pattern PROGRAMMATIC = Pattern.compile(
+            "\\b(ScheduledExecutorService|TaskScheduler|ThreadPoolTaskScheduler|SmartLifecycle|ExecutorService|Executors|"
+                    + "ThreadPoolTaskExecutor|TaskExecutor|ApplicationRunner|CommandLineRunner|VirtualThread)\\b"
+                    + "|\\bCompletableFuture\\s*\\.\\s*(runAsync|supplyAsync)\\b|\\bnew\\s+Thread\\s*\\(|\\bThread\\s*\\.\\s*(ofVirtual|ofPlatform|startVirtualThread)\\b");
 
     record Node(String cls, String method) {
         @Override public String toString() {

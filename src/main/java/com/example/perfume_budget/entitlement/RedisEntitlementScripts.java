@@ -13,6 +13,7 @@ final class RedisEntitlementScripts {
     static final Duration GENERATION_TTL = Duration.ofDays(1);
 
     static final RedisScript<Long> PUT_IF_GENERATION = script("redis/entitlement-put-if-generation.lua");
+    static final RedisScript<Long> MARK_EVICTED = script("redis/entitlement-mark-evicted.lua");
     static final RedisScript<Long> EVICT = script("redis/entitlement-evict.lua");
 
     private RedisEntitlementScripts() {

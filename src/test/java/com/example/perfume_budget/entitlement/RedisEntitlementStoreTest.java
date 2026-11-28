@@ -21,8 +21,6 @@ class RedisEntitlementStoreTest {
         ValueOperations<String, String> ops = mock(ValueOperations.class);
         when(t.opsForValue()).thenReturn(ops);
         RedisEntitlementStore store = new RedisEntitlementStore(t);
-        store.put("plans:v1:tenant:1", "{}", Duration.ofSeconds(60));
-        verify(ops).set("plans:v1:tenant:1", "{}", Duration.ofSeconds(60));
         store.get("plans:v1:tenant:1");
         verify(ops).get("plans:v1:tenant:1");
     }
@@ -79,5 +77,27 @@ class RedisEntitlementStoreTest {
         org.assertj.core.api.Assertions.assertThat(put).contains("redis.call('GET', KEYS[2])").contains("current == ARGV[1]")
                 .contains("redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])");
         org.assertj.core.api.Assertions.assertThat(evict).contains("redis.call('INCR', KEYS[i + 1])").contains("redis.call('DEL', KEYS[i])");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theMarkerWriteIsOneScriptThatBumpsTheGenerationAndSetsTheMarker() throws Exception {
+        StringRedisTemplate t = mock(StringRedisTemplate.class);
+        new RedisEntitlementStore(t).markEvicted(List.of("plans:v1:tenant:7"), "!evicted", Duration.ofSeconds(2));
+        org.mockito.ArgumentCaptor<List<String>> keys = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(t).execute(org.mockito.ArgumentMatchers.any(org.springframework.data.redis.core.script.RedisScript.class), keys.capture(),
+                org.mockito.ArgumentMatchers.eq("86400000"), org.mockito.ArgumentMatchers.eq("!evicted"), org.mockito.ArgumentMatchers.eq("2000"));
+        org.assertj.core.api.Assertions.assertThat(keys.getValue()).containsExactly("plans:v1:tenant:7", "plans:v1:gen:tenant:7");
+        String lua = new String(new org.springframework.core.io.ClassPathResource("redis/entitlement-mark-evicted.lua").getInputStream().readAllBytes());
+        org.assertj.core.api.Assertions.assertThat(lua).contains("redis.call('INCR', KEYS[i + 1])").contains("redis.call('SET', KEYS[i], ARGV[2], 'PX', ARGV[3])");
+    }
+
+    @Test
+    void theDedicatedClientHasShortTimeoutsAndRejectsCommandsWhileDisconnected() {
+        io.lettuce.core.ClientOptions o = RedisEntitlementStore.clientOptions();
+        org.assertj.core.api.Assertions.assertThat(o.getDisconnectedBehavior()).isEqualTo(io.lettuce.core.ClientOptions.DisconnectedBehavior.REJECT_COMMANDS);
+        org.assertj.core.api.Assertions.assertThat(o.getSocketOptions().getConnectTimeout()).isLessThanOrEqualTo(Duration.ofMillis(500));
+        org.assertj.core.api.Assertions.assertThat(o.getTimeoutOptions().isTimeoutCommands()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(RedisEntitlementStore.COMMAND_TIMEOUT).isLessThanOrEqualTo(Duration.ofMillis(500));
     }
 }

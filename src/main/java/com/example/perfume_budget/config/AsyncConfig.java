@@ -1,5 +1,6 @@
 package com.example.perfume_budget.config;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.handlers.MailDispatcher;
 import com.example.perfume_budget.tenancy.TenantContextTaskDecorator;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +18,7 @@ import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 
+@NotPlanGated(reason = "thread-pool configuration for the @Async handlers, never plan-gated")
 @EnableAsync
 @Configuration
 @Slf4j

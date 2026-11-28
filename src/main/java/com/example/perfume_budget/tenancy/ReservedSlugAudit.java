@@ -1,5 +1,6 @@
 package com.example.perfume_budget.tenancy;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.platform.model.Tenant;
 import com.example.perfume_budget.platform.repository.TenantRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -14,6 +15,7 @@ import java.util.List;
  * (their schema, links and custom data are keyed on it). At every start this lists them at ERROR so an operator
  * can rename them deliberately; it never changes data and never blocks startup. Only slugs are logged.
  */
+@NotPlanGated(reason = "startup audit of reserved slugs, never plan-gated")
 @Slf4j
 @Component
 public class ReservedSlugAudit implements ApplicationRunner {

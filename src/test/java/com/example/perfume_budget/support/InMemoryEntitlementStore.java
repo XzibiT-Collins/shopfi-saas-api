@@ -33,6 +33,7 @@ public class InMemoryEntitlementStore implements EntitlementStore {
         ttls.clear();
         generations.clear();
         failEvicts.set(0);
+        failMarks.set(0);
         evictAttempts.set(0);
         afterGenerationRead = null;
     }
@@ -43,13 +44,20 @@ public class InMemoryEntitlementStore implements EntitlementStore {
         return mode == Mode.ON ? values.get(key) : null;
     }
 
+    /** Test hook: the next N calls of {@link #markEvicted} throw. */
+    public final java.util.concurrent.atomic.AtomicInteger failMarks = new java.util.concurrent.atomic.AtomicInteger();
+
     @Override
-    public void put(String key, String json, Duration ttl) {
+    public synchronized void markEvicted(Collection<String> keys, String marker, Duration ttl) {
         down();
-        if (mode == Mode.ON) {
-            values.put(key, json);
-            ttls.put(key, ttl);
+        if (failMarks.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
+            throw new org.springframework.data.redis.RedisConnectionFailureException("mark failed (test)");
         }
+        keys.forEach(k -> {
+            generations.merge(k, 1L, Long::sum);
+            values.put(k, marker);
+            ttls.put(k, ttl);
+        });
     }
 
     @Override
