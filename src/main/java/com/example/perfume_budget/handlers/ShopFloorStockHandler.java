@@ -1,5 +1,6 @@
 package com.example.perfume_budget.handlers;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.config.ws.NotificationService;
 import com.example.perfume_budget.enums.StorageLocationType;
 import com.example.perfume_budget.events.ShopFloorStockEvent;
@@ -25,6 +26,7 @@ public class ShopFloorStockHandler {
     private final ProductRepository productRepository;
     private final NotificationService notificationService;
 
+    @NotPlanGated(reason = "stock alert notification, no tenant write behind a gate")
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void handleShopFloorStockChange(ShopFloorStockEvent event) {

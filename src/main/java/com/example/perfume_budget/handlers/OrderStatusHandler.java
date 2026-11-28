@@ -1,5 +1,6 @@
 package com.example.perfume_budget.handlers;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.events.OrderStatusChangeEvent;
 import com.example.perfume_budget.notification.EmailService;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ public class OrderStatusHandler {
      * expiry transaction e-mails once (only the attempt that commits gets here). Outside a transaction it runs at
      * once. EVT-01: the send runs on the dedicated mail executor; a lost e-mail is logged with the order number.
      */
+    @NotPlanGated(reason = "order notification side effect; orders are core, never plan-gated")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handleOrderStatusChangeEvent(OrderStatusChangeEvent event){
         String reference = MailDispatcher.reference(event);

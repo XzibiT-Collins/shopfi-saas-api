@@ -11,11 +11,11 @@ public interface FrontDeskPermissionTemplateRepository extends JpaRepository<Fro
     List<FrontDeskPermissionTemplate> findAllByEnabledTrue();
 
     /**
-     * API-RD-11c: transaction-scoped advisory lock that serialises default-template saves of ONE tenant (the template
+     * API-RD-11c: transaction-scoped advisory lock that serialises default-template saves (namespace 3 = AdvisoryLocks.FRONT_DESK_TEMPLATE, pinned by a test) of ONE tenant (the template
      * has no single row to lock; {@code current_schema()} keeps tenants apart). Released at commit / rollback.
      */
     @org.springframework.data.jpa.repository.Query(value =
-            "SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':front_desk_template'))) l",
+            "SELECT 1 FROM (SELECT pg_advisory_xact_lock(3, hashtext(current_schema() || ':front_desk_template'))) l",
             nativeQuery = true)
     Integer lockTemplateSaves();
 }

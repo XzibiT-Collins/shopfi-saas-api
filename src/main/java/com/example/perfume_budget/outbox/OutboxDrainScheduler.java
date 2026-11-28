@@ -1,5 +1,6 @@
 package com.example.perfume_budget.outbox;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.SmartLifecycle;
@@ -22,6 +23,7 @@ import com.example.perfume_budget.utils.SafeStackTrace;
  * before the mail executors it hands rows to.
  */
 @Slf4j
+@NotPlanGated(reason = "outbox delivery (mail, notifications) of work that already happened, never plan-gated")
 @Component
 public class OutboxDrainScheduler implements SmartLifecycle {
 

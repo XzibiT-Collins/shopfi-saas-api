@@ -1,6 +1,7 @@
 package com.example.perfume_budget.entitlement;
 
 import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.service.AdvisoryLocks;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Component;
@@ -38,11 +39,10 @@ public class UsageCounter {
     /**
      * Serializes count-and-insert per tenant and feature (plans.md 15.2): a transaction-scoped advisory lock, released at
      * commit or rollback, so of two concurrent writes at {@code limit - 1} the second counts after the first committed.
-     * The key includes the tenant's immutable id, so tenants never wait for each other (a hash collision only serializes).
+     * Two-key form (namespace {@link AdvisoryLocks#PLAN_LIMIT}, hash of tenant id and feature): it cannot collide with another
+     * subsystem's lock; tenants never wait for each other (a hash collision inside the namespace only serializes).
      */
     public void lock(long tenantId, PlanFeature limitFeature) {
-        entityManager.createNativeQuery("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtext(:k))) l")
-                .setParameter("k", "plan-limit:" + tenantId + ":" + limitFeature.name())
-                .getSingleResult();
+        AdvisoryLocks.lock(entityManager, AdvisoryLocks.PLAN_LIMIT, tenantId + ":" + limitFeature.name());
     }
 }

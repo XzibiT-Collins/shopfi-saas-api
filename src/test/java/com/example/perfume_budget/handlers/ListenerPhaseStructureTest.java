@@ -229,8 +229,11 @@ class ListenerPhaseStructureTest {
         }
         Method evict = com.example.perfume_budget.entitlement.EntitlementCache.class.getDeclaredMethod("evict", List.class);
         for (String call : callsIn(evict)) {
-            if (!(call.equals(store + "#delete") || call.startsWith("org/slf4j/") || call.equals(cache + "#count")
-                    || call.startsWith("java/lang/") || call.startsWith("java/time/"))) {
+            // BILL-01c: the guarded eviction (store#evict), its bounded retry (java/lang Thread.sleep, java/util List) and the
+            // short-lived marker (store#put) when every attempt failed; still no database, no transaction
+            if (!(call.equals(store + "#evict") || call.equals(store + "#put") || call.startsWith("org/slf4j/")
+                    || call.equals(cache + "#count") || call.equals(cache + "#failedEviction")
+                    || call.startsWith("java/lang/") || call.startsWith("java/time/") || call.startsWith("java/util/List#"))) {
                 offenders.add("evict calls " + call);
             }
         }

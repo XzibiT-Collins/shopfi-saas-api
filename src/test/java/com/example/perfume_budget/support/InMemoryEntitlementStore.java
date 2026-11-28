@@ -19,12 +19,22 @@ public class InMemoryEntitlementStore implements EntitlementStore {
 
     public final Map<String, String> values = new ConcurrentHashMap<>();
     public final Map<String, Duration> ttls = new ConcurrentHashMap<>();
+    public final Map<String, Long> generations = new ConcurrentHashMap<>();
     public volatile Mode mode = Mode.OFF;
+    /** Test hook: the next N calls of {@link #evict} throw (a flaky store), counted in {@link #evictAttempts}. */
+    public final java.util.concurrent.atomic.AtomicInteger failEvicts = new java.util.concurrent.atomic.AtomicInteger();
+    public final java.util.concurrent.atomic.AtomicInteger evictAttempts = new java.util.concurrent.atomic.AtomicInteger();
+    /** Test hook: runs right after every {@link #generation} read (the point where a loader goes to the database). */
+    public volatile Runnable afterGenerationRead = null;
 
     public void reset() {
         mode = Mode.OFF;
         values.clear();
         ttls.clear();
+        generations.clear();
+        failEvicts.set(0);
+        evictAttempts.set(0);
+        afterGenerationRead = null;
     }
 
     @Override
@@ -43,9 +53,42 @@ public class InMemoryEntitlementStore implements EntitlementStore {
     }
 
     @Override
-    public void delete(Collection<String> keys) {
+    public long generation(String key) {
         down();
-        keys.forEach(values::remove);
+        long g = mode == Mode.ON ? generations.getOrDefault(key, 0L) : 0L;
+        Runnable hook = afterGenerationRead;
+        if (hook != null) {
+            hook.run();
+        }
+        return g;
+    }
+
+    /** Atomic like the Lua script (synchronized): the write lands only while the generation is unchanged. */
+    @Override
+    public synchronized boolean putIfGeneration(String key, String json, Duration ttl, long expectedGeneration) {
+        down();
+        if (mode != Mode.ON) {
+            return true;
+        }
+        if (generations.getOrDefault(key, 0L) != expectedGeneration) {
+            return false;
+        }
+        values.put(key, json);
+        ttls.put(key, ttl);
+        return true;
+    }
+
+    @Override
+    public synchronized void evict(Collection<String> keys) {
+        evictAttempts.incrementAndGet();
+        down();
+        if (failEvicts.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
+            throw new org.springframework.data.redis.RedisConnectionFailureException("evict failed (test)");
+        }
+        keys.forEach(k -> {
+            generations.merge(k, 1L, Long::sum);
+            values.remove(k);
+        });
     }
 
     private void down() {

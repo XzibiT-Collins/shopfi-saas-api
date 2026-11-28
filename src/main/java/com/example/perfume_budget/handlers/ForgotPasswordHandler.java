@@ -1,5 +1,6 @@
 package com.example.perfume_budget.handlers;
 
+import com.example.perfume_budget.entitlement.NotPlanGated;
 import com.example.perfume_budget.events.ResetPasswordEvent;
 import com.example.perfume_budget.notification.EmailService;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,7 @@ public class ForgotPasswordHandler {
     private final EmailService emailService;
     private final MailDispatcher mailDispatcher;
 
+    @NotPlanGated(reason = "auth mail, never plan-gated")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void handlePasswordResetEvent(ResetPasswordEvent event){
         mailDispatcher.submit("password reset e-mail", MailDispatcher.reference(event), () -> {

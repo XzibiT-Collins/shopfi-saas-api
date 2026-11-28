@@ -25,7 +25,5 @@ class RedisEntitlementStoreTest {
         verify(ops).set("plans:v1:tenant:1", "{}", Duration.ofSeconds(60));
         store.get("plans:v1:tenant:1");
         verify(ops).get("plans:v1:tenant:1");
-        store.delete(List.of("plans:v1:entitlements:2"));
-        verify(t).delete(List.of("plans:v1:entitlements:2"));
     }
 }

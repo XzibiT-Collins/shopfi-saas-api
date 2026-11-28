@@ -93,7 +93,8 @@ public class ThemeStore {
     /** Self-heal: the singleton row is missing (migration is the normal source), so create the contract default. */
     private StoreSettings heal() {
         // Serialise concurrent heals within this tenant schema so we never create two singleton rows.
-        em.createNativeQuery("SELECT pg_advisory_xact_lock(hashtext(current_schema() || ':store_settings'))").getSingleResult();
+        em.createNativeQuery("SELECT 1 FROM (SELECT pg_advisory_xact_lock(" + com.example.perfume_budget.service.AdvisoryLocks.THEME
+                + ", hashtext(current_schema() || ':store_settings'))) l").getSingleResult();
         return repository.findTopByOrderByIdAsc().orElseGet(() -> {
             LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.MILLIS);
             em.createNativeQuery("INSERT INTO store_settings (schema_version, theme, version, created_at, updated_at) "
