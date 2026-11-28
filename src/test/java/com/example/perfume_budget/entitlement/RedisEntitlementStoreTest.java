@@ -44,7 +44,8 @@ class RedisEntitlementStoreTest {
     void theGuardedWriteIsOneAtomicScriptOverTheKeyAndItsGeneration() {
         StringRedisTemplate t = mock(StringRedisTemplate.class);
         when(t.execute(org.mockito.ArgumentMatchers.any(org.springframework.data.redis.core.script.RedisScript.class),
-                org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.<Object[]>any())).thenReturn(1L, 0L);
+                org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.eq("3"), org.mockito.ArgumentMatchers.eq("{}"),
+                org.mockito.ArgumentMatchers.eq("60000"))).thenReturn(1L, 0L);
         RedisEntitlementStore store = new RedisEntitlementStore(t);
         org.assertj.core.api.Assertions.assertThat(store.putIfGeneration("plans:v1:tenant:7", "{}", Duration.ofSeconds(60), 3)).isTrue();
         org.assertj.core.api.Assertions.assertThat(store.putIfGeneration("plans:v1:tenant:7", "{}", Duration.ofSeconds(60), 3)).isFalse();
