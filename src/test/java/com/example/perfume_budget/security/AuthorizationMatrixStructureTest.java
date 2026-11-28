@@ -132,6 +132,8 @@ class AuthorizationMatrixStructureTest {
         expect(SUPER_ADMIN, "PlatformTenantController", "list", "detail", "audit", "approve", "suspend", "reactivate", "reprovision",
                 "changePlan"); // PLAN-01: PUT /{slug}/plan
         expect(SUPER_ADMIN, "PlatformPlanController", "list", "create", "update", "matrix", "audit"); // PLAN-01
+        expect(SUPER_ADMIN, "PlatformBillingSettingsController", "get", "put", "numberPreview", "audit"); // BILL-01
+        expect(SUPER_ADMIN, "PlatformBillingCredentialController", "list", "put", "verify"); // BILL-01
         expect(SUPER_ADMIN, "PlatformAuthController", "me", "changePassword"); // API-RD-07 AC1
         expect(SUPER_ADMIN, "PlatformTenantDomainController", "getTenantCustomDomain", "verifyTenantCustomDomain",
                 "removeTenantCustomDomain"); // DOMAIN-02
@@ -141,6 +143,7 @@ class AuthorizationMatrixStructureTest {
                 "logout", "refreshToken", "forgotPassword", "resetPassword");
         expect(PUBLIC, "WebhookController", "processWebhook");                       // per-tenant token + HMAC signature
         expect(PUBLIC, "DevTenantController", "createTenant");                       // bean only when dev flag; matcher denyAll otherwise
+        expect(PUBLIC, "DevBillingController", "clock", "advance", "run");           // BILL-01: bean only when dev flag and not prod; matcher denyAll otherwise
         expect(PUBLIC, "PlatformAuthController", "login", "refresh", "logout");
         expect(PUBLIC, "TenantOnboardingController", "signup", "verify", "resend", "status", "findStore", // API-RD-04
                 "plans"); // PLAN-01: public plan list (GET/HEAD, exact path)
@@ -165,6 +168,7 @@ class AuthorizationMatrixStructureTest {
             "AuthController#resendOtp", "AuthController#resendLoginOtp", "AuthController#login",
             "AuthController#logout", "AuthController#refreshToken", "AuthController#forgotPassword",
             "AuthController#resetPassword", "WebhookController#processWebhook", "DevTenantController#createTenant",
+            "DevBillingController#advance", "DevBillingController#run",
             "PlatformAuthController#login", "PlatformAuthController#refresh", "PlatformAuthController#logout",
             "TenantOnboardingController#signup", "TenantOnboardingController#verify", "TenantOnboardingController#resend",
             "TenantOnboardingController#findStore", "ProductController#recordView");
@@ -174,7 +178,7 @@ class AuthorizationMatrixStructureTest {
             "CategoryController#getCategories", "ProductController#getFeaturedProducts",
             "ProductController#getProductListings", "ProductController#searchProducts",
             "ProductController#getProductDetailsPage", "ProductController#getProductsByIds", "StoreThemeController#getTheme",
-            "TenantOnboardingController#status", "TenantOnboardingController#plans");
+            "TenantOnboardingController#status", "TenantOnboardingController#plans", "DevBillingController#clock");
 
     // ---------------------------------------------------------------- handler model
 
@@ -219,6 +223,11 @@ class AuthorizationMatrixStructureTest {
             }
         }
         return out;
+    }
+
+    /** The dev-only controllers: beans only with the dev flag (and never under prod); the matcher is denyAll otherwise. */
+    static boolean isDevController(Class<?> c) {
+        return c.getSimpleName().equals("DevTenantController") || c.getSimpleName().equals("DevBillingController");
     }
 
     static String norm(String expression) {
@@ -503,7 +512,7 @@ class AuthorizationMatrixStructureTest {
                         }
                     }
                     case DENY, SPECIAL -> {
-                        if (!h.controller().getSimpleName().equals("DevTenantController")) {
+                        if (!isDevController(h.controller())) {
                             problems.add(where + " is denied/special-cased for a normal endpoint");
                         }
                     }
@@ -552,7 +561,7 @@ class AuthorizationMatrixStructureTest {
         List<String> problems = new ArrayList<>();
         int cells = 0;
         for (Handler h : handlers(controllers())) {
-            if (h.unrestricted() || h.controller().getSimpleName().equals("DevTenantController")) {
+            if (h.unrestricted() || isDevController(h.controller())) {
                 continue;
             }
             String expected = EXPECTED.get(h.id());

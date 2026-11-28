@@ -44,7 +44,12 @@ import static org.assertj.core.api.Assertions.assertThat;
         "GOOGLE_CLIENT_SECRET=test-client-secret",
         "OAUTH2_CALLBACK_BASE_URL=https://api.shopfi.test",
         "OAUTH2_REDIRECT_URIS=https://acme.shopfi.test/oauth2/redirect",
-        "PLATFORM_ENCRYPTION_KEY=test-encryption-key",
+        // BILL-01: the other test contexts of this JVM point billing at the shared fake (system properties); prod must boot with the
+        // official Paystack URLs only (BillingStartupGuard refuses anything else outside dev/test)
+        "billing.paystack.test-base-url=https://api.paystack.co",
+        "billing.paystack.live-base-url=https://api.paystack.co",
+        "billing.paystack.checkout-url-prefix=https://checkout.paystack.com/",
+        "PLATFORM_ENCRYPTION_KEY=prod-boot-test-encryption-key-0123456789",
         "PLATFORM_API_BASE_URL=https://api.shopfi.test",
         "CLOUDINARY_CLOUD_NAME=test",
         "CLOUDINARY_API_KEY=test",
@@ -88,6 +93,10 @@ class ProdProfileBootTest extends AbstractPostgresIntegrationTest {
         assertThat(props.getPlatformDomains()).containsExactly("api.shopfi.test");
         assertThat(env.getProperty("tenant.dev-endpoints.enabled")).isEqualTo("false");
         assertThat(ctx.getBeansOfType(com.example.perfume_budget.controller.DevTenantController.class)).isEmpty();
+        // BILL-01: the dev billing clock / round controller does not exist under prod, and its billing-only clock is not the global one
+        assertThat(ctx.getBeansOfType(com.example.perfume_budget.platform.billing.dev.DevBillingController.class)).isEmpty();
+        assertThat(ctx.getBean(com.example.perfume_budget.platform.billing.BillingProperties.class).baseUrl(
+                com.example.perfume_budget.platform.billing.BillingEnvironment.LIVE)).isEqualTo("https://api.paystack.co");
         assertThat(ctx.getBeansOfType(TenantHeaderResolutionGuard.class)).hasSize(1);
     }
 

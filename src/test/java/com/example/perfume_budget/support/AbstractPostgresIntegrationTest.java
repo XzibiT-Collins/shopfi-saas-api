@@ -54,6 +54,8 @@ public abstract class AbstractPostgresIntegrationTest {
     static final AtomicReference<Boolean> EMPTY_DB_AT_FIRST_BOOT = new AtomicReference<>();
 
     static {
+        // BILL-01: every context of this JVM reaches the one shared fake Paystack (JVM system properties, set before any boot)
+        com.example.perfume_budget.platform.billing.fake.FakePaystackSupport.install();
         if (PostgresTestDatabase.unreachableReason() == null) {
             PostgresTestDatabase.dropAppSchemas();
             EMPTY_DB_AT_FIRST_BOOT.set(!PostgresTestDatabase.schemaExists("master")

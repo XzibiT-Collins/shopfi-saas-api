@@ -440,7 +440,7 @@ class CatalogAuthorizationMatrixIntegrationTest extends AbstractTenantIsolationT
             for (Method m : c.getDeclaredMethods()) {
                 RequestMapping mm = AnnotatedElementUtils.findMergedAnnotation(m, RequestMapping.class);
                 if (mm == null || publicIds.contains(c.getSimpleName() + "#" + m.getName())
-                        || c.getSimpleName().equals("DevTenantController")) {
+                        || AuthorizationMatrixStructureTest.isDevController(c)) {
                     continue;
                 }
                 String sub = mm.path().length > 0 ? mm.path()[0] : "";
