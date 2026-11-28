@@ -1,6 +1,6 @@
 # Plans, entitlements and subscription API (PLAN-03)
 
-Status: **contract; sections 2-12 implemented by PLAN-01.** Owner-approved plan: `.keep/plan-keep/PLAN.md`, board section
+Status: **contract; sections 2-12 implemented by PLAN-01, sections 13-15 by PLAN-02.** Owner-approved plan: `.keep/plan-keep/PLAN.md`, board section
 "Paywall wave 2026-11-27" (owner answers O1-O5). PLAN-01 built the plan catalog (master V51), the platform plans API, the
 tenant plan action, the public list, signup on the default plan and the trial clock (set once when provisioning first
 completes); PLAN-02 builds enforcement (the 402 bodies), the subscription endpoint and the entitlement cache. Both implement this document exactly; a deviation is a change to this document first.
@@ -60,12 +60,12 @@ groups appear in the order of their first feature.
 
 | `key` | `kind` | `label` | `group` | What it gates (PLAN-02 AC2) |
 |---|---|---|---|---|
-| `CUSTOM_DOMAIN` | BOOLEAN | Custom domain | Storefront | `PUT /api/v1/admin/custom-domain` and `POST .../verify` (GET and DELETE stay open). Boolean only, there is no domain-count limit |
-| `THEME_ADVANCED` | BOOLEAN | Advanced theme customisation | Storefront | `PUT /api/v1/theme`, defined as an **allowlist** (fails closed): without the feature a theme may use only the catalog theme (`themeId`) with its own tokens, logo and branding, and the section types `hero`, `featured-products`, `category-grid` and the basic footer (no `linkGroups`). Anything else that the request adds or changes, compared with the stored document on a canonical form, is gated: today `rich-text`, `story`, `banner`, footer `linkGroups`, colour/typography overrides beyond the catalog theme and a background image (O2), and **any section type added later** until it is put on the allowlist. Stored content that is not changed never triggers a 402. Storefront `GET` never gated |
+| `CUSTOM_DOMAIN` | BOOLEAN | Custom domain | Storefront | `PUT /api/v1/admin/custom-domain` and `POST .../verify` (GET and DELETE stay open; the platform custom-domain endpoints and the re-verification job are never gated). Boolean only, there is no domain-count limit |
+| `THEME_ADVANCED` | BOOLEAN | Advanced theme customisation | Storefront | `PUT /api/v1/theme`, defined as an **allowlist** (fails closed): without the feature a theme may use only the catalog theme (`themeId`) with its own tokens, logo and branding, and the section types `hero`, `featured-products`, `category-grid` and the basic footer (no `linkGroups`). Anything else that the request adds or changes, compared with the stored document on a canonical form, is gated: today `rich-text`, `story`, `banner`, footer `linkGroups`, colour/typography overrides beyond the catalog theme and a background image (O2), and **any section type added later** until it is put on the allowlist. Stored content that is not changed never triggers a 402, and neither does removing or hiding (`visible: false`) advanced content. Storefront `GET` never gated |
 | `MAX_PRODUCTS` | LIMIT | Products | Catalog | every write that moves a row into the counted set (section 15): product create, new family or variant into a family |
-| `PRODUCT_FAMILIES` | BOOLEAN | Product families and pack sizes | Catalog | `ProductFamilyController`, and `familyId` / `uomCode` / `conversionFactor` on product create and update |
-| `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | starting new walk-in work: `POST /api/v1/admin/walk-in/order`, `POST /quote`, customer search (`POST` and `GET /customers/search`). **Never gated** (finishing work on existing orders, PO decision on Security L7): `GET /orders`, `GET /orders/{orderNumber}`, `PATCH .../receipt-printed`, `POST .../cancel`, `POST .../refund` |
-| `SHOP_WIDE_DISCOUNTS` | BOOLEAN | Shop-wide discounts | Marketing | `ShopWideDiscountController` writes |
+| `PRODUCT_FAMILIES` | BOOLEAN | Product families and pack sizes | Catalog | `ProductFamilyController`, and `familyId` / `uomCode` / `conversionFactor` on product create and update (create: any of them sent; update: a value that differs from the stored product, so re-sending the stored values is never a 402, like the other content gates) |
+| `WALK_IN_POS` | BOOLEAN | Walk-in point of sale | Orders | starting new walk-in work: `POST /api/v1/admin/walk-in/order`, `POST /quote`, customer search (`POST` and `GET /customers/search`; a search is a read for both methods, so it is never blocked by read-only mode, PO 2026-11-28). **Never gated** (finishing work on existing orders, PO decision on Security L7): `GET /orders`, `GET /orders/{orderNumber}`, `PATCH .../receipt-printed`, `POST .../cancel`, `POST .../refund` |
+| `SHOP_WIDE_DISCOUNTS` | BOOLEAN | Shop-wide discounts | Marketing | `PUT /api/v1/admin/shop-discount` (setting a discount). **Never gated** (PO 2026-11-28): ending a running discount (`DELETE /{id}`), also in read-only mode, and the reads |
 | `MAX_ACTIVE_COUPONS` | LIMIT | Active coupons | Marketing | every write that moves a coupon into the counted set (`is_active OR limit_deactivated`, section 15.2): create of an active coupon, `PUT /{couponId}` from switched off to active |
 | `INVENTORY_MANAGEMENT` | BOOLEAN | Inventory adjustments and history | Inventory | `InventoryManagementController` `POST /adjustments` and `GET /products/{productId}/history` only. Core (never gated): receipts (the only way stock enters), summary, stock-by-location, and `GET /legacy-balance-report` + `POST /legacy-balance-repair` (data repair, Security L9) |
 | `STOCK_TRANSFERS` | BOOLEAN | Stock transfers between locations | Inventory | `StockTransferController` |
@@ -79,7 +79,7 @@ groups appear in the order of their first feature.
 
 Never gated (core): platform, onboarding, auth, storefront, cart, checkout, payment, webhook, notification and metrics
 endpoints, ledger posting from orders, scheduled and async jobs, orders, finishing work on existing orders (walk-in
-reads / receipt / cancel / refund), returns and refunds (`POST /{orderNumber}/return`, `return-received`,
+reads / receipt / cancel / refund), ending a running shop-wide discount (`DELETE /api/v1/admin/shop-discount/{id}`), returns and refunds (`POST /{orderNumber}/return`, `return-received`,
 `refund-acknowledgement`: core for every plan), products other than the
 limit, categories, coupons other than the limit, the legacy balance report and repair, the subscription endpoint itself.
 **Only starting new gated work is blocked**, after a downgrade or a trial expiry alike. Labels and groups are code-defined (they change with a release, not through the
@@ -2281,7 +2281,7 @@ A tenant route that needs a feature the tenant's plan lacks, or a write while th
 | `reason` | When | `description` (exact) |
 |---|---|---|
 | `NOT_IN_PLAN` | the route's BOOLEAN feature is off in the tenant's plan (any method, reads included) | `Your plan does not include this feature.` |
-| `SUBSCRIPTION_INACTIVE` | `readOnly` is true (13), the plan has the feature, and the request is a gated write (a method other than GET/HEAD on a gated route of section 2, or a request-content gate that fires: `THEME_ADVANCED` change, `LOGIN_OTP` off -> on, `PRODUCT_FAMILIES` fields) or a write that moves a row into a counted set (15); `feature` is the route's feature, or the LIMIT key. Never for the never-gated routes of section 2 (finishing existing orders included) | `Your subscription is not active. Existing data stays readable; upgrade to make changes.` |
+| `SUBSCRIPTION_INACTIVE` | `readOnly` is true (13), the plan has the feature, and the request is a gated write (a method other than GET/HEAD on a gated route of section 2, except the walk-in customer search `POST`, which is a read, or a request-content gate that fires: `THEME_ADVANCED` change, `LOGIN_OTP` off -> on, `PRODUCT_FAMILIES` fields) or a write that moves a row into a counted set (15); `feature` is the route's feature, or the LIMIT key. Never for the never-gated routes of section 2 (finishing existing orders included) | `Your subscription is not active. Existing data stays readable; upgrade to make changes.` |
 
 <!-- example: upgrade-required-not-in-plan response PlanUpgradeRequiredEnvelope 402 -->
 ```json
@@ -2477,6 +2477,10 @@ Decided by the PO / orchestrator on the QA and Security review of PR #72 (2026-1
 - `LOGIN_OTP` is a request-content gate: only off -> on, also in read-only mode; login reads the flag only (15).
 - Limits apply to every write into the counted set (15.2). Caching rules (15.1).
 - Finishing work on existing orders is never gated; only starting new gated work is (2).
+- PO 2026-11-28 (PLAN-02 review): ending a running shop-wide discount (`DELETE /admin/shop-discount/{id}`) is core;
+  the walk-in customer search is a read for `POST` and `GET` (gated by `WALK_IN_POS`, never by read-only mode); the
+  `CUSTOM_DOMAIN` gate applies to a tenant admin's claim / verify only, never to platform admins or the re-verification
+  job (2).
 - Returns and refunds are core for every plan; `RETURNS_REFUNDS` is dropped, the catalog has 16 keys (2).
 - `THEME_ADVANCED` is an allowlist; the legacy balance report / repair is core (2).
 - `transactionFeeBps` <= 1000; fee changes apply from the next cycle; `trialEndsAt` is set once (3.1, 15).

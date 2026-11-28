@@ -27,7 +27,7 @@ class TaxServicePerUserLimitTest {
     private final OrderRepository orders = mock(OrderRepository.class);
     private final TaxRepository taxes = mock(TaxRepository.class);
     private final AuthUserUtil auth = mock(AuthUserUtil.class);
-    private final TaxServiceImpl service = new TaxServiceImpl(taxes, new DiscountCalculationUtil(coupons, Clock.systemUTC()),
+    private final TaxServiceImpl service = new TaxServiceImpl(org.mockito.Mockito.mock(com.example.perfume_budget.entitlement.EntitlementService.class), taxes, new DiscountCalculationUtil(coupons, Clock.systemUTC()),
             coupons, new CouponPerUserLimit(orders), auth);
 
     private Coupon coupon() {

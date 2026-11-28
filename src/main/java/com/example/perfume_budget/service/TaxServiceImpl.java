@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.tax.TaxCalculationResponse;
 import com.example.perfume_budget.dto.tax.TaxCalculationResult;
 import com.example.perfume_budget.dto.tax.request.TaxRequest;
@@ -33,6 +35,7 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class TaxServiceImpl implements TaxService {
+    private final EntitlementService entitlementService;
 
     private final TaxRepository taxRepository;
     private final DiscountCalculationUtil discountCalculationUtil;
@@ -46,6 +49,7 @@ public class TaxServiceImpl implements TaxService {
     @Override
     @Transactional
     public TaxResponse createTax(TaxRequest request) {
+        entitlementService.requireRoute(PlanFeature.TAX_CONFIG); // PLAN-02
         if (taxRepository.existsByName(request.name())) {
             throw new DuplicateResourceException("Tax already exists with name: " + request.name(), "TAX_NAME_EXISTS");
         }
@@ -65,6 +69,7 @@ public class TaxServiceImpl implements TaxService {
     @Override
     @Transactional
     public TaxResponse updateTax(Long id, TaxRequest request, String ifMatch) {
+        entitlementService.requireRoute(PlanFeature.TAX_CONFIG); // PLAN-02
         String expected = ConcurrencyTag.parseIfMatch(ifMatch);
         // API-RD-11c: row lock, then compare the caller's ETag with the state read under the lock
         Tax tax = taxRepository.lockById(id)
@@ -100,6 +105,7 @@ public class TaxServiceImpl implements TaxService {
     @Override
     @Transactional
     public void deleteTax(Long id) {
+        entitlementService.requireRoute(PlanFeature.TAX_CONFIG); // PLAN-02
         if (!taxRepository.existsById(id)) {
             throw new ResourceNotFoundException("Tax not found with id: " + id, "TAX_NOT_FOUND");
         }

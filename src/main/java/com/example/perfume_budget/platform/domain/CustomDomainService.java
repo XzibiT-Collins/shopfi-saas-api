@@ -1,5 +1,7 @@
 package com.example.perfume_budget.platform.domain;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.exception.ApiCodeException;
 import com.example.perfume_budget.exception.ResourceNotFoundException;
 import com.example.perfume_budget.exception.RetryAfterApiCodeException;
@@ -96,13 +98,16 @@ public class CustomDomainService {
     private final ReverifySchedule reverifySchedule;
     private final SecureRandom random = new SecureRandom();
     private volatile Clock clock = Clock.systemUTC();
+    private final EntitlementService entitlementService;
 
     public CustomDomainService(TenantRepository tenantRepository, TenantDomainAuditLogRepository auditRepository,
                                TenantOriginPolicy originPolicy, DbLockTimeout lockTimeout, DnsTxtResolver dns,
                                CustomDomainProperties props, TenantResolutionProperties tenantProps,
                                CorsProperties corsProps, PlatformCorsProperties platformCorsProps,
-                               PlatformTransactionManager txManager, ReverifySchedule reverifySchedule) {
+                               PlatformTransactionManager txManager, ReverifySchedule reverifySchedule,
+                               EntitlementService entitlementService) {
         this.reverifySchedule = reverifySchedule;
+        this.entitlementService = entitlementService;
         this.tenantRepository = tenantRepository;
         this.auditRepository = auditRepository;
         this.originPolicy = originPolicy;
@@ -176,6 +181,7 @@ public class CustomDomainService {
     // ---------------------------------------------------------------------------------------------------- request
 
     public CustomDomainView request(String slug, String rawDomain, Actor actor) {
+        requirePlan(actor);
         Tenant initial = tenant(slug);
         limit(changeLimiter, "c:" + initial.getId(), CHANGE_RATE_LIMITED, "Too many custom-domain changes. Try again later.");
         String domain = CustomDomains.normalize(rawDomain, policy);
@@ -226,9 +232,20 @@ public class CustomDomainService {
         }
     }
 
+    /**
+     * PLAN-02: a tenant admin's claim / verify needs CUSTOM_DOMAIN (plans.md 2); GET and DELETE stay open. Platform
+     * admins and the system (re-verifier) are never plan-gated. The tenant is the request's TenantContext.
+     */
+    private void requirePlan(Actor actor) {
+        if (actor != null && actor.type() == ActorType.TENANT_ADMIN) {
+            entitlementService.requireRoute(PlanFeature.CUSTOM_DOMAIN);
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------------- verify
 
     public CustomDomainView verify(String slug, Actor actor) {
+        requirePlan(actor);
         Tenant snapshot = tenant(slug);
         if (snapshot.getCustomDomain() == null) {
             throw new ApiCodeException(HttpStatus.NOT_FOUND, NOT_SET, "No custom domain is set.");

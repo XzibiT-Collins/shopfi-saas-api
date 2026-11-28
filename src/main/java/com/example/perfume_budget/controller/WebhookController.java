@@ -44,7 +44,7 @@ public class WebhookController {
 
         Tenant t = tenant.get();
         try {
-            TenantContext.set(TenantIdentity.tenant(t.getSlug(), t.getSchemaName()));
+            TenantContext.set(TenantIdentity.tenant(t.getId(), t.getSlug(), t.getSchemaName()));
             // Signature verification and (EVT-01c) the settlement itself happen here, on this thread, so the answer
             // is 200 only for an event that committed (or can never be applied); after-commit work hands off to the
             // mail / notification executors, which capture the tenant context before this finally clears it.

@@ -46,6 +46,7 @@ public class TestTenants {
         TestTenant tenant = new TestTenant(slug, schema, email, ADMIN_PASSWORD);
 
         if (tenantRepository.existsBySlug(slug)) {
+            normaliseSubscription(slug);
             return tenant;
         }
         Tenant row = tenantRepository.save(Tenant.builder()
@@ -53,7 +54,7 @@ public class TestTenants {
                 .displayName(slug)
                 .schemaName(schema)
                 .status(TenantStatus.PROVISIONING)
-                .planId(1L)
+                .planId(TestPlans.SCALE_ID)
                 .ownerEmail(email)
                 .build());
 
@@ -66,6 +67,25 @@ public class TestTenants {
         row.setStatus(TenantStatus.ACTIVE);
         tenantRepository.save(row);
         return tenant;
+    }
+
+    /**
+     * PLAN-02: test tenants run on SCALE (every feature, no limit), TRIALING without a trial end (never read-only), so
+     * the existing behaviour tests of gated features keep working; plan tests set their own state with SQL. Re-applied
+     * on every call because plan tests (and resetToSeed) move tenants between plans.
+     */
+    private void normaliseSubscription(String slug) {
+        try (java.sql.Connection c = PostgresTestDatabase.connect();
+             java.sql.PreparedStatement ps = c.prepareStatement("UPDATE master.tenants SET plan_id = ?, "
+                     + "subscription_status = 'TRIALING', trial_ends_at = NULL WHERE slug = ? AND (plan_id <> ? "
+                     + "OR subscription_status <> 'TRIALING' OR trial_ends_at IS NOT NULL)")) {
+            ps.setLong(1, TestPlans.SCALE_ID);
+            ps.setString(2, slug);
+            ps.setLong(3, TestPlans.SCALE_ID);
+            ps.executeUpdate();
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** Runs {@code action} with the tenant bound to {@link TenantContext}, always clearing it afterwards. */

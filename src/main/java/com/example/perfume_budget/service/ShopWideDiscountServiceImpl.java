@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.discount.request.ShopWideDiscountRequest;
 import com.example.perfume_budget.dto.discount.response.ShopWideDiscountResponse;
 import com.example.perfume_budget.exception.BadRequestException;
@@ -22,6 +24,7 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
+    private final EntitlementService entitlementService;
 
     private final ShopWideDiscountRepository shopWideDiscountRepository;
     private final Clock systemClock;
@@ -30,6 +33,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
     @Transactional
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ShopWideDiscountResponse setShopWideDiscount(ShopWideDiscountRequest request) {
+        entitlementService.requireRoute(PlanFeature.SHOP_WIDE_DISCOUNTS); // PLAN-02
         if (!request.endAt().isAfter(request.startAt())) {
             throw new BadRequestException("Discount end date must be after the start date.");
         }
@@ -79,6 +83,7 @@ public class ShopWideDiscountServiceImpl implements ShopWideDiscountService {
     @Transactional
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public void deactivate(Long id) {
+        // PLAN-02 (PO 2026-11-28): ending a running discount is core, never plan-gated, also when read-only
         ShopWideDiscount discount = shopWideDiscountRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Shop-wide discount not found."));
         discount.setIsActive(false);

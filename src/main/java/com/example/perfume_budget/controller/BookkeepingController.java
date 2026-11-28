@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.accounts.request.ManualJournalEntryRequest;
 import com.example.perfume_budget.service.BookkeepingService;
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class BookkeepingController {
     private final BookkeepingService bookkeepingService;
 
+    @RequiresFeature(PlanFeature.ACCOUNTING)
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/manual-entry")
     public ResponseEntity<CustomApiResponse<Void>> recordManualEntry(

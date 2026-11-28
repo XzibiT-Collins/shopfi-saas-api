@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.inventory.request.InventoryAdjustmentRequest;
 import com.example.perfume_budget.dto.inventory.request.InventoryReceiptRequest;
@@ -34,6 +36,7 @@ public class InventoryManagementController {
         ));
     }
 
+    @RequiresFeature(PlanFeature.INVENTORY_MANAGEMENT)
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/adjustments")
     public ResponseEntity<CustomApiResponse<InventorySummaryResponse>> adjustInventory(
@@ -78,6 +81,7 @@ public class InventoryManagementController {
                 "Legacy balances repaired", inventoryManagementService.repairLegacyBalances(request.productIds())));
     }
 
+    @RequiresFeature(PlanFeature.INVENTORY_MANAGEMENT)
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/products/{productId}/history")
     public ResponseEntity<CustomApiResponse<List<InventoryMovementResponse>>> getProductInventoryHistory(

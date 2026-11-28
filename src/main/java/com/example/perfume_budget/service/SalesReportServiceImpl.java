@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.sales.ItemsSoldReportResponse;
 import com.example.perfume_budget.dto.sales.LocationStockEntry;
@@ -39,6 +41,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class SalesReportServiceImpl implements SalesReportService {
+    private final EntitlementService entitlementService;
 
     private static final CurrencyCode DEFAULT_CURRENCY = CurrencyCode.GHS;
 
@@ -49,6 +52,7 @@ public class SalesReportServiceImpl implements SalesReportService {
 
     @Override
     public ItemsSoldReportResponse getItemsSold(SalesAnalyticsSource source, LocalDate from, LocalDate to, Pageable pageable) {
+        entitlementService.requireRoute(PlanFeature.SALES_REPORTS); // PLAN-02 (items-sold/{productId} stays open)
         Window window = resolveWindow(from, to);
         SalesAnalyticsSource resolvedSource = source != null ? source : SalesAnalyticsSource.ALL;
         List<InventoryReferenceType> refTypes = referenceTypesFor(resolvedSource);

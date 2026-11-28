@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.product.response.AvailableUomsResponse;
 import com.example.perfume_budget.dto.product.response.ProductFamilySummaryResponse;
@@ -18,12 +20,14 @@ public class ProductFamilyController {
 
     private final ProductFamilyService productFamilyService;
 
+    @RequiresFeature(PlanFeature.PRODUCT_FAMILIES)
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping
     public ResponseEntity<CustomApiResponse<List<ProductFamilySummaryResponse>>> getAllFamilies() {
         return ResponseEntity.ok(CustomApiResponse.success("Product families retrieved", productFamilyService.getAllFamilies()));
     }
 
+    @RequiresFeature(PlanFeature.PRODUCT_FAMILIES)
     @PreAuthorize("hasRole('ADMIN')")
     @GetMapping("/{id}/available-uoms")
     public ResponseEntity<CustomApiResponse<AvailableUomsResponse>> getAvailableUoms(@PathVariable Long id) {

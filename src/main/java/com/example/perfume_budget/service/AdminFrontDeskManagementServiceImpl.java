@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.front_desk.request.CreateFrontDeskUserRequest;
 import com.example.perfume_budget.dto.front_desk.request.FrontDeskPermissionTemplateUpdateRequest;
 import com.example.perfume_budget.dto.front_desk.request.FrontDeskUserPermissionOverrideUpdateRequest;
@@ -39,6 +41,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Transactional
 public class AdminFrontDeskManagementServiceImpl implements AdminFrontDeskManagementService {
+    private final EntitlementService entitlementService;
 
     private final FrontDeskPermissionTemplateRepository templateRepository;
     private final FrontDeskUserPermissionOverrideRepository overrideRepository;
@@ -102,6 +105,9 @@ public class AdminFrontDeskManagementServiceImpl implements AdminFrontDeskManage
 
     @Override
     public FrontDeskUserSummaryResponse createFrontDeskUser(CreateFrontDeskUserRequest request) {
+        if (Boolean.TRUE.equals(request.isActive())) {
+            entitlementService.requireLimitSlot(PlanFeature.MAX_STAFF); // PLAN-02: a new active FRONT_DESK user
+        }
         String normalizedEmail = normalizeEmail(request.email());
         if (userRepository.existsByEmail(normalizedEmail)) {
             throw new DuplicateResourceException("An account with this email already exists.", "EMAIL_ALREADY_EXISTS");
@@ -124,6 +130,10 @@ public class AdminFrontDeskManagementServiceImpl implements AdminFrontDeskManage
     @Override
     public FrontDeskUserSummaryResponse assignUserToFrontDesk(Long userId) {
         User user = getUser(userId);
+        if (user.isActive() && user.getRoles() != UserRole.FRONT_DESK) {
+            // PLAN-02 (Security H1): an active user becoming FRONT_DESK enters the MAX_STAFF counted set
+            entitlementService.requireLimitSlot(PlanFeature.MAX_STAFF);
+        }
         user.setRoles(UserRole.FRONT_DESK);
         return toSummary(userRepository.save(user));
     }
@@ -131,6 +141,9 @@ public class AdminFrontDeskManagementServiceImpl implements AdminFrontDeskManage
     @Override
     public FrontDeskUserSummaryResponse updateFrontDeskUser(Long userId, UpdateFrontDeskUserRequest request) {
         User user = getFrontDeskUser(userId);
+        if (Boolean.TRUE.equals(request.isActive()) && !user.isActive()) {
+            entitlementService.requireLimitSlot(PlanFeature.MAX_STAFF); // PLAN-02: re-activation enters the set
+        }
 
         if (request.fullName() != null) {
             user.setFullName(normalizeRequiredText(request.fullName(), "Full name cannot be blank.", "FULL_NAME_REQUIRED"));

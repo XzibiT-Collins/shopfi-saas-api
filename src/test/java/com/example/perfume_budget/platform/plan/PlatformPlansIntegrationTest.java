@@ -43,7 +43,7 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
                 put(PLANS + "/2").contentType("application/json").content("{}"),
                 put(PLANS + "/matrix").contentType("application/json").content("{}"),
                 get(PLANS + "/audit"),
-                put("/api/v1/platform/tenants/plans-a/plan").contentType("application/json").content("{\"planId\":3}"));
+                put("/api/v1/platform/tenants/plans-a/plan").contentType("application/json").content("{\"planId\":2}")); // PLAN-02: test tenants start on SCALE
     }
 
     @Test
@@ -72,7 +72,7 @@ class PlatformPlansIntegrationTest extends AbstractPlansIntegrationTest {
             int s = call(b.cookie(adminCookie).header("Origin", CONSOLE)).getStatus();
             assertThat(s).as("SUPER_ADMIN " + b).isNotIn(401, 403);
         }
-        // nothing an unauthorised caller sent changed anything (the SUPER_ADMIN bodies above were empty -> 400, or planId 3)
+        // nothing an unauthorised caller sent changed anything (the SUPER_ADMIN bodies above were empty -> 400, or planId 2)
         assertThat(version(2)).isZero();
         assertThat(auditRows()).isEqualTo(audit + 1); // only the SUPER_ADMIN tenant plan change wrote a row
     }

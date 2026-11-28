@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.product.request.StockConversionRequest;
 import com.example.perfume_budget.dto.product.response.ProductVariantSummaryResponse;
@@ -20,6 +22,7 @@ public class StockConversionController {
 
     private final StockConversionService stockConversionService;
 
+    @RequiresFeature(PlanFeature.STOCK_CONVERSION)
     @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @GetMapping("/reverse/{sourceProductId}/variants")
     public ResponseEntity<CustomApiResponse<List<ProductVariantSummaryResponse>>> getReverseConversionTargetVariants(
@@ -30,6 +33,7 @@ public class StockConversionController {
         ));
     }
 
+    @RequiresFeature(PlanFeature.STOCK_CONVERSION)
     @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @PostMapping("/forward")
     public ResponseEntity<CustomApiResponse<StockConversionResponse>> convertForward(
@@ -42,6 +46,7 @@ public class StockConversionController {
         return ResponseEntity.ok(CustomApiResponse.success("Forward conversion successful", conversion));
     }
 
+    @RequiresFeature(PlanFeature.STOCK_CONVERSION)
     @PreAuthorize("hasAnyRole('ADMIN','FRONT_DESK')")
     @PostMapping("/reverse")
     public ResponseEntity<CustomApiResponse<StockConversionResponse>> convertReverse(

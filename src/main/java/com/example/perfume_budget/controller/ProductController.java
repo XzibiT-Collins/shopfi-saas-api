@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.product.request.ProductDiscountRequest;
@@ -27,6 +29,8 @@ import org.springframework.web.bind.annotation.*;
 public class ProductController {
     private final ProductService productService;
 
+    @RequiresFeature(value = PlanFeature.MAX_PRODUCTS, mode = RequiresFeature.Mode.LIMIT)
+    @RequiresFeature(value = PlanFeature.PRODUCT_FAMILIES, mode = RequiresFeature.Mode.CONTENT)
     @PreAuthorize("hasRole('ADMIN')")
     @PostMapping(value = "/add-product", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<CustomApiResponse<ProductDetails>> createProduct(@Valid @ModelAttribute ProductRequest request){
@@ -35,6 +39,7 @@ public class ProductController {
         );
     }
 
+    @RequiresFeature(value = PlanFeature.PRODUCT_FAMILIES, mode = RequiresFeature.Mode.CONTENT)
     @PreAuthorize("hasRole('ADMIN')")
     @PutMapping(value = "/update/{productId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<CustomApiResponse<ProductDetails>> updateProduct(

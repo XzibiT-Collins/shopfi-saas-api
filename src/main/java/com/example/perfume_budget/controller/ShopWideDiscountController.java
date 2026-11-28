@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.discount.request.ShopWideDiscountRequest;
 import com.example.perfume_budget.dto.discount.response.ShopWideDiscountResponse;
@@ -19,6 +21,7 @@ import java.util.List;
 public class ShopWideDiscountController {
     private final ShopWideDiscountService shopWideDiscountService;
 
+    @RequiresFeature(PlanFeature.SHOP_WIDE_DISCOUNTS)
     @PutMapping
     public ResponseEntity<CustomApiResponse<ShopWideDiscountResponse>> setShopWideDiscount(
             @Valid @RequestBody ShopWideDiscountRequest request){

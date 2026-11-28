@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.product.response.ProductVariantSummaryResponse;
 import com.example.perfume_budget.dto.product.response.StockConversionResponse;
 import com.example.perfume_budget.enums.ConversionDirection;
@@ -32,6 +34,7 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class StockConversionServiceImpl implements StockConversionService {
+    private final EntitlementService entitlementService;
     private final ProductRepository productRepository;
     private final StockConversionRepository stockConversionRepository;
     private final BookkeepingService bookkeepingService;
@@ -42,6 +45,7 @@ public class StockConversionServiceImpl implements StockConversionService {
     @Override
     public List<ProductVariantSummaryResponse> getReverseConversionTargetVariants(Long sourceProductId) {
         frontDeskAccessService.requireAccess(FrontDeskPermission.STOCK_CONVERSION);
+        entitlementService.requireRoute(PlanFeature.STOCK_CONVERSION); // PLAN-02: after the 403 check
         Product sourceProduct = productRepository.findById(sourceProductId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source product not found"));
 
@@ -63,6 +67,7 @@ public class StockConversionServiceImpl implements StockConversionService {
     @Transactional
     public StockConversionResponse convertForward(Long sourceProductId, Integer sourceQuantity, String notes) {
         frontDeskAccessService.requireAccess(FrontDeskPermission.STOCK_CONVERSION);
+        entitlementService.requireRoute(PlanFeature.STOCK_CONVERSION); // PLAN-02: after the 403 check
         Product sourceProduct = productRepository.findById(sourceProductId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source product not found"));
 
@@ -139,6 +144,7 @@ public class StockConversionServiceImpl implements StockConversionService {
     @Transactional
     public StockConversionResponse convertReverse(Long sourceProductId, Integer sourceQuantity, Long targetProductId, String notes) {
         frontDeskAccessService.requireAccess(FrontDeskPermission.STOCK_CONVERSION);
+        entitlementService.requireRoute(PlanFeature.STOCK_CONVERSION); // PLAN-02: after the 403 check
         if (targetProductId == null) {
             throw new BadRequestException("Target product ID is required for reverse conversion.");
         }

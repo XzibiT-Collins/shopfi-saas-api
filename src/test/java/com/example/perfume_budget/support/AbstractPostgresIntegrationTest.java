@@ -102,6 +102,16 @@ public abstract class AbstractPostgresIntegrationTest {
             };
         }
 
+        /**
+         * PLAN-02: the entitlement store is an in-memory map in Postgres tests (Redis is mocked). OFF by default (always
+         * a miss), so SQL edits of plans / tenants in other tests are never hidden by a cached entry.
+         */
+        @Bean
+        @org.springframework.context.annotation.Primary
+        InMemoryEntitlementStore inMemoryEntitlementStore() {
+            return new InMemoryEntitlementStore();
+        }
+
         /** DOMAIN-02: DNS is always faked in Postgres tests (no network); tests program it through this bean. */
         @Bean
         @org.springframework.context.annotation.Primary

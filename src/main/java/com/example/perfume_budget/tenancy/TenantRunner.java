@@ -23,7 +23,7 @@ public class TenantRunner {
     public void forEachActiveTenant(Runnable action) {
         for (Tenant tenant : tenantRegistryService.findByStatus(TenantStatus.ACTIVE)) {
             try {
-                TenantContext.set(TenantIdentity.tenant(tenant.getSlug(), tenant.getSchemaName()));
+                TenantContext.set(TenantIdentity.tenant(tenant.getId(), tenant.getSlug(), tenant.getSchemaName()));
                 action.run();
             } catch (Exception e) {
                 log.error("Scheduled action failed for tenant {}: {}", tenant.getSlug(), SafeStackTrace.of(e));

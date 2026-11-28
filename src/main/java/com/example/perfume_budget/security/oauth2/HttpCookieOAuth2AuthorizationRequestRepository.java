@@ -89,7 +89,7 @@ public class HttpCookieOAuth2AuthorizationRequestRepository
         Optional<Tenant> tenant = tenantRegistryService.findBySlug(slug.toString());
         if (tenant.isPresent() && tenant.get().getStatus() == TenantStatus.ACTIVE) {
             Tenant t = tenant.get();
-            TenantContext.set(TenantIdentity.tenant(t.getSlug(), t.getSchemaName()));
+            TenantContext.set(TenantIdentity.tenant(t.getId(), t.getSlug(), t.getSchemaName()));
         } else {
             log.warn("OAuth2 callback carried unknown/inactive tenant slug: {}", slug);
         }

@@ -83,6 +83,9 @@ class ProductServiceImplTest {
     @org.mockito.Spy
     private ProductViewDeduper viewDeduper = new ProductViewDeduper(java.time.Clock.systemUTC(), 30, 1000);
 
+    @Mock
+    private com.example.perfume_budget.entitlement.EntitlementService entitlementService; // PLAN-02 gates (no-op mock)
+
     @InjectMocks
     private ProductServiceImpl productService;
 

@@ -124,6 +124,7 @@ class AuthorizationMatrixStructureTest {
         expect(FRONT_DESK, "StockConversionController", "getReverseConversionTargetVariants", "convertForward", "convertReverse");
         expect(FRONT_DESK, "StockTransferController", "transfer", "history");
         expect(FRONT_DESK, "StorageLocationController", "list", "get");
+        expect(FRONT_DESK, "SubscriptionController", "current"); // PLAN-02: own tenant's plan / status / usage
         expect(FRONT_DESK, "WalkInOrderController", "placeWalkInOrder", "quoteWalkInOrder", "searchCustomersByBody", "searchCustomers", "getWalkInOrders", "getWalkInOrder",
                 "markReceiptPrinted");
 
@@ -592,6 +593,7 @@ class AuthorizationMatrixStructureTest {
         });
         assertThat(frontDesk).containsExactlyInAnyOrder(
                 "AuthController#updateProfile", "AuthController#changePassword", // API-RD-08 self-service, every tenant role
+                "SubscriptionController#current", // PLAN-02: the subscription hook of the admin shell
                 "InventoryManagementController#getProductStockByLocation",
                 // PERM-BE: the three routes of PRODUCT_VIEW_STOCK_SUMMARY / PRODUCT_VIEW_ADMIN_CATALOG (service check on top)
                 "InventoryManagementController#getProductInventorySummary",

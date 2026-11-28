@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.enums.FrontDeskPermission;
 import com.example.perfume_budget.service.interfaces.FrontDeskAccessService;
 import com.example.perfume_budget.dto.PageResponse;
@@ -52,6 +54,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -61,6 +64,7 @@ import java.util.function.Supplier;
 @Service
 @RequiredArgsConstructor
 public class ProductServiceImpl implements ProductService {
+    private final EntitlementService entitlementService;
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
     private final ProductFamilyRepository productFamilyRepository;
@@ -87,6 +91,12 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ProductDetails createProduct(ProductRequest request) {
+        // PLAN-02 (plans.md 14.4 / 15.2): content gate, then the limit, before any business check or the upload. The
+        // authoritative, locked limit check runs again inside the writing transaction (createProductRows).
+        if (request.familyId() != null || request.uomCode() != null || request.conversionFactor() != null) {
+            entitlementService.requireWrite(PlanFeature.PRODUCT_FAMILIES);
+        }
+        entitlementService.precheckLimitSlot(PlanFeature.MAX_PRODUCTS);
         checkIfImageIsPresentForEcommerceProduct(request);
 
         String uploadedImageUrl = uploadToCloudIfImageIsPresent(request.productImage());
@@ -121,6 +131,9 @@ public class ProductServiceImpl implements ProductService {
     }
 
     private ProductDetails createProductRows(ProductRequest request, String uploadedImageUrl) {
+        // PLAN-02: both scenarios (new family, variant into a family) insert one product row; count + insert under the
+        // per-tenant lock of this transaction
+        entitlementService.requireLimitSlot(PlanFeature.MAX_PRODUCTS);
         String size = request.size() != null ? " " + request.size() : "";
         String name = request.productName() + size;
 
@@ -481,7 +494,11 @@ public class ProductServiceImpl implements ProductService {
     @Transactional
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public ProductDetails updateProduct(Long productId, ProductRequest request) {
-        Product productToUpdate = productRepository.findById(productId).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
+        Product found = productRepository.findById(productId).orElse(null);
+        if (changesFamilyFields(found, request)) {
+            entitlementService.requireWrite(PlanFeature.PRODUCT_FAMILIES); // PLAN-02, before the 404 / business checks
+        }
+        Product productToUpdate = Optional.ofNullable(found).orElseThrow(() -> new ResourceNotFoundException(PRODUCT_NOT_FOUND));
         checkIfImageIsPresentForEcommerceProductUpdate(request, productToUpdate);
         Product updatedProduct = checkAndUpdateProductFields(productToUpdate, request);
         return toDetails(updatedProduct);
@@ -586,6 +603,25 @@ public class ProductServiceImpl implements ProductService {
         changed |= updateImage(productToUpdate, request);
 
         return changed ? productRepository.save(productToUpdate) : productToUpdate;
+    }
+
+    /**
+     * PLAN-02: {@code familyId} / {@code uomCode} / {@code conversionFactor} on an update are gated by PRODUCT_FAMILIES
+     * when they would change the stored product (re-sending the stored values is never a 402, like the other content
+     * gates). An unknown product counts as a change, so the gate still precedes the 404.
+     */
+    static boolean changesFamilyFields(Product product, ProductRequest request) {
+        if (request.familyId() == null && request.uomCode() == null && request.conversionFactor() == null) {
+            return false;
+        }
+        if (product == null) {
+            return true;
+        }
+        Long familyId = product.getFamily() != null ? product.getFamily().getId() : null;
+        String uom = product.getUnitOfMeasure() != null ? product.getUnitOfMeasure().getCode() : null;
+        return (request.familyId() != null && !Objects.equals(request.familyId(), familyId))
+                || (request.uomCode() != null && !Objects.equals(request.uomCode(), uom))
+                || (request.conversionFactor() != null && !Objects.equals(request.conversionFactor(), product.getConversionFactor()));
     }
 
     private boolean updateFamilyAndUom(Product product, ProductRequest request) {

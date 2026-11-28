@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.product.response.AvailableUomsResponse;
 import com.example.perfume_budget.dto.product.response.ProductFamilySummaryResponse;
 import com.example.perfume_budget.dto.product.response.UnitOfMeasureResponse;
@@ -21,12 +23,14 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class ProductFamilyServiceImpl implements ProductFamilyService {
+    private final EntitlementService entitlementService;
     private final ProductFamilyRepository familyRepository;
     private final ProductRepository productRepository;
     private final UnitOfMeasureRepository unitOfMeasureRepository;
 
     @Override
     public List<ProductFamilySummaryResponse> getAllFamilies() {
+        entitlementService.requireRoute(PlanFeature.PRODUCT_FAMILIES); // PLAN-02
         return familyRepository.findAllWithBaseUnit().stream()
                 .map(ProductFamilyMapper::toSummary)
                 .toList();
@@ -34,6 +38,7 @@ public class ProductFamilyServiceImpl implements ProductFamilyService {
 
     @Override
     public AvailableUomsResponse getAvailableUoms(Long familyId) {
+        entitlementService.requireRoute(PlanFeature.PRODUCT_FAMILIES); // PLAN-02
         ProductFamily family = familyRepository.findWithBaseUnitById(familyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Product family not found."));
 

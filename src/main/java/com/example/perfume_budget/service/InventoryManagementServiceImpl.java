@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.enums.FrontDeskPermission;
 import com.example.perfume_budget.service.interfaces.FrontDeskAccessService;
 import com.example.perfume_budget.dto.inventory.request.InventoryAdjustmentRequest;
@@ -44,6 +46,7 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class InventoryManagementServiceImpl implements InventoryManagementService {
+    private final EntitlementService entitlementService;
     private final ProductRepository productRepository;
     private final InventoryLayerRepository inventoryLayerRepository;
     private final InventoryAllocationRepository inventoryAllocationRepository;
@@ -99,6 +102,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Transactional
     @CacheEvict(cacheNames = {CatalogCaches.PUBLIC_LISTINGS, CatalogCaches.PUBLIC_FEATURED, CatalogCaches.PRODUCT_DETAILS}, allEntries = true)
     public InventorySummaryResponse adjustInventory(InventoryAdjustmentRequest request) {
+        entitlementService.requireRoute(PlanFeature.INVENTORY_MANAGEMENT); // PLAN-02
         stockLocks.lock(List.of(request.productId()));
         Product product = getProduct(request.productId());
         return switch (request.direction()) {
@@ -118,6 +122,7 @@ public class InventoryManagementServiceImpl implements InventoryManagementServic
     @Override
     @Transactional
     public List<InventoryMovementResponse> getProductInventoryHistory(Long productId) {
+        entitlementService.requireRoute(PlanFeature.INVENTORY_MANAGEMENT); // PLAN-02
         bootstrapLegacyLayerUnderLock(productId);
         return inventoryMovementRepository.findByProductIdOrderByCreatedAtDescIdDesc(productId).stream()
                 .map(this::toMovementResponse)

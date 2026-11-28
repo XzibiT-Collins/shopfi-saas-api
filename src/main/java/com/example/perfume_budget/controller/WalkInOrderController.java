@@ -1,5 +1,7 @@
 package com.example.perfume_budget.controller;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.RequiresFeature;
 import com.example.perfume_budget.dto.CustomApiResponse;
 import com.example.perfume_budget.dto.PageResponse;
 import com.example.perfume_budget.dto.walk_in.request.CustomerSearchRequest;
@@ -28,6 +30,7 @@ import java.util.List;
 public class WalkInOrderController {
     private final WalkInOrderService walkInOrderService;
 
+    @RequiresFeature(PlanFeature.WALK_IN_POS)
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @PostMapping("/order")
     public ResponseEntity<CustomApiResponse<WalkInOrderResponse>> placeWalkInOrder(
@@ -37,6 +40,7 @@ public class WalkInOrderController {
     }
 
     /** API-RD-03 AC1: server-computed totals of a draft; writes nothing. */
+    @RequiresFeature(PlanFeature.WALK_IN_POS)
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @PostMapping("/quote")
     public ResponseEntity<CustomApiResponse<WalkInQuoteResponse>> quoteWalkInOrder(
@@ -45,6 +49,7 @@ public class WalkInOrderController {
     }
 
     /** API-RD-13(b): the search text travels in the body, so it never reaches an access log or browser history. */
+    @RequiresFeature(value = PlanFeature.WALK_IN_POS, mode = RequiresFeature.Mode.READ)
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @PostMapping("/customers/search")
     public ResponseEntity<CustomApiResponse<List<CustomerSearchResponse>>> searchCustomersByBody(
@@ -52,6 +57,7 @@ public class WalkInOrderController {
         return ResponseEntity.ok(CustomApiResponse.success(walkInOrderService.searchCustomers(request.query())));
     }
 
+    @RequiresFeature(PlanFeature.WALK_IN_POS)
     @PreAuthorize("hasAnyRole('ADMIN', 'FRONT_DESK')")
     @GetMapping("/customers/search")
     @Deprecated

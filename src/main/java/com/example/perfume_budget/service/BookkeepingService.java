@@ -1,5 +1,7 @@
 package com.example.perfume_budget.service;
 
+import com.example.perfume_budget.platform.plan.PlanFeature;
+import com.example.perfume_budget.entitlement.EntitlementService;
 import com.example.perfume_budget.dto.accounts.request.ManualJournalEntryRequest;
 import com.example.perfume_budget.enums.AccountCategory;
 import com.example.perfume_budget.enums.AccountType;
@@ -36,6 +38,7 @@ import java.util.TreeMap;
 @Service
 @RequiredArgsConstructor
 public class BookkeepingService {
+    private final EntitlementService entitlementService;
     private final JournalEntryRepository journalEntryRepository;
     private final LedgerAccountRepository ledgerAccountRepository;
     private final JournalEntryNumberGenerator entryNumberGenerator;
@@ -595,6 +598,7 @@ public class BookkeepingService {
      */
     @Transactional
     public boolean recordManualEntry(ManualJournalEntryRequest request, String idempotencyKey){
+        entitlementService.requireRoute(PlanFeature.ACCOUNTING); // PLAN-02: manual entries only
         User user = authUserUtil.getCurrentUser();
         requirePositiveAmounts(request);
         String key = normalizeIdempotencyKey(idempotencyKey);

@@ -36,7 +36,7 @@ class ThemeServiceUploadFlowTest {
         when(categories.findExistingIds(anyCollection())).thenAnswer(i -> new java.util.ArrayList<>((java.util.Collection<Long>) i.getArgument(0)));
         ThemeValidator validator = new ThemeValidator(MAPPER, products, categories, "shopfi-demo");
         service = new ThemeServiceImpl(store, validator, new BrandingUploadService(storage), new ConcurrentMapCacheManager(), MAPPER,
-                new ThemeCanonicalizer(new ThemeCatalog(MAPPER), MAPPER));
+                new ThemeCanonicalizer(new ThemeCatalog(MAPPER), MAPPER), org.mockito.Mockito.mock(ThemePlanGate.class));
         TenantContext.set(TenantIdentity.tenant("acme", "tenant_acme"));
         when(store.defaultDocument()).thenReturn(defaults());
         when(store.read()).thenReturn(new ThemeSnapshot(defaults().toString(), 1));
