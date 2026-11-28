@@ -1110,24 +1110,95 @@
       }
     },
     "MemberIdentity": {
+      "description": "Snapshot of the member at issue. After a personal-data redaction (billing.md 10.6) only {redacted: true} is rendered; the stored row is unchanged.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "shopName",
+            "ownerEmail"
+          ],
+          "properties": {
+            "shopName": {
+              "type": "string"
+            },
+            "ownerName": {
+              "type": "string"
+            },
+            "ownerEmail": {
+              "$ref": "#/$defs/Email"
+            },
+            "billingAddress": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "redacted"
+          ],
+          "properties": {
+            "redacted": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "RedactionRequest": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "shopName",
-        "ownerEmail"
+        "reason"
       ],
       "properties": {
-        "shopName": {
-          "type": "string"
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        }
+      }
+    },
+    "RedactionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantSlug",
+        "documentsRedacted",
+        "adjustmentsRedacted",
+        "redactedAt"
+      ],
+      "properties": {
+        "tenantSlug": {
+          "$ref": "#/$defs/Slug"
         },
-        "ownerName": {
-          "type": "string"
+        "documentsRedacted": {
+          "type": "integer",
+          "minimum": 0
         },
-        "ownerEmail": {
-          "$ref": "#/$defs/Email"
+        "adjustmentsRedacted": {
+          "type": "integer",
+          "minimum": 0
         },
-        "billingAddress": {
-          "type": "string"
+        "redactedAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "RedactionResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/RedactionResult"
         }
       }
     },
@@ -2027,7 +2098,8 @@
         "status",
         "phase",
         "cardRequired",
-        "card"
+        "card",
+        "trialGranted"
       ],
       "properties": {
         "slug": {
@@ -2044,6 +2116,9 @@
         },
         "card": {
           "$ref": "#/$defs/Card"
+        },
+        "trialGranted": {
+          "type": "boolean"
         }
       }
     },
@@ -2064,11 +2139,12 @@
       }
     },
     "CardSetup": {
-      "description": "Everything the card step shows, from the server only (BILL-FE-02a AC2).",
+      "description": "Everything the card step shows, from the server only (BILL-FE-02a AC2). trialEligible false (oneTrialPerCard, the owner e-mail already had a trial) means trialDays 0 and the first charge happens at provisioning.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "plan",
+        "trialEligible",
         "trialDays",
         "trialEndsAtEstimate",
         "firstChargePesewas",
@@ -2092,9 +2168,12 @@
             }
           }
         },
+        "trialEligible": {
+          "type": "boolean"
+        },
         "trialDays": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "trialEndsAtEstimate": {
           "$ref": "#/$defs/Timestamp"
@@ -2209,7 +2288,8 @@
         "COMPLIMENTARY_ENDING",
         "COMPLIMENTARY_ENDED",
         "CARD_EXPIRING",
-        "CARD_UPDATED"
+        "CARD_UPDATED",
+        "TRIAL_NOT_GRANTED"
       ]
     },
     "BillingSettings": {
@@ -2251,7 +2331,13 @@
         "billingRunIntervalSeconds",
         "webhookIpAllowlistEnabled",
         "webhookIpAllowlist",
-        "refundMaxDays"
+        "refundMaxDays",
+        "cardTokenRetentionDaysAfterEnd",
+        "oneTrialPerCard",
+        "cardAttemptsPerEmailPerDay",
+        "cardDeclineAlertThresholdPerHour",
+        "cardSetupStopThresholdPerHour",
+        "refundConfirmThresholdPesewas"
       ],
       "properties": {
         "billingEnabled": {
@@ -2347,8 +2433,8 @@
           "propertyNames": {
             "$ref": "#/$defs/NotificationKind"
           },
-          "minProperties": 26,
-          "maxProperties": 26
+          "minProperties": 27,
+          "maxProperties": 27
         },
         "invoiceNumberFormat": {
           "type": "string",
@@ -2585,6 +2671,34 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 365
+        },
+        "cardTokenRetentionDaysAfterEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "oneTrialPerCard": {
+          "type": "boolean"
+        },
+        "cardAttemptsPerEmailPerDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cardDeclineAlertThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "cardSetupStopThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "refundConfirmThresholdPesewas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000
         }
       }
     },
@@ -2628,6 +2742,12 @@
         "webhookIpAllowlistEnabled",
         "webhookIpAllowlist",
         "refundMaxDays",
+        "cardTokenRetentionDaysAfterEnd",
+        "oneTrialPerCard",
+        "cardAttemptsPerEmailPerDay",
+        "cardDeclineAlertThresholdPerHour",
+        "cardSetupStopThresholdPerHour",
+        "refundConfirmThresholdPesewas",
         "version"
       ],
       "properties": {
@@ -2724,8 +2844,8 @@
           "propertyNames": {
             "$ref": "#/$defs/NotificationKind"
           },
-          "minProperties": 26,
-          "maxProperties": 26
+          "minProperties": 27,
+          "maxProperties": 27
         },
         "invoiceNumberFormat": {
           "type": "string",
@@ -2962,6 +3082,34 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 365
+        },
+        "cardTokenRetentionDaysAfterEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "oneTrialPerCard": {
+          "type": "boolean"
+        },
+        "cardAttemptsPerEmailPerDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cardDeclineAlertThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "cardSetupStopThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "refundConfirmThresholdPesewas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000
         },
         "version": {
           "type": "integer",
@@ -3097,6 +3245,49 @@
         }
       }
     },
+    "PlatformHealth": {
+      "description": "Loud platform-fault indicator (accepted decision 20.3 item 9): paused is true while the active environment's keys are rejected or billing is switched off although billing-managed subscriptions exist; those tenants keep full access, so the console shows a persistent alert.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paused",
+        "reason",
+        "since",
+        "affectedSubscriptions"
+      ],
+      "properties": {
+        "paused": {
+          "type": "boolean"
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "KEY_REJECTED",
+                "BILLING_DISABLED"
+              ]
+            }
+          ]
+        },
+        "since": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "affectedSubscriptions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "NumberPreviews": {
       "description": "Read-only: the number each format would issue NEXT (current counters of the year of now, UTC). Server-computed so the console renders nothing itself.",
       "type": "object",
@@ -3127,7 +3318,8 @@
         "updatedAt",
         "updatedBy",
         "credentials",
-        "numberPreviews"
+        "numberPreviews",
+        "health"
       ],
       "properties": {
         "settings": {
@@ -3167,6 +3359,9 @@
         },
         "numberPreviews": {
           "$ref": "#/$defs/NumberPreviews"
+        },
+        "health": {
+          "$ref": "#/$defs/PlatformHealth"
         }
       }
     },
@@ -4621,6 +4816,7 @@
       }
     },
     "RefundRequest": {
+      "description": "confirmAmountPesewas is required, and must equal amountPesewas, when amountPesewas is above the refundConfirmThresholdPesewas setting.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -4637,6 +4833,10 @@
         },
         "cancelSubscription": {
           "type": "boolean"
+        },
+        "confirmAmountPesewas": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },
@@ -6041,7 +6241,8 @@
         "IDEMPOTENCY_KEY_REUSED",
         "RECONCILIATION_IN_PROGRESS",
         "FINDING_ALREADY_RESOLVED",
-        "WEBHOOK_EVENT_NOT_RETRYABLE"
+        "WEBHOOK_EVENT_NOT_RETRYABLE",
+        "CARD_SETUP_PAUSED"
       ]
     },
     "ErrorEnvelope": {
@@ -6492,6 +6693,31 @@
           "properties": {
             "code": {
               "const": "BILLING_MANAGED"
+            }
+          }
+        }
+      }
+    },
+    "CardSetupPausedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "const": "CARD_SETUP_PAUSED"
             }
           }
         }

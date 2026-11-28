@@ -293,6 +293,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
 | `webhookIpAllowlistEnabled` | boolean | `false` | HMAC is the control (O29); when `true`, `webhookIpAllowlist` must be non-empty | `provide at least one address` |
 | `webhookIpAllowlist` | string[] | `[]` | <= 20 IPv4/IPv6 addresses or CIDR blocks | `must be IP addresses or CIDR blocks` |
 | `refundMaxDays` | integer | `90` | 1..365: a refund is allowed this many days after `paidAt` (O11) | `must be between 1 and 365` |
+| `refundConfirmThresholdPesewas` | integer | `100000` (GHS 1,000) | 0..100,000,000: a refund ABOVE this amount needs the second confirmation `confirmAmountPesewas` (the amount typed again, 7.10); 0 = every refund | `must be between 0 and 100000000` |
+| `cardTokenRetentionDaysAfterEnd` | integer | `7` | 0..365: days after a subscription ENDS before its card authorization is deactivated at Paystack and its encrypted code erased (9.5.1) | `must be between 0 and 365` |
+| `oneTrialPerCard` | boolean | `true` | a card (hash of the Paystack fingerprint) or owner e-mail that already had a trial in the same environment gets NO free trial (5.7) | |
+| `cardAttemptsPerEmailPerDay` | integer | `5` | 1..50: card authorization attempts per owner e-mail per UTC day on the public card step (5.8) | `must be between 1 and 50` |
+| `cardDeclineAlertThresholdPerHour` | integer | `20` | 1..10,000: platform-wide `CARD_AUTH_FAILED` per hour that raises the admin alert (5.8) | `must be between 1 and 10000` |
+| `cardSetupStopThresholdPerHour` | integer | `100` | 1..100,000: platform-wide card-step attempts per hour above which NEW card setup tokens are no longer issued (5.8); must be >= the alert threshold | `must be between 1 and 100000 and at least the alert threshold` |
 
 **Field bounds come from the contract, not from a runtime call.** The bounds, defaults and messages above exist only in this table and in `billing.schema.json`; the console (BILL-FE-01) takes them from the schema or types generated from it and never fetches them from the API. The server stays the authority and repeats every check.
 
@@ -305,6 +311,7 @@ The seed (migration) is the **Default** column; identity fields are `null` until
 3. `recurringChannels` is a subset of `allowedChannels`.
 4. The three number formats are valid and distinct in their literal part. Changing a format affects only documents issued afterwards.
 5. `taxRateBps` set with `taxLabel` `null`: the tax line is rendered with the neutral label `Tax`; a blank label is never rendered (the PDF renderer and the JSON agree).
+6. `cardSetupStopThresholdPerHour >= cardDeclineAlertThresholdPerHour`.
 
 <!-- example: settings-defaults response BillingSettingsEnvelope 200 -->
 ```json
@@ -364,7 +371,8 @@ The seed (migration) is the **Default** column; identity fields are `null` until
         "COMPLIMENTARY_ENDING": true,
         "COMPLIMENTARY_ENDED": true,
         "CARD_EXPIRING": true,
-        "CARD_UPDATED": true
+        "CARD_UPDATED": true,
+        "TRIAL_NOT_GRANTED": true
       },
       "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
       "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -392,7 +400,13 @@ The seed (migration) is the **Default** column; identity fields are `null` until
       "billingRunIntervalSeconds": 60,
       "webhookIpAllowlistEnabled": false,
       "webhookIpAllowlist": [],
-      "refundMaxDays": 90
+      "refundMaxDays": 90,
+      "cardTokenRetentionDaysAfterEnd": 7,
+      "oneTrialPerCard": true,
+      "cardAttemptsPerEmailPerDay": 5,
+      "cardDeclineAlertThresholdPerHour": 20,
+      "cardSetupStopThresholdPerHour": 100,
+      "refundConfirmThresholdPesewas": 100000
     },
     "version": 0,
     "updatedAt": null,
@@ -433,6 +447,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
       "INVOICE": "SUB-2026-000001",
       "RECEIPT": "REC-2026-000001",
       "CREDIT_NOTE": "CN-2026-000001"
+    },
+    "health": {
+      "paused": false,
+      "reason": null,
+      "since": null,
+      "affectedSubscriptions": 0
     }
   }
 }
@@ -497,7 +517,8 @@ The seed (migration) is the **Default** column; identity fields are `null` until
         "COMPLIMENTARY_ENDING": true,
         "COMPLIMENTARY_ENDED": true,
         "CARD_EXPIRING": true,
-        "CARD_UPDATED": true
+        "CARD_UPDATED": true,
+        "TRIAL_NOT_GRANTED": true
       },
       "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
       "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -525,7 +546,13 @@ The seed (migration) is the **Default** column; identity fields are `null` until
       "billingRunIntervalSeconds": 60,
       "webhookIpAllowlistEnabled": false,
       "webhookIpAllowlist": [],
-      "refundMaxDays": 90
+      "refundMaxDays": 90,
+      "cardTokenRetentionDaysAfterEnd": 7,
+      "oneTrialPerCard": true,
+      "cardAttemptsPerEmailPerDay": 5,
+      "cardDeclineAlertThresholdPerHour": 20,
+      "cardSetupStopThresholdPerHour": 100,
+      "refundConfirmThresholdPesewas": 100000
     },
     "version": 4,
     "updatedAt": "2026-11-29T09:10:00Z",
@@ -566,6 +593,160 @@ The seed (migration) is the **Default** column; identity fields are `null` until
       "INVOICE": "SUB-2026-000001",
       "RECEIPT": "REC-2026-000001",
       "CREDIT_NOTE": "CN-2026-000001"
+    },
+    "health": {
+      "paused": false,
+      "reason": null,
+      "since": null,
+      "affectedSubscriptions": 0
+    }
+  }
+}
+```
+
+While billing is paused by a platform fault the settings view carries the loud indicator:
+
+<!-- example: settings-health-paused response BillingSettingsEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "settings": {
+      "billingEnabled": false,
+      "activeEnvironment": "TEST",
+      "cardRequiredAtSignup": true,
+      "graceDays": 10,
+      "retryOffsetsDays": [
+        1,
+        3,
+        5,
+        8
+      ],
+      "retryTimeOfDayUtc": null,
+      "trialReminderDaysBefore": [
+        3,
+        1
+      ],
+      "renewalReminderDaysBefore": [
+        3
+      ],
+      "priceChangeNoticeDays": 30,
+      "graceReminderOffsetsDays": [
+        1,
+        3,
+        5
+      ],
+      "graceEndingReminderDaysBefore": [
+        1
+      ],
+      "emailEnabled": {
+        "TRIAL_REMINDER": true,
+        "TRIAL_ENDS_TODAY": true,
+        "TRIAL_ENDED": true,
+        "PAYMENT_SUCCEEDED": true,
+        "PAYMENT_FAILED": true,
+        "RETRY_SCHEDULED": true,
+        "GRACE_STARTED": true,
+        "GRACE_REMINDER": true,
+        "GRACE_ENDING": true,
+        "ACCESS_RESTRICTED": true,
+        "ACCESS_RESTORED": true,
+        "RENEWAL_REMINDER": true,
+        "UPGRADE_APPLIED": true,
+        "DOWNGRADE_SCHEDULED": true,
+        "DOWNGRADE_APPLIED": true,
+        "CANCELLATION_SCHEDULED": true,
+        "CANCELLATION_REVERSED": true,
+        "SUBSCRIPTION_ENDED": true,
+        "INVOICE_AVAILABLE": true,
+        "REFUND_ISSUED": true,
+        "PRICE_CHANGE_NOTICE": true,
+        "COMPLIMENTARY_STARTED": true,
+        "COMPLIMENTARY_ENDING": true,
+        "COMPLIMENTARY_ENDED": true,
+        "CARD_EXPIRING": true,
+        "CARD_UPDATED": true,
+        "TRIAL_NOT_GRANTED": true
+      },
+      "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
+      "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
+      "creditNoteNumberFormat": "CN-{YYYY}-{NNNNNN}",
+      "businessName": null,
+      "businessAddress": null,
+      "businessTin": null,
+      "businessEmail": null,
+      "businessPhone": null,
+      "taxLabel": null,
+      "taxRateBps": null,
+      "taxInclusive": true,
+      "invoiceFooterText": null,
+      "attachPdfToEmail": false,
+      "cardVerificationAmountPesewas": 100,
+      "allowedChannels": [
+        "card"
+      ],
+      "recurringChannels": [
+        "card"
+      ],
+      "reconcileIntervalMinutes": 15,
+      "reconcileLookbackHours": 48,
+      "reconcileFullScanDays": 30,
+      "billingRunIntervalSeconds": 60,
+      "webhookIpAllowlistEnabled": false,
+      "webhookIpAllowlist": [],
+      "refundMaxDays": 90,
+      "cardTokenRetentionDaysAfterEnd": 7,
+      "oneTrialPerCard": true,
+      "cardAttemptsPerEmailPerDay": 5,
+      "cardDeclineAlertThresholdPerHour": 20,
+      "cardSetupStopThresholdPerHour": 100,
+      "refundConfirmThresholdPesewas": 100000
+    },
+    "version": 6,
+    "updatedAt": "2027-01-12T08:00:00Z",
+    "updatedBy": "admin@shopfi.test",
+    "credentials": [
+      {
+        "environment": "TEST",
+        "configured": true,
+        "status": "VERIFIED",
+        "publicKeyLast4": "Qx7Z",
+        "secretKeyLast4": "k3Pd",
+        "verifiedAt": "2026-11-29T08:00:00Z",
+        "failureCode": null,
+        "lastWebhookAt": "2026-11-29T08:05:12Z",
+        "lastWebhookOkAt": "2026-11-29T08:05:12Z",
+        "webhookUrl": "https://api.shopfi.test/api/v1/platform/billing/webhooks/paystack/test",
+        "version": 2,
+        "updatedAt": "2026-11-29T07:58:30Z",
+        "updatedBy": "admin@shopfi.test"
+      },
+      {
+        "environment": "LIVE",
+        "configured": false,
+        "status": "UNSET",
+        "publicKeyLast4": null,
+        "secretKeyLast4": null,
+        "verifiedAt": null,
+        "failureCode": null,
+        "lastWebhookAt": null,
+        "lastWebhookOkAt": null,
+        "webhookUrl": "https://api.shopfi.test/api/v1/platform/billing/webhooks/paystack/live",
+        "version": 0,
+        "updatedAt": null,
+        "updatedBy": null
+      }
+    ],
+    "numberPreviews": {
+      "INVOICE": "SUB-2026-000001",
+      "RECEIPT": "REC-2026-000001",
+      "CREDIT_NOTE": "CN-2026-000001"
+    },
+    "health": {
+      "paused": true,
+      "reason": "BILLING_DISABLED",
+      "since": "2027-01-12T08:00:00Z",
+      "affectedSubscriptions": 12
     }
   }
 }
@@ -628,7 +809,8 @@ The seed (migration) is the **Default** column; identity fields are `null` until
     "COMPLIMENTARY_ENDING": true,
     "COMPLIMENTARY_ENDED": true,
     "CARD_EXPIRING": true,
-    "CARD_UPDATED": true
+    "CARD_UPDATED": true,
+    "TRIAL_NOT_GRANTED": true
   },
   "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
   "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -657,6 +839,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
   "webhookIpAllowlistEnabled": false,
   "webhookIpAllowlist": [],
   "refundMaxDays": 90,
+  "cardTokenRetentionDaysAfterEnd": 7,
+  "oneTrialPerCard": true,
+  "cardAttemptsPerEmailPerDay": 5,
+  "cardDeclineAlertThresholdPerHour": 20,
+  "cardSetupStopThresholdPerHour": 100,
+  "refundConfirmThresholdPesewas": 100000,
   "version": 4
 }
 ```
@@ -719,7 +907,8 @@ The seed (migration) is the **Default** column; identity fields are `null` until
         "COMPLIMENTARY_ENDING": true,
         "COMPLIMENTARY_ENDED": true,
         "CARD_EXPIRING": true,
-        "CARD_UPDATED": true
+        "CARD_UPDATED": true,
+        "TRIAL_NOT_GRANTED": true
       },
       "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
       "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -747,7 +936,13 @@ The seed (migration) is the **Default** column; identity fields are `null` until
       "billingRunIntervalSeconds": 60,
       "webhookIpAllowlistEnabled": false,
       "webhookIpAllowlist": [],
-      "refundMaxDays": 90
+      "refundMaxDays": 90,
+      "cardTokenRetentionDaysAfterEnd": 7,
+      "oneTrialPerCard": true,
+      "cardAttemptsPerEmailPerDay": 5,
+      "cardDeclineAlertThresholdPerHour": 20,
+      "cardSetupStopThresholdPerHour": 100,
+      "refundConfirmThresholdPesewas": 100000
     },
     "version": 5,
     "updatedAt": "2026-11-29T09:20:00Z",
@@ -788,6 +983,12 @@ The seed (migration) is the **Default** column; identity fields are `null` until
       "INVOICE": "SUB-2026-000001",
       "RECEIPT": "REC-2026-000001",
       "CREDIT_NOTE": "CN-2026-000001"
+    },
+    "health": {
+      "paused": false,
+      "reason": null,
+      "since": null,
+      "affectedSubscriptions": 0
     }
   }
 }
@@ -850,7 +1051,8 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
     "COMPLIMENTARY_ENDING": true,
     "COMPLIMENTARY_ENDED": true,
     "CARD_EXPIRING": true,
-    "CARD_UPDATED": true
+    "CARD_UPDATED": true,
+    "TRIAL_NOT_GRANTED": true
   },
   "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
   "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -879,6 +1081,12 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
   "webhookIpAllowlistEnabled": false,
   "webhookIpAllowlist": [],
   "refundMaxDays": 90,
+  "cardTokenRetentionDaysAfterEnd": 7,
+  "oneTrialPerCard": true,
+  "cardAttemptsPerEmailPerDay": 5,
+  "cardDeclineAlertThresholdPerHour": 20,
+  "cardSetupStopThresholdPerHour": 100,
+  "refundConfirmThresholdPesewas": 100000,
   "version": 0
 }
 ```
@@ -938,7 +1146,8 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
     "COMPLIMENTARY_ENDING": true,
     "COMPLIMENTARY_ENDED": true,
     "CARD_EXPIRING": true,
-    "CARD_UPDATED": true
+    "CARD_UPDATED": true,
+    "TRIAL_NOT_GRANTED": true
   },
   "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
   "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -967,6 +1176,12 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
   "webhookIpAllowlistEnabled": false,
   "webhookIpAllowlist": [],
   "refundMaxDays": 90,
+  "cardTokenRetentionDaysAfterEnd": 7,
+  "oneTrialPerCard": true,
+  "cardAttemptsPerEmailPerDay": 5,
+  "cardDeclineAlertThresholdPerHour": 20,
+  "cardSetupStopThresholdPerHour": 100,
+  "refundConfirmThresholdPesewas": 100000,
   "version": 0
 }
 ```
@@ -1026,7 +1241,8 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
     "COMPLIMENTARY_ENDING": true,
     "COMPLIMENTARY_ENDED": true,
     "CARD_EXPIRING": true,
-    "CARD_UPDATED": true
+    "CARD_UPDATED": true,
+    "TRIAL_NOT_GRANTED": true
   },
   "invoiceNumberFormat": "INV-{YYYY}",
   "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -1055,6 +1271,12 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
   "webhookIpAllowlistEnabled": false,
   "webhookIpAllowlist": [],
   "refundMaxDays": 90,
+  "cardTokenRetentionDaysAfterEnd": 7,
+  "oneTrialPerCard": true,
+  "cardAttemptsPerEmailPerDay": 5,
+  "cardDeclineAlertThresholdPerHour": 20,
+  "cardSetupStopThresholdPerHour": 100,
+  "refundConfirmThresholdPesewas": 100000,
   "version": 0
 }
 ```
@@ -1114,7 +1336,8 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
     "COMPLIMENTARY_ENDING": true,
     "COMPLIMENTARY_ENDED": true,
     "CARD_EXPIRING": true,
-    "CARD_UPDATED": true
+    "CARD_UPDATED": true,
+    "TRIAL_NOT_GRANTED": true
   },
   "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
   "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -1143,6 +1366,12 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
   "webhookIpAllowlistEnabled": false,
   "webhookIpAllowlist": [],
   "refundMaxDays": 90,
+  "cardTokenRetentionDaysAfterEnd": 7,
+  "oneTrialPerCard": true,
+  "cardAttemptsPerEmailPerDay": 5,
+  "cardDeclineAlertThresholdPerHour": 20,
+  "cardSetupStopThresholdPerHour": 100,
+  "refundConfirmThresholdPesewas": 100000,
   "version": 0
 }
 ```
@@ -1202,7 +1431,8 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
     "COMPLIMENTARY_ENDING": true,
     "COMPLIMENTARY_ENDED": true,
     "CARD_EXPIRING": true,
-    "CARD_UPDATED": true
+    "CARD_UPDATED": true,
+    "TRIAL_NOT_GRANTED": true
   },
   "invoiceNumberFormat": "SUB-{YYYY}-{NNNNNN}",
   "receiptNumberFormat": "REC-{YYYY}-{NNNNNN}",
@@ -1231,6 +1461,12 @@ Invalid requests (each is rejected by the schema and by the server with `400`, n
   "webhookIpAllowlistEnabled": false,
   "webhookIpAllowlist": [],
   "refundMaxDays": 90,
+  "cardTokenRetentionDaysAfterEnd": 7,
+  "oneTrialPerCard": true,
+  "cardAttemptsPerEmailPerDay": 5,
+  "cardDeclineAlertThresholdPerHour": 20,
+  "cardSetupStopThresholdPerHour": 100,
+  "refundConfirmThresholdPesewas": 100000,
   "version": 0
 }
 ```
@@ -1311,6 +1547,7 @@ One row per environment: `public_key`, `secret_key` (AES-GCM with a **versioned 
 
 `PUT /api/v1/platform/billing/credentials/{environment}` (`environment` = `test` | `live`): body `{publicKey, secretKey, expectedVersion?}` (a stale `expectedVersion` is `409 CREDENTIALS_VERSION_CONFLICT`); the prefixes must match the path (`pk_test_` / `sk_test_` for `test`, `pk_live_` / `sk_live_` for `live`, else `400` with the field message), 16..128 letters and digits after the prefix. It stores the secret encrypted, sets `UNVERIFIED`, resets `verified_at` and returns `CredentialStatus`. The new pair is used immediately (key rotation after a leak must not wait); the operator is expected to press Verify right away.
 **A Paystack `401` or `403` on any billing call (our key is wrong, revoked or rotated) is a platform fault, never a member fault**: the environment status becomes `FAILED`, the billing jobs skip that environment until a `verify` succeeds (no charge is marked failed, no grace starts, no subscription changes state), and a metric and alert fire.
+**Accepted decision (owner, 2026-11-28; section 20.3 item 9):** while OUR keys are rejected, or `billingEnabled` is off while billing-managed subscriptions exist, those tenants keep FULL access (the fault is ours) and there is NO ceiling after which access is restricted. The risk is made visible instead: `BillingSettingsView.health` reports `paused`, `reason` (`KEY_REJECTED`, `BILLING_DISABLED`), `since` and the number of affected subscriptions; the console shows a persistent SUPER_ADMIN banner while `paused` is true, an alert fires on entry, and entering and leaving the state is audited (`BILLING_PAUSED`, `BILLING_RESUMED`).
 `CredentialStatus.webhookUrl` is the URL to paste in that Paystack dashboard (test and live dashboards each have ONE webhook URL, so the environment is carried in the PATH, never guessed from the body, M6); it is built from server configuration (`billing.webhook-base-url`), never from input.
 
 <!-- example: credentials-request-test valid CredentialsRequest -->
@@ -1588,7 +1825,7 @@ The decision is taken at `POST /verify` (the moment the OTP is accepted) and sto
 | `cardRequired` | boolean | same | `true` only in `AWAITING_CARD` (a card still has to be added); `false` afterwards |
 | `cardSetupToken` | string | **verify response only**, only while `phase = AWAITING_CARD` | random (>= 32 characters of `A-Za-z0-9_-`), shown once, stored hashed, single use for a successful authorization, expires in <= 30 minutes, bound to the signup's tenant id. **Never returned by `/status`** (that endpoint is unauthenticated and polled by slug; returning the token there would hand it to anyone who knows a slug) |
 | `cardSetupExpiresAt` | timestamp | with the token | expiry of the token |
-| `cardSetup` | object | with the token | everything the card step displays, from the server only: `plan {code,name}` (the default sign-up plan), `trialDays`, `trialEndsAtEstimate` (now + `trialDays`; the real value is set when provisioning completes, a few seconds later, so the UI says "on or about"), `firstChargePesewas` (the plan's monthly price: the first charge, automatic at trial end), `verificationAmountPesewas` (the hold, refunded at once, O1), `currency` |
+| `cardSetup` | object | with the token | everything the card step displays, from the server only: `plan {code,name}` (the default sign-up plan), `trialEligible` (false when the owner e-mail already had a trial in this environment, 5.7), `trialDays` (0 when not eligible), `trialEndsAtEstimate` (now + `trialDays`; the real value is set when provisioning completes, a few seconds later, so the UI says "on or about"), `firstChargePesewas` (the plan's monthly price: the first charge, automatic at trial end), `verificationAmountPesewas` (the hold, refunded at once, O1), `currency` |
 
 <!-- example: verify-accepted-card-required response OnboardingCardEnvelope 202 -->
 ```json
@@ -1606,8 +1843,38 @@ The decision is taken at `POST /verify` (the moment the OTP is accepted) and sto
         "code": "STARTER",
         "name": "Starter"
       },
+      "trialEligible": true,
       "trialDays": 14,
       "trialEndsAtEstimate": "2026-12-11T09:30:00Z",
+      "firstChargePesewas": 14900,
+      "verificationAmountPesewas": 100,
+      "currency": "GHS"
+    }
+  }
+}
+```
+
+A repeat owner (`oneTrialPerCard`, 5.7): no free trial, the first charge happens at provisioning, the card step says so:
+
+<!-- example: verify-accepted-card-required-no-trial response OnboardingCardEnvelope 202 -->
+```json
+{
+  "description": "Card required to start the subscription",
+  "data": {
+    "slug": "again-store",
+    "status": "PROVISIONING",
+    "phase": "AWAITING_CARD",
+    "cardRequired": true,
+    "cardSetupToken": "cst_Zy9xW8vU7tS6rQ5pN4mL3kJ2hG1fE0dC",
+    "cardSetupExpiresAt": "2026-11-27T09:56:00Z",
+    "cardSetup": {
+      "plan": {
+        "code": "STARTER",
+        "name": "Starter"
+      },
+      "trialEligible": false,
+      "trialDays": 0,
+      "trialEndsAtEstimate": "2026-11-27T09:26:00Z",
       "firstChargePesewas": 14900,
       "verificationAmountPesewas": 100,
       "currency": "GHS"
@@ -1663,7 +1930,7 @@ The decision is taken at `POST /verify` (the moment the OTP is accepted) and sto
 
 Public (`permitAll`, exact path, POST only, placed before the SUPER_ADMIN rule of `/api/v1/platform/**`), no cookie, no CORS beyond the onboarding zone ([onboarding.md](onboarding.md) section 11). Header `X-Card-Setup-Token: <cardSetupToken>` (required; never a query parameter, never logged). Body `{ "slug": "<signup slug>" }` (`CardSetupInitRequest`).
 The server loads the signup by the token hash, checks that it belongs to `slug` and is in `AWAITING_CARD`, creates the Paystack transaction with: the active environment's keys, `channels = allowedChannels`, `amount = cardVerificationAmountPesewas`, `currency GHS`, the signup OWNER e-mail from our row (never from the request), a fresh reference `sub-card-<t|l>-<24 chars>`, metadata `{kind: card_setup, tenantId}`, and a callback URL built from configuration (never from input);
-it records the setup (reference, amount, environment, token) and returns ONLY the hosted checkout URL and the reference (`200`). Initializing again for the same signup abandons the previous reference (it can no longer be verified).
+it records the setup (reference, amount, environment, token) and returns ONLY the hosted checkout URL and the reference (`200`). **The server checks that the `authorization_url` Paystack returned starts with `https://checkout.paystack.com/` before handing it out** (any other host is refused: `503 PROVIDER_UNAVAILABLE`, nothing returned, an alert fires), so a wrong provider URL can never turn the card step into a redirect to another site. The callback URL sent to Paystack is built from configuration for the platform origin. Initializing again for the same signup abandons the previous reference (it can no longer be verified).
 
 <!-- example: card-initialize-request valid CardSetupInitRequest -->
 ```json
@@ -1697,8 +1964,8 @@ it records the setup (reference, amount, environment, token) and returns ONLY th
 
 Header `X-Card-Setup-Token` required. The server calls Paystack `verify` for the reference (never trusts the redirect or any client value, S3) and accepts ONLY when all hold:
 the reference is the one initialized for this token's signup, the transaction is `success`, amount equals `cardVerificationAmountPesewas`, currency `GHS`, `authorization.reusable == true`, `authorization.channel` is in `recurringChannels`, and the customer e-mail equals the signup owner e-mail (case-insensitive).
-Then, in one unit of work: the authorization is stored (`authorization_code` encrypted, S1; display data brand, last4, expiry, bank), the verification payment is recorded `SUCCESS` with purpose `CARD_VERIFY` and **refunded immediately** (an adjustment row of type `REFUND`, reason `CARD_VERIFY`; **no invoice, no receipt, no credit note**: a verification hold is not a sale, BR-04), and provisioning is queued. A refund call that fails does not block the signup: it is retried by the billing job and shows as an open item in the console until done.
-`200` returns the new phase and the card display data. The call is **idempotent**: repeating it with the same reference and token within 15 minutes of success returns the same `200` without side effects (a browser refresh on the callback page).
+Then, in one unit of work: the one-trial-per-card check runs (5.7), the authorization is stored (`authorization_code` encrypted, S1; display data brand, last4, expiry, bank), the verification payment is recorded `SUCCESS` with purpose `CARD_VERIFY` and **refunded immediately** (an adjustment row of type `REFUND`, reason `CARD_VERIFY`; **no invoice, no receipt, no credit note**: a verification hold is not a sale, BR-04), and provisioning is queued. A refund call that fails does not block the signup: it is retried by the billing job and shows as an open item in the console until done.
+`200` returns the new phase, the card display data and `trialGranted` (false when 5.7 withheld the trial). The call is **idempotent**: repeating it with the same reference and token within 15 minutes of success returns the same `200` without side effects (a browser refresh on the callback page).
 (`GET` with a server-side effect is the board's contract; the custom header makes it non-forgeable cross-site and the result is idempotent.)
 
 <!-- example: card-callback-verified response CardSetupVerifyEnvelope 200 -->
@@ -1717,7 +1984,30 @@ Then, in one unit of work: the authorization is stored (`authorization_code` enc
       "expYear": 2029,
       "bank": "Test Bank",
       "expiringSoon": false
-    }
+    },
+    "trialGranted": true
+  }
+}
+```
+
+<!-- example: card-callback-verified-no-trial response CardSetupVerifyEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "slug": "again-store",
+    "status": "PROVISIONING",
+    "phase": "PROVISIONING",
+    "cardRequired": false,
+    "card": {
+      "brand": "visa",
+      "last4": "4081",
+      "expMonth": 12,
+      "expYear": 2029,
+      "bank": "Test Bank",
+      "expiringSoon": false
+    },
+    "trialGranted": false
   }
 }
 ```
@@ -1729,7 +2019,8 @@ Failures (the token survives failed attempts, not a success; at most 5 failed at
 | 400 | `CARD_AUTH_FAILED`, `retryAllowed`, `reason` (`DECLINED`, `ABANDONED`, `NOT_REUSABLE`, `NOT_CARD`, `AMOUNT_MISMATCH`, `EMAIL_MISMATCH`, `UNKNOWN`) | declined, abandoned, non-reusable authorization, a non-recurring channel (for example mobile money while `recurringChannels` is `["card"]`), wrong amount (tampering), customer e-mail differs. The `description` is a fixed message (`We could not verify this card. Try another card.`); the `reason` is for the UI and logs, never raw provider text |
 | 404 | none | token unknown, expired, already consumed by a success (and the replay window over), belonging to another signup, or the signup has no card step: ONE body for all of them, so nothing can be probed (`Card setup not found or expired`) |
 | 409 | `BILLING_NOT_CONFIGURED` | billing was switched off or the credentials failed after the verify step |
-| 429 | none | rate limit (section 18) |
+| 429 | none | rate limit (section 18), including the per-e-mail daily cap (5.8) |
+| 503 | `CARD_SETUP_PAUSED` | platform-wide card-step stop threshold reached (5.8): no new card setup is started; the wizard says to try again later |
 | 503 | `PROVIDER_UNAVAILABLE` | Paystack unreachable; the wizard keeps the reference and offers "try again" (the verify is repeatable) |
 
 <!-- example: card-auth-failed-declined response CardAuthFailedEnvelope 400 -->
@@ -1774,11 +2065,21 @@ Failures (the token survives failed attempts, not a success; at most 5 failed at
 }
 ```
 
+<!-- example: card-setup-paused response CardSetupPausedEnvelope 503 -->
+```json
+{
+  "description": "Card setup is temporarily unavailable. Try again later.",
+  "data": {
+    "code": "CARD_SETUP_PAUSED"
+  }
+}
+```
+
 ### 5.5 After the card is on file
 
 1. Provisioning runs as today (PENDING -> PROVISIONING -> ACTIVE). Provisioning failure leaves no subscription row and keeps the card (BILL-02 AC4).
 2. In the SAME transaction as the tenant becoming `ACTIVE`, the subscription row is created: event E1 (`TRIALING`, payment `CURRENT`, access `FULL`, `billingMode PAYSTACK`, `environment` = the active one, `next_billing_at = trial_ends_at`, locked price = the default plan's monthly price at that moment, interval `MONTHLY`, anchor = `trial_ends_at`).
-3. `trialDays` of the default plan (>= 1, [plans.md](plans.md) section 7) sets `trial_ends_at` once. A plan with `trialDays = 0` is impossible as the default sign-up plan.
+3. `trialDays` of the default plan (>= 1, [plans.md](plans.md) section 7) sets `trial_ends_at` once. A plan with `trialDays = 0` is impossible as the default sign-up plan. **Exception (5.7):** when the trial is withheld (`trialGranted: false`), `trial_ends_at` is the provisioning-complete instant itself (a zero-length trial); the subscription is `TRIALING` for at most one billing round and the first charge is taken by the normal trial-end job (7.2). A billing-managed tenant in that moment is not read-only (3.4).
 4. The first charge happens automatically at `trial_ends_at` (section 7.2).
 5. A signup abandoned at the card step is a PENDING tenant that follows the existing stale-signup purge ([onboarding.md](onboarding.md) section 6); the stored token and card setup rows die with it. No money was moved except a possible verification hold that was refunded or is listed for refund.
 6. `POST /resend` and `POST /verify` on a signup that is `AWAITING_CARD`: allowed (a fresh OTP gives a fresh token and invalidates the old one; this is how a user who lost the token or whose token expired restarts). The OTP rules, lockouts and resend limits of onboarding.md are unchanged.
@@ -1787,6 +2088,21 @@ Failures (the token survives failed attempts, not a success; at most 5 failed at
 
 Keep `cardSetupToken` AND the `cardSetup` object (the status endpoint returns neither, so a resumed card step has nothing else to display) in memory or `sessionStorage` for the wizard session and send the token in the header; never in a URL, never logged. Allow-list the checkout URL host (`checkout.paystack.com`, plus the fake in the e2e config) before redirecting.
 Validate `reference` (charset `A-Za-z0-9-`, length 8..64) on the callback route, call `callback-verify`, then `history.replaceState` the reference out of the URL and continue with status polling. Map `404` to "Start again", `CARD_AUTH_FAILED` to the fixed message with "Try another card" (re-initialize), and an unknown `phase` or `status` to the existing error screen. Card step copy (trial days, price, date, hold) comes only from `cardSetup`.
+
+### 5.7 One trial per card and owner (`oneTrialPerCard`, default true; Security M4)
+
+Without a rule a member could cancel during the trial (no charge, 7.3) and sign up again with a new e-mail and the same card, for ever. With `oneTrialPerCard`:
+
+- The billing service keeps, per ENVIRONMENT, a keyed hash (HMAC-SHA-256 with a server secret, never a plain hash) of the owner e-mail (lower-cased) and a keyed hash of Paystack's card fingerprint (`authorization.signature`). Neither value is ever returned by an API (S1), logged or put in an audit row; only the hashes are stored, in `billing_trial_marks` (insert-only; a row is written when a trial STARTS).
+- **At `verify` (OTP accepted):** if the owner e-mail hash is already marked in this environment, `cardSetup.trialEligible` is `false` and `trialDays` is `0` (the card step says "no free trial, the first charge is taken when your store is created", copy from the frontend, driven by `trialEligible`).
+- **At `callback-verify`:** if the card fingerprint hash is already marked in this environment (any other tenant), the trial is withheld too (`trialGranted: false`). The card is still accepted; the member is told on the callback result and by the `TRIAL_NOT_GRANTED` e-mail.
+- **Provisioning with no trial:** `trial_ends_at` = the provisioning-complete instant, `TRIALING` for one round, then the normal trial-end charge (7.2): purpose `TRIAL_CONVERSION`, reference `sub-<env>-<tenantId>-tc-0-1`, failure policy of section 8 (grace and retries as for any first charge). No new state, event or access value exists for it.
+- When a trial is granted both hashes are marked. A TEST-environment mark never affects LIVE. Turning the setting off stops the checks and keeps the marks.
+- A platform admin can still grant a trial deliberately (`EXTEND_TRIAL`, 7.11); the rule limits only the automatic signup trial.
+
+### 5.8 Card-step abuse limits (Security L3)
+
+The public card step is a GHS 1.00 card authorization oracle behind only an e-mail OTP, so it has velocity controls beyond the per-IP and per-token buckets of section 18: (a) a **per-owner-e-mail daily cap** (`cardAttemptsPerEmailPerDay`, default 5 attempts per UTC day, across tokens and resends: `429` with `Retry-After`), (b) a **platform-wide decline-velocity alert** when more than `cardDeclineAlertThresholdPerHour` `CARD_AUTH_FAILED` happen in an hour (metric `shopfi.billing.card.declines`, admin alert), and (c) a **platform-wide stop**: above `cardSetupStopThresholdPerHour` card-step attempts in an hour no new card setup token or checkout is issued (`503 CARD_SETUP_PAUSED`) until the rate falls back; the stop is a metric, an alert and an audit row. All three thresholds are settings (4.1). Counters are database-backed (not in-JVM) so several instances share them.
 
 ## 6. Money rules (BR-03, BR-07, BR-08, BR-09, FR-10, FR-16)
 
@@ -2345,13 +2661,13 @@ See 6.4. **This supersedes PLAN-03 AC6** ("a price change affects only the next 
 
 ### 7.9 Complimentary plans (O13, FR-22)
 
-`POST /api/v1/platform/billing/subscriptions/{slug}/complimentary` `{planId, until, reason, allowInactive?, expectedVersion}`: grants the plan with `complimentary = true`, lifecycle `ACTIVE`, access `FULL`, payment `NONE` (E16; any pending change and cancellation flag are cleared; a running trial or paid period is replaced). Billing is paused: no charges, no renewal or trial reminders (only the complimentary-ending notices, section 16), `next_billing_at` empty, no card required. `until`: a future instant at most 5 years ahead, or `null` for open-ended; an inactive plan needs `allowInactive: true`. Fully audited with the reason. `DELETE` (body `{reason, expectedVersion}`) ends it now.
+`POST /api/v1/platform/billing/subscriptions/{slug}/complimentary` `{planId, until, reason, allowInactive?, expectedVersion}`: grants the plan with `complimentary = true`, lifecycle `ACTIVE`, access `FULL`, payment `NONE` (E16; any pending change and cancellation flag are cleared; a running trial or paid period is replaced). Billing is paused: no charges, no renewal or trial reminders (only the complimentary-ending notices, section 16), `next_billing_at` empty, no card required. `until`: a future instant at most 5 years ahead, or `null` for open-ended; an inactive plan needs `allowInactive: true`. Fully audited with the reason. `DELETE` (body `{reason, expectedVersion}`) ends it now. Both need an `Idempotency-Key`.
 **At the end** (E17): with a card on file the paid subscription resumes (a renewal charge is due at the end instant, anchor = the end instant, the same failure policy); without a card the failure policy `NO_CARD` applies (grace, reminders, no charge attempts). Complimentary subscriptions are excluded from revenue, MRR and active counts (section 14). `409 NOT_COMPLIMENTARY` for the end call on a paid subscription.
 
 ### 7.10 Refunds (FR-22, BR-08, O11)
 
-`POST /api/v1/platform/billing/payments/{id}/refund` `{amountPesewas, reason, cancelSubscription?}` + `Idempotency-Key` (SUPER_ADMIN, throttled). Only a `SUCCESS` payment of a purpose other than `CARD_VERIFY`, within `refundMaxDays` of `paidAt`, in the same environment (`REFUND_NOT_ALLOWED` reasons `PAYMENT_NOT_SUCCESSFUL`, `CARD_VERIFY`, `WINDOW_EXPIRED`, `WRONG_ENVIRONMENT`, `NOTHING_REFUNDABLE`); `amountPesewas` 1..`refundableRemainingPesewas` (`409 REFUND_EXCEEDS_REMAINING` with `remainingPesewas`). Partial and repeated refunds are allowed up to the remaining amount.
-The refund goes to Paystack with a deterministic key; the refund request row is `PENDING` until Paystack confirms: `200` `COMPLETED` (the adjustment row and the credit note exist) or `202` `PENDING` (finished by the `refund.processed` webhook or reconciliation; `refund.failed` makes it `FAILED` and frees the amount). The original payment, invoice and receipt are never edited (BR-08). The refund changes NO access and NO state, unless the same request carries `cancelSubscription: true`, which schedules non-renewal (E9, the same as `CANCEL_AT_PERIOD_END`; an immediate end is the separate `CANCEL_NOW` action). Refunding an upgrade charge does not revert the plan. A double click is one refund. A refund in TEST never touches a LIVE record.
+`POST /api/v1/platform/billing/payments/{id}/refund` `{amountPesewas, reason, cancelSubscription?, confirmAmountPesewas?}` + `Idempotency-Key` (SUPER_ADMIN, throttled). **Second confirmation:** a refund ABOVE `refundConfirmThresholdPesewas` (default GHS 1,000; 0 = every refund) must carry `confirmAmountPesewas` equal to `amountPesewas` (the amount typed again); missing or different is `400` with that field. (One SUPER_ADMIN with a reason, no second approver, O11.) Only a `SUCCESS` payment of a purpose other than `CARD_VERIFY`, within `refundMaxDays` of `paidAt`, in the same environment (`REFUND_NOT_ALLOWED` reasons `PAYMENT_NOT_SUCCESSFUL`, `CARD_VERIFY`, `WINDOW_EXPIRED`, `WRONG_ENVIRONMENT`, `NOTHING_REFUNDABLE`); `amountPesewas` 1..`refundableRemainingPesewas` (`409 REFUND_EXCEEDS_REMAINING` with `remainingPesewas`). Partial and repeated refunds are allowed up to the remaining amount.
+The refund goes to Paystack with our deterministic refund key `sub-rf-<t|l>-<refundId>` as its `merchant_note`; the refund request row is `PENDING` until Paystack confirms: `200` `COMPLETED` (the adjustment row and the credit note exist) or `202` `PENDING` (finished by the `refund.processed` webhook or reconciliation; `refund.failed` makes it `FAILED` and frees the amount). The original payment, invoice and receipt are never edited (BR-08). The refund changes NO access and NO state, unless the same request carries `cancelSubscription: true`, which schedules non-renewal (E9, the same as `CANCEL_AT_PERIOD_END`; an immediate end is the separate `CANCEL_NOW` action). Refunding an upgrade charge does not revert the plan. A double click is one refund. A refund in TEST never touches a LIVE record.
 
 <!-- example: refund-request valid RefundRequest -->
 ```json
@@ -2367,6 +2683,25 @@ The refund goes to Paystack with a deterministic key; the refund request row is 
   "amountPesewas": 5000,
   "reason": "Goodwill refund and closing the account",
   "cancelSubscription": true
+}
+```
+
+<!-- example: refund-request-large valid RefundRequest -->
+```json
+{
+  "amountPesewas": 150000,
+  "reason": "Duplicate annual charge, full refund",
+  "confirmAmountPesewas": 150000
+}
+```
+
+<!-- example: refund-confirmation-required response ValidationErrorEnvelope 400 -->
+```json
+{
+  "description": "Validation failed",
+  "data": {
+    "confirmAmountPesewas": "must repeat the amount for refunds above the confirmation threshold"
+  }
 }
 ```
 
@@ -2538,7 +2873,7 @@ The refund goes to Paystack with a deterministic key; the refund request row is 
 
 ### 7.11 Manual admin actions (FR-22, BR-10)
 
-`POST /api/v1/platform/billing/subscriptions/{slug}/actions` `{action, reason, expectedVersion, ...}`; `reason` required (plain text 5..500), `expectedVersion` required (stale: `409 SUBSCRIPTION_VERSION_CONFLICT`), SUPER_ADMIN only, throttled per admin. Each action runs through `SubscriptionStateService`, is audited (actor admin id and e-mail, reason, before / after), evicts the cache after commit, and answers with the new `SubscriptionDetail`. A state in which the action is illegal: `409 ACTION_NOT_ALLOWED` with the `action`, `lifecycleStatus` and `accessState`.
+`POST /api/v1/platform/billing/subscriptions/{slug}/actions` `{action, reason, expectedVersion, ...}`; `reason` required (plain text 5..500), `expectedVersion` required (stale: `409 SUBSCRIPTION_VERSION_CONFLICT`), SUPER_ADMIN only, throttled per admin. **Every action that moves money (`CHANGE_PLAN` with `charge: true`, `RETRY_PAYMENT_NOW`) and the complimentary grant / end (7.9) require an `Idempotency-Key`** (a network retry replays the stored answer instead of a confusing `409`); the other actions rely on `expectedVersion`. Each action runs through `SubscriptionStateService`, is audited (actor admin id and e-mail, reason, before / after), evicts the cache after commit, and answers with the new `SubscriptionDetail`. A state in which the action is illegal: `409 ACTION_NOT_ALLOWED` with the `action`, `lifecycleStatus` and `accessState`.
 
 | `action` | Extra fields | Legal from | Effect |
 |---|---|---|---|
@@ -2546,10 +2881,10 @@ The refund goes to Paystack with a deterministic key; the refund request row is 
 | `RESTRICT` | | `TRIALING`, `ACTIVE`, `PAST_DUE` | access `READ_ONLY` now, `manualRestriction = true` (survives payments until `RESTORE`) |
 | `RESTORE` | | with `manualRestriction` | clears it and recomputes the access from the lifecycle and grace rules |
 | `EXTEND_TRIAL` | `trialEndsAt` (later than the current, in the future, <= now + 365 days) | `TRIALING` | E18: moves the first charge and the reminders (unsent trial reminders are rescheduled) |
-| `CHANGE_PLAN` | `planId`, `interval?`, `charge?`, `allowInactive?` | `TRIALING`, `ACTIVE`, `PAST_DUE` | immediate, no charge; with `charge: true` through the normal prorated path (the stored card is charged) |
+| `CHANGE_PLAN` | `planId`, `interval?`, `charge?`, `allowInactive?` | `TRIALING`, `ACTIVE`, `PAST_DUE` | immediate, no charge; with `charge: true` through the normal prorated path (the stored card is charged; **`Idempotency-Key` required**) |
 | `CANCEL_NOW` | | `TRIALING`, `ACTIVE`, `PAST_DUE` | E11 now: `CANCELED`, `READ_ONLY` (no refund) |
 | `CANCEL_AT_PERIOD_END` | | same | E9 |
-| `RETRY_PAYMENT_NOW` | | `PAST_DUE` | ONE attempt through the section 8 path (`PAYMENT_PENDING` while one is in flight) |
+| `RETRY_PAYMENT_NOW` | | `PAST_DUE` | ONE attempt through the section 8 path (`PAYMENT_PENDING` while one is in flight; **`Idempotency-Key` required**) |
 | `CLEAR_PENDING_CHANGE` | | with a pending change | clears it |
 
 <!-- example: action-activate-request valid SubscriptionActionRequest -->
@@ -3887,7 +4222,7 @@ The card is authorized by Paystack's hosted checkout; the browser never sends ca
 }
 ```
 
-`POST /api/v1/admin/billing/card/initialize` (ADMIN, throttled per tenant; no body): creates the verification transaction for the tenant OWNER e-mail of the master record, `channels = allowedChannels`, `amount = cardVerificationAmountPesewas`, a fresh `sub-card-...` reference stored against the tenant, a callback URL built from configuration for the tenant's admin origin (`/admin/settings/billing/card-callback`); returns `{checkoutUrl, reference, verificationAmountPesewas, currency, expiresAt}`.
+`POST /api/v1/admin/billing/card/initialize` (ADMIN, throttled per tenant; no body): creates the verification transaction for the tenant OWNER e-mail of the master record, `channels = allowedChannels`, `amount = cardVerificationAmountPesewas`, a fresh `sub-card-...` reference stored against the tenant, a callback URL `<tenant admin origin>/admin/settings/billing/card-callback` whose origin is read from the master TENANT RECORD (its platform subdomain or verified custom domain), **never from `Host`, `X-Forwarded-Host` or any request header or parameter**, so it cannot become an open redirect; the `authorization_url` returned by Paystack is checked to start with `https://checkout.paystack.com/` before it is returned (5.3); returns `{checkoutUrl, reference, verificationAmountPesewas, currency, expiresAt}`.
 
 <!-- example: member-card-initialize-response response CardCheckoutInitEnvelope 200 -->
 ```json
@@ -3903,7 +4238,7 @@ The card is authorized by Paystack's hosted checkout; the browser never sends ca
 }
 ```
 
-`POST /api/v1/admin/billing/card/verify` `{reference}`: server-side `verify` and the same acceptance rules as 5.4 (the reference is one this tenant initialized, success, amount, GHS, reusable, channel in `recurringChannels`, customer e-mail = the owner e-mail). It stores the new authorization (encrypted), marks the old one `REPLACED` (never deleted), refunds the hold at once (`verificationRefunded`), converts a `MANUAL` tenant to `PAYSTACK` (E19), and, when the subscription is `PAST_DUE`, starts ONE immediate charge attempt (`retryPayment`, 8.6). The `card_expiring` notice fires at most once per card.
+`POST /api/v1/admin/billing/card/verify` `{reference}`: server-side `verify` and the same acceptance rules as 5.4 (the reference is one this tenant initialized, success, amount, GHS, reusable, channel in `recurringChannels`, customer e-mail = the owner e-mail). It stores the new authorization (encrypted), marks the old one `REPLACED` (the row and its display data are never deleted, the token is: 9.5.1), refunds the hold at once (`verificationRefunded`), converts a `MANUAL` tenant to `PAYSTACK` (E19), and, when the subscription is `PAST_DUE`, starts ONE immediate charge attempt (`retryPayment`, 8.6). The `card_expiring` notice fires at most once per card.
 Failures: `400 CARD_AUTH_FAILED` (`retryAllowed`, `reason`), `404` for a reference that is not this tenant's, `409 BILLING_NOT_CONFIGURED`, `409 PAYMENT_PENDING` (a retry is already in flight), `503 PROVIDER_UNAVAILABLE`.
 
 <!-- example: card-verify-request valid CardVerifyRequest -->
@@ -4234,6 +4569,18 @@ Failures: `400 CARD_AUTH_FAILED` (`retryAllowed`, `reason`), `404` for a referen
   }
 }
 ```
+
+### 9.5.1 Authorization lifecycle (Security M1)
+
+An `authorization_code` is a live, reusable token that can charge the member's card, so it is kept only while it is needed. The authorization ROW (display metadata: brand, last4, expiry, bank; the reference; status) is never deleted; the encrypted code is erased:
+
+| Trigger | When |
+|---|---|
+| the authorization becomes `REPLACED` | when the member verifies a new card (9.5) |
+| the subscription has ENDED (`CANCELED` / `EXPIRED`) | `cardTokenRetentionDaysAfterEnd` days after the end (default 7, setting; 0 = immediately). A member who subscribes again inside the window reuses the card; the window then stops. A `MANUAL` conversion or a new subscription restarts nothing |
+| the tenant is purged | at once (also for an abandoned signup whose tenant is purged) |
+
+Procedure: call Paystack `customer/deactivate_authorization` for the code (an "already inactive" answer counts as success), then null the ciphertext (crypto-erase) and set the status `DEACTIVATED` in ONE step after the provider answered; a failed deactivation leaves the row as it is and **the billing round retries it with backoff**, raising a metric and alert after repeated failures (`shopfi.billing.authorization.cleanup.failed`). Audit: `CARD_DEACTIVATED`, `CARD_DEACTIVATION_FAILED`. Required tests (BILL-02, BILL-03, BILL-05 implementers, section 21): after each trigger no ciphertext of that authorization exists in the database, the display data and reference survive, the history and documents still render, and a charge with a deactivated authorization is impossible (`CARD_REQUIRED`).
 
 ### 9.6 Plan changes: preview, then apply (FR-10, FR-11, FR-12)
 
@@ -5679,6 +6026,84 @@ Rendering rules (S9): programmatic layout from the row only (no HTML-to-PDF rend
 ### 10.5 Delivery
 
 `INVOICE_AVAILABLE` is e-mailed once per document (dedupe key `invoice-available:<documentId>`, section 16) to the tenant owner e-mail with a link to `/admin/settings/billing` on the tenant host; no PDF is attached unless `attachPdfToEmail` is on (O18); the in-app banner `INVOICE_AVAILABLE` shows for 7 days. The member can re-send a document (`POST /documents/{id}/resend`, throttled) and the console can too.
+
+### 10.6 Erasure: personal-data redaction at render time (Security L7; answers O20's default)
+
+Documents and ledger rows are kept (BR-08, 4.5), but a member can ask for their personal data to be erased. The stored rows are NEVER changed (immutability, S6); instead a **redaction overlay** is applied when a document is READ or RENDERED:
+`POST /api/v1/platform/billing/tenants/{slug}/personal-data-redaction` `{reason}` (SUPER_ADMIN, `Idempotency-Key`, throttled, audited as `PERSONAL_DATA_REDACTED` with the reason; irreversible) records a redaction for the tenant. From then on `member` of every document of that tenant (JSON and PDF, member and platform views) renders as `{ "redacted": true }` (no shop name, owner name, owner e-mail or billing address), the tenant name and owner e-mail snapshots of the ledger and audit rows are shown as `redacted` in the console, and the owner e-mail is removed from the billing outbox rows. Business identity, amounts, numbers, dates and references are unaffected (they are the issuer's records). A tenant purge triggers nothing by itself; the retention period of the records remains the owner's call (O20), this is the mechanism for a specific erasure request.
+
+<!-- example: redaction-request valid RedactionRequest -->
+```json
+{
+  "reason": "Erasure request received from the owner on 2027-02-02"
+}
+```
+
+<!-- example: redaction-request-short invalid RedactionRequest 400 -->
+```json
+{
+  "reason": "x"
+}
+```
+
+<!-- example: redaction-result response RedactionResultEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "tenantSlug": "acme",
+    "documentsRedacted": 5,
+    "adjustmentsRedacted": 1,
+    "redactedAt": "2027-02-02T10:00:00Z"
+  }
+}
+```
+
+<!-- example: document-invoice-redacted response BillingDocumentEnvelope 200 -->
+```json
+{
+  "description": null,
+  "data": {
+    "id": 501,
+    "type": "INVOICE",
+    "number": "SUB-2026-000001",
+    "issuedAt": "2026-12-11T09:30:07Z",
+    "currency": "GHS",
+    "reference": "sub-l-12-tc-0-1",
+    "paymentId": 9001,
+    "adjustmentId": null,
+    "relatedDocumentId": null,
+    "status": "PAID",
+    "periodStart": "2026-12-11T09:30:00Z",
+    "periodEnd": "2027-01-11T09:30:00Z",
+    "plan": {
+      "code": "GROWTH",
+      "name": "Growth",
+      "interval": "MONTHLY"
+    },
+    "lineItems": [
+      {
+        "description": "Growth plan, monthly, 11 Dec 2026 to 11 Jan 2027",
+        "quantity": 1,
+        "unitAmountPesewas": 39900,
+        "amountPesewas": 39900
+      }
+    ],
+    "amounts": {
+      "netPesewas": 39900,
+      "taxPesewas": 0,
+      "totalPesewas": 39900,
+      "taxRateBps": null,
+      "taxInclusive": null,
+      "taxLabel": null
+    },
+    "business": {},
+    "member": {
+      "redacted": true
+    }
+  }
+}
+```
 
 ## 11. Platform console API (`/api/v1/platform/billing/**`, FR-22, FR-26, BR-10; BILL-06)
 
@@ -7154,7 +7579,11 @@ The detail: the three state fields, `manualRestriction`, the schedule (`currentP
 }
 ```
 
-### 11.8 Reconciliation and webhook event health
+### 11.8 Personal-data redaction
+
+`POST /api/v1/platform/billing/tenants/{slug}/personal-data-redaction`: 10.6.
+
+### 11.9 Reconciliation and webhook event health
 
 Sections 12.7 (`GET /webhook-events`, `POST /webhook-events/{id}/retry`) and 13 (`/reconciliation/**`).
 
@@ -7167,12 +7596,12 @@ The per-shop webhook (`POST /api/v1/webhook/{token}`, the shop's own secret, ord
 `POST /api/v1/platform/billing/webhooks/paystack/{environment}`, `environment` = `test` | `live` (anything else: `404`). Paste the matching URL in the matching Paystack dashboard (section 4.4).
 
 - **Security configuration**: an exact-path `permitAll` matcher for POST, placed BEFORE the `/api/v1/platform/**` SUPER_ADMIN rule (other methods fall to that rule: `401`). It must be verified that the tenant-resolution filter does not require a tenant for it (platform scope, no `Origin` needed) and that the platform Origin guard does not reject a header-less server-to-server POST. No cookie is read or set, no CORS headers, no tenant resolution, no authentication filter side effects.
-- **Raw body**: the bytes are read ONCE as received (the signature covers the exact bytes; never re-serialize), capped at **64 KiB** (`413` beyond; the cap is checked while reading, not after).
+- **Raw body**: the bytes are read ONCE as received (the signature covers the exact bytes; never re-serialize), capped at **64 KiB** (`413` beyond; the cap is enforced while STREAMING the body, never trusting `Content-Length`). **The HMAC is verified on the raw bytes BEFORE any JSON parsing.**
 - **Never log a body** (it carries the customer e-mail and authorization data), never log the signature or the secret, never put either in an error.
 
 ### 12.2 Signature
 
-Header `x-paystack-signature` = lower-case hex of `HMAC-SHA512(rawBody, secretKey)` where `secretKey` is the secret of the environment in the PATH (Paystack has no separate webhook secret, M6). The comparison is constant-time (`MessageDigest.isEqual` on the decoded bytes). A missing, malformed or wrong signature, or a signature made with the secret of the OTHER environment, is `401` with ONLY a counter incremented (`shopfi.billing.webhook.invalid`): no event row, no DB write beyond the counter, no body logged. An environment with no stored keys is `404` (the same body as an unknown environment, nothing to compare against).
+Header `x-paystack-signature` = lower-case hex of `HMAC-SHA512(rawBody, secretKey)` where `secretKey` is the secret of the environment in the PATH (Paystack has no separate webhook secret, M6). The comparison is constant-time (`MessageDigest.isEqual` on the decoded bytes). A missing, malformed or wrong signature, or a signature made with the secret of the OTHER environment, is `401` with ONLY a counter incremented (`shopfi.billing.webhook.invalid`): no event row, no DB write beyond the counter, no body logged. An environment with NO stored keys answers the SAME `401 Invalid signature` as a wrong signature (nothing to compare against, and an unauthenticated caller must not learn which environments are configured); only an environment segment other than `test` / `live` is `404`.
 Worked example (documentation values; the fake Paystack signs with the secret configured for the fake): the raw body is exactly the single line below, the signature is the HMAC-SHA512 hex of those bytes with the secret shown.
 
 ```text
@@ -7219,8 +7648,8 @@ secret (documentation value, not a key): `docs-example-secret-not-a-real-key`
 |---|---|---|
 | 200 | the signature is valid and the event is durably stored (committed) and queued, or it is a duplicate, or it is an event type we store and ignore | `{"description": null, "data": {"result": "Accepted" \| "Duplicate" \| "Ignored"}}` |
 | 400 | valid signature but the body is not a JSON object with a string `event` and an object `data` (malformed) | `Invalid payload` |
-| 401 | missing, malformed or wrong signature | `Invalid signature` |
-| 404 | unknown environment segment, or no keys stored for it | `Not found` |
+| 401 | missing, malformed or wrong signature, or no keys stored for that environment | `Invalid signature` |
+| 404 | the environment segment is not `test` or `live` (an unconfigured environment is the `401` above) | `Not found` |
 | 413 | body larger than 64 KiB | `Payload too large` |
 | 503 | the database is unavailable (so that Paystack retries); **never 5xx for a business outcome** | |
 
@@ -7322,8 +7751,8 @@ Every state change from an event re-verifies the subject with Paystack first (**
 |---|---|
 | `charge.success` | call Paystack `verify` for `data.reference`, then apply the VERIFIED result: payment `SUCCESS` (idempotent), subscription advanced by `SubscriptionStateService` (E2, E4, E8, E13 or the upgrade E14), `PaymentSucceeded` published (documents, mail) |
 | `charge.failed` | `verify`, then apply the verified failure: payment `FAILED` (never over a `SUCCESS`), E5 / E6 per the policy, `PaymentFailed` published. (Paystack's documented event list should be re-checked at the first real smoke test, O19: a synchronous `charge_authorization` answer and reconciliation already cover failures if this event is never sent) |
-| `refund.processed` | the refund request becomes `COMPLETED`, the adjustment row (negative) is inserted ONCE, the credit note is issued (idempotent by the refund key) |
-| `refund.failed` | the refund request becomes `FAILED`; the amount is refundable again |
+| `refund.processed` | **fetch the refund from Paystack first** (`GET /refund/{id}`, never trust the payload) and match it (below); only then the refund request becomes `COMPLETED`, the adjustment row (negative) is inserted ONCE, the credit note is issued (idempotent by the refund key) |
+| `refund.failed` | the same fetch and match; only then the refund request becomes `FAILED` and the amount is refundable again |
 | `refund.pending`, `refund.processing` | stored and ignored (the request stays `PENDING`) |
 | `charge.dispute.create` | **alert only** (metric, admin alert, audit row); no state, access or money change (O12) |
 | every other event | stored as `IGNORED`, answer `Ignored`; never an error |
@@ -7362,6 +7791,8 @@ Two more inbound examples (the refund and the dispute events; Paystack's payload
   }
 }
 ```
+
+**Refund match rule (Security M3), for `refund.processed`, `refund.failed` and reconciliation:** the local refund request is found by OUR deterministic refund key (`sub-rf-<t|l>-<refundId>`, sent to Paystack as the refund's `merchant_note` and read back from the fetched refund), and ALL of these must hold against the FETCHED refund: the transaction reference equals the local payment's reference, the amount equals the request's `amountPesewas`, the currency is `GHS`, the environment equals the path environment, and the request is still `PENDING`. **Any mismatch: change nothing**, flag the refund request, raise an audit row and an admin alert, and end the event `FAILED` with `failureClass VERIFY_MISMATCH` (a refund created from the Paystack dashboard, or an event for another refund of the same transaction, can therefore never complete the wrong request or the wrong amount, and a `refund.failed` can never free an amount wrongly). A refund at Paystack that matches no local request is NOT applied: it is the `ORPHAN_REFUND` reconciliation finding (13).
 
 The field checks of a verified charge (any mismatch: the payment is **flagged** (`flagged`, `flagReason`), an audit row and an admin alert are written, NO entitlement or state changes, the event ends `FAILED` with `failureClass VERIFY_MISMATCH`):
 
@@ -7459,7 +7890,7 @@ The field checks of a verified charge (any mismatch: the payment is **flagged** 
 
 A dedicated scheduler (`SmartLifecycle`, survives a failing round, two-key advisory leader lock) compares our records with Paystack so that a dropped webhook or a lost response never leaves money or access wrong. Every run is recorded (`billing_reconciliation_runs`: kind, environment, trigger, counts).
 
-1. **Incremental**, every `reconcileIntervalMinutes`: (a) every local payment stuck `INITIATED` / `PENDING` longer than a threshold is `verify`-ed and healed through the SAME apply path as the webhook; (b) the Paystack transaction list of the last `reconcileLookbackHours` is read (only references with the billing prefix and the environment's letter) and compared.
+1. **Incremental**, every `reconcileIntervalMinutes`: (a) every local payment AND every local `PENDING` refund request stuck `INITIATED` / `PENDING` longer than a threshold is `verify`-ed and healed through the SAME apply path as the webhook; (b) the Paystack transaction list of the last `reconcileLookbackHours` is read (only references with the billing prefix and the environment's letter) and compared.
 2. **Full scan**, nightly, over `reconcileFullScanDays`.
 3. **Manual**: `POST /api/v1/platform/billing/reconciliation/run` `{environment?, full?}` (SUPER_ADMIN, throttled): `202` with the run (`RUNNING`); `409 RECONCILIATION_IN_PROGRESS` while one runs for that environment.
 
@@ -7468,7 +7899,7 @@ A dedicated scheduler (`SmartLifecycle`, survives a failing round, two-key advis
 | `MISSING_LOCAL` | Paystack has a transaction with our prefix that no local row explains | **never**: it is reported only; the system never creates a money row from an unknown remote transaction |
 | `AMOUNT_MISMATCH` | amounts differ between the local row and Paystack | reported; the row is flagged; no entitlement change |
 | `STATUS_MISMATCH` | statuses differ. Remote `success` with a local `INITIATED` / `PENDING` row and matching amount is healed by the apply path (and counted `healed`); a local `SUCCESS` that Paystack reports as failed, reversed or absent is reported only (money is never moved backwards automatically) | partially, as stated |
-| `ORPHAN_REFUND` | a refund exists at Paystack with no local refund request | reported only |
+| `ORPHAN_REFUND` | a refund exists at Paystack that matches no local refund request by the match rule of 12.5 (key, transaction reference, amount, environment) | reported only; a refund that matches nothing is never applied |
 
 A finding is `OPEN` or `RESOLVED`; resolving needs a reason (5..500 characters) and is audited; a resolved finding is not raised again for the same reference and state. Tests on the fake: a dropped webhook is healed by reconciliation; a wrong-amount remote success becomes a finding, never an entitlement.
 
@@ -7878,6 +8309,7 @@ All billing jobs are MASTER-level (`TenantScope.PLATFORM`): they never iterate t
 | webhook event worker | continuous | processes `billing_webhook_events` (12.6) |
 | reconciliation | `reconcileIntervalMinutes`, nightly full | section 13 |
 | outbox drain | seconds | sends `billing_outbox` mail through `MailTransport` (16.1) |
+| authorization cleanup | same round | deactivates at Paystack and erases the encrypted code of `REPLACED` authorizations, of ended subscriptions after `cardTokenRetentionDaysAfterEnd` days and of purged tenants; retries failed deactivations with backoff (9.5.1) |
 | document issuing | in the transaction of the payment | not a job: section 10 |
 
 Order inside one round: retries before grace expiry (an attempt clamped to `graceEndsAt` runs first); a pending payment is resolved by `verify` before any new attempt for the same subscription; the scheduled plan change is applied before the renewal charge.
@@ -7890,7 +8322,8 @@ Billing data is MASTER data, so billing notifications do not use the tenant outb
 
 - Sent after the commit of the change that caused them (the outbox row is written in the SAME transaction); restart-safe and delivered once (a kill between commit and send still delivers once).
 - `emailEnabled[kind] = false` suppresses only the e-mail; banners are driven by state and are never switched off.
-- An e-mail never contains card data, an authorization, a secret or a long-lived secret link; links go to `/admin/settings/billing` on the tenant host (host from configuration). The address is never logged.
+- An e-mail never contains card data, an authorization, a secret or a long-lived secret link; links go to `/admin/settings/billing` on the tenant host (host from the tenant record, never a request header). The address is never logged.
+- **Templates escape everything** (Thymeleaf `th:text` only, never `th:utext`, in plain-text and HTML templates): `shopName`, owner name and every other variable are member-controlled. Subjects are built from the template with CR and LF (and every other control character) stripped from variables, so a variable can never inject a header.
 - A reminder for an instant that is already past when it would be scheduled is skipped (never sent early or late); a charge reminder (`TRIAL_REMINDER`, `TRIAL_ENDS_TODAY`, `RENEWAL_REMINDER`) is not sent while `cancelAtPeriodEnd` is set or the subscription is complimentary. Changing a reminder setting affects only reminders not yet sent; an edited trial end reschedules and cancels the pending reminders.
 - Template variables are an allow-list: `shopName`, `planName`, `interval`, `amount` (from pesewas, formatted by the template), `dueDate`, `trialEndsAt`, `daysLeft`, `graceEndsAt`, `nextRetryAt`, `cardBrand`, `cardLast4`, `cardExpiry`, `invoiceNumber`, `documentType`, `effectiveAt`, `oldAmount`, `newAmount`, `billingUrl`.
 
@@ -7926,6 +8359,7 @@ Billing data is MASTER data, so billing notifications do not use the tenant outb
 | `COMPLIMENTARY_ENDED` | the complimentary term ended | E | event (E17) | planName | `complimentary-ended:{tenantId}:{untilEpoch}` |
 | `CARD_EXPIRING` | the default card expires this or next month | E, B | at the first round of the month before expiry | cardBrand, cardLast4, cardExpiry | `card-expiring:{authorizationId}` |
 | `CARD_UPDATED` | the default card was replaced | E | event | cardBrand, cardLast4 | `card-updated:{authorizationId}` |
+| `TRIAL_NOT_GRANTED` | provisioning completed without a free trial (`oneTrialPerCard`, 5.7): states that the first charge is taken now | E | event (E1 variant) | shopName, planName, amount, cardLast4 | `trial-not-granted:{tenantId}` |
 
 Admin-facing conditions (flagged payment, failed webhook event, open reconciliation finding, dispute, stuck round) are NOT e-mails: they are metrics, alerts and console rows (sections 12.8, 13).
 
@@ -7939,6 +8373,7 @@ Checks run in this order; the first failure answers. It extends [plans.md](plans
 2. **Authentication**: `401`.
 3. **Authorization**: `403` (role matchers, `@PreAuthorize`; FRONT_DESK on a money route, non-SUPER_ADMIN on the platform).
 4. **Body parsing and validation**: `400` (`Request body is missing or malformed.`, `Validation failed` + field map, `Idempotency-Key` presence and format, query parameter validation).
+4a. **Second confirmation** of a large refund (`confirmAmountPesewas`, 7.10) is part of step 4 (`400` field error).
 5. **Object-level lookup**: `404` for an id or slug that does not exist OR belongs to another tenant (identical body, S5).
 6. **State, version and idempotency checks**: `409` (`SUBSCRIPTION_VERSION_CONFLICT`, `CHANGE_NOT_ALLOWED`, `ACTION_NOT_ALLOWED`, `PAYMENT_PENDING`, `IDEMPOTENCY_KEY_REUSED`, `BILLING_NOT_CONFIGURED`, ...). Throttling (`429`) is applied after authorization and before the body is processed.
 7. **Provider and business outcome**: the charge, with `PAYMENT_FAILED` `409`, `202 PAYMENT_PENDING` for an unknown outcome, `503 PROVIDER_UNAVAILABLE` only when nothing was sent.
@@ -7987,7 +8422,8 @@ All bodies are the envelope; `ApiCodeException` shape `{"description", "data": {
 | 413 | none | | webhook body > 64 KiB |
 | 423 | none | | suspended tenant (tenant resolution, all tenant routes) |
 | 429 | none | | throttle (`Retry-After`) |
-| 503 | `PROVIDER_UNAVAILABLE` | | Paystack unreachable / circuit open BEFORE anything was sent |
+| 503 | `PROVIDER_UNAVAILABLE` | | Paystack unreachable / circuit open BEFORE anything was sent; a returned checkout URL not on `checkout.paystack.com` |
+| 503 | `CARD_SETUP_PAUSED` | | public card step stopped platform-wide (5.8) |
 
 Provider text is never returned: `failureCode` values are the fixed enum `DECLINED`, `INSUFFICIENT_FUNDS`, `CARD_EXPIRED`, `AUTHORIZATION_REVOKED`, `PROVIDER_ERROR`, `VERIFICATION_MISMATCH`, `UNKNOWN` (Paystack responses are summarised, never logged or forwarded, `PaystackErrorSummary` pattern).
 
@@ -7998,7 +8434,7 @@ The entitlement cache value gains `accessState` and `billingManaged` (BILL-01c).
 ### 17.5 Audit (FR-26, BR-10, S6)
 
 `billing_audit_log` is append-only (a trigger refuses `UPDATE` and `DELETE`, a test proves it through JDBC) and every row is written in the SAME transaction as the change. Shape `BillingAuditRow`: `occurredAt`, `actorType` (`SYSTEM`, `WEBHOOK`, `MEMBER`, `PLATFORM_ADMIN`), `actorId` and `actorEmail` (the ADMIN user or the platform admin; null for `SYSTEM` / `WEBHOOK`), `tenantId` (immutable id) and `tenantSlug`, `action`, `reference` (the Paystack reference when there is one), `reason` (the free text of an admin action), `before` / `after` (JSON objects of the changed fields only).
-**`before` / `after` never contain a secret, an authorization code, a card number, a webhook body or a provider message.** `action` is a fixed upper-case code, at least: `SUBSCRIPTION_CREATED`, `TRIAL_CHARGE_SUCCEEDED`, `PAYMENT_ATTEMPTED`, `PAYMENT_SUCCEEDED`, `PAYMENT_FAILED`, `PAYMENT_FLAGGED`, `RETRY_SCHEDULED`, `GRACE_STARTED`, `ACCESS_RESTRICTED`, `ACCESS_RESTORED`, `PLAN_UPGRADED`, `DOWNGRADE_SCHEDULED`, `PLAN_CHANGE_APPLIED`, `PENDING_CHANGE_CLEARED`, `CANCELLATION_REQUESTED`, `CANCELLATION_REVERSED`, `SUBSCRIPTION_ENDED`, `RESUBSCRIBED`, `CARD_AUTHORIZED`, `CARD_REPLACED`, `REFUND_REQUESTED`, `REFUND_COMPLETED`, `REFUND_FAILED`, `COMPLIMENTARY_GRANTED`, `COMPLIMENTARY_ENDED`, `TRIAL_EXTENDED`, `ADMIN_ACTIVATED`, `ADMIN_RESTRICTED`, `ADMIN_RESTORED`, `ADMIN_PLAN_CHANGED`, `PRICE_CHANGE_NOTICED`, `PRICE_CHANGE_APPLIED`, `RECONCILIATION_FINDING_RAISED`, `RECONCILIATION_FINDING_RESOLVED`, `WEBHOOK_EVENT_RETRIED`, `SETTINGS_CHANGED` (a reference to the settings audit row), `CREDENTIALS_CHANGED`, `CREDENTIALS_VERIFIED`. The V6 tenant audit `action` CHECK is extended only if the tenant audit is also written. Ledger rows (`billing_payments`, `billing_adjustments`, documents) keep a snapshot of the tenant name and owner e-mail and are never deleted by a tenant purge.
+**`before` / `after` never contain a secret, an authorization code, a card number, a webhook body or a provider message.** `action` is a fixed upper-case code, at least: `SUBSCRIPTION_CREATED`, `TRIAL_CHARGE_SUCCEEDED`, `PAYMENT_ATTEMPTED`, `PAYMENT_SUCCEEDED`, `PAYMENT_FAILED`, `PAYMENT_FLAGGED`, `RETRY_SCHEDULED`, `GRACE_STARTED`, `ACCESS_RESTRICTED`, `ACCESS_RESTORED`, `PLAN_UPGRADED`, `DOWNGRADE_SCHEDULED`, `PLAN_CHANGE_APPLIED`, `PENDING_CHANGE_CLEARED`, `CANCELLATION_REQUESTED`, `CANCELLATION_REVERSED`, `SUBSCRIPTION_ENDED`, `RESUBSCRIBED`, `CARD_AUTHORIZED`, `CARD_REPLACED`, `REFUND_REQUESTED`, `REFUND_COMPLETED`, `REFUND_FAILED`, `COMPLIMENTARY_GRANTED`, `COMPLIMENTARY_ENDED`, `TRIAL_EXTENDED`, `ADMIN_ACTIVATED`, `ADMIN_RESTRICTED`, `ADMIN_RESTORED`, `ADMIN_PLAN_CHANGED`, `PRICE_CHANGE_NOTICED`, `PRICE_CHANGE_APPLIED`, `RECONCILIATION_FINDING_RAISED`, `RECONCILIATION_FINDING_RESOLVED`, `WEBHOOK_EVENT_RETRIED`, `SETTINGS_CHANGED` (a reference to the settings audit row), `CREDENTIALS_CHANGED`, `CREDENTIALS_VERIFIED`, `CARD_DEACTIVATED`, `CARD_DEACTIVATION_FAILED`, `TRIAL_WITHHELD`, `BILLING_PAUSED`, `BILLING_RESUMED`, `CARD_SETUP_PAUSED`, `PERSONAL_DATA_REDACTED`, `REFUND_MISMATCH`. The V6 tenant audit `action` CHECK is extended only if the tenant audit is also written. Ledger rows (`billing_payments`, `billing_adjustments`, documents) keep a snapshot of the tenant name and owner e-mail and are never deleted by a tenant purge.
 
 ## 18. Rate limits (S10)
 
@@ -8009,6 +8445,7 @@ Token buckets in the style of [onboarding.md](onboarding.md) section 7 (per JVM 
 | `card-init-ip` (public) | client IP | 10 | 600 s |
 | `card-init-token` (public) | the setup token | 5 | 600 s |
 | `card-verify-ip` (public) | client IP | 20 | 600 s |
+| `card-email-day` (public, section 5.8) | owner e-mail | `cardAttemptsPerEmailPerDay` | 86400 s |
 | `admin-card-init` | tenant | 5 | 600 s |
 | `admin-card-verify` | tenant | 10 | 600 s |
 | `admin-change-preview` | tenant | 30 | 600 s |
@@ -8029,7 +8466,7 @@ No real Paystack keys exist yet (O19): everything is built and tested against a 
 
 ### 19.1 The fake (BILL-01; JVM-embedded for JUnit and a standalone process for the frontend real-stack e2e)
 
-It is reached by pointing the per-environment base URL (`paystack.url`) at it and implements: `transaction/initialize`, `transaction/verify/{reference}`, `transaction/charge_authorization`, `refund`, `transaction` (list, for reconciliation), `customer`; a **hosted fake checkout** page that completes or declines and redirects to the callback URL; scripted outcomes; a webhook emitter; and a request recorder. Response shapes are copied from the Paystack documentation fixtures and the fake's own tests prove it behaves like them.
+It is reached by pointing the per-environment base URL (`paystack.url`) at it. **It must never be able to run in production (Security M2):** the fake's classes live in test sources or a separate artifact and are NOT in the production jar (a build check lists the jar contents and fails when a fake class is present); outside the `dev` and `test` profiles the application REFUSES TO START unless every environment's Paystack base URL is exactly `https://api.paystack.co`; the server also checks that every `authorization_url` returned by `initialize` is on `https://checkout.paystack.com/` before it hands the URL out (5.3, 9.5). It implements: `transaction/initialize`, `transaction/verify/{reference}`, `transaction/charge_authorization`, `refund`, `transaction` (list, for reconciliation), `customer`; a **hosted fake checkout** page that completes or declines and redirects to the callback URL; scripted outcomes; a webhook emitter; and a request recorder. Response shapes are copied from the Paystack documentation fixtures and the fake's own tests prove it behaves like them.
 
 | Scripted outcome | How it is selected | What the fake does |
 |---|---|---|
@@ -8046,7 +8483,7 @@ Magic values are the cards chosen on the fake checkout page (the fake mints auth
 
 ### 19.2 Time: the injectable `Clock` and `DevBillingController`
 
-Tests inject a controllable `Clock`. For the real-stack e2e a dev-profile-only `DevBillingController` (precedent `DevTenantController`, enabled by `tenant.dev-endpoints.enabled`, `/api/v1/dev/**` is `denyAll` otherwise) exposes: `GET /api/v1/dev/billing/clock` (`now`, the offset, `frozen`), `POST /api/v1/dev/billing/clock/advance` (`{seconds}` or `{to}` or `{reset: true}`) and `POST /api/v1/dev/billing/run` (one billing round, synchronously, with the counts of what it did). A test asserts that the bean does NOT exist under the `prod` profile and that the routes are `denyAll` without the property.
+Tests inject a controllable `Clock`. For the real-stack e2e a dev-profile-only `DevBillingController` (precedent `DevTenantController`, enabled by `tenant.dev-endpoints.enabled`, `/api/v1/dev/**` is `denyAll` otherwise) exposes (it moves ONLY a billing-specific `Clock` wrapper used by the billing code; the global `Clock` bean that JWT expiry, OTP and rate limits use is never touched, even in dev): `GET /api/v1/dev/billing/clock` (`now`, the offset, `frozen`), `POST /api/v1/dev/billing/clock/advance` (`{seconds}` or `{to}` or `{reset: true}`) and `POST /api/v1/dev/billing/run` (one billing round, synchronously, with the counts of what it did). A test asserts that the bean does NOT exist under the `prod` profile and that the routes are `denyAll` without the property.
 
 <!-- example: dev-clock response DevClockEnvelope 200 -->
 ```json
@@ -8128,13 +8565,18 @@ A PDF library is added; BILL-05 picks OpenPDF or Apache PDFBox (programmatic lay
 6. A price change of a plan creates a notice for every affected subscription, including price DECREASES (uniform rule, D3); a second edit replaces the notice and restarts the clock (6.4).
 7. `EXPIRED` is produced only by a fixed-term admin `ACTIVATE` with `until`; every ended-by-cancellation subscription is `CANCELED`. Both map to `tenants.subscription_status = CANCELED` (3, 3.4).
 8. A refund with `cancelSubscription: true` schedules non-renewal; it does not end access (7.10). `RESTRICT` sets a `manualRestriction` that payments do not lift (7.11).
-9. A Paystack `401` / `403` with our own key is a platform fault: the environment becomes `FAILED`, billing jobs skip it, no member is charged a failure or put in grace (4.4).
+9. **ACCEPTED RISK (owner, 2026-11-28; Security L1).** A Paystack `401` / `403` with our own key is a platform fault: the environment becomes `FAILED`, billing jobs skip it, no member is charged a failure or put in grace; the same applies while `billingEnabled` is off but billing-managed subscriptions exist. Those tenants keep FULL access with **no ceiling** (no `platformFaultMaxDays`). Mitigation required instead: `BillingSettingsView.health` (`paused`, `reason`, `since`, `affectedSubscriptions`), a persistent SUPER_ADMIN console banner, an alert on entry and an audit row on entering and leaving (`BILLING_PAUSED`, `BILLING_RESUMED`) (4.4, 21 item 20).
 10. Settings added to the board list so that D2, O2, O18 and O29 are real settings: `graceEndingReminderDaysBefore`, `recurringChannels`, `webhookIpAllowlist`, `attachPdfToEmail`, `emailEnabled` (one flag per notification kind).
 11. Retries clamp to `graceEndsAt`; with `graceDays = 0` access is restricted at the first failure and no retries run (4.1, 8.2).
 12. `callback-verify` is a `GET` with a server-side effect (the board's contract); it is made safe by the custom token header and by idempotent replay of the same reference for 15 minutes (5.4).
 13. `DELETE .../complimentary` carries a JSON body (reason and `expectedVersion`) (11.4).
 14. `MANUAL` mode tenants subscribe through `POST /subscribe` after adding a card (7.5, 7.12).
 15. Verification holds (`CARD_VERIFY`) are not listed in the member billing history and cannot be refunded by an admin (the system refunds them) (9.7, 7.10).
+16. Card tokens are erased: on replace, `cardTokenRetentionDaysAfterEnd` (default 7) after the subscription ends and on tenant purge (9.5.1; PO decision on Security M1).
+17. `oneTrialPerCard` (default true): a repeat card or owner e-mail gets no free trial, charged at provisioning (5.7; PO decision on Security M4).
+18. Webhook: an unconfigured environment answers the same `401` as a bad signature (Security L2); refund events and reconciliation fetch and match the refund (12.5, Security M3).
+19. Card-step velocity limits, a platform-wide stop threshold, `Idempotency-Key` on every money admin action and a second confirmation for large refunds are settings-driven (5.8, 7.10, 7.11; Security L3, L4).
+20. Erasure of personal data is a render-time redaction overlay, the stored rows never change (10.6); this is the default answer to O20.
 
 ### 20.4 O9: tax treatment (STILL PENDING; kept: prices are tax-inclusive with an optional configurable tax line, empty until supplied)
 
@@ -8160,7 +8602,7 @@ No tax is assumed (D4). **Either answer is a settings change:** (a) tax already 
 | O16 | owner e-mail + banners for ADMIN and FRONT_DESK (read); money actions ADMIN only | 9, 16 |
 | O17 | one active environment, test and live records never mix; LIVE needs a new card authorization; separate encryption key recommended | 1, 4.4 |
 | O19 | no real keys: fake Paystack and a human smoke test; `billingEnabled` stays false until then | 19 |
-| O20 | billing records are kept with a snapshot (retention period and erasure requests are the owner's call) | 17.5, 10.3 |
+| O20 | billing records are kept with a snapshot; erasure of a member's personal data is a render-time redaction overlay (10.6); the retention period itself stays the owner's call | 17.5, 10.3, 10.6 |
 | O21 | revenue is gross charged, net of refunds; fees shown separately | 14.2 |
 | O22 | PLAN-01 bridge kept for `MANUAL`, `409 BILLING_MANAGED` for `PAYSTACK` | 3.3, 7.12 |
 | O23 | PLAN-06 transaction-fee split stays out of scope | 6.4 |
@@ -8191,6 +8633,19 @@ Security signs off each billing ticket against this list (the board's S1-S10), t
 13. **Doc tests.** `BillingDocExamples` (the tag grammar of [onboarding.md](onboarding.md)), `BillingDocSchemaTest` (every example vs `billing.schema.json`; invalid ones fail it; `billing.schema.json` is a valid draft 2020-12 schema), `BillingDocContractTest` (every response example equals what the live server returns for the named scenario, money recomputed by the server function, every error code of 17.3 has an example) are added with the first implementing ticket and extended by each later one. They do not read `plans.md` tables (`PlanFeatureTest`, `PlanPricingTest` own those) and must not add rows that match their patterns.
 14. **Existing docs tests stay green.** The `platform-tenants.md` and `onboarding.md` examples keep parsing into the CURRENT DTOs until the implementing ticket changes the DTOs and the examples in the same PR (the new tenant keys: BILL-01b; the onboarding keys: BILL-02). `authorization-matrix.md` section 3 is the reflection-checked table of REAL controllers; the billing routes are documented in section 3c and are added to the pinned table by the ticket that builds each controller (`AuthorizationMatrixStructureTest`).
 15. **Stability.** Frontend and QA mark this document "stable" in a PR comment before the BILL-FE-* tickets start; after that a change to a shape is a new contract PR first.
+
+16. **Authorization lifecycle (9.5.1).** On `REPLACED`, on subscription end + `cardTokenRetentionDaysAfterEnd` days and on tenant purge: `customer/deactivate_authorization` at Paystack, then the ciphertext is nulled, display data and reference kept; the billing round retries failed deactivations. BILL-02, BILL-03 and BILL-05 each add a test line: no ciphertext survives the trigger, history and documents still render, a deactivated authorization can never be charged.
+17. **Provider URLs (5.3, 19.1).** The fake Paystack is excluded from the production jar (a build check on the jar contents fails the build when a fake class is present); outside `dev` / `test` the application refuses to start unless each environment's Paystack base URL is exactly `https://api.paystack.co`; the server verifies that every returned `authorization_url` starts with `https://checkout.paystack.com/`. A startup test and a unit test per rule.
+18. **Refund events and reconciliation (12.5).** Fetch the refund from Paystack and match refund key, transaction reference, amount and environment; mismatch: flag, change nothing; unmatched: `ORPHAN_REFUND`. Tests with a foreign refund of the same transaction, a wrong amount and a wrong environment.
+19. **One trial per card and owner (5.7).** Keyed hashes (never plain) of the card fingerprint and owner e-mail per environment, never returned or logged; tests: repeat e-mail, repeat card on another tenant, TEST vs LIVE isolation, setting off.
+20. **Platform-fault visibility (accepted risk, 20.3 item 9).** `health` on the settings view, persistent console banner, alert and audit on entering and leaving; tests: keys rejected keeps FULL access and raises the banner, a later successful `verify` clears it.
+21. **Webhook.** HMAC on the raw bytes before any JSON parsing; the size cap enforced while streaming, never trusting `Content-Length`; the IP allow-list uses the trusted-proxy client IP rule of `ClientIps`, never a raw `X-Forwarded-For`.
+22. **Card setup token.** Stored as SHA-256, looked up by hash, compared in constant time, accepted only in the header and rejected if it appears in a query string.
+23. **Unique constraints in the database:** payment `reference` unique per environment, refund key unique, webhook `(environment, dedupeKey)` unique, and ONE in-flight payment per subscription as a partial unique index, not only in code.
+24. **Idempotency replay store** is keyed by (actor scope, endpoint, key), checks the stored request hash and never stores or replays a secret or authorization field.
+25. **Member reads** filter `tenant_id = TenantContext id` in SQL, not after loading; cross-tenant tests cover payments, documents, PDF, resend and card verify with another tenant's reference.
+26. **Paystack client:** TLS verification on, timeouts and circuit breaker, responses summarised (`PaystackErrorSummary`) and never logged raw, the secret sent only as the Bearer header and never present in exception messages.
+27. **Abuse and output controls:** the card-step limits of 5.8 (per-e-mail daily cap, decline alert, platform stop) with tests; `Idempotency-Key` on every money admin action and the large-refund confirmation; callback URLs from the tenant record; escaped e-mail templates with control characters stripped from subject variables; the redaction overlay never altering stored rows (a test compares row hashes before and after); `DevBillingController` moving only the billing clock (a test proves the global `Clock` is unchanged).
 
 ### 21.1 The docs checker
 
