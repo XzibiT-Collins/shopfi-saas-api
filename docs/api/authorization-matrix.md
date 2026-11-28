@@ -185,6 +185,7 @@ Pushes use `convertAndSendToUser("<tenant>:<email>", "/queue/notifications", ...
 | StorageLocationController | PATCH | `/api/v1/admin/inventory/locations/{id}/defaults` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | StoreThemeController | GET | `/api/v1/theme` | permitAll (GET) | - | reads tenant data (SF-BE-01: response gains themeId; no authz change) |
 | StoreThemeController | PUT | `/api/v1/theme` | ADMIN (PUT) | `hasRole('ADMIN')` | mutates (SF-BE-01: no authz change; body is canonicalized, see theme-contract.md 2.5 and 3.2) |
+| SubscriptionController | GET | `/api/v1/admin/subscription` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads the caller's own tenant plan, status and usage counts; tenant from `TenantContext` only; never plan-gated (PLAN-02) |
 | TaxController | GET | `/api/v1/tax` | authenticated (anyRequest) | - | reads tax rates (any signed-in user) |
 | TaxController | POST | `/api/v1/tax/add-tax` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
 | TaxController | PUT | `/api/v1/tax/update/{taxId}` | authenticated (anyRequest) | `hasRole('ADMIN')` | mutates |
@@ -233,13 +234,13 @@ Rows with `@PreAuthorize` `-` and a non-public matcher (any signed-in tenant use
 
 ## 3b. Plans and subscription (PLAN-03 contract)
 
-PLAN-01 implemented the platform plan routes, the tenant plan action and the public list: their rows are now in section 3
-(pinned by `AuthorizationMatrixStructureTest`). Still planned (PLAN-02 moves it into section 3 with its `EXPECTED` entry):
-contract [plans.md](plans.md).
+PLAN-01 implemented the platform plan routes, the tenant plan action and the public list; PLAN-02 implemented
+`GET /api/v1/admin/subscription` (`SubscriptionController`). All their rows are in section 3 (pinned by
+`AuthorizationMatrixStructureTest`); contract [plans.md](plans.md).
 
-| Controller (planned) | Method | Path | Matcher | @PreAuthorize | Effect |
-|---|---|---|---|---|---|
-| SubscriptionController | GET | `/api/v1/admin/subscription` | authenticated (anyRequest) | `hasAnyRole('ADMIN','FRONT_DESK')` | reads the caller's own tenant plan, status and usage counts; tenant from `TenantContext` only |
+PLAN-02 plan gates change no role: every gated route keeps its matcher and `@PreAuthorize` row above. The gated handlers
+carry the registry marker `@RequiresFeature` (no enforcement of its own; the check runs in the service after
+authorization), pinned by `PlanGateRegistryTest`.
 
 Same actor rules as the rest of the platform: tenant tokens of any role on `/platform/**` are `401`, anonymous `401`. The
 public allow-list of section 2 has `GET /api/v1/platform/onboarding/plans` (exact path, GET and HEAD; PLAN-01). **New status 402**

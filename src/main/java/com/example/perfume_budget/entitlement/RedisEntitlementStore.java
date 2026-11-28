@@ -17,6 +17,7 @@ public class RedisEntitlementStore implements EntitlementStore {
 
     private final StringRedisTemplate redis;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public RedisEntitlementStore(RedisConnectionFactory connectionFactory) {
         StringRedisTemplate t = new StringRedisTemplate(connectionFactory);
         t.afterPropertiesSet();
