@@ -115,7 +115,7 @@ public abstract class AbstractEntitlementIntegrationTest extends AbstractPlansIn
         publicPlanCache.evict();
     }
 
-    /** Leaves exactly {@code n} storage locations (a fresh tenant is seeded with two, nothing references them yet). */
+    /** Leaves exactly {@code n} storage locations (a fresh tenant has one, 'Shop Floor', since PLAN-07 / tenant V51). */
     protected void trimLocations(T t, long n) {
         exec("DELETE FROM " + t.schema() + ".storage_locations WHERE id IN (SELECT id FROM " + t.schema()
                 + ".storage_locations ORDER BY id DESC LIMIT greatest((SELECT count(*) FROM " + t.schema() + ".storage_locations) - ?, 0))", n);

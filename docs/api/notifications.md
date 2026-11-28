@@ -54,7 +54,8 @@ of the event; a staff member created afterwards does not get older events.
 
 * `PAYMENT_SUCCESS` (ref `ORDER`): written once per order when its payment is confirmed (a retried or duplicate webhook does
   not write a second one).
-* `SHOP_FLOOR_RESTOCK` (ref `PRODUCT`): the shop floor of a product ran low while store rooms still hold stock. At most one
+* `SHOP_FLOOR_RESTOCK` (ref `PRODUCT`): the shop floor of a product ran low while store rooms still hold stock. A new store has no store room (PLAN-07: one
+  location, `Shop Floor`), so this alert only appears once the admin has added a `STORE_ROOM` location holding stock. At most one
   **unread** alert per product exists at a time: while any staff member has it unread, no new alert for that product is made.
 
 ## GET /
