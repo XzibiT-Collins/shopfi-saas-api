@@ -31,6 +31,8 @@ Every example below tagged `<!-- example: <name> <kind> <Schema> [status] -->` i
 | `GET /status?slug=` | `200` | Poll the onboarding state; URLs once ACTIVE |
 | `POST /find-store` | `202` (always) | "Find your store": e-mail the owner the sign-in link if the store exists (API-RD-04) |
 | `GET /plans` | `200` | Public active plans for the pricing page and the wizard (PLAN-03 contract, implemented by PLAN-01; [plans.md](plans.md) section 12) |
+| `POST /card/initialize` | `200` | Start the hosted card authorization of the signup (BILL-00 contract, implemented by BILL-02; section 3b) |
+| `GET /card/callback-verify?reference=` | `200` | Verify the authorization server side, store the card and continue provisioning (BILL-00 contract; section 3b) |
 
 ## 3. `POST /signup`
 
@@ -171,6 +173,22 @@ A client-sent plan is ignored (replaces the former `signup-unknown-plan` 400 exa
 ## 3a. `GET /plans` (PLAN-03 contract, implemented by PLAN-01)
 
 Public, like the rest of this base path: no cookie, no tenant, onboarding CORS zone (section 11). Rate limited per IP (`plans-ip`, section 7); served from a short in-process cache (at most 60 s stale). Returns the plans that are public and active, in display order, with their entitlements, prices (integer pesewas, with the derived annual fields) and card texts, plus the feature catalog; `Cache-Control: public, max-age=60`. The wizard uses it only to show "You start on <default plan name> with an N-day free trial" (hidden when the call fails or the default plan is not public); it sends nothing about a plan back. Shape, rules and the example `public-plans`: [plans.md](plans.md) section 12. (Its examples live in plans.md, not here: every response example in this file is exercised by `OnboardingContractTest`.)
+
+## 3b. Card step before the trial (BILL-00 contract, implemented by BILL-02)
+
+**Status: contract only; nothing in this section is live until BILL-02 merges.** Owner decision D1 (2026-11-28): a card is REQUIRED before a trial starts. It is authorized with Paystack's hosted checkout after the OTP is accepted and before provisioning, so no store exists for an unverified or card-less signup and no raw card data ever reaches Shopfi. The full contract (token, endpoints, acceptance rules, the verification hold that is refunded at once, provisioning and trial start, failures, rate limits) is [billing.md](billing.md) section 5; the schema is `OnboardingCardStatus` in [billing.schema.json](billing.schema.json); every example of it lives in billing.md (the examples of THIS file are exercised by `OnboardingContractTest` against the code as it is today).
+
+What changes for the existing endpoints is **additive only**; the `status` values (`PENDING | PROVISIONING | ACTIVE | FAILED`) never change, and when the card step does not apply (billing not enabled, card not required, credentials not verified) every response of this document is byte-identical to today:
+
+| Endpoint | Addition when the card step applies |
+|---|---|
+| `POST /verify` (`202`) | `phase: "AWAITING_CARD"`, `cardRequired: true`, a single-use `cardSetupToken` (hashed at rest, bound to the signup, expires in at most 30 minutes), `cardSetupExpiresAt` and `cardSetup` (plan, trial days, first charge, verification amount: everything the card step shows). `status` is `PROVISIONING`; provisioning is queued only after the card is on file. The description is `Card required to start the trial` |
+| `GET /status?slug=` (`200`) | `phase` (`AWAITING_CARD`, `PROVISIONING`, `READY`) and `cardRequired`. **Never the token** (this endpoint is unauthenticated and polled by slug) |
+| `POST /resend`, `POST /verify` on a signup that is `AWAITING_CARD` | allowed: a fresh OTP issues a fresh token and kills the old one (how a user whose token expired or was lost restarts). Limits and lockouts unchanged |
+| `POST /card/initialize` | new, public, header `X-Card-Setup-Token`, body `{slug}`; returns the hosted checkout URL and a reference |
+| `GET /card/callback-verify?reference=` | new, public, header `X-Card-Setup-Token`; verifies with Paystack, stores the authorization, refunds the hold, continues provisioning; idempotent for the same reference |
+
+Parsers: a new key is optional, an absent `phase` or `cardRequired` means "no card step" (do not default to `false` and fail on `null`), and an unknown `phase` or `status` falls back to the existing error screen. The two new endpoints have their own rate limits (billing.md section 18), not rows of the table in section 7. The marketing copy "No credit card required" is replaced by the frontend (BILL-FE-02a); the exact wording is the owner's (O30).
 
 ## 4. `POST /verify`
 
