@@ -15,6 +15,7 @@ Requirements the PLAN-01 / PLAN-02 implementations must meet (Security sign-off 
 | Signup no longer chooses a plan | [onboarding.md](onboarding.md) section 3 |
 | 402 / 409 codes in the error catalogue | [errors.md](errors.md#plans-and-subscription-plan-03) |
 | Routes and roles | [authorization-matrix.md](authorization-matrix.md#3b-plans-and-subscription-plan-03-contract) |
+| Subscription billing (card at signup, charges, grace, invoices; supersedes the price-change wording of section 15) | [billing.md](billing.md) (BILL-00) |
 | Contract tests | PLAN-01 `PlansDocSchemaTest` (every example vs the schema) and `PlansDocContractTest` (every PLAN-01 example vs the live server); PLAN-02 `SubscriptionDocContractTest` (the subscription and 402 examples) |
 
 Every example below is tagged `<!-- example: <name> <kind> <Schema> [status] -->`, with the grammar of
@@ -1153,7 +1154,9 @@ Tenant plan changes ALSO appear in `GET /api/v1/platform/tenants/{slug}/audit` (
 
 ## 11. `PUT /api/v1/platform/tenants/{slug}/plan`
 
-Sets one tenant's plan, trial end and/or subscription status (the manual bridge until PLAN-06 billing). `{slug}` follows
+Sets one tenant's plan, trial end and/or subscription status (the manual bridge; with BILL-00 it stays for `MANUAL` tenants
+and answers `409` `data.code` `BILLING_MANAGED` for a tenant that is billing-managed with a live subscription, which is changed
+through the billing actions instead, [billing.md](billing.md) sections 3.3 and 7.11). `{slug}` follows
 platform-tenants.md (unknown or malformed: `404 {"description": "Tenant not found", "data": null}`). It counts against the
 per-admin action throttle of platform-tenants.md (`429`). Body `TenantPlanUpdateRequest`, at least one of:
 
@@ -1698,7 +1701,7 @@ never a parameter, so only the caller's own tenant is ever returned. Anonymous, 
 | `plan` | the tenant's plan in the public shape (also when the plan is inactive or not public) |
 | `status` | `TRIALING`, `ACTIVE`, `PAST_DUE`, `CANCELED` (stored subscription status) |
 | `trialEndsAt` | timestamp or `null` (the trial clock starts when provisioning completes, PLAN-02 AC9) |
-| `readOnly` | `true` when `status` is `CANCELED`, or `TRIALING` with `trialEndsAt` not null and `now >= trialEndsAt` (at the instant itself the trial has ended). `ACTIVE` and `PAST_DUE` are never read-only (PAST_DUE grace is PLAN-06). Evaluated per request against the server clock |
+| `readOnly` | `true` when `status` is `CANCELED`, or `TRIALING` with `trialEndsAt` not null and `now >= trialEndsAt` (at the instant itself the trial has ended). `ACTIVE` and `PAST_DUE` are never read-only for a tenant that is NOT billing-managed. **BILL-00:** for a billing-managed tenant (`billingMode PAYSTACK`) `readOnly` is `accessState == READ_ONLY` (grace is full access, a trial that just ended is charged, not restricted); the exact rule, the three independent fields and the `tenants.subscription_status` projection are in [billing.md](billing.md) section 3.4. Evaluated per request against the server clock |
 | `entitlements` | the plan's entitlements (same list as `plan.entitlements`; kept at top level for the clients' convenience) |
 | `usage` | one entry per LIMIT feature, catalog order: `{ "featureKey", "used", "limit" }`, `limit` `null` = unlimited, `used` counted over the counted set of 15.2 (for `MAX_ACTIVE_COUPONS`: active plus exhausted coupons) |
 | `features` | the catalog, for labels and groups |
@@ -2346,7 +2349,9 @@ Checks run in this order; the first failure answers:
    counted set, `402 PLAN_LIMIT_REACHED` (15.2).
 6. **Service business checks**: the service's own rules (`400`, `404`, `409`, ...) after the gate.
 
-**Every 403 precedes every 402**: an unauthorized FRONT_DESK user never sees a 402 that reveals the plan. (Exact
+**Every 403 precedes every 402**: an unauthorized FRONT_DESK user never sees a 402 that reveals the plan.
+(BILL-00: the billing endpoints have no plan gate, so step 5 does not exist for them and they never answer 402; their order
+is in [billing.md](billing.md) section 17.1.) (Exact
 interleaving inside steps 3-4, unchanged by this contract: the role matchers run in the filter chain before binding,
 while `@PreAuthorize` and the service-level permission checks run after argument binding, so an invalid body from a
 caller who fails `@PreAuthorize` or a service permission gets `400`, as today. None of this involves a 402.)
@@ -2372,9 +2377,15 @@ and update). Limit checks (15.2) run in the same place.
   data; the gated routes answer 402 (reads included) until the feature is back.
 - **Trial length** (`trialDays`) affects only trials that start after the change; existing `trialEndsAt` values are not
   touched.
-- **Price, annual-discount or transaction-fee changes** affect only the next billing cycle (there is no billing until
-  PLAN-06); the derived annual fields and the shown fee change at once in every response. For PLAN-06: amounts are
-  charged from a server-side snapshot of the plan taken at the start of the cycle, never from a client value.
+- **Price, annual-discount or transaction-fee changes.** The derived annual fields and the shown fee change at once in
+  every plan response. **Superseded by BILL-00 (owner decision D3, 2026-11-28; replaces the PLAN-03 AC6 wording "affects
+  only the next billing cycle, no billing yet"):** a change of `monthlyPricePesewas` or `annualDiscountPercent` reaches an
+  existing subscriber only at their FIRST RENEWAL ON OR AFTER `notifiedAt + price_change_notice_days` (default 30, 0
+  allowed, a billing setting), after the member was notified; renewals before that keep the locked price. Amounts are
+  charged from the subscription's server-side price lock, never from the live catalog and never from a client value; a
+  new subscriber pays the current price. `transactionFeeBps` stays display-only and changes at once. Rules, the notice and
+  worked examples: [billing.md](billing.md) sections 6.1, 6.4 and 7.8; `PlansChangedEvent` is extended with the before and
+  after of the price fields so the notice can be created.
 - **Trial expired or `CANCELED`** (`readOnly`): reads allowed (GET/HEAD on gated routes of features in the plan), every
   gated write and every limit-checked create answers `402` reason `SUBSCRIPTION_INACTIVE`; core features (orders,
   checkout, storefront, products other than create, ...) are unaffected. The super-admin keeps a tenant going by
@@ -2485,6 +2496,9 @@ Decided by the PO / orchestrator on the QA and Security review of PR #72 (2026-1
 - `THEME_ADVANCED` is an allowlist; the legacy balance report / repair is core (2).
 - `transactionFeeBps` <= 1000; fee changes apply from the next cycle; `trialEndsAt` is set once (3.1, 15).
 - The default sign-up plan needs `trialDays >= 1` (7).
+- BILL-00 (2026-11-28, owner decisions D1-D5): subscription billing is specified in [billing.md](billing.md). It supersedes
+  PLAN-03 AC6 (price changes reach existing subscribers only at the next renewal after notice, section 15) and refines the
+  `readOnly` rule for billing-managed tenants (section 13); PLAN-06's transaction-fee split stays out of scope.
 
 Defaults this document still picked where the AC are silent (change them here before PLAN-01/02 start if needed):
 
@@ -2541,6 +2555,9 @@ Security sign-off of PLAN-01 and PLAN-02 checks every item (Security review of P
 10. **Never gated**, enforced by the allow-list scan test: auth, onboarding, platform, storefront, cart, checkout,
     payment, webhook, notifications, metrics, ledger posting from orders, scheduled and async jobs, finishing work on
     existing orders, returns and refunds, the legacy balance report / repair. No gate check inside webhook or scheduled code paths.
+    **BILL-00 additions to the allow-list:** `/api/v1/admin/billing/**`, `/api/v1/platform/billing/**` (incl. the billing webhook),
+    `/api/v1/platform/onboarding/card/**`, `/api/v1/dev/billing/**`; a billing endpoint answers 200 while the tenant is read-only
+    ([billing.md](billing.md) section 17.2).
 11. **Audit** rows in the same transaction for every plan create / update / matrix item / default-flag move / tenant plan
     change, with the immutable admin id + e-mail and field-level before / after; no update or delete path for audit
     rows; values rendered as text (PLAN-04).
