@@ -1,0 +1,6796 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shopfi.example/schemas/billing.schema.json",
+  "title": "Shopfi subscription billing contract (BILL-00)",
+  "description": "Request and response bodies of the billing API: /api/v1/platform/billing/**, /api/v1/admin/billing/**, the signup card step additions of /api/v1/platform/onboarding/*, the Paystack billing webhook and the dev-only billing clock. Every response body is the CustomApiResponse envelope {description, data}. The examples in billing.md are validated against this file. Rules JSON Schema cannot express (state machine, proration, check order, ordering of webhook events) are in billing.md.",
+  "$defs": {
+    "Timestamp": {
+      "description": "An instant in UTC, always ending in Z (plans.md section 1).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "Pesewas": {
+      "description": "Integer GHS pesewas (GHS 1 = 100), never a float.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "Currency": {
+      "const": "GHS"
+    },
+    "Environment": {
+      "enum": [
+        "TEST",
+        "LIVE"
+      ]
+    },
+    "PlainText": {
+      "description": "Plain text (plans.md section 1): rejects Cc, Cf, U+2028/2029; clients render it as text.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb]*$"
+    },
+    "Reason": {
+      "description": "Free-text reason: plain text, trimmed, 5..500 characters (board BILL-06 AC2).",
+      "allOf": [
+        {
+          "$ref": "#/$defs/PlainText"
+        },
+        {
+          "minLength": 5,
+          "maxLength": 500
+        }
+      ]
+    },
+    "Slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "maxLength": 40
+    },
+    "PlanCode": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{1,31}$"
+    },
+    "FeatureKey": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+    },
+    "Interval": {
+      "enum": [
+        "MONTHLY",
+        "ANNUAL"
+      ]
+    },
+    "Sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "PaymentReference": {
+      "description": "Billing charge reference: sub-<t|l>-<tenantId>-<kind>-<n>-<attempt> (kind tc|rn|up|sb|mn), or a card verification reference sub-card-<t|l>-<24 lower-case alphanumerics>. Hyphens only (Paystack allows letters, digits, - . =).",
+      "type": "string",
+      "pattern": "^(sub-(t|l)-[0-9]+-(tc|rn|up|sb|mn)-[0-9]+-[0-9]+|sub-card-(t|l)-[a-z0-9]{24})$"
+    },
+    "IdempotencyKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{8,64}$"
+    },
+    "PreviewToken": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{32,512}$"
+    },
+    "CheckoutUrl": {
+      "description": "Paystack hosted checkout URL (authorization_url returned by Paystack). The frontend allow-lists the host.",
+      "type": "string",
+      "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9_./-]*$"
+    },
+    "Email": {
+      "type": "string",
+      "maxLength": 254,
+      "pattern": "^[^@\\s]+@[^@\\s]+$"
+    },
+    "LifecycleStatus": {
+      "enum": [
+        "TRIALING",
+        "ACTIVE",
+        "PAST_DUE",
+        "CANCELED",
+        "EXPIRED"
+      ]
+    },
+    "PaymentStatusOfSubscription": {
+      "enum": [
+        "NONE",
+        "CURRENT",
+        "PENDING",
+        "RETRYING",
+        "FAILED"
+      ]
+    },
+    "AccessState": {
+      "enum": [
+        "FULL",
+        "GRACE",
+        "READ_ONLY"
+      ]
+    },
+    "BillingMode": {
+      "enum": [
+        "PAYSTACK",
+        "MANUAL"
+      ]
+    },
+    "BillingState": {
+      "description": "The three independent fields (billing.md section 3): subscription lifecycle (+ two flags), payment status, access state.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lifecycleStatus",
+        "cancelAtPeriodEnd",
+        "complimentary",
+        "paymentStatus",
+        "accessState"
+      ],
+      "properties": {
+        "lifecycleStatus": {
+          "$ref": "#/$defs/LifecycleStatus"
+        },
+        "cancelAtPeriodEnd": {
+          "type": "boolean"
+        },
+        "complimentary": {
+          "type": "boolean"
+        },
+        "paymentStatus": {
+          "$ref": "#/$defs/PaymentStatusOfSubscription"
+        },
+        "accessState": {
+          "$ref": "#/$defs/AccessState"
+        }
+      }
+    },
+    "PlanRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "code",
+        "name",
+        "monthlyPricePesewas",
+        "annualPricePesewas"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/PlanCode"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "monthlyPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "annualPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Card": {
+      "description": "Display data of the default authorization. The authorization code, signature and customer code are never part of any response (S1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "brand",
+        "last4",
+        "expMonth",
+        "expYear",
+        "bank",
+        "expiringSoon"
+      ],
+      "properties": {
+        "brand": {
+          "type": "string",
+          "pattern": "^[a-z0-9 _-]{2,32}$"
+        },
+        "last4": {
+          "type": "string",
+          "pattern": "^[0-9]{4}$"
+        },
+        "expMonth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "expYear": {
+          "type": "integer",
+          "minimum": 2000,
+          "maximum": 2200
+        },
+        "bank": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 64
+            }
+          ]
+        },
+        "expiringSoon": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Period": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "end": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "PendingChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "planId",
+        "planCode",
+        "planName",
+        "interval",
+        "effectiveAt",
+        "pricePesewas"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "DOWNGRADE",
+            "INTERVAL_CHANGE"
+          ]
+        },
+        "planId": {
+          "type": "integer"
+        },
+        "planCode": {
+          "$ref": "#/$defs/PlanCode"
+        },
+        "planName": {
+          "type": "string"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        },
+        "effectiveAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "pricePesewas": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Catalog price of the target at preview time, informational: the renewal charges the price locked at the renewal."
+        }
+      }
+    },
+    "PriceChange": {
+      "description": "Pending price change notice (BR-09). earliestEffectiveAt = notifiedAt + price_change_notice_days; the new price applies at the first renewal on or after it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "oldPricePesewas",
+        "newPricePesewas",
+        "notifiedAt",
+        "earliestEffectiveAt",
+        "interval"
+      ],
+      "properties": {
+        "oldPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "newPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notifiedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "earliestEffectiveAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        }
+      }
+    },
+    "BannerKind": {
+      "enum": [
+        "TRIAL_ENDING",
+        "TRIAL_NO_CARD",
+        "PAYMENT_PENDING",
+        "PAYMENT_FAILED_GRACE",
+        "ACCESS_RESTRICTED",
+        "CARD_EXPIRING",
+        "PRICE_CHANGE_NOTICE",
+        "INVOICE_AVAILABLE",
+        "CANCELLATION_SCHEDULED",
+        "COMPLIMENTARY_ENDING"
+      ]
+    },
+    "BannerParams": {
+      "description": "Only the keys listed for the banner kind in billing.md section 9.3 are present. Banners carry codes and values, never display text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "trialEndsAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "daysLeft": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cardOnFile": {
+          "type": "boolean"
+        },
+        "graceEndsAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "nextRetryAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "amountPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expMonth": {
+          "type": "integer"
+        },
+        "expYear": {
+          "type": "integer"
+        },
+        "last4": {
+          "type": "string",
+          "pattern": "^[0-9]{4}$"
+        },
+        "effectiveAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "oldPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "newPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "documentId": {
+          "type": "integer"
+        },
+        "documentType": {
+          "enum": [
+            "INVOICE",
+            "RECEIPT",
+            "CREDIT_NOTE"
+          ]
+        },
+        "endsAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "Banner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "severity",
+        "dismissible",
+        "params"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/BannerKind"
+        },
+        "severity": {
+          "enum": [
+            "INFO",
+            "WARNING",
+            "CRITICAL"
+          ]
+        },
+        "dismissible": {
+          "type": "boolean"
+        },
+        "params": {
+          "$ref": "#/$defs/BannerParams"
+        }
+      }
+    },
+    "Actions": {
+      "description": "Server-computed capability flags so the client does not re-implement the state rules. A false flag is advice; the endpoint stays the authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canChangePlan",
+        "canCancel",
+        "canReactivate",
+        "canUpdateCard",
+        "canRetryPayment",
+        "canSubscribe"
+      ],
+      "properties": {
+        "canChangePlan": {
+          "type": "boolean"
+        },
+        "canCancel": {
+          "type": "boolean"
+        },
+        "canReactivate": {
+          "type": "boolean"
+        },
+        "canUpdateCard": {
+          "type": "boolean"
+        },
+        "canRetryPayment": {
+          "type": "boolean"
+        },
+        "canSubscribe": {
+          "type": "boolean"
+        }
+      }
+    },
+    "NextBilling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "amountPesewas",
+        "planCode",
+        "interval",
+        "reason"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "amountPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "planCode": {
+          "$ref": "#/$defs/PlanCode"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        },
+        "reason": {
+          "enum": [
+            "TRIAL_CONVERSION",
+            "RENEWAL",
+            "RETRY"
+          ]
+        }
+      }
+    },
+    "Grace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startedAt",
+        "endsAt",
+        "nextRetryAt",
+        "retriesRemaining",
+        "reason"
+      ],
+      "properties": {
+        "startedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "endsAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "nextRetryAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "retriesRemaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "enum": [
+            "PAYMENT_FAILED",
+            "NO_CARD"
+          ]
+        }
+      }
+    },
+    "BillingSummary": {
+      "description": "GET /api/v1/admin/billing/summary for an ADMIN.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "serverTime",
+        "billingEnabled",
+        "billingMode",
+        "plan",
+        "interval",
+        "state",
+        "trialEndsAt",
+        "currentPeriod",
+        "cancelEffectiveAt",
+        "complimentaryUntil",
+        "nextBilling",
+        "lockedPricePesewas",
+        "grace",
+        "pendingChange",
+        "priceChange",
+        "card",
+        "actions",
+        "banners",
+        "version"
+      ],
+      "properties": {
+        "view": {
+          "const": "FULL"
+        },
+        "serverTime": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "billingEnabled": {
+          "type": "boolean"
+        },
+        "billingMode": {
+          "$ref": "#/$defs/BillingMode"
+        },
+        "plan": {
+          "$ref": "#/$defs/PlanRef"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        },
+        "state": {
+          "$ref": "#/$defs/BillingState"
+        },
+        "trialEndsAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "currentPeriod": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Period"
+            }
+          ]
+        },
+        "cancelEffectiveAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "complimentaryUntil": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "nextBilling": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/NextBilling"
+            }
+          ]
+        },
+        "lockedPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "grace": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Grace"
+            }
+          ]
+        },
+        "pendingChange": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PendingChange"
+            }
+          ]
+        },
+        "priceChange": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PriceChange"
+            }
+          ]
+        },
+        "card": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Card"
+            }
+          ]
+        },
+        "actions": {
+          "$ref": "#/$defs/Actions"
+        },
+        "banners": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Banner"
+          },
+          "maxItems": 10
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "BillingBannerView": {
+      "description": "The same endpoint for FRONT_DESK: non-financial banners only (kinds TRIAL_ENDING, PAYMENT_FAILED_GRACE, ACCESS_RESTRICTED; params only trialEndsAt, daysLeft, graceEndsAt).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "serverTime",
+        "accessState",
+        "banners"
+      ],
+      "properties": {
+        "view": {
+          "const": "BANNER"
+        },
+        "serverTime": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "accessState": {
+          "$ref": "#/$defs/AccessState"
+        },
+        "banners": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Banner"
+          },
+          "maxItems": 3
+        }
+      }
+    },
+    "BillingSummaryEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/BillingSummary"
+            },
+            {
+              "$ref": "#/$defs/BillingBannerView"
+            }
+          ]
+        }
+      }
+    },
+    "PaymentPurpose": {
+      "enum": [
+        "TRIAL_CONVERSION",
+        "RENEWAL",
+        "UPGRADE",
+        "RETRY",
+        "CARD_VERIFY",
+        "MANUAL"
+      ]
+    },
+    "PaymentStatus": {
+      "enum": [
+        "INITIATED",
+        "PENDING",
+        "SUCCESS",
+        "FAILED",
+        "ABANDONED"
+      ]
+    },
+    "FailureCode": {
+      "enum": [
+        "DECLINED",
+        "INSUFFICIENT_FUNDS",
+        "CARD_EXPIRED",
+        "AUTHORIZATION_REVOKED",
+        "PROVIDER_ERROR",
+        "VERIFICATION_MISMATCH",
+        "UNKNOWN"
+      ]
+    },
+    "DocType": {
+      "enum": [
+        "INVOICE",
+        "RECEIPT",
+        "CREDIT_NOTE"
+      ]
+    },
+    "DocRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "number"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "type": {
+          "$ref": "#/$defs/DocType"
+        },
+        "number": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      }
+    },
+    "PaymentView": {
+      "description": "Member view of one charge attempt. No provider ids, no fees, no authorization data. failureCode is a fixed code; raw provider text is never returned (S1, S9).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "reference",
+        "purpose",
+        "status",
+        "amountPesewas",
+        "currency",
+        "attemptNo",
+        "planCode",
+        "planName",
+        "interval",
+        "periodStart",
+        "periodEnd",
+        "createdAt",
+        "paidAt",
+        "failureCode",
+        "refundedPesewas",
+        "documents"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "reference": {
+          "$ref": "#/$defs/PaymentReference"
+        },
+        "purpose": {
+          "$ref": "#/$defs/PaymentPurpose"
+        },
+        "status": {
+          "$ref": "#/$defs/PaymentStatus"
+        },
+        "amountPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "attemptNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PlanCode"
+            }
+          ]
+        },
+        "planName": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "interval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Interval"
+            }
+          ]
+        },
+        "periodStart": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "periodEnd": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "paidAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "failureCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/FailureCode"
+            }
+          ]
+        },
+        "refundedPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocRef"
+          },
+          "maxItems": 5
+        }
+      }
+    },
+    "PaymentEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/PaymentView"
+        }
+      }
+    },
+    "PaymentPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "page",
+        "size",
+        "totalElements",
+        "totalPages"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PaymentView"
+          }
+        },
+        "page": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "totalElements": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalPages": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "PaymentPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/PaymentPage"
+        }
+      }
+    },
+    "LineItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "quantity",
+        "unitAmountPesewas",
+        "amountPesewas"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "unitAmountPesewas": {
+          "type": "integer"
+        },
+        "amountPesewas": {
+          "type": "integer"
+        }
+      }
+    },
+    "DocAmounts": {
+      "description": "Credit notes carry NEGATIVE net, tax and total. taxRateBps, taxInclusive and taxLabel are null when no tax line applies.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "netPesewas",
+        "taxPesewas",
+        "totalPesewas",
+        "taxRateBps",
+        "taxInclusive",
+        "taxLabel"
+      ],
+      "properties": {
+        "netPesewas": {
+          "type": "integer"
+        },
+        "taxPesewas": {
+          "type": "integer"
+        },
+        "totalPesewas": {
+          "type": "integer"
+        },
+        "taxRateBps": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          ]
+        },
+        "taxInclusive": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "taxLabel": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "BusinessIdentity": {
+      "description": "Snapshot at issue. A key whose setting was empty at issue time is ABSENT (never null or an empty string), so no blank labels are rendered.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string"
+        },
+        "tin": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "footer": {
+          "type": "string"
+        }
+      }
+    },
+    "MemberIdentity": {
+      "description": "Snapshot of the member at issue. After a personal-data redaction (billing.md 10.6) only {redacted: true} is rendered; the stored row is unchanged.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "shopName",
+            "ownerEmail"
+          ],
+          "properties": {
+            "shopName": {
+              "type": "string"
+            },
+            "ownerName": {
+              "type": "string"
+            },
+            "ownerEmail": {
+              "$ref": "#/$defs/Email"
+            },
+            "billingAddress": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "redacted"
+          ],
+          "properties": {
+            "redacted": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "RedactionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        }
+      }
+    },
+    "RedactionResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantSlug",
+        "documentsRedacted",
+        "adjustmentsRedacted",
+        "redactedAt"
+      ],
+      "properties": {
+        "tenantSlug": {
+          "$ref": "#/$defs/Slug"
+        },
+        "documentsRedacted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "adjustmentsRedacted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "redactedAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "RedactionResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/RedactionResult"
+        }
+      }
+    },
+    "BillingDocument": {
+      "description": "Immutable document row (BILL-05). INVOICE and RECEIPT are PAID (documents exist only for successful charges), CREDIT_NOTE is CREDITED.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "number",
+        "issuedAt",
+        "currency",
+        "reference",
+        "paymentId",
+        "adjustmentId",
+        "relatedDocumentId",
+        "status",
+        "periodStart",
+        "periodEnd",
+        "plan",
+        "lineItems",
+        "amounts",
+        "business",
+        "member"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "type": {
+          "$ref": "#/$defs/DocType"
+        },
+        "number": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "reference": {
+          "$ref": "#/$defs/PaymentReference"
+        },
+        "paymentId": {
+          "type": "integer"
+        },
+        "adjustmentId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "relatedDocumentId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "PAID",
+            "CREDITED"
+          ]
+        },
+        "periodStart": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "periodEnd": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "name",
+            "interval"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/PlanCode"
+            },
+            "name": {
+              "type": "string"
+            },
+            "interval": {
+              "$ref": "#/$defs/Interval"
+            }
+          }
+        },
+        "lineItems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LineItem"
+          },
+          "maxItems": 10,
+          "minItems": 1
+        },
+        "amounts": {
+          "$ref": "#/$defs/DocAmounts"
+        },
+        "business": {
+          "$ref": "#/$defs/BusinessIdentity"
+        },
+        "member": {
+          "$ref": "#/$defs/MemberIdentity"
+        }
+      }
+    },
+    "BillingDocumentEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/BillingDocument"
+        }
+      }
+    },
+    "DocumentPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BillingDocument"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "CardCheckoutInit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkoutUrl",
+        "reference",
+        "verificationAmountPesewas",
+        "currency",
+        "expiresAt"
+      ],
+      "properties": {
+        "checkoutUrl": {
+          "$ref": "#/$defs/CheckoutUrl"
+        },
+        "reference": {
+          "$ref": "#/$defs/PaymentReference"
+        },
+        "verificationAmountPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "CardCheckoutInitEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/CardCheckoutInit"
+        }
+      }
+    },
+    "CardVerifyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference"
+      ],
+      "properties": {
+        "reference": {
+          "$ref": "#/$defs/PaymentReference"
+        }
+      }
+    },
+    "CardVerifyResult": {
+      "description": "retryPayment is the immediate charge attempt started because the subscription was PAST_DUE (BILL-04 AC5), else null.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "card",
+        "verificationRefunded",
+        "retryPayment",
+        "summary"
+      ],
+      "properties": {
+        "card": {
+          "$ref": "#/$defs/Card"
+        },
+        "verificationRefunded": {
+          "type": "boolean"
+        },
+        "retryPayment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PaymentView"
+            }
+          ]
+        },
+        "summary": {
+          "$ref": "#/$defs/BillingSummary"
+        }
+      }
+    },
+    "CardVerifyResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/CardVerifyResult"
+        }
+      }
+    },
+    "CardViewEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "card",
+            "billingMode"
+          ],
+          "properties": {
+            "card": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/Card"
+                }
+              ]
+            },
+            "billingMode": {
+              "$ref": "#/$defs/BillingMode"
+            }
+          }
+        }
+      }
+    },
+    "SubscribeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planId",
+        "interval"
+      ],
+      "properties": {
+        "planId": {
+          "type": "integer"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        }
+      }
+    },
+    "SubscribeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "payment",
+        "summary"
+      ],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "APPLIED",
+            "PAYMENT_PENDING"
+          ]
+        },
+        "payment": {
+          "$ref": "#/$defs/PaymentView"
+        },
+        "summary": {
+          "$ref": "#/$defs/BillingSummary"
+        }
+      }
+    },
+    "SubscribeResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/SubscribeResult"
+        }
+      }
+    },
+    "ChangePreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planId",
+        "interval"
+      ],
+      "properties": {
+        "planId": {
+          "type": "integer"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        }
+      }
+    },
+    "PlanSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planId",
+        "planCode",
+        "planName",
+        "interval",
+        "pricePesewas"
+      ],
+      "properties": {
+        "planId": {
+          "type": "integer"
+        },
+        "planCode": {
+          "$ref": "#/$defs/PlanCode"
+        },
+        "planName": {
+          "type": "string"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        },
+        "pricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Proration": {
+      "description": "chargeNet = round_half_up(priceDifference x remainingSeconds / periodSeconds); chargeTax is 0 unless tax_rate_bps is set and tax_inclusive is false; chargeNow = chargeNet + chargeTax.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "periodStart",
+        "periodEnd",
+        "changeAt",
+        "periodSeconds",
+        "remainingSeconds",
+        "priceDifferencePesewas",
+        "chargeNetPesewas",
+        "chargeTaxPesewas",
+        "chargeNowPesewas"
+      ],
+      "properties": {
+        "periodStart": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "periodEnd": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "changeAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "remainingSeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "priceDifferencePesewas": {
+          "type": "integer"
+        },
+        "chargeNetPesewas": {
+          "type": "integer"
+        },
+        "chargeTaxPesewas": {
+          "type": "integer"
+        },
+        "chargeNowPesewas": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "LimitChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "featureKey",
+        "from",
+        "to",
+        "used",
+        "overLimit"
+      ],
+      "properties": {
+        "featureKey": {
+          "$ref": "#/$defs/FeatureKey"
+        },
+        "from": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "to": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "overLimit": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EntitlementChanges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gained",
+        "lost",
+        "limitChanges"
+      ],
+      "properties": {
+        "gained": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FeatureKey"
+          }
+        },
+        "lost": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FeatureKey"
+          }
+        },
+        "limitChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LimitChange"
+          }
+        }
+      }
+    },
+    "ChangePreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "timing",
+        "effectiveAt",
+        "inTrial",
+        "from",
+        "to",
+        "chargeNowPesewas",
+        "proration",
+        "nextBilling",
+        "entitlementChanges",
+        "overLimitFeatures",
+        "clearsPendingChange",
+        "replacesPendingChange",
+        "previewToken",
+        "expiresAt",
+        "subscriptionVersion"
+      ],
+      "properties": {
+        "classification": {
+          "enum": [
+            "UPGRADE",
+            "DOWNGRADE",
+            "INTERVAL_CHANGE",
+            "SAME"
+          ]
+        },
+        "timing": {
+          "enum": [
+            "IMMEDIATE",
+            "AT_PERIOD_END",
+            "NONE"
+          ]
+        },
+        "effectiveAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "inTrial": {
+          "type": "boolean"
+        },
+        "from": {
+          "$ref": "#/$defs/PlanSide"
+        },
+        "to": {
+          "$ref": "#/$defs/PlanSide"
+        },
+        "chargeNowPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "proration": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Proration"
+            }
+          ]
+        },
+        "nextBilling": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/NextBilling"
+            }
+          ]
+        },
+        "entitlementChanges": {
+          "$ref": "#/$defs/EntitlementChanges"
+        },
+        "overLimitFeatures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FeatureKey"
+          }
+        },
+        "clearsPendingChange": {
+          "type": "boolean"
+        },
+        "replacesPendingChange": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PendingChange"
+            }
+          ]
+        },
+        "previewToken": {
+          "$ref": "#/$defs/PreviewToken"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "subscriptionVersion": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ChangePreviewEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/ChangePreview"
+        }
+      }
+    },
+    "ChangeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previewToken"
+      ],
+      "properties": {
+        "previewToken": {
+          "$ref": "#/$defs/PreviewToken"
+        }
+      }
+    },
+    "ChangeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "classification",
+        "payment",
+        "summary"
+      ],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "APPLIED",
+            "SCHEDULED",
+            "PAYMENT_PENDING",
+            "PENDING_CLEARED"
+          ]
+        },
+        "classification": {
+          "enum": [
+            "UPGRADE",
+            "DOWNGRADE",
+            "INTERVAL_CHANGE",
+            "SAME"
+          ]
+        },
+        "payment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PaymentView"
+            }
+          ]
+        },
+        "summary": {
+          "$ref": "#/$defs/BillingSummary"
+        }
+      }
+    },
+    "ChangeResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/ChangeResult"
+        }
+      }
+    },
+    "CancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/PlainText"
+            },
+            {
+              "minLength": 1,
+              "maxLength": 500
+            }
+          ]
+        }
+      }
+    },
+    "CancelResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cancelEffectiveAt",
+        "summary"
+      ],
+      "properties": {
+        "cancelEffectiveAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "summary": {
+          "$ref": "#/$defs/BillingSummary"
+        }
+      }
+    },
+    "CancelResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/CancelResult"
+        }
+      }
+    },
+    "SummaryEnvelopeFull": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/BillingSummary"
+        }
+      }
+    },
+    "RetryPaymentResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payment",
+        "summary"
+      ],
+      "properties": {
+        "payment": {
+          "$ref": "#/$defs/PaymentView"
+        },
+        "summary": {
+          "$ref": "#/$defs/BillingSummary"
+        }
+      }
+    },
+    "RetryPaymentResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/RetryPaymentResult"
+        }
+      }
+    },
+    "ResendResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queued"
+      ],
+      "properties": {
+        "queued": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ResendResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/ResendResult"
+        }
+      }
+    },
+    "CardSetupInitRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slug"
+      ],
+      "properties": {
+        "slug": {
+          "$ref": "#/$defs/Slug"
+        }
+      }
+    },
+    "CardSetupVerifyResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slug",
+        "status",
+        "phase",
+        "cardRequired",
+        "card",
+        "trialGranted"
+      ],
+      "properties": {
+        "slug": {
+          "$ref": "#/$defs/Slug"
+        },
+        "status": {
+          "const": "PROVISIONING"
+        },
+        "phase": {
+          "const": "PROVISIONING"
+        },
+        "cardRequired": {
+          "const": false
+        },
+        "card": {
+          "$ref": "#/$defs/Card"
+        },
+        "trialGranted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "CardSetupVerifyEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/CardSetupVerifyResult"
+        }
+      }
+    },
+    "CardSetup": {
+      "description": "Everything the card step shows, from the server only (BILL-FE-02a AC2). trialEligible false (oneTrialPerCard, the owner e-mail already had a trial) means trialDays 0 and the first charge happens at provisioning.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan",
+        "trialEligible",
+        "trialDays",
+        "trialEndsAtEstimate",
+        "firstChargePesewas",
+        "verificationAmountPesewas",
+        "currency"
+      ],
+      "properties": {
+        "plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "name"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/PlanCode"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "trialEligible": {
+          "type": "boolean"
+        },
+        "trialDays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trialEndsAtEstimate": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "firstChargePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verificationAmountPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      }
+    },
+    "OnboardingCardStatus": {
+      "description": "data of the verify (202) and status (200) responses when the card step applies to the signup (billing.md section 5). cardSetupToken, cardSetupExpiresAt and cardSetup appear ONLY in the verify response while phase is AWAITING_CARD, never in a status poll.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slug",
+        "status",
+        "phase",
+        "cardRequired"
+      ],
+      "properties": {
+        "slug": {
+          "$ref": "#/$defs/Slug"
+        },
+        "status": {
+          "enum": [
+            "PROVISIONING",
+            "ACTIVE",
+            "FAILED"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "AWAITING_CARD",
+            "PROVISIONING",
+            "READY"
+          ]
+        },
+        "cardRequired": {
+          "type": "boolean"
+        },
+        "cardSetupToken": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{32,128}$"
+        },
+        "cardSetupExpiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "cardSetup": {
+          "$ref": "#/$defs/CardSetup"
+        },
+        "storefrontUrl": {
+          "type": "string",
+          "pattern": "^https?://"
+        },
+        "adminLoginUrl": {
+          "type": "string",
+          "pattern": "^https?://"
+        }
+      }
+    },
+    "OnboardingCardEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/OnboardingCardStatus"
+        }
+      }
+    },
+    "NotificationKind": {
+      "enum": [
+        "TRIAL_REMINDER",
+        "TRIAL_ENDS_TODAY",
+        "TRIAL_ENDED",
+        "PAYMENT_SUCCEEDED",
+        "PAYMENT_FAILED",
+        "RETRY_SCHEDULED",
+        "GRACE_STARTED",
+        "GRACE_REMINDER",
+        "GRACE_ENDING",
+        "ACCESS_RESTRICTED",
+        "ACCESS_RESTORED",
+        "RENEWAL_REMINDER",
+        "UPGRADE_APPLIED",
+        "DOWNGRADE_SCHEDULED",
+        "DOWNGRADE_APPLIED",
+        "CANCELLATION_SCHEDULED",
+        "CANCELLATION_REVERSED",
+        "SUBSCRIPTION_ENDED",
+        "INVOICE_AVAILABLE",
+        "REFUND_ISSUED",
+        "PRICE_CHANGE_NOTICE",
+        "COMPLIMENTARY_STARTED",
+        "COMPLIMENTARY_ENDING",
+        "COMPLIMENTARY_ENDED",
+        "CARD_EXPIRING",
+        "CARD_UPDATED",
+        "TRIAL_NOT_GRANTED"
+      ]
+    },
+    "BillingSettings": {
+      "description": "The platform billing settings (billing_settings, ONE row). Cross-field rules are in billing.md section 4.2.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "billingEnabled",
+        "activeEnvironment",
+        "cardRequiredAtSignup",
+        "graceDays",
+        "retryOffsetsDays",
+        "retryTimeOfDayUtc",
+        "trialReminderDaysBefore",
+        "renewalReminderDaysBefore",
+        "priceChangeNoticeDays",
+        "graceReminderOffsetsDays",
+        "graceEndingReminderDaysBefore",
+        "emailEnabled",
+        "invoiceNumberFormat",
+        "receiptNumberFormat",
+        "creditNoteNumberFormat",
+        "businessName",
+        "businessAddress",
+        "businessTin",
+        "businessEmail",
+        "businessPhone",
+        "taxLabel",
+        "taxRateBps",
+        "taxInclusive",
+        "invoiceFooterText",
+        "attachPdfToEmail",
+        "cardVerificationAmountPesewas",
+        "allowedChannels",
+        "recurringChannels",
+        "reconcileIntervalMinutes",
+        "reconcileLookbackHours",
+        "reconcileFullScanDays",
+        "billingRunIntervalSeconds",
+        "webhookIpAllowlistEnabled",
+        "webhookIpAllowlist",
+        "refundMaxDays",
+        "cardTokenRetentionDaysAfterEnd",
+        "oneTrialPerCard",
+        "cardAttemptsPerEmailPerDay",
+        "cardDeclineAlertThresholdPerHour",
+        "cardSetupStopThresholdPerHour",
+        "refundConfirmThresholdPesewas"
+      ],
+      "properties": {
+        "billingEnabled": {
+          "type": "boolean"
+        },
+        "activeEnvironment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "cardRequiredAtSignup": {
+          "type": "boolean"
+        },
+        "graceDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60
+        },
+        "retryOffsetsDays": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 6,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "retryTimeOfDayUtc": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+            }
+          ]
+        },
+        "trialReminderDaysBefore": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 5,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "renewalReminderDaysBefore": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 5,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "priceChangeNoticeDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "graceReminderOffsetsDays": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 6,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "graceEndingReminderDaysBefore": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 3,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "emailEnabled": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/NotificationKind"
+          },
+          "minProperties": 27,
+          "maxProperties": 27
+        },
+        "invoiceNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "receiptNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "creditNoteNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "businessName": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              ]
+            }
+          ]
+        },
+        "businessAddress": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 300
+                }
+              ]
+            }
+          ]
+        },
+        "businessTin": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 40
+                }
+              ]
+            }
+          ]
+        },
+        "businessEmail": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 254
+                }
+              ]
+            }
+          ]
+        },
+        "businessPhone": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 40
+                }
+              ]
+            }
+          ]
+        },
+        "taxLabel": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 40
+                }
+              ]
+            }
+          ]
+        },
+        "taxRateBps": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          ]
+        },
+        "taxInclusive": {
+          "type": "boolean"
+        },
+        "invoiceFooterText": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 500
+                }
+              ]
+            }
+          ]
+        },
+        "attachPdfToEmail": {
+          "type": "boolean"
+        },
+        "cardVerificationAmountPesewas": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 100000
+        },
+        "allowedChannels": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "card",
+              "mobile_money",
+              "bank",
+              "ussd",
+              "qr",
+              "bank_transfer"
+            ]
+          }
+        },
+        "recurringChannels": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "card",
+              "mobile_money",
+              "bank",
+              "ussd",
+              "qr",
+              "bank_transfer"
+            ]
+          }
+        },
+        "reconcileIntervalMinutes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 1440
+        },
+        "reconcileLookbackHours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 720
+        },
+        "reconcileFullScanDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        },
+        "billingRunIntervalSeconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 3600
+        },
+        "webhookIpAllowlistEnabled": {
+          "type": "boolean"
+        },
+        "webhookIpAllowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F:.]+(/[0-9]{1,3})?$"
+          }
+        },
+        "refundMaxDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        },
+        "cardTokenRetentionDaysAfterEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "oneTrialPerCard": {
+          "type": "boolean"
+        },
+        "cardAttemptsPerEmailPerDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cardDeclineAlertThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "cardSetupStopThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "refundConfirmThresholdPesewas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000
+        }
+      }
+    },
+    "BillingSettingsRequest": {
+      "description": "PUT body: every setting plus the version read (full replace, optimistic lock).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "billingEnabled",
+        "activeEnvironment",
+        "cardRequiredAtSignup",
+        "graceDays",
+        "retryOffsetsDays",
+        "retryTimeOfDayUtc",
+        "trialReminderDaysBefore",
+        "renewalReminderDaysBefore",
+        "priceChangeNoticeDays",
+        "graceReminderOffsetsDays",
+        "graceEndingReminderDaysBefore",
+        "emailEnabled",
+        "invoiceNumberFormat",
+        "receiptNumberFormat",
+        "creditNoteNumberFormat",
+        "businessName",
+        "businessAddress",
+        "businessTin",
+        "businessEmail",
+        "businessPhone",
+        "taxLabel",
+        "taxRateBps",
+        "taxInclusive",
+        "invoiceFooterText",
+        "attachPdfToEmail",
+        "cardVerificationAmountPesewas",
+        "allowedChannels",
+        "recurringChannels",
+        "reconcileIntervalMinutes",
+        "reconcileLookbackHours",
+        "reconcileFullScanDays",
+        "billingRunIntervalSeconds",
+        "webhookIpAllowlistEnabled",
+        "webhookIpAllowlist",
+        "refundMaxDays",
+        "cardTokenRetentionDaysAfterEnd",
+        "oneTrialPerCard",
+        "cardAttemptsPerEmailPerDay",
+        "cardDeclineAlertThresholdPerHour",
+        "cardSetupStopThresholdPerHour",
+        "refundConfirmThresholdPesewas",
+        "version"
+      ],
+      "properties": {
+        "billingEnabled": {
+          "type": "boolean"
+        },
+        "activeEnvironment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "cardRequiredAtSignup": {
+          "type": "boolean"
+        },
+        "graceDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60
+        },
+        "retryOffsetsDays": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 6,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "retryTimeOfDayUtc": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+            }
+          ]
+        },
+        "trialReminderDaysBefore": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 5,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "renewalReminderDaysBefore": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 5,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "priceChangeNoticeDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "graceReminderOffsetsDays": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 6,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "graceEndingReminderDaysBefore": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 0,
+          "maxItems": 3,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "emailEnabled": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/NotificationKind"
+          },
+          "minProperties": 27,
+          "maxProperties": 27
+        },
+        "invoiceNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "receiptNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "creditNoteNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "businessName": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              ]
+            }
+          ]
+        },
+        "businessAddress": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 300
+                }
+              ]
+            }
+          ]
+        },
+        "businessTin": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 40
+                }
+              ]
+            }
+          ]
+        },
+        "businessEmail": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 254
+                }
+              ]
+            }
+          ]
+        },
+        "businessPhone": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 40
+                }
+              ]
+            }
+          ]
+        },
+        "taxLabel": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 40
+                }
+              ]
+            }
+          ]
+        },
+        "taxRateBps": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            }
+          ]
+        },
+        "taxInclusive": {
+          "type": "boolean"
+        },
+        "invoiceFooterText": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/PlainText"
+                },
+                {
+                  "minLength": 1,
+                  "maxLength": 500
+                }
+              ]
+            }
+          ]
+        },
+        "attachPdfToEmail": {
+          "type": "boolean"
+        },
+        "cardVerificationAmountPesewas": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 100000
+        },
+        "allowedChannels": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "card",
+              "mobile_money",
+              "bank",
+              "ussd",
+              "qr",
+              "bank_transfer"
+            ]
+          }
+        },
+        "recurringChannels": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "card",
+              "mobile_money",
+              "bank",
+              "ussd",
+              "qr",
+              "bank_transfer"
+            ]
+          }
+        },
+        "reconcileIntervalMinutes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 1440
+        },
+        "reconcileLookbackHours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 720
+        },
+        "reconcileFullScanDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        },
+        "billingRunIntervalSeconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 3600
+        },
+        "webhookIpAllowlistEnabled": {
+          "type": "boolean"
+        },
+        "webhookIpAllowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F:.]+(/[0-9]{1,3})?$"
+          }
+        },
+        "refundMaxDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        },
+        "cardTokenRetentionDaysAfterEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365
+        },
+        "oneTrialPerCard": {
+          "type": "boolean"
+        },
+        "cardAttemptsPerEmailPerDay": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cardDeclineAlertThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "cardSetupStopThresholdPerHour": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "refundConfirmThresholdPesewas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CredentialStatus": {
+      "description": "Write-only credentials (S2): the keys are never returned, only configured, the last 4 characters of each and metadata. webhookUrl is built from server configuration, never from input.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environment",
+        "configured",
+        "status",
+        "publicKeyLast4",
+        "secretKeyLast4",
+        "verifiedAt",
+        "failureCode",
+        "lastWebhookAt",
+        "lastWebhookOkAt",
+        "webhookUrl",
+        "version",
+        "updatedAt",
+        "updatedBy"
+      ],
+      "properties": {
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "configured": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "UNSET",
+            "UNVERIFIED",
+            "VERIFIED",
+            "FAILED"
+          ]
+        },
+        "publicKeyLast4": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{4}$"
+            }
+          ]
+        },
+        "secretKeyLast4": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{4}$"
+            }
+          ]
+        },
+        "verifiedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "failureCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "KEY_REJECTED"
+              ]
+            }
+          ]
+        },
+        "lastWebhookAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "lastWebhookOkAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "webhookUrl": {
+          "type": "string",
+          "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]+)?/api/v1/platform/billing/webhooks/paystack/(test|live)$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "updatedBy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Email"
+            }
+          ]
+        }
+      }
+    },
+    "PlatformHealth": {
+      "description": "Loud platform-fault indicator (PO default, billing.md 20.3 item 9 and 20.6, awaiting owner confirmation): paused is true while the active environment's keys are rejected or billing is switched off although billing-managed subscriptions exist; those tenants keep full access, so the console shows a persistent alert.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paused",
+        "reason",
+        "since",
+        "affectedSubscriptions"
+      ],
+      "properties": {
+        "paused": {
+          "type": "boolean"
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "KEY_REJECTED",
+                "BILLING_DISABLED"
+              ]
+            }
+          ]
+        },
+        "since": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "affectedSubscriptions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "NumberPreviews": {
+      "description": "Read-only: the number each format would issue NEXT (current counters of the year of now, UTC). Server-computed so the console renders nothing itself.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "INVOICE",
+        "RECEIPT",
+        "CREDIT_NOTE"
+      ],
+      "properties": {
+        "INVOICE": {
+          "type": "string"
+        },
+        "RECEIPT": {
+          "type": "string"
+        },
+        "CREDIT_NOTE": {
+          "type": "string"
+        }
+      }
+    },
+    "BillingSettingsView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settings",
+        "version",
+        "updatedAt",
+        "updatedBy",
+        "credentials",
+        "numberPreviews",
+        "health"
+      ],
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/BillingSettings"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updatedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "updatedBy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Email"
+            }
+          ]
+        },
+        "credentials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CredentialStatus"
+          },
+          "maxItems": 2,
+          "minItems": 2
+        },
+        "numberPreviews": {
+          "$ref": "#/$defs/NumberPreviews"
+        },
+        "health": {
+          "$ref": "#/$defs/PlatformHealth"
+        }
+      }
+    },
+    "NumberPreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "invoiceNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "receiptNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        },
+        "creditNoteNumberFormat": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9/_.{}-]*\\{NNNNNN\\}[A-Za-z0-9/_.{}-]*$"
+        }
+      },
+      "description": "POST .../settings/number-preview: preview UNSAVED formats (any subset); formats not sent use the saved ones."
+    },
+    "NumberPreviewEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/NumberPreviews"
+        }
+      }
+    },
+    "BillingSettingsEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/BillingSettingsView"
+        }
+      }
+    },
+    "CredentialsRequest": {
+      "description": "PUT credentials. Prefixes must match the environment of the path (pk_test_/sk_test_ for test, pk_live_/sk_live_ for live).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publicKey",
+        "secretKey"
+      ],
+      "properties": {
+        "publicKey": {
+          "type": "string",
+          "pattern": "^pk_(test|live)_[A-Za-z0-9]{16,128}$"
+        },
+        "secretKey": {
+          "type": "string",
+          "pattern": "^sk_(test|live)_[A-Za-z0-9]{16,128}$"
+        },
+        "expectedVersion": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CredentialStatusEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/CredentialStatus"
+        }
+      }
+    },
+    "CredentialListEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "credentials"
+          ],
+          "properties": {
+            "credentials": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/CredentialStatus"
+              },
+              "maxItems": 2,
+              "minItems": 2
+            }
+          }
+        }
+      }
+    },
+    "SettingsAuditRow": {
+      "description": "One row per save. changes[] is field level; credential fields appear as before/after the string \"changed\" or last4 only, never a key (S2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "occurredAt",
+        "actorId",
+        "actorEmail",
+        "settingsVersion",
+        "changes"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "actorId": {
+          "type": "integer"
+        },
+        "actorEmail": {
+          "$ref": "#/$defs/Email"
+        },
+        "settingsVersion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "before",
+              "after"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "before": {},
+              "after": {}
+            }
+          },
+          "maxItems": 60,
+          "minItems": 1
+        }
+      }
+    },
+    "SettingsAuditPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SettingsAuditRow"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "CardDisplay": {
+      "$ref": "#/$defs/Card"
+    },
+    "TenantRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "slug",
+        "displayName",
+        "ownerEmail"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "slug": {
+          "$ref": "#/$defs/Slug"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "ownerEmail": {
+          "$ref": "#/$defs/Email"
+        }
+      }
+    },
+    "SubscriptionRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "plan",
+        "interval",
+        "state",
+        "billingMode",
+        "environment",
+        "trialEndsAt",
+        "currentPeriodEnd",
+        "nextBillingAt",
+        "nextBillingAmountPesewas",
+        "cardOnFile",
+        "lastPayment",
+        "version"
+      ],
+      "properties": {
+        "tenant": {
+          "$ref": "#/$defs/TenantRef"
+        },
+        "plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "name"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/PlanCode"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        },
+        "state": {
+          "$ref": "#/$defs/BillingState"
+        },
+        "billingMode": {
+          "$ref": "#/$defs/BillingMode"
+        },
+        "environment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Environment"
+            }
+          ]
+        },
+        "trialEndsAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "currentPeriodEnd": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "nextBillingAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "nextBillingAmountPesewas": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "cardOnFile": {
+          "type": "boolean"
+        },
+        "lastPayment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "at",
+                "amountPesewas"
+              ],
+              "properties": {
+                "status": {
+                  "$ref": "#/$defs/PaymentStatus"
+                },
+                "at": {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                "amountPesewas": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "SubscriptionPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages",
+            "sort",
+            "direction",
+            "facets"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SubscriptionRow"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sort": {
+              "type": "string"
+            },
+            "direction": {
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "facets": {
+              "description": "Counts for the quick filters over the whole filtered-by-environment set, not only the page.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "TRIALING",
+                "ACTIVE",
+                "PAST_DUE",
+                "CANCELED",
+                "EXPIRED",
+                "COMPLIMENTARY",
+                "RENEWALS_DUE_7D",
+                "FAILED_PAYMENTS"
+              ],
+              "properties": {
+                "TRIALING": {
+                  "type": "integer"
+                },
+                "ACTIVE": {
+                  "type": "integer"
+                },
+                "PAST_DUE": {
+                  "type": "integer"
+                },
+                "CANCELED": {
+                  "type": "integer"
+                },
+                "EXPIRED": {
+                  "type": "integer"
+                },
+                "COMPLIMENTARY": {
+                  "type": "integer"
+                },
+                "RENEWALS_DUE_7D": {
+                  "type": "integer"
+                },
+                "FAILED_PAYMENTS": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "AdminPaymentView": {
+      "description": "Console view of a charge attempt: adds environment, fees, verification, flags and refund arithmetic. refundableRemaining = amount - refunded - pendingRefund (0 unless SUCCESS, not CARD_VERIFY, inside refund_max_days).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "reference",
+        "purpose",
+        "status",
+        "amountPesewas",
+        "currency",
+        "attemptNo",
+        "environment",
+        "planCode",
+        "interval",
+        "periodStart",
+        "periodEnd",
+        "createdAt",
+        "paidAt",
+        "verifiedAt",
+        "feesPesewas",
+        "failureCode",
+        "flagged",
+        "flagReason",
+        "refundedPesewas",
+        "pendingRefundPesewas",
+        "refundableRemainingPesewas",
+        "refundableUntil",
+        "documents"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "reference": {
+          "$ref": "#/$defs/PaymentReference"
+        },
+        "purpose": {
+          "$ref": "#/$defs/PaymentPurpose"
+        },
+        "status": {
+          "$ref": "#/$defs/PaymentStatus"
+        },
+        "amountPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "attemptNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "planCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PlanCode"
+            }
+          ]
+        },
+        "interval": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Interval"
+            }
+          ]
+        },
+        "periodStart": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "periodEnd": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "paidAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "verifiedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "feesPesewas": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "failureCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/FailureCode"
+            }
+          ]
+        },
+        "flagged": {
+          "type": "boolean"
+        },
+        "flagReason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "AMOUNT_MISMATCH",
+                "CURRENCY_MISMATCH",
+                "CUSTOMER_MISMATCH",
+                "REFERENCE_MISMATCH"
+              ]
+            }
+          ]
+        },
+        "refundedPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pendingRefundPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refundableRemainingPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refundableUntil": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocRef"
+          },
+          "maxItems": 5
+        }
+      }
+    },
+    "RefundView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "paymentId",
+        "amountPesewas",
+        "status",
+        "reason",
+        "requestedBy",
+        "requestedAt",
+        "completedAt",
+        "adjustmentId",
+        "creditNoteId",
+        "cancelledSubscription"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "paymentId": {
+          "type": "integer"
+        },
+        "amountPesewas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "COMPLETED",
+            "FAILED"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        },
+        "requestedBy": {
+          "$ref": "#/$defs/Email"
+        },
+        "requestedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "completedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "adjustmentId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "creditNoteId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "cancelledSubscription": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Adjustment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "amountPesewas",
+        "paymentId",
+        "reason",
+        "actorEmail",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "REFUND",
+            "CREDIT",
+            "REVERSAL",
+            "MANUAL_ADJUSTMENT"
+          ]
+        },
+        "amountPesewas": {
+          "type": "integer"
+        },
+        "paymentId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "actorEmail": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Email"
+            }
+          ]
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "Transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "event",
+        "from",
+        "to",
+        "actorType",
+        "reference"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "event": {
+          "type": "string",
+          "pattern": "^[A-Z_]{3,40}$"
+        },
+        "from": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/BillingState"
+            }
+          ]
+        },
+        "to": {
+          "$ref": "#/$defs/BillingState"
+        },
+        "actorType": {
+          "enum": [
+            "SYSTEM",
+            "WEBHOOK",
+            "MEMBER",
+            "PLATFORM_ADMIN"
+          ]
+        },
+        "reference": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "RetryAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptNo",
+        "scheduledFor",
+        "status"
+      ],
+      "properties": {
+        "attemptNo": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "scheduledFor": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "status": {
+          "enum": [
+            "SCHEDULED",
+            "DONE",
+            "SKIPPED"
+          ]
+        }
+      }
+    },
+    "ComplimentaryInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planCode",
+        "since",
+        "until",
+        "reason",
+        "grantedBy"
+      ],
+      "properties": {
+        "planCode": {
+          "$ref": "#/$defs/PlanCode"
+        },
+        "since": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "until": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        },
+        "grantedBy": {
+          "$ref": "#/$defs/Email"
+        }
+      }
+    },
+    "SubscriptionDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant",
+        "plan",
+        "interval",
+        "state",
+        "billingMode",
+        "environment",
+        "manualRestriction",
+        "allowedActions",
+        "trialEndsAt",
+        "currentPeriod",
+        "anchorAt",
+        "nextBillingAt",
+        "lockedPricesPesewas",
+        "grace",
+        "pendingChange",
+        "priceChange",
+        "complimentary",
+        "card",
+        "version",
+        "timeline",
+        "payments",
+        "documents",
+        "adjustments",
+        "recentAudit"
+      ],
+      "properties": {
+        "tenant": {
+          "$ref": "#/$defs/TenantRef"
+        },
+        "plan": {
+          "$ref": "#/$defs/PlanRef"
+        },
+        "interval": {
+          "$ref": "#/$defs/Interval"
+        },
+        "state": {
+          "$ref": "#/$defs/BillingState"
+        },
+        "billingMode": {
+          "$ref": "#/$defs/BillingMode"
+        },
+        "environment": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Environment"
+            }
+          ]
+        },
+        "manualRestriction": {
+          "type": "boolean"
+        },
+        "allowedActions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "ACTIVATE",
+              "RESTRICT",
+              "RESTORE",
+              "EXTEND_TRIAL",
+              "CHANGE_PLAN",
+              "CANCEL_NOW",
+              "CANCEL_AT_PERIOD_END",
+              "RETRY_PAYMENT_NOW",
+              "CLEAR_PENDING_CHANGE"
+            ]
+          }
+        },
+        "trialEndsAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "currentPeriod": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Period"
+            }
+          ]
+        },
+        "anchorAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "nextBillingAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "lockedPricesPesewas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "MONTHLY",
+            "ANNUAL"
+          ],
+          "properties": {
+            "MONTHLY": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "ANNUAL": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "grace": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "startedAt",
+                "endsAt",
+                "reason",
+                "retrySchedule"
+              ],
+              "properties": {
+                "startedAt": {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                "endsAt": {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                "reason": {
+                  "enum": [
+                    "PAYMENT_FAILED",
+                    "NO_CARD"
+                  ]
+                },
+                "retrySchedule": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/RetryAttempt"
+                  },
+                  "maxItems": 6
+                }
+              }
+            }
+          ]
+        },
+        "pendingChange": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PendingChange"
+            }
+          ]
+        },
+        "priceChange": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PriceChange"
+            }
+          ]
+        },
+        "complimentary": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/ComplimentaryInfo"
+            }
+          ]
+        },
+        "card": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Card"
+            }
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Transition"
+          },
+          "maxItems": 50
+        },
+        "payments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AdminPaymentView"
+          },
+          "maxItems": 50
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocRef"
+          },
+          "maxItems": 100
+        },
+        "adjustments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Adjustment"
+          },
+          "maxItems": 50
+        },
+        "recentAudit": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BillingAuditRow"
+          },
+          "maxItems": 20
+        }
+      }
+    },
+    "SubscriptionDetailEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/SubscriptionDetail"
+        }
+      }
+    },
+    "SubscriptionActionRequest": {
+      "description": "POST /subscriptions/{slug}/actions. Exactly one shape per action; reason and expectedVersion are always required.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "ACTIVATE"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "until": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/Timestamp"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "RESTRICT"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "RESTORE"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion",
+            "trialEndsAt"
+          ],
+          "properties": {
+            "action": {
+              "const": "EXTEND_TRIAL"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "trialEndsAt": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion",
+            "planId"
+          ],
+          "properties": {
+            "action": {
+              "const": "CHANGE_PLAN"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "planId": {
+              "type": "integer"
+            },
+            "interval": {
+              "$ref": "#/$defs/Interval"
+            },
+            "charge": {
+              "type": "boolean"
+            },
+            "allowInactive": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "CANCEL_NOW"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "CANCEL_AT_PERIOD_END"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "RETRY_PAYMENT_NOW"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "reason",
+            "expectedVersion"
+          ],
+          "properties": {
+            "action": {
+              "const": "CLEAR_PENDING_CHANGE"
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "ComplimentaryGrantRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planId",
+        "until",
+        "reason",
+        "expectedVersion"
+      ],
+      "properties": {
+        "planId": {
+          "type": "integer"
+        },
+        "until": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        },
+        "allowInactive": {
+          "type": "boolean"
+        },
+        "expectedVersion": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ComplimentaryEndRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "expectedVersion"
+      ],
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        },
+        "expectedVersion": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "RefundRequest": {
+      "description": "confirmAmountPesewas is required, and must equal amountPesewas, when amountPesewas is above the refundConfirmThresholdPesewas setting.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amountPesewas",
+        "reason"
+      ],
+      "properties": {
+        "amountPesewas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        },
+        "cancelSubscription": {
+          "type": "boolean"
+        },
+        "confirmAmountPesewas": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "RefundResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refund",
+        "payment"
+      ],
+      "properties": {
+        "refund": {
+          "$ref": "#/$defs/RefundView"
+        },
+        "payment": {
+          "$ref": "#/$defs/AdminPaymentView"
+        }
+      }
+    },
+    "RefundResultEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/RefundResult"
+        }
+      }
+    },
+    "HistoryItem": {
+      "description": "Merged, newest first. summary is a fixed code (for example PAYMENT_SUCCESS, REFUND_COMPLETED, INVOICE_ISSUED, EVENT_<name>), never free text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "kind",
+        "summary",
+        "reference",
+        "amountPesewas",
+        "id"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "kind": {
+          "enum": [
+            "PAYMENT",
+            "ADJUSTMENT",
+            "DOCUMENT",
+            "TRANSITION",
+            "REFUND"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "pattern": "^[A-Z_]{3,40}$"
+        },
+        "reference": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "amountPesewas": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        }
+      }
+    },
+    "HistoryEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HistoryItem"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "BillingAuditRow": {
+      "description": "Append-only. before and after never contain a secret, an authorization code or a webhook body (S1, S2, S6).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "occurredAt",
+        "actorType",
+        "actorId",
+        "actorEmail",
+        "tenantId",
+        "tenantSlug",
+        "action",
+        "reference",
+        "reason",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "actorType": {
+          "enum": [
+            "SYSTEM",
+            "WEBHOOK",
+            "MEMBER",
+            "PLATFORM_ADMIN"
+          ]
+        },
+        "actorId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "actorEmail": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Email"
+            }
+          ]
+        },
+        "tenantId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "tenantSlug": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Slug"
+            }
+          ]
+        },
+        "action": {
+          "type": "string",
+          "pattern": "^[A-Z_]{3,60}$"
+        },
+        "reference": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "before": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "after": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object"
+            }
+          ]
+        }
+      }
+    },
+    "BillingAuditPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/BillingAuditRow"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "PlatformDocumentPageEnvelope": {
+      "$ref": "#/$defs/DocumentPageEnvelope"
+    },
+    "FindingSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amountPesewas"
+      ],
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "amountPesewas": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        }
+      }
+    },
+    "ReconciliationFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "status",
+        "environment",
+        "reference",
+        "tenantSlug",
+        "local",
+        "remote",
+        "detectedAt",
+        "runId",
+        "resolvedAt",
+        "resolvedBy",
+        "resolution"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "MISSING_LOCAL",
+            "AMOUNT_MISMATCH",
+            "STATUS_MISMATCH",
+            "ORPHAN_REFUND"
+          ]
+        },
+        "status": {
+          "enum": [
+            "OPEN",
+            "RESOLVED"
+          ]
+        },
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "reference": {
+          "$ref": "#/$defs/PaymentReference"
+        },
+        "tenantSlug": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Slug"
+            }
+          ]
+        },
+        "local": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/FindingSide"
+            }
+          ]
+        },
+        "remote": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/FindingSide"
+            }
+          ]
+        },
+        "detectedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "runId": {
+          "type": "integer"
+        },
+        "resolvedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "resolvedBy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Email"
+            }
+          ]
+        },
+        "resolution": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "ReconciliationFindingPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReconciliationFinding"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "ResolveFindingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/Reason"
+        }
+      }
+    },
+    "ReconciliationFindingEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/ReconciliationFinding"
+        }
+      }
+    },
+    "ReconciliationRunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "full": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ReconciliationRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "environment",
+        "trigger",
+        "startedAt",
+        "finishedAt",
+        "status",
+        "checked",
+        "healed",
+        "findings"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "INCREMENTAL",
+            "FULL"
+          ]
+        },
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "trigger": {
+          "enum": [
+            "SCHEDULE",
+            "MANUAL"
+          ]
+        },
+        "startedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "finishedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "RUNNING",
+            "OK",
+            "FAILED"
+          ]
+        },
+        "checked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "healed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "findings": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ReconciliationRunEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/ReconciliationRun"
+        }
+      }
+    },
+    "ReconciliationRunsEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runs",
+            "openFindings"
+          ],
+          "properties": {
+            "runs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ReconciliationRun"
+              },
+              "maxItems": 50
+            },
+            "openFindings": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "WebhookEventRow": {
+      "description": "No payload body is ever returned (S3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "environment",
+        "eventType",
+        "status",
+        "attempts",
+        "failureClass",
+        "reference",
+        "dedupeKey",
+        "receivedAt",
+        "processedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "environment": {
+          "$ref": "#/$defs/Environment"
+        },
+        "eventType": {
+          "type": "string",
+          "pattern": "^[a-z0-9._]{3,64}$"
+        },
+        "status": {
+          "enum": [
+            "RECEIVED",
+            "PROCESSING",
+            "PROCESSED",
+            "IGNORED",
+            "FAILED"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failureClass": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "VERIFY_MISMATCH",
+                "UNKNOWN_REFERENCE",
+                "PROVIDER_UNAVAILABLE",
+                "INTERNAL",
+                "POISON"
+              ]
+            }
+          ]
+        },
+        "reference": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "dedupeKey": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "receivedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "processedAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/Timestamp"
+            }
+          ]
+        }
+      }
+    },
+    "WebhookEventPageEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items",
+            "page",
+            "size",
+            "totalElements",
+            "totalPages"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WebhookEventRow"
+              }
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "totalElements": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalPages": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "WebhookEventEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/WebhookEventRow"
+        }
+      }
+    },
+    "PaystackEvent": {
+      "description": "Inbound Paystack event (the raw request body; the shape is Paystack's, only the fields billing.md section 12 reads are constrained).",
+      "type": "object",
+      "required": [
+        "event",
+        "data"
+      ],
+      "properties": {
+        "event": {
+          "type": "string",
+          "pattern": "^[a-z0-9._]{3,64}$"
+        },
+        "data": {
+          "type": "object"
+        }
+      }
+    },
+    "WebhookAckEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result"
+          ],
+          "properties": {
+            "result": {
+              "enum": [
+                "Accepted",
+                "Duplicate",
+                "Ignored"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "ReportRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "to": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "ReportsSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "range",
+        "filters",
+        "revenue",
+        "mrrPesewas",
+        "activeSubscriptions",
+        "newSubscriptions",
+        "cancellations",
+        "failedPayments",
+        "trialConversion",
+        "outstanding",
+        "revenueByPlan",
+        "arpuPesewas",
+        "definitions"
+      ],
+      "properties": {
+        "range": {
+          "$ref": "#/$defs/ReportRange"
+        },
+        "filters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "environment",
+            "planId",
+            "interval"
+          ],
+          "properties": {
+            "environment": {
+              "$ref": "#/$defs/Environment"
+            },
+            "planId": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "interval": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/Interval"
+                }
+              ]
+            }
+          }
+        },
+        "revenue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "grossCollectedPesewas",
+            "refundedPesewas",
+            "netRevenuePesewas",
+            "feesPesewas"
+          ],
+          "properties": {
+            "grossCollectedPesewas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "refundedPesewas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "netRevenuePesewas": {
+              "type": "integer"
+            },
+            "feesPesewas": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              ]
+            }
+          }
+        },
+        "mrrPesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeSubscriptions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "newSubscriptions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cancellations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheduled",
+            "effective"
+          ],
+          "properties": {
+            "scheduled": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "effective": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "failedPayments": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "count",
+            "amountPesewas"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "amountPesewas": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "trialConversion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trialsEnded",
+            "converted",
+            "rateBps"
+          ],
+          "properties": {
+            "trialsEnded": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "converted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "rateBps": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10000
+                }
+              ]
+            }
+          }
+        },
+        "outstanding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "subscriptions",
+            "amountAtRiskPesewas"
+          ],
+          "properties": {
+            "subscriptions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "amountAtRiskPesewas": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "revenueByPlan": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "planCode",
+              "planName",
+              "grossPesewas",
+              "refundedPesewas",
+              "netPesewas"
+            ],
+            "properties": {
+              "planCode": {
+                "$ref": "#/$defs/PlanCode"
+              },
+              "planName": {
+                "type": "string"
+              },
+              "grossPesewas": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "refundedPesewas": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "netPesewas": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "arpuPesewas": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0
+            }
+          ]
+        },
+        "definitions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ReportsSummaryEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/ReportsSummary"
+        }
+      }
+    },
+    "TimeseriesMetric": {
+      "enum": [
+        "MRR",
+        "REVENUE",
+        "NEW",
+        "CANCELLED",
+        "FAILED",
+        "CONVERSION"
+      ]
+    },
+    "Timeseries": {
+      "description": "UTC bucket boundaries (week = Monday 00:00Z), zero-filled gaps (a bucket with no data is 0; CONVERSION with no trials ended is null).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "granularity",
+        "unit",
+        "range",
+        "points"
+      ],
+      "properties": {
+        "metric": {
+          "$ref": "#/$defs/TimeseriesMetric"
+        },
+        "granularity": {
+          "enum": [
+            "day",
+            "week",
+            "month"
+          ]
+        },
+        "unit": {
+          "enum": [
+            "PESEWAS",
+            "COUNT",
+            "BPS"
+          ]
+        },
+        "range": {
+          "$ref": "#/$defs/ReportRange"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "bucketStart",
+              "value"
+            ],
+            "properties": {
+              "bucketStart": {
+                "$ref": "#/$defs/Timestamp"
+              },
+              "value": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              }
+            }
+          },
+          "maxItems": 800
+        }
+      }
+    },
+    "TimeseriesEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/Timeseries"
+        }
+      }
+    },
+    "DevClock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "now",
+        "offsetSeconds",
+        "frozen"
+      ],
+      "properties": {
+        "now": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "offsetSeconds": {
+          "type": "integer"
+        },
+        "frozen": {
+          "type": "boolean"
+        }
+      }
+    },
+    "DevClockEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/DevClock"
+        }
+      }
+    },
+    "DevClockAdvanceRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "seconds"
+          ],
+          "properties": {
+            "seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 63072000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "to"
+          ],
+          "properties": {
+            "to": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reset"
+          ],
+          "properties": {
+            "reset": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "DevBillingRunResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "now",
+        "trialCharges",
+        "renewals",
+        "retries",
+        "graceExpiries",
+        "reminders",
+        "reconciled"
+      ],
+      "properties": {
+        "now": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "trialCharges": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "renewals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "graceExpiries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reminders": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reconciled": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "DevBillingRunEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "null"
+        },
+        "data": {
+          "$ref": "#/$defs/DevBillingRunResult"
+        }
+      }
+    },
+    "TenantBillingFields": {
+      "description": "The keys BILL-01b adds to every platform tenant summary object (platform-tenants.md). Booleans and enums only; no card data.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "billingStatus",
+        "accessState",
+        "paymentStatus",
+        "cardOnFile",
+        "billingMode"
+      ],
+      "properties": {
+        "billingStatus": {
+          "$ref": "#/$defs/LifecycleStatus"
+        },
+        "accessState": {
+          "$ref": "#/$defs/AccessState"
+        },
+        "paymentStatus": {
+          "$ref": "#/$defs/PaymentStatusOfSubscription"
+        },
+        "cardOnFile": {
+          "type": "boolean"
+        },
+        "billingMode": {
+          "$ref": "#/$defs/BillingMode"
+        }
+      }
+    },
+    "BillingErrorCode": {
+      "enum": [
+        "BILLING_NOT_CONFIGURED",
+        "CARD_REQUIRED",
+        "CARD_AUTH_FAILED",
+        "PAYMENT_PENDING",
+        "PAYMENT_FAILED",
+        "CHANGE_NOT_ALLOWED",
+        "PENDING_CHANGE_CONFLICT",
+        "PRICE_CHANGED",
+        "PREVIEW_TOKEN_INVALID",
+        "USE_SUBSCRIBE",
+        "ALREADY_SUBSCRIBED",
+        "REFUND_EXCEEDS_REMAINING",
+        "REFUND_NOT_ALLOWED",
+        "SUBSCRIPTION_VERSION_CONFLICT",
+        "BILLING_SETTINGS_VERSION_CONFLICT",
+        "CREDENTIALS_VERSION_CONFLICT",
+        "BILLING_MANAGED",
+        "CREDENTIALS_NOT_CONFIGURED",
+        "PROVIDER_UNAVAILABLE",
+        "ACTION_NOT_ALLOWED",
+        "NOT_COMPLIMENTARY",
+        "IDEMPOTENCY_KEY_REQUIRED",
+        "IDEMPOTENCY_KEY_INVALID",
+        "IDEMPOTENCY_KEY_REUSED",
+        "RECONCILIATION_IN_PROGRESS",
+        "FINDING_ALREADY_RESOLVED",
+        "WEBHOOK_EVENT_NOT_RETRYABLE",
+        "CARD_SETUP_PAUSED"
+      ]
+    },
+    "ErrorEnvelope": {
+      "description": "Every non-2xx body. branch on the status and, where documented, data.code, never on description. data is null, a field map (400 validation) or an object with code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "$ref": "#/$defs/BillingErrorCode"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "ValidationErrorEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "const": "Validation failed"
+        },
+        "data": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CodeErrorEnvelope": {
+      "description": "A body whose data is exactly {code} for the codes that carry no extra keys.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/BillingErrorCode"
+            }
+          }
+        }
+      }
+    },
+    "VersionConflictEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "expectedVersion",
+            "currentVersion"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "SUBSCRIPTION_VERSION_CONFLICT",
+                "BILLING_SETTINGS_VERSION_CONFLICT",
+                "CREDENTIALS_VERSION_CONFLICT"
+              ]
+            },
+            "expectedVersion": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "currentVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "ChangeNotAllowedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "reason"
+          ],
+          "properties": {
+            "code": {
+              "const": "CHANGE_NOT_ALLOWED"
+            },
+            "reason": {
+              "enum": [
+                "NOT_ACTIVE",
+                "PAYMENT_OVERDUE",
+                "ENDED",
+                "COMPLIMENTARY",
+                "MANUAL_MODE",
+                "PLAN_NOT_PURCHASABLE",
+                "UPGRADE_WITH_INTERVAL_CHANGE",
+                "TRIAL_ENDED",
+                "NOTHING_DUE"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "ActionNotAllowedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "action",
+            "lifecycleStatus",
+            "accessState"
+          ],
+          "properties": {
+            "code": {
+              "const": "ACTION_NOT_ALLOWED"
+            },
+            "action": {
+              "type": "string"
+            },
+            "lifecycleStatus": {
+              "$ref": "#/$defs/LifecycleStatus"
+            },
+            "accessState": {
+              "$ref": "#/$defs/AccessState"
+            }
+          }
+        }
+      }
+    },
+    "PriceChangedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "reason"
+          ],
+          "properties": {
+            "code": {
+              "const": "PRICE_CHANGED"
+            },
+            "reason": {
+              "enum": [
+                "PRICE",
+                "PLAN"
+              ]
+            },
+            "newPricePesewas": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "chargeNowPesewas": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "RefundExceedsEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "remainingPesewas"
+          ],
+          "properties": {
+            "code": {
+              "const": "REFUND_EXCEEDS_REMAINING"
+            },
+            "remainingPesewas": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "RefundNotAllowedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "reason"
+          ],
+          "properties": {
+            "code": {
+              "const": "REFUND_NOT_ALLOWED"
+            },
+            "reason": {
+              "enum": [
+                "PAYMENT_NOT_SUCCESSFUL",
+                "CARD_VERIFY",
+                "WINDOW_EXPIRED",
+                "WRONG_ENVIRONMENT",
+                "NOTHING_REFUNDABLE"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "PaymentFailedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "payment"
+          ],
+          "properties": {
+            "code": {
+              "const": "PAYMENT_FAILED"
+            },
+            "payment": {
+              "$ref": "#/$defs/PaymentView"
+            }
+          }
+        }
+      }
+    },
+    "PaymentPendingEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "const": "PAYMENT_PENDING"
+            },
+            "paymentId": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "CardAuthFailedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "retryAllowed",
+            "reason"
+          ],
+          "properties": {
+            "code": {
+              "const": "CARD_AUTH_FAILED"
+            },
+            "retryAllowed": {
+              "type": "boolean"
+            },
+            "reason": {
+              "enum": [
+                "DECLINED",
+                "ABANDONED",
+                "NOT_REUSABLE",
+                "NOT_CARD",
+                "AMOUNT_MISMATCH",
+                "EMAIL_MISMATCH",
+                "UNKNOWN"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "ProviderUnavailableEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "const": "PROVIDER_UNAVAILABLE"
+            }
+          }
+        }
+      }
+    },
+    "BillingManagedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "const": "BILLING_MANAGED"
+            }
+          }
+        }
+      }
+    },
+    "CardSetupPausedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "data"
+      ],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "const": "CARD_SETUP_PAUSED"
+            }
+          }
+        }
+      }
+    },
+    "ProrationRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "oldPricePesewas",
+        "newPricePesewas",
+        "periodStart",
+        "periodEnd",
+        "changeAt",
+        "periodSeconds",
+        "remainingSeconds",
+        "exact",
+        "deltaPesewas"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "oldPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "newPricePesewas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "periodStart": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "periodEnd": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "changeAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "periodSeconds": {
+          "type": "integer"
+        },
+        "remainingSeconds": {
+          "type": "integer"
+        },
+        "exact": {
+          "type": "string"
+        },
+        "deltaPesewas": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

@@ -83,7 +83,7 @@
       }
     },
     "OnboardingStatus": {
-      "description": "data of signup, verify and status responses. storefrontUrl and adminLoginUrl are present only when status is ACTIVE and tenant.base-domain is configured; they are omitted (not null) otherwise.",
+      "description": "data of signup, verify and status responses. storefrontUrl and adminLoginUrl are present only when status is ACTIVE and tenant.base-domain is configured; they are omitted (not null) otherwise. BILL-00 adds the optional keys phase, cardRequired, cardSetupToken, cardSetupExpiresAt and cardSetup (billing.md section 5), present only when the card step applies.",
       "type": "object",
       "additionalProperties": false,
       "required": ["slug", "status"],
@@ -91,7 +91,26 @@
         "slug": { "$ref": "#/$defs/Slug" },
         "status": { "enum": ["PENDING", "PROVISIONING", "ACTIVE", "FAILED"] },
         "storefrontUrl": { "type": "string", "pattern": "^https?://" },
-        "adminLoginUrl": { "type": "string", "pattern": "^https?://" }
+        "adminLoginUrl": { "type": "string", "pattern": "^https?://" },
+        "phase": { "description": "BILL-00 (billing.md section 5), implemented by BILL-02: present only when the card step applies to this signup (absent otherwise, never null).", "enum": ["AWAITING_CARD", "PROVISIONING", "READY"] },
+        "cardRequired": { "description": "BILL-00: present only when the card step applies; true only while phase is AWAITING_CARD.", "type": "boolean" },
+        "cardSetupToken": { "description": "BILL-00: verify response only, while phase is AWAITING_CARD; never returned by GET /status. Single use, expires in at most 30 minutes.", "type": "string", "pattern": "^[A-Za-z0-9_-]{32,128}$" },
+        "cardSetupExpiresAt": { "description": "BILL-00: expiry of cardSetupToken (UTC instant).", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" },
+        "cardSetup": {
+          "description": "BILL-00: what the card step displays (billing.md section 5.2). Same shape as CardSetup in billing.schema.json.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["plan", "trialEligible", "trialDays", "trialEndsAtEstimate", "firstChargePesewas", "verificationAmountPesewas", "currency"],
+          "properties": {
+            "plan": { "type": "object", "additionalProperties": false, "required": ["code", "name"], "properties": { "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,31}$" }, "name": { "type": "string" } } },
+            "trialEligible": { "type": "boolean" },
+            "trialDays": { "type": "integer", "minimum": 0 },
+            "trialEndsAtEstimate": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" },
+            "firstChargePesewas": { "type": "integer", "minimum": 0 },
+            "verificationAmountPesewas": { "type": "integer", "minimum": 0 },
+            "currency": { "const": "GHS" }
+          }
+        }
       },
       "if": { "properties": { "status": { "const": "ACTIVE" } } },
       "then": {},
