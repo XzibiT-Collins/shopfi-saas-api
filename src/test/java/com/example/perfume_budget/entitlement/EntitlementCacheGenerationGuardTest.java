@@ -242,6 +242,8 @@ class EntitlementCacheGenerationGuardTest {
         // a read of the marker is a miss: the database answers, and its value replaces the marker
         assertThat(cache.tenant(4, () -> Optional.of(state(4, 2))).orElseThrow().planId()).isEqualTo(2);
         assertThat(store.values.get("plans:v1:tenant:4")).contains("\"planId\":2");
+        assertThat(meters.find(EntitlementCache.ERRORS_METRIC).tag("op", "get").counter())
+                .as("the marker is a plain miss, not an unreadable entry").isNull();
     }
 
     @Test
