@@ -182,7 +182,7 @@ What changes for the existing endpoints is **additive only**; the `status` value
 
 | Endpoint | Addition when the card step applies |
 |---|---|
-| `POST /verify` (`202`) | `phase: "AWAITING_CARD"`, `cardRequired: true`, a single-use `cardSetupToken` (hashed at rest, bound to the signup, expires in at most 30 minutes), `cardSetupExpiresAt` and `cardSetup` (plan, trial days, first charge, verification amount: everything the card step shows). `status` is `PROVISIONING`; provisioning is queued only after the card is on file. The description is `Card required to start the trial` |
+| `POST /verify` (`202`) | `phase: "AWAITING_CARD"`, `cardRequired: true`, a single-use `cardSetupToken` (hashed at rest, bound to the signup, expires in at most 30 minutes), `cardSetupExpiresAt` and `cardSetup` (plan, trial eligibility and days, first charge, verification amount: everything the card step shows). `status` is `PROVISIONING`; provisioning is queued only after the card is on file. The description is `Card required to start the trial` |
 | `GET /status?slug=` (`200`) | `phase` (`AWAITING_CARD`, `PROVISIONING`, `READY`) and `cardRequired`. **Never the token** (this endpoint is unauthenticated and polled by slug) |
 | `POST /resend`, `POST /verify` on a signup that is `AWAITING_CARD` | allowed: a fresh OTP issues a fresh token and kills the old one (how a user whose token expired or was lost restarts). Limits and lockouts unchanged |
 | `POST /card/initialize` | new, public, header `X-Card-Setup-Token`, body `{slug}`; returns the hosted checkout URL and a reference |

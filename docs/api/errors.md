@@ -82,9 +82,10 @@ Contract only (docs `billing.md`); implemented by BILL-01..BILL-07. All are `Api
 | 409 | `SUBSCRIPTION_VERSION_CONFLICT`, `BILLING_SETTINGS_VERSION_CONFLICT`, `CREDENTIALS_VERSION_CONFLICT` | `expectedVersion`, `currentVersion` | stale optimistic-lock `version` (never the generic `503 TRY_AGAIN`) |
 | 409 | `BILLING_MANAGED` | | the PLAN-01 status bridge on a tenant billed through Paystack |
 | 409 | `CREDENTIALS_NOT_CONFIGURED`, `ACTION_NOT_ALLOWED`, `NOT_COMPLIMENTARY`, `IDEMPOTENCY_KEY_REUSED`, `RECONCILIATION_IN_PROGRESS`, `FINDING_ALREADY_RESOLVED`, `WEBHOOK_EVENT_NOT_RETRYABLE` | `action`, `lifecycleStatus`, `accessState` (for `ACTION_NOT_ALLOWED`) | platform console conflicts |
-| 503 | `PROVIDER_UNAVAILABLE` | | Paystack unreachable or the circuit is open BEFORE anything was sent (an unknown outcome of a charge already sent is `202`, never 503) |
+| 503 | `PROVIDER_UNAVAILABLE` | | Paystack unreachable or the circuit is open BEFORE anything was sent (an unknown outcome of a charge already sent is `202`, never 503); also a returned checkout URL that is not on `checkout.paystack.com` |
+| 503 | `CARD_SETUP_PAUSED` | | the public card step is stopped platform-wide by the velocity threshold (billing.md 5.8) |
 
-Webhook receiver (`POST /api/v1/platform/billing/webhooks/paystack/{environment}`): `401 Invalid signature` (only a counter is incremented), `404 Not found` (unknown environment or no keys), `413 Payload too large` (> 64 KiB), `400 Invalid payload`; a business outcome is never a 5xx ([billing.md](billing.md) section 12.3). Provider text, authorization codes, secrets and webhook bodies are never part of any error body or log (the `Paystack` section above applies to the platform client as well).
+Webhook receiver (`POST /api/v1/platform/billing/webhooks/paystack/{environment}`): `401 Invalid signature` (only a counter is incremented), `404 Not found` (an environment segment other than `test` / `live`; an environment with no stored keys answers the same `401` as a wrong signature), `413 Payload too large` (> 64 KiB), `400 Invalid payload`; a business outcome is never a 5xx ([billing.md](billing.md) section 12.3). Provider text, authorization codes, secrets and webhook bodies are never part of any error body or log (the `Paystack` section above applies to the platform client as well).
 
 ## Kept: business messages (our own exception types)
 

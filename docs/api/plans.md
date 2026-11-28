@@ -2392,7 +2392,7 @@ and update). Limit checks (15.2) run in the same place.
   extending the trial or setting it `ACTIVE` (11).
 - **Sign-up** (O1): every new tenant gets the `isDefaultForSignup` plan, `subscriptionStatus` `TRIALING`, and
   `trialEndsAt` = the moment provisioning first completes (tenant becomes `ACTIVE`) + that plan's `trialDays` at that
-  moment. It is set **only when it is `null`**: reactivate (`SUSPENDED -> ACTIVE`), reprovision and a re-approve never
+  moment (BILL-00: under `oneTrialPerCard` a repeat card or owner e-mail gets no trial and `trialEndsAt` is the provisioning instant itself, [billing.md](billing.md) section 5.7). It is set **only when it is `null`**: reactivate (`SUSPENDED -> ACTIVE`), reprovision and a re-approve never
   reset it (Security L5). Any `plan` value in the signup body is ignored (onboarding.md). Until provisioning completes
   `trialEndsAt` is `null`.
 - **Feature flags vs entitlements**: an entitlement decides whether the tenant MAY use a feature; the existing feature
