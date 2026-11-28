@@ -42,6 +42,10 @@ class EntitlementCacheIntegrationTest extends AbstractEntitlementIntegrationTest
         exec("UPDATE master.plan_entitlements SET enabled = false WHERE plan_id = 2 AND feature_key = 'WALK_IN_POS'");
         assertPassedTheGate(quote(growth), "growth served from the cache");
         exec("UPDATE master.plan_entitlements SET enabled = true WHERE plan_id = 2 AND feature_key = 'WALK_IN_POS'");
+        // the same for the tenant entry: a status changed with SQL stays invisible until evicted (or the TTL)
+        setPlan(scale, TestPlans.SCALE_ID, "CANCELED", null);
+        assertPassedTheGate(quote(scale), "scale tenant state served from the cache");
+        setPlan(scale, TestPlans.SCALE_ID, "TRIALING", null);
 
         // the platform console removes WALK_IN_POS from Growth: evicted after commit, effective on the next request
         MockHttpServletResponse m = asAdmin(put(PLANS + "/matrix"), "{\"plans\":[{\"id\":2,\"version\":" + version(2)

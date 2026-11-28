@@ -78,8 +78,10 @@ class PlanLimitsIntegrationTest extends AbstractEntitlementIntegrationTest {
     @Test
     void limitMinusOnePasses_limitAnswers402_forEveryLimitFeature_inTheirOwnService() throws Exception {
         T t = growthTenant("p2-limits");
-        // MAX_LOCATIONS: every location counts, active or not
-        long used = count(t, PlanFeature.MAX_LOCATIONS);
+        // MAX_LOCATIONS: every location counts, active or not (counted here with SQL of its own)
+        exec("INSERT INTO " + t.schema() + ".storage_locations (name, type, active, created_at) VALUES (?, 'STORE_ROOM', false, now())",
+                "P2 inactive " + N.incrementAndGet());
+        long used = scalar("SELECT count(*) FROM " + t.schema() + ".storage_locations");
         setLimit(TestPlans.GROWTH_ID, PlanFeature.MAX_LOCATIONS, (int) used + 1);
         assertThat(locationCreate(t).getStatus()).isEqualTo(200);
         limitReached(locationCreate(t), PlanFeature.MAX_LOCATIONS, (int) used + 1, used + 1);
@@ -213,10 +215,11 @@ class PlanLimitsIntegrationTest extends AbstractEntitlementIntegrationTest {
     @Test
     void concurrentEntriesAtLimitMinusOne_exactlyOnePasses() throws Exception {
         T t = growthTenant("p2-race");
-        for (PlanFeature f : List.of(PlanFeature.MAX_LOCATIONS, PlanFeature.MAX_ACTIVE_COUPONS)) {
+        for (PlanFeature f : List.of(PlanFeature.MAX_LOCATIONS, PlanFeature.MAX_ACTIVE_COUPONS, PlanFeature.MAX_PRODUCTS)) {
             long used = count(t, f);
             setLimit(TestPlans.GROWTH_ID, f, (int) used + 1);
-            List<Integer> statuses = parallel(4, i -> () -> (f == PlanFeature.MAX_LOCATIONS ? locationCreate(t) : couponCreate(t, true)).getStatus());
+            List<Integer> statuses = parallel(4, i -> () -> (f == PlanFeature.MAX_LOCATIONS ? locationCreate(t)
+                    : f == PlanFeature.MAX_ACTIVE_COUPONS ? couponCreate(t, true) : productCreate(t)).getStatus());
             assertThat(statuses).as(f.name()).containsOnly(200, 402);
             assertThat(statuses.stream().filter(s -> s == 200).count()).as(f.name()).isEqualTo(1);
             assertThat(count(t, f)).isEqualTo(used + 1);
@@ -233,9 +236,16 @@ class PlanLimitsIntegrationTest extends AbstractEntitlementIntegrationTest {
         long exhausted = scalar("INSERT INTO " + t.schema() + ".coupons (code, discount_type, discount_value, usage_limit, usage_count, "
                 + "is_active, limit_deactivated, start_date, expiration_date, created_at) VALUES ('P2EXH" + N.incrementAndGet()
                 + "', 'FLAT', 5, 1, 1, false, true, DATE '2026-01-01', DATE '2099-12-31', now()) RETURNING id");
+        long exhausted2 = scalar("INSERT INTO " + t.schema() + ".coupons (code, discount_type, discount_value, usage_limit, usage_count, "
+                + "is_active, limit_deactivated, start_date, expiration_date, created_at) VALUES ('P2EXH" + N.incrementAndGet()
+                + "', 'FLAT', 5, 1, 1, false, true, DATE '2026-01-01', DATE '2099-12-31', now()) RETURNING id");
         long used = count(t, PlanFeature.MAX_ACTIVE_COUPONS);
         setLimit(TestPlans.GROWTH_ID, PlanFeature.MAX_ACTIVE_COUPONS, (int) used);
         assert402(couponCreate(t, true), "PLAN_LIMIT_REACHED", PlanFeature.MAX_ACTIVE_COUPONS, null, "at the limit");
+        // an admin PUT isActive:true on an exhausted (already counted) coupon is not an entry: never 402, even at the limit
+        assertThat(send(t, t.admin(), req(HttpMethod.PUT, "/api/v1/coupon/" + exhausted2), couponJson(null, true)).getStatus())
+                .isEqualTo(200);
+        assertThat(count(t, PlanFeature.MAX_ACTIVE_COUPONS)).isEqualTo(used);
         // the automatic release (a cancelled order / failed payment) re-activates it: still inside the set
         int moved = tenants.runAs(t.t(), () -> new TransactionTemplate(txManager).execute(s -> couponRepository.releaseRedemption(exhausted)));
         assertThat(moved).isEqualTo(1);

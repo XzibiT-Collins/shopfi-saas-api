@@ -172,8 +172,8 @@ public abstract class AbstractEntitlementIntegrationTest extends AbstractPlansIn
                     + "'FLAT', 1, 5, 0, true, DATE '2026-01-01', DATE '2099-12-31', now() FROM generate_series(1, ?) g", missing);
             case MAX_STAFF -> exec("INSERT INTO " + s + ".users (full_name, email, password, roles, is_active, email_verified, created_at) "
                     + "SELECT 'Fill', 'p2-" + tag + "-' || g || '@fill.test', 'x', 'FRONT_DESK', true, true, now() FROM generate_series(1, ?) g", missing);
-            case MAX_LOCATIONS -> exec("INSERT INTO " + s + ".storage_locations (name, type, active) "
-                    + "SELECT 'P2 " + tag + " ' || g, 'STORE_ROOM', true FROM generate_series(1, ?) g", missing);
+            case MAX_LOCATIONS -> exec("INSERT INTO " + s + ".storage_locations (name, type, active, created_at) "
+                    + "SELECT 'P2 " + tag + " ' || g, 'STORE_ROOM', true, now() FROM generate_series(1, ?) g", missing);
             default -> throw new IllegalArgumentException(f.name());
         }
         assertThat(count(t, f)).isEqualTo(target);
