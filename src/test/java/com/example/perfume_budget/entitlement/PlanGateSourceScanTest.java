@@ -41,7 +41,7 @@ class PlanGateSourceScanTest {
     private static final Path MAIN = Path.of("src/main/java/com/example/perfume_budget");
     private static final Pattern CALL = Pattern.compile(
             "entitlementService\\.(requireRoute|requireWrite|requireLimitSlot|precheckLimitSlot)\\(PlanFeature\\.(\\w+)\\)");
-    private static final Pattern METHOD = Pattern.compile("^    (?:public |private |protected |static |final |synchronized )*[\\w<>\\[\\], ?.]+ (\\w+)\\(");
+    private static final Pattern METHOD = Pattern.compile("^    (?:public |private |protected |static |final |synchronized )*\\w[\\w<>\\[\\], ?.]* (\\w+)\\(");
 
     /** Class#method -> the features it checks. Hand-maintained: a new call site must be added here (and to the registry). */
     static final Map<String, String> CALL_SITES = new TreeMap<>(Map.ofEntries(
@@ -90,7 +90,7 @@ class PlanGateSourceScanTest {
             "PlatformPlanController", "PlatformTenantController", "PlatformTenantDomainController", "WebhookController",
             "PaymentController", "PaymentSettingsController", "CartController", "CartItemController", "OrderController",
             "NotificationController", "AdminMetricController", "CategoryController", "DeliveryDetailController",
-            "SubscriptionController", "DevTenantController");
+            "SubscriptionController");
 
     /** Handlers of mixed controllers that must stay ungated (finishing orders, core inventory, reads that stay open, ...). */
     static final Set<String> NEVER_GATED_HANDLERS = Set.of(

@@ -100,7 +100,7 @@ class EntitlementCacheTest {
     void theCacheIsNotTheTenantAwareCacheManager() {
         assertThat(java.util.Arrays.stream(EntitlementCache.class.getDeclaredFields()).map(f -> f.getType().getName()))
                 .noneMatch(n -> n.contains("CacheManager"));
-        assertThat(java.util.Arrays.stream(RedisEntitlementStore.class.getDeclaredFields()).map(f -> f.getType()))
-                .containsExactly(org.springframework.data.redis.core.StringRedisTemplate.class);
+        assertThat(java.util.Arrays.stream(RedisEntitlementStore.class.getDeclaredFields()).map(f -> f.getType().getName()).toList())
+                .containsExactly(org.springframework.data.redis.core.StringRedisTemplate.class.getName());
     }
 }

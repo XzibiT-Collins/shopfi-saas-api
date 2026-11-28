@@ -161,6 +161,9 @@ class PlanLimitsIntegrationTest extends AbstractEntitlementIntegrationTest {
     @Test
     void loweringALimitKeepsTheData_andOnlyBlocksNewEntries() throws Exception {
         T t = growthTenant("p2-lower");
+        for (PlanFeature f : List.of(PlanFeature.MAX_LOCATIONS, PlanFeature.MAX_ACTIVE_COUPONS, PlanFeature.MAX_STAFF, PlanFeature.MAX_PRODUCTS)) {
+            setLimit(TestPlans.GROWTH_ID, f, null);
+        }
         for (int i = 0; i < 2; i++) {
             assertThat(locationCreate(t).getStatus()).isEqualTo(200);
             assertThat(couponCreate(t, true).getStatus()).isEqualTo(200);

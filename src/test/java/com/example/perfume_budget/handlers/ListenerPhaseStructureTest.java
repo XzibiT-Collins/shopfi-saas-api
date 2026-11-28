@@ -179,6 +179,9 @@ class ListenerPhaseStructureTest {
             if (tel == null || tel.phase() != TransactionPhase.AFTER_COMMIT || AnnotatedElementUtils.hasAnnotation(m, Async.class)) {
                 continue;
             }
+            if (cacheEviction(m)) {
+                continue; // PLAN-02: checked by cacheEvictionListenersOnlyEvict below
+            }
             inline++;
             for (String call : callsIn(m)) {
                 if (!handOffOrLogging(call.substring(0, call.indexOf('#'))) && !idOfThePayload(call)) {
@@ -191,6 +194,47 @@ class ListenerPhaseStructureTest {
             }
         }
         assertThat(inline).as("the inline (mail) listeners were inspected").isGreaterThanOrEqualTo(6);
+        assertThat(offenders).isEmpty();
+    }
+
+    /**
+     * PLAN-02 (plans.md 15.1 item 5): the entitlement cache evicts INLINE after commit, on purpose: "effective on the next
+     * request" needs the eviction done before the response, which a hand-off to another thread cannot promise. Allowed
+     * only because the body touches no database and no transaction: it computes the master keys from the payload and
+     * deletes them from the dedicated store (a failure is logged, never thrown).
+     */
+    private static boolean cacheEviction(Method m) {
+        return m.getDeclaringClass() == com.example.perfume_budget.entitlement.EntitlementCache.class;
+    }
+
+    @Test
+    void cacheEvictionListenersOnlyEvict() throws Exception {
+        String cache = org.springframework.asm.Type.getInternalName(com.example.perfume_budget.entitlement.EntitlementCache.class);
+        String store = org.springframework.asm.Type.getInternalName(com.example.perfume_budget.entitlement.EntitlementStore.class);
+        List<String> offenders = new ArrayList<>();
+        int seen = 0;
+        for (Method m : listenerMethods()) {
+            if (!cacheEviction(m)) {
+                continue;
+            }
+            seen++;
+            for (String call : callsIn(m)) {
+                boolean ok = call.equals(cache + "#evict") || call.equals(cache + "#tenantKey") || call.equals(cache + "#planKey")
+                        || call.startsWith("com/example/perfume_budget/platform/plan/events/") || call.startsWith("java/util/")
+                        || call.startsWith("java/lang/Long#");
+                if (!ok) {
+                    offenders.add(m.getName() + " calls " + call);
+                }
+            }
+        }
+        Method evict = com.example.perfume_budget.entitlement.EntitlementCache.class.getDeclaredMethod("evict", List.class);
+        for (String call : callsIn(evict)) {
+            if (!(call.equals(store + "#delete") || call.startsWith("org/slf4j/") || call.equals(cache + "#count")
+                    || call.startsWith("java/lang/") || call.startsWith("java/time/"))) {
+                offenders.add("evict calls " + call);
+            }
+        }
+        assertThat(seen).isEqualTo(2);
         assertThat(offenders).isEmpty();
     }
 

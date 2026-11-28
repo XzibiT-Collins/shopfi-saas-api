@@ -65,6 +65,7 @@ class SubscriptionDocContractTest extends AbstractEntitlementIntegrationTest {
     private void usage(T t, long products, long coupons, long locations, long staff) {
         fillTo(t, PlanFeature.MAX_PRODUCTS, products);
         fillTo(t, PlanFeature.MAX_ACTIVE_COUPONS, coupons);
+        trimLocations(t, locations);
         fillTo(t, PlanFeature.MAX_LOCATIONS, locations);
         fillTo(t, PlanFeature.MAX_STAFF, staff);
         assertThat(List.of(count(t, PlanFeature.MAX_PRODUCTS), count(t, PlanFeature.MAX_ACTIVE_COUPONS),

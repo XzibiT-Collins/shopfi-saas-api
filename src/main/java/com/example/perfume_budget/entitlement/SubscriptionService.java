@@ -54,7 +54,11 @@ public class SubscriptionService {
     }
 
     private static Integer limitOf(List<EntitlementView> list, PlanFeature f) {
-        return list.stream().filter(e -> e.featureKey().equals(f.name())).findFirst()
-                .map(EntitlementView::limitValue).orElse(0);
+        for (EntitlementView e : list) {
+            if (e.featureKey().equals(f.name())) {
+                return e.limitValue(); // null = unlimited
+            }
+        }
+        return 0; // a key without a row reads as 0 (never unlimited)
     }
 }

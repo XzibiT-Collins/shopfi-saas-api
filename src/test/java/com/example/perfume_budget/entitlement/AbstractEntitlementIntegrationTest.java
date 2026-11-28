@@ -107,16 +107,18 @@ public abstract class AbstractEntitlementIntegrationTest extends AbstractPlansIn
                 + "VALUES (?, 'NOTHING', 'Nothing', 0, 0, 'GHS', 0, 0, false, false, false, '[]', 999, false, 0, now()) ON CONFLICT (id) DO NOTHING", NONE_ID);
     }
 
-    protected static void setLimit(long planId, PlanFeature f, Integer limit) {
+    /** Edits a plan with SQL (no plan event): the in-process public list is evicted by hand, the store is OFF. */
+    protected void setLimit(long planId, PlanFeature f, Integer limit) {
         exec("DELETE FROM master.plan_entitlements WHERE plan_id = ? AND feature_key = ?", planId, f.name());
         exec("INSERT INTO master.plan_entitlements (plan_id, feature_key, enabled, limit_value) VALUES (?, ?, true, ?)",
                 planId, f.name(), limit);
+        publicPlanCache.evict();
     }
 
-    protected static void setEnabled(long planId, PlanFeature f, boolean on) {
-        exec("DELETE FROM master.plan_entitlements WHERE plan_id = ? AND feature_key = ?", planId, f.name());
-        exec("INSERT INTO master.plan_entitlements (plan_id, feature_key, enabled, limit_value) VALUES (?, ?, ?, NULL)",
-                planId, f.name(), on);
+    /** Leaves exactly {@code n} storage locations (a fresh tenant is seeded with two, nothing references them yet). */
+    protected void trimLocations(T t, long n) {
+        exec("DELETE FROM " + t.schema() + ".storage_locations WHERE id IN (SELECT id FROM " + t.schema()
+                + ".storage_locations ORDER BY id DESC LIMIT greatest((SELECT count(*) FROM " + t.schema() + ".storage_locations) - ?, 0))", n);
     }
 
     // ------------------------------------------------------------------------------------------ requests

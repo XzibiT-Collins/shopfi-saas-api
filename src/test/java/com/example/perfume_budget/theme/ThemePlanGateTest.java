@@ -34,8 +34,11 @@ class ThemePlanGateTest {
         return canonicalizer.canonicalize(submitted, storedResolved).document();
     }
 
-    private static ObjectNode basic() {
+    /** A tenant that picked the catalog theme "morrow" and uses only basic sections. */
+    private ObjectNode basic() {
         ObjectNode d = ThemeTestDocs.defaults();
+        d.put("themeId", ThemeCatalog.DEFAULT_ID);
+        d.set("tokens", catalog.tokens(ThemeCatalog.DEFAULT_ID));
         ArrayNode home = MAPPER.createArrayNode();
         d.get("pages").get("home").forEach(s -> {
             if (s.path("type").asText().equals("hero")) {
@@ -47,7 +50,7 @@ class ThemePlanGateTest {
         return d;
     }
 
-    private static ObjectNode with(ObjectNode doc, String sectionJson) {
+    private ObjectNode with(ObjectNode doc, String sectionJson) {
         ObjectNode c = doc.deepCopy();
         ((ArrayNode) c.get("pages").get("home")).add(json(sectionJson));
         return c;
@@ -112,7 +115,7 @@ class ThemePlanGateTest {
 
     @Test
     void aLegacyCustomThemeKeptAsItIsNeverFires() {
-        ObjectNode legacy = basic();
+        ObjectNode legacy = ThemeTestDocs.defaults(); // its tokens match no catalog theme: kept as the legacy theme
         legacy.remove("themeId");
         ((ObjectNode) legacy.get("tokens").get("colors")).put("primary", "#123456");
         ObjectNode s = stored(legacy);
