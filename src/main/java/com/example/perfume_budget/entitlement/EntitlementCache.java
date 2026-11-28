@@ -88,26 +88,26 @@ public class EntitlementCache {
     /** The tenant's plan id / status / trial end; {@code loader} reads the master table (empty: no such tenant). */
     public Optional<TenantPlanState> tenant(long tenantId, Supplier<Optional<TenantPlanState>> loader) {
         String key = tenantKey(tenantId);
-        long generation = generation(key); // BEFORE the database read (BILL-01c)
-        TenantPlanState hit = read(key, TenantPlanState.class, null);
+        long[] generation = {generation(key)}; // BEFORE the database read (BILL-01c)
+        TenantPlanState hit = read(key, TenantPlanState.class, null, generation);
         if (hit != null && hit.tenantId() == tenantId) {
             return Optional.of(hit);
         }
         Optional<TenantPlanState> fresh = loader.get();
-        fresh.ifPresent(v -> write(key, v, generation));
+        fresh.ifPresent(v -> write(key, v, generation[0]));
         return fresh;
     }
 
     /** One plan's entitlements in catalog order; {@code loader} reads the master tables. */
     public List<EntitlementView> plan(long planId, Supplier<List<EntitlementView>> loader) {
         String key = planKey(planId);
-        long generation = generation(key); // BEFORE the database read (BILL-01c)
-        List<EntitlementView> hit = read(key, null, ENTITLEMENTS);
+        long[] generation = {generation(key)}; // BEFORE the database read (BILL-01c)
+        List<EntitlementView> hit = read(key, null, ENTITLEMENTS, generation);
         if (hit != null) {
             return hit;
         }
         List<EntitlementView> fresh = loader.get();
-        write(key, fresh, generation);
+        write(key, fresh, generation[0]);
         return fresh;
     }
 
@@ -171,7 +171,8 @@ public class EntitlementCache {
         }
     }
 
-    private <T> T read(String key, Class<T> type, TypeReference<T> ref) {
+    /** {@code generation[0]} is re-read after an unreadable entry was dropped (that drop is an eviction of this very key). */
+    private <T> T read(String key, Class<T> type, TypeReference<T> ref, long[] generation) {
         String raw;
         try {
             raw = store.get(key);
@@ -189,6 +190,7 @@ public class EntitlementCache {
             count("get");
             log.warn("Entitlement cache entry unreadable ({}); reading the database", e.getClass().getSimpleName());
             evict(List.of(key));
+            generation[0] = generation(key); // still BEFORE the caller's database read
             return null;
         }
     }

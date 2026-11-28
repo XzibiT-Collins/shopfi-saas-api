@@ -1262,7 +1262,10 @@ empty list ("Plans coming soon", PLAN-05 AC7). Response headers `Cache-Control: 
 (the CORS headers depend on the `Origin`); the response never sets a cookie. Server side it is served from a short cache
 (the master plan cache of 15.1, or an in-process cache of at most 60 s), never a master-DB read per hit, and it has a
 per-IP rate limiter like the other onboarding endpoints (`plans-ip`, 60 per 60 s, `429` + `Retry-After` with the standard
-body). A change made in the console may take up to 60 s to show here. If PLAN-05 ever puts plan text into JSON-LD or a
+body). A change made in the console may take up to 60 s to show here (the in-process cache refreshes single-flight: when the
+entry has expired one request reloads it and the others serve the expired list meanwhile; a reload that started before a
+committed plan write never stores its old list back). Plan texts must contain a visible character: blank-rendering characters
+(Hangul fillers, braille blank, zero-width and other format characters, lone combining marks) do not count. If PLAN-05 ever puts plan text into JSON-LD or a
 `<meta>` tag, it must be serialised with `<` escaped.
 
 The default sign-up plan is the one with `isDefaultForSignup: true`; if it is not public it is absent from this list and
@@ -2395,6 +2398,16 @@ and update). Limit checks (15.2) run in the same place.
   moment (BILL-00: under `oneTrialPerCard` a repeat card or owner e-mail gets no trial and `trialEndsAt` is the provisioning instant itself, [billing.md](billing.md) section 5.7). It is set **only when it is `null`**: reactivate (`SUSPENDED -> ACTIVE`), reprovision and a re-approve never
   reset it (Security L5). Any `plan` value in the signup body is ignored (onboarding.md). Until provisioning completes
   `trialEndsAt` is `null`.
+- **Plan writes never block sign-ups.** Every plan write takes a catalog advisory lock (namespace `PLAN_CATALOG`) and then
+  the row locks `SELECT ... FOR NO KEY UPDATE` on the plans (BILL-01c), never `FOR UPDATE` or a table lock. Writers serialise
+  with each other; a sign-up inserting a tenant, a tenant plan change (foreign-key check, `FOR KEY SHARE`), the default-plan
+  lookup, the public list and a billing price read never wait behind a console save.
+- **Background callers of gated services (BILL-01c decision).** Scheduled jobs, `@Async` handlers and event listeners are
+  never plan-gated: outside an HTTP request a plan check would apply as a write and fail closed, so every background entry point
+  carries `@NotPlanGated(reason)` (or, for new user-visible gated work, `@PlanGatedBackground(reason)`; none today) and must not
+  reach a service method that calls `requireRoute` / `requireWrite` / `requireLimitSlot`. `BackgroundCallerScanTest` fails on
+  an unclassified entry point or on a `@NotPlanGated` one that reaches a plan check. Billing code never calls a gated service,
+  and a plan check inside a request to a never-gated billing path fails loudly (`IllegalStateException`), it is never a 402.
 - **Feature flags vs entitlements**: an entitlement decides whether the tenant MAY use a feature; the existing feature
   flags (feature-flags.md) decide whether it has turned it on.
 - **`LOGIN_OTP` is a request-content gate.** Only a `PATCH /api/v1/admin/feature-flags/LOGIN_OTP` that changes at least
@@ -2423,8 +2436,26 @@ on a tenant request and an eviction fired from a platform request would hit diff
 7. `readOnly` is **never cached** as a boolean: it is computed per request from the cached `status` / `trialEndsAt`
    against the `Clock`.
 
+8. **Generation guard (BILL-01c; closes the former "60 s write-back window").** Every cache key has a generation counter
+   (`plans:v1:gen:tenant:{tenantId}`, `plans:v1:gen:entitlements:{planId}`). A loader reads the generation BEFORE it reads the
+   database and stores its value only while the generation is unchanged (an atomic compare-and-set in the store, a Lua script
+   on Redis); every eviction increments the generation and deletes the key in one atomic step. A request that read the
+   database before a committed change therefore can never write the old value back after the eviction (it still answers
+   with what it read; nothing is stored). If the generation cannot be read, nothing is written.
+9. **Eviction is reliable.** Every change that grants or revokes access evicts after commit. A failed eviction is retried
+   (4 attempts in all, backoff 25 ms, 100 ms, 400 ms); when every attempt failed the counter
+   `shopfi.entitlement.cache.eviction.failed` is incremented, an ERROR is logged, and each key is overwritten with a
+   short-lived marker (2 s) that reads as a miss, so a stale entry cannot outlive a couple of seconds. A Redis outage still
+   reads the database and never grants by default.
+10. **Cached value.** `plans:v1:tenant:{tenantId}` also holds `accessState` (`FULL`, `GRACE`, `READ_ONLY`) and
+    `billingManaged` from the billing projection ([billing.md](billing.md) section 17.4). `readOnly` is still computed per
+    request: `accessState == READ_ONLY`, or (not `billingManaged` and the rule of section 13: `CANCELED`, or `TRIALING` at or
+    after `trialEndsAt`). Until billing manages a tenant the values are `FULL` / `false` and section 13 is unchanged.
+
 Tests: an eviction fired from a platform request is seen by the next tenant request; tenant A's entry is never served to
-tenant B.
+tenant B; a reader held at the database read cannot write back after an eviction (deterministic interleaving, and 200 rounds
+of two readers against one writer); a store that fails the first N evictions is retried and, if it never recovers, alerts
+and leaves the marker.
 
 ### 15.2 Limits: counted set and every write that enters it
 
@@ -2449,7 +2480,9 @@ freed by deactivating it, not by deleting it. After an admin deactivate a releas
 coupon (it is no longer `limit_deactivated`).
 
 Custom domains have no limit: `CUSTOM_DOMAIN` is a boolean and a tenant has at most one domain (O3). Count and insert are
-serialized per tenant and feature (a transaction-scoped advisory lock or `SELECT ... FOR UPDATE` on a per-tenant row), so
+serialized per tenant and feature (a transaction-scoped advisory lock in the two-key form `pg_advisory_xact_lock(namespace,
+hashtext(...))`, namespace `PLAN_LIMIT`; every advisory lock of the application has its own namespace constant in `AdvisoryLocks`,
+so plan-limit, theme, template, billing and leader-election locks cannot collide), so
 two concurrent writes at `limit - 1` let exactly one through (PLAN-02 AC4); a re-check after insert under READ COMMITTED
 without a lock is not enough. PLAN-02's 402 tests have one row per write in the table above, including `assign`.
 
@@ -2554,7 +2587,8 @@ Security sign-off of PLAN-01 and PLAN-02 checks every item (Security review of P
    are never 402. Test: downgrade with the flag on -> login still asks for the OTP.
 10. **Never gated**, enforced by the allow-list scan test: auth, onboarding, platform, storefront, cart, checkout,
     payment, webhook, notifications, metrics, ledger posting from orders, scheduled and async jobs, finishing work on
-    existing orders, returns and refunds, the legacy balance report / repair. No gate check inside webhook or scheduled code paths.
+    existing orders, returns and refunds, the legacy balance report / repair. No gate check inside webhook or scheduled code paths
+    (every background entry point is classified `@NotPlanGated`, enforced by `BackgroundCallerScanTest`, section 15).
     **BILL-00 additions to the allow-list:** `/api/v1/admin/billing/**`, `/api/v1/platform/billing/**` (incl. the billing webhook),
     `/api/v1/platform/onboarding/card/**`, `/api/v1/dev/billing/**`; a billing endpoint answers 200 while the tenant is read-only
     ([billing.md](billing.md) section 17.2).
