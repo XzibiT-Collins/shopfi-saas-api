@@ -3770,6 +3770,10 @@ The FRONT_DESK view (same endpoint; only non-financial banner kinds, params limi
 }
 ```
 
+### 9.2 Reading the summary
+
+The states, dates, `nextBilling`, `grace`, `pendingChange`, `priceChange`, `card` and `actions` are one consistent server-side snapshot taken in one read; the client maps the THREE independent state fields to copy separately (for example "Active - Cancels on <date>", "Payment failed - retrying - full access until <date>", "Read-only until payment") and never infers one from another. Unknown enum values must be rejected by the parser, not rendered.
+
 ### 9.3 Banners
 
 The banners are codes and values, never display text; the frontend owns the copy (BILL-FE-02b AC6). Priority order (highest first, at most 10): `ACCESS_RESTRICTED`, `PAYMENT_FAILED_GRACE`, `PAYMENT_PENDING`, `TRIAL_NO_CARD`, `TRIAL_ENDING`, `CARD_EXPIRING`, `PRICE_CHANGE_NOTICE`, `CANCELLATION_SCHEDULED`, `COMPLIMENTARY_ENDING`, `INVOICE_AVAILABLE`.
@@ -3788,6 +3792,10 @@ The banners are codes and values, never display text; the frontend owns the copy
 | `INVOICE_AVAILABLE` | a document was issued in the last 7 days | `INFO` | session | `documentId`, `documentType` | no |
 
 `daysLeft` = whole days remaining, rounded down (`floor(remainingSeconds / 86400)`), never negative. "Session" dismissible = the client may hide it for the browser session only; `dismissible: false` banners (restriction, grace, no card, pending payment) are never dismissible.
+
+### 9.4 When billing is not enabled
+
+With `billingEnabled: false` (the default until credentials are verified) `GET /summary` still answers (example `summary-billing-not-enabled`: `MANUAL` mode, no card, every billing action flag `false` except what the pre-billing plan panel needs) and every other billing endpoint answers `409 BILLING_NOT_CONFIGURED`; signup and the plan panel behave as before the wave. Merging the wave therefore changes nothing for users until a human enters Paystack keys, verifies them and switches billing on (O19).
 
 ### 9.5 Card management (FR-07, FR-13)
 
